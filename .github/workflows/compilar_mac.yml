@@ -35,10 +35,10 @@ jobs:
         # Las aplicaciones de Mac (.app) son en realidad carpetas. 
         # Hay que comprimirlas en ZIP para que no pierdan sus permisos al descargarlas.
         cd dist
-        zip -r ControlEventos-Mac.zip "ControlEventos.app"
+        zip -r ControlFlota-Mac.zip "ControlEventos.app"
 
     - name: Subir el archivo final (Artifact)
       uses: actions/upload-artifact@v4  # <-- ¡AQUÍ ESTÁ LA SOLUCIÓN PRINCIPAL (Actualizado a v4)!
       with:
-        name: ControlEventos-Mac-APP
-        path: dist/ControlEventos-Mac.zip
+        name: ControlFlota-Mac-APP
+        path: dist/Controlflota-Mac.zip
