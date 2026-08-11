@@ -1,7 +1,5 @@
 name: Compilar para macOS
 
-# Esto hace que se compile automáticamente cada vez que subes código a la rama "main"
-# También permite ejecutarlo manualmente con "workflow_dispatch"
 on:
   push:
     branches: [ "main", "master" ]
@@ -13,12 +11,12 @@ jobs:
 
     steps:
     - name: Clonar el repositorio
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4  # <-- Actualizado a v4
 
     - name: Configurar Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5  # <-- Actualizado a v5
       with:
-        python-version: '3.11' # Versión estable recomendada
+        python-version: '3.11'
 
     - name: Instalar dependencias
       run: |
@@ -40,7 +38,7 @@ jobs:
         zip -r ControlEventos-Mac.zip "ControlEventos.app"
 
     - name: Subir el archivo final (Artifact)
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # <-- ¡AQUÍ ESTÁ LA SOLUCIÓN PRINCIPAL (Actualizado a v4)!
       with:
         name: ControlEventos-Mac-APP
         path: dist/ControlEventos-Mac.zip
