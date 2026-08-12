@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-latest # Le pedimos a GitHub una computadora con Windows
+    runs-on: windows-latest # Servidor Windows
 
     steps:
     - name: Clonar el repositorio
@@ -26,8 +26,8 @@ jobs:
 
     - name: Compilar la aplicación con PyInstaller
       run: |
-        # ATENCIÓN: En Windows usamos ";" (punto y coma) en lugar de ":" para las imágenes
-        pyinstaller --noconfirm --windowed --name "ControlFlota" --add-data "Logo.png;." --add-data "Logo_Collie_Software.png;." --collect-all customtkinter control_general.py
+        # Agregamos el comando --icon para incrustar tu logo en el .exe principal
+        pyinstaller --noconfirm --windowed --name "ControlFlota" --icon="Ico_Collie_Software.ico" --add-data "Logo.png;." --add-data "Logo_Collie_Software.png;." --collect-all customtkinter control_general.py
 
     - name: Descargar Inno Setup (Creador de Instaladores)
       run: choco install innosetup
@@ -45,6 +45,7 @@ jobs:
         Compression=lzma
         SolidCompression=yes
         PrivilegesRequired=lowest
+        SetupIconFile=Ico_Collie_Software.ico
         
         [Tasks]
         Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
