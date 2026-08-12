@@ -1,5 +1,4 @@
 customtkinter
-tkinter
 psycopg2-binary
 bcrypt
 Pillow
