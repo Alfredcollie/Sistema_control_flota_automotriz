@@ -7,14 +7,14 @@ on:
 
 jobs:
   build-mac:
-    runs-on: macos-latest
+    runs-on: macos-14 # <-- Esto fuerza a GitHub a usar una Mac con procesador M1
 
     steps:
     - name: Clonar el repositorio
-      uses: actions/checkout@v4  # <-- Actualizado a v4
+      uses: actions/checkout@v4
 
     - name: Configurar Python
-      uses: actions/setup-python@v5  # <-- Actualizado a v5
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
@@ -26,19 +26,17 @@ jobs:
 
     - name: Compilar la aplicación con PyInstaller
       run: |
-        # Usamos --collect-all customtkinter para que los colores y temas no se rompan
-        # Usamos : en lugar de ; para agregar imágenes en macOS
+        # Compilamos la aplicación
         pyinstaller --noconfirm --windowed --name "ControlEventos" --add-data "Logo.png:." --add-data "Logo_Collie_Software.png:." --collect-all customtkinter control_general.py
 
-    - name: Comprimir la aplicación en ZIP
+    - name: Comprimir la aplicación (Modo Seguro Apple)
       run: |
-        # Las aplicaciones de Mac (.app) son en realidad carpetas. 
-        # Hay que comprimirlas en ZIP para que no pierdan sus permisos al descargarlas.
         cd dist
-        zip -r ControlFlota-Mac.zip "ControlEventos.app"
+        # Usamos 'ditto' en lugar de 'zip'. Esto preserva la estructura interna para M1/M2/M3.
+        ditto -c -k --keepParent "ControlEventos.app" ControlEventos-Mac.zip
 
-    - name: Subir el archivo final (Artifact)
-      uses: actions/upload-artifact@v4  # <-- ¡AQUÍ ESTÁ LA SOLUCIÓN PRINCIPAL (Actualizado a v4)!
+    - name: Subir el archivo final
+      uses: actions/upload-artifact@v4
       with:
-        name: ControlFlota-Mac-APP
-        path: dist/Controlflota-Mac.zip
+        name: ControlEventos-Mac-APP
+        path: dist/ControlEventos-Mac.zip
