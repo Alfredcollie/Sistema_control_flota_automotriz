@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-mac:
-    runs-on: macos-14 # Procesador M1
+    runs-on: macos-14 # Procesador M1 (Apple Silicon)
 
     steps:
     - name: Clonar el repositorio
@@ -26,13 +26,14 @@ jobs:
 
     - name: Compilar la aplicación con PyInstaller
       run: |
-        pyinstaller --noconfirm --windowed --name "ControlEventos" --add-data "Logo.png:." --add-data "Logo_Collie_Software.png:." --collect-all customtkinter control_general.py
+        # Usamos control_general.py y nombramos la aplicación "ControlFlota"
+        pyinstaller --noconfirm --windowed --name "ControlFlota" --add-data "Logo.png:." --add-data "Logo_Collie_Software.png:." --collect-all customtkinter control_general.py
 
     - name: Comprimir la aplicación (Preservando estructura Mac)
       run: |
         cd dist
-        # La letra 'y' evita que se rompa la aplicación por dentro
-        zip -ry ControlEventos-Mac.zip "ControlEventos.app"
+        # La letra 'y' preserva la estructura interna para que Mac no la bloquee
+        zip -ry ControlFlota-Mac.zip "ControlFlota.app"
 
     - name: Subir el archivo final
       uses: actions/upload-artifact@v4
