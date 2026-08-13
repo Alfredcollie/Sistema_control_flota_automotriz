@@ -55,7 +55,7 @@ class BitacoraApp:
         if not conn: return
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, fecha, hora, usuario, modulo, accion FROM bitacora_auditoria ORDER BY id DESC")
+            cursor.execute("SELECT id, fecha, hora, usuario, modulo, accion FROM bitacora_auditoria ORDER BY id DESC LIMIT 500")
             for r in cursor.fetchall():
                 self.tabla.insert("", tk.END, values=r)
         except Exception as e:

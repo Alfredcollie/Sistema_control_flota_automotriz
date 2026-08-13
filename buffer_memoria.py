@@ -1,79 +1,82 @@
 # -*- coding: utf-8 -*-
-import threading
+"""
+BUFFER_MEMORIA.PY (Caché Inteligente con TTL y Limpieza Automática)
+Almacena datos temporalmente en la memoria RAM para evitar consultas repetitivas
+a Supabase. Los datos expiran automáticamente después de un tiempo definido.
+"""
 import time
-from conexion import conectar_db
+import threading
 
-class BufferDatos:
+class CacheInteligente:
     def __init__(self):
-        self.categorias_generales = ["Equipos Audiovisuales", "Mobiliario", "Decoración", "Otros"]
-        self.proveedores_nombres = []
-        self.clientes_nombres = []
-        self.equipos_operativos = []
-        self.eventos_aprobados = []
-        
-        self.en_ejecucion = False
-        self.intervalo_segundos = 60
+        self.almacen = {}
+        # Tiempo de vida por defecto del caché: 300 segundos (5 minutos)
+        self.ttl_segundos = 300 
+        self.modo_lectura = False
+        self._ciclo_activo = False
+
+    def guardar(self, clave, datos, ttl_personalizado=None):
+        """Guarda un dato en memoria con su marca de tiempo actual."""
+        tiempo_expiracion = ttl_personalizado if ttl_personalizado else self.ttl_segundos
+        self.almacen[clave] = {
+            'contenido': datos,
+            'timestamp': time.time(),
+            'ttl': tiempo_expiracion
+        }
+
+    def obtener(self, clave):
+        """Devuelve el dato solo si no ha caducado. Si caducó, lo borra y devuelve None."""
+        if clave in self.almacen:
+            registro = self.almacen[clave]
+            # Si estamos en modo lectura offline, los datos nunca caducan
+            if self.modo_lectura:
+                return registro['contenido']
+                
+            edad_dato = time.time() - registro['timestamp']
+            if edad_dato < registro['ttl']:
+                return registro['contenido']
+            else:
+                # El dato es demasiado viejo, lo eliminamos
+                del self.almacen[clave]
+        return None
+
+    def invalidar(self, clave=None):
+        """Borra un dato específico del caché o vacía todo."""
+        if clave:
+            if clave in self.almacen:
+                del self.almacen[clave]
+        else:
+            self.almacen.clear()
+
+    def cargar_copia_local(self):
+        """Función de compatibilidad para el modo offline de control_general.py"""
+        pass
 
     def iniciar_ciclo(self):
-        if self.en_ejecucion: return
-        self.en_ejecucion = True
-        hilo = threading.Thread(target=self._bucle_actualizacion)
-        hilo.daemon = True
-        hilo.start()
-
-    def detener_ciclo(self):
-        self.en_ejecucion = False
-
-    def _bucle_actualizacion(self):
-        while self.en_ejecucion:
-            self.sincronizar_ahora()
-            time.sleep(self.intervalo_segundos)
-
-    def sincronizar_ahora(self):
-        conn = conectar_db(silencioso=True)
-        if not conn: return
-
-        try:
-            cursor = conn.cursor()
+        """
+        Función requerida por control_general.py al iniciar sesión.
+        Inicia un ciclo silencioso en segundo plano para limpiar la memoria caducada.
+        """
+        if not self._ciclo_activo:
+            self._ciclo_activo = True
+            hilo = threading.Thread(target=self._limpieza_automatica, daemon=True)
+            hilo.start()
             
-            # 1. Cargar Categorías
-            cursor.execute("SELECT DISTINCT categoria FROM proveedores WHERE categoria IS NOT NULL AND categoria != ''")
-            cats_p = [str(r[0]).strip() for r in cursor.fetchall()]
-            try:
-                cursor.execute("SELECT DISTINCT categoria FROM inventario_equipos WHERE categoria IS NOT NULL AND categoria != ''")
-                cats_i = [str(r[0]).strip() for r in cursor.fetchall()]
-            except: cats_i = []
-            cats_unidas = list(set(cats_p + cats_i))
-            cats_unidas.sort()
-            if cats_unidas: self.categorias_generales = cats_unidas
+    def _limpieza_automatica(self):
+        """Revisa cada 60 segundos y elimina de la RAM los datos que ya caducaron."""
+        while self._ciclo_activo:
+            time.sleep(60)
+            if self.modo_lectura:
+                continue
+                
+            ahora = time.time()
+            claves_a_borrar = []
+            for clave, registro in self.almacen.items():
+                if (ahora - registro['timestamp']) >= registro['ttl']:
+                    claves_a_borrar.append(clave)
+                    
+            for c in claves_a_borrar:
+                del self.almacen[c]
 
-            # 2. Cargar Proveedores
-            try:
-                cursor.execute("SELECT nombre FROM proveedores ORDER BY nombre ASC")
-                self.proveedores_nombres = [str(r[0]).strip() for r in cursor.fetchall()]
-            except: pass
-
-            # 3. Cargar Clientes
-            try:
-                cursor.execute("SELECT nombre_empresa FROM clientes ORDER BY nombre_empresa ASC")
-                self.clientes_nombres = [str(r[0]).strip() for r in cursor.fetchall()]
-            except: pass
-
-            # 4. Cargar Equipos
-            try:
-                cursor.execute("SELECT id, codigo, nombre FROM inventario_equipos WHERE estado = 'Operativo' ORDER BY nombre")
-                self.equipos_operativos = [f"[{r[0]}] {r[1]} - {r[2]}" for r in cursor.fetchall()]
-            except: pass
-
-            # 5. Cargar Eventos
-            try:
-                cursor.execute("SELECT codigo_cotizacion, nombre_evento FROM cotizaciones WHERE status = 'Aprobada'")
-                self.eventos_aprobados = [f"{r[0]} | {r[1]}" for r in cursor.fetchall()]
-            except: pass
-
-        except Exception as e:
-            pass
-        finally:
-            conn.close()
-
-cache_sistema = BufferDatos()
+# Instancia global para ser importada en otros módulos
+cache_sistema = CacheInteligente()

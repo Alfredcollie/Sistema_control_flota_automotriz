@@ -1,14 +1,25 @@
 # -*- coding: utf-8 -*-
+"""
+=========================================================
+ESTADISTICAS_FINANCIERA.PY (ENTERPRISE EDITION)
+=========================================================
+- FIX: Carga de Eventos y Filtros 100% Asíncrona (Resuelve combobox atascados).
+- FIX: Cruce contable exacto (Las ventas no se mezclan si buscas por proveedor, y viceversa).
+- FIX: Exclusión de Facturas Anuladas para no inflar los ingresos reales.
+- Cálculo de Provisión de Impuesto a la Renta Dinámico.
+"""
+
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import customtkinter as ctk
 import calendar
 import os
 import sys 
 import json
 import subprocess 
+import threading
 from datetime import datetime
-from conexion import conectar_db, registrar_auditoria
+from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 
 # =========================================================
@@ -34,8 +45,7 @@ def cargar_configuracion_regional():
         "formato_numero": "1,000.00",
         "formato_fecha": "DD/MM/AAAA",
         "ruta_drive": "",
-        "impresora": "",
-        "cuentas_bancarias": []
+        "impresora": ""
     }
     try:
         if os.path.exists("config_local.json"):
@@ -60,7 +70,7 @@ def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
     try: valor = float(valor)
-    except: valor = 0.0
+    except Exception: valor = 0.0
     
     if formato == "1.000,00":
         str_val = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -74,60 +84,47 @@ class CalendarioNativo(ctk.CTkToplevel):
         super().__init__(parent)
         self.target_entry = target_entry
         self.title("Seleccionar Fecha")
-        self.geometry("310x320")
+        self.geometry("280x320")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
         
         self.update_idletasks()
-        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (310 // 2)
+        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (280 // 2)
         y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (320 // 2)
         self.geometry(f"+{x}+{y}")
         
         self.current_year = datetime.now().year
         self.current_month = datetime.now().month
-        self.meses_nombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         
         self.header_frame = ctk.CTkFrame(self, fg_color="#1f538d", corner_radius=0)
         self.header_frame.pack(fill="x")
         
-        ctk.CTkButton(self.header_frame, text="<", width=25, fg_color="transparent", text_color="white", hover_color="#163b65", font=("Arial", 14, "bold"), command=self.prev_month).pack(side="left", padx=5, pady=10)
+        btn_prev = ctk.CTkButton(self.header_frame, text="<", width=30, fg_color="transparent", text_color="white", hover_color="#163b65", font=("Arial", 12, "bold"), command=self.prev_month)
+        btn_prev.pack(side="left", padx=10, pady=10)
         
-        self.cmb_mes = ctk.CTkComboBox(self.header_frame, values=self.meses_nombres, width=100, command=self.cambiar_mes_combo)
-        self.cmb_mes.pack(side="left", padx=2, pady=10)
+        self.lbl_month_year = ctk.CTkLabel(self.header_frame, text="", font=("Arial", 14, "bold"), text_color="white")
+        self.lbl_month_year.pack(side="left", expand=True)
         
-        anios = [str(y) for y in range(datetime.now().year - 80, datetime.now().year + 20)]
-        self.cmb_anio = ctk.CTkComboBox(self.header_frame, values=anios, width=75, command=self.cambiar_anio_combo)
-        self.cmb_anio.pack(side="left", padx=2, pady=10)
-        
-        ctk.CTkButton(self.header_frame, text=">", width=25, fg_color="transparent", text_color="white", hover_color="#163b65", font=("Arial", 14, "bold"), command=self.next_month).pack(side="right", padx=5, pady=10)
+        btn_next = ctk.CTkButton(self.header_frame, text=">", width=30, fg_color="transparent", text_color="white", hover_color="#163b65", font=("Arial", 12, "bold"), command=self.next_month)
+        btn_next.pack(side="right", padx=10, pady=10)
         
         self.days_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.days_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
         dias_semana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
         for i, day in enumerate(dias_semana):
-            ctk.CTkLabel(self.days_frame, text=day, font=("Arial", 11, "bold"), text_color="#1f538d").grid(row=0, column=i, padx=5, pady=5)
+            lbl = ctk.CTkLabel(self.days_frame, text=day, font=("Arial", 11, "bold"), text_color="#1f538d")
+            lbl.grid(row=0, column=i, padx=4, pady=5)
             
         self.update_calendar()
         
-    def cambiar_mes_combo(self, choice):
-        self.current_month = self.meses_nombres.index(choice) + 1
-        self.update_calendar()
-
-    def cambiar_anio_combo(self, choice):
-        try:
-            self.current_year = int(choice)
-            self.update_calendar()
-        except ValueError:
-            pass
-
     def update_calendar(self):
-        self.cmb_mes.set(self.meses_nombres[self.current_month - 1])
-        self.cmb_anio.set(str(self.current_year))
-
         for widget in self.days_frame.winfo_children():
             if int(widget.grid_info()["row"]) > 0: widget.destroy()
+                
+        meses = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        self.lbl_month_year.configure(text=f"{meses[self.current_month]} {self.current_year}")
         
         cal = calendar.monthcalendar(self.current_year, self.current_month)
         hoy = datetime.now()
@@ -135,20 +132,27 @@ class CalendarioNativo(ctk.CTkToplevel):
         for row_idx, week in enumerate(cal, start=1):
             for col_idx, day in enumerate(week):
                 if day != 0:
-                    btn_color = "#d4edda" if day == hoy.day and self.current_month == hoy.month and self.current_year == hoy.year else "transparent"
-                    txt_color = "#155724" if btn_color == "#d4edda" else "black"
+                    btn_color = "transparent"
+                    txt_color = "black"
+                    if day == hoy.day and self.current_month == hoy.month and self.current_year == hoy.year:
+                        btn_color = "#d4edda"
+                        txt_color = "#155724"
                     btn = ctk.CTkButton(self.days_frame, text=str(day), width=30, height=30, fg_color=btn_color, text_color=txt_color, hover_color="#e0e0e0", font=("Arial", 11))
                     btn.configure(command=lambda d=day: self.select_date(d))
-                    btn.grid(row=row_idx, column=col_idx, padx=3, pady=2)
+                    btn.grid(row=row_idx, column=col_idx, padx=2, pady=2)
                     
     def prev_month(self):
         self.current_month -= 1
-        if self.current_month < 1: self.current_month = 12; self.current_year -= 1
+        if self.current_month < 1:
+            self.current_month = 12
+            self.current_year -= 1
         self.update_calendar()
         
     def next_month(self):
         self.current_month += 1
-        if self.current_month > 12: self.current_month = 1; self.current_year += 1
+        if self.current_month > 12:
+            self.current_month = 1
+            self.current_year += 1
         self.update_calendar()
         
     def select_date(self, day):
@@ -162,14 +166,15 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.target_entry.insert(0, fecha_seleccionada)
         self.destroy()
 
+
 class EstadisticasFinancieraApp:
     def __init__(self, parent_frame):
         self.parent_frame = parent_frame
         self.usuario_activo = "Desconocido"
         self.tasa_renta_anual = obtener_porcentaje_renta_anual()
+        
         self.crear_interfaz()
-        self.cargar_bancos_y_listas()
-        self.cargar_kpis()
+        self.cargar_eventos()
 
     def abrir_calendario(self, entry_objetivo):
         CalendarioNativo(self.parent_frame.winfo_toplevel(), entry_objetivo)
@@ -191,18 +196,17 @@ class EstadisticasFinancieraApp:
         f_entidades = ctk.CTkFrame(f_filtro, fg_color="transparent")
         f_entidades.pack(fill="x", pady=(5, 10), padx=10)
 
-        # 🚀 SECCIÓN REEMPLAZADA: FILTRO POR BANCO/CUENTA
-        f_banco = ctk.CTkFrame(f_entidades, fg_color="transparent")
-        f_banco.pack(fill="x", pady=2)
-        ctk.CTkLabel(f_banco, text="Filtrar por Cuenta / Banco:", font=("Arial", 12, "bold"), width=160, anchor="e").pack(side="left", padx=(0, 10))
-        self.combo_banco = ctk.CTkComboBox(f_banco, values=["Todas las Cuentas"], state="readonly", width=400)
-        self.combo_banco.pack(side="left")
-        self.combo_banco.set("Todas las Cuentas")
+        f_ev = ctk.CTkFrame(f_entidades, fg_color="transparent")
+        f_ev.pack(fill="x", pady=2)
+        ctk.CTkLabel(f_ev, text="Filtrar por Evento:", font=("Arial", 12, "bold"), width=130, anchor="e").pack(side="left", padx=(0, 10))
+        self.combo_evento = ctk.CTkComboBox(f_ev, values=["Todos los Eventos"], state="readonly", width=400, command=self.actualizar_filtros_dinamicos)
+        self.combo_evento.pack(side="left")
+        self.combo_evento.set("Todos los Eventos")
 
         f_cp = ctk.CTkFrame(f_entidades, fg_color="transparent")
         f_cp.pack(fill="x", pady=(8,0))
         
-        ctk.CTkLabel(f_cp, text="Filtrar por Cliente:", font=("Arial", 12, "bold"), width=160, anchor="e").pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(f_cp, text="Filtrar por Cliente:", font=("Arial", 12, "bold"), width=130, anchor="e").pack(side="left", padx=(0, 10))
         self.combo_cliente = ctk.CTkComboBox(f_cp, values=["Todos los Clientes"], state="readonly", width=250)
         self.combo_cliente.pack(side="left", padx=(0, 20))
         self.combo_cliente.set("Todos los Clientes")
@@ -215,7 +219,7 @@ class EstadisticasFinancieraApp:
         f_periodo = ctk.CTkFrame(f_filtro, fg_color="transparent")
         f_periodo.pack(fill="x", pady=5, padx=10)
 
-        ctk.CTkLabel(f_periodo, text="Tipo de Fecha:", font=("Arial", 12, "bold"), width=160, anchor="e").pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(f_periodo, text="Tipo de Fecha:", font=("Arial", 12, "bold"), width=130, anchor="e").pack(side="left", padx=(0, 10))
         
         self.tipo_fecha_var = ctk.StringVar(value="Mensual/Anual")
         self.opcion_mensual = ctk.CTkRadioButton(f_periodo, text="Mensual / Anual", variable=self.tipo_fecha_var, value="Mensual/Anual", command=self.toggle_fecha_modo)
@@ -228,7 +232,7 @@ class EstadisticasFinancieraApp:
         self.f_controles_fecha.pack(fill="x", pady=5, padx=10)
 
         self.f_mensual = ctk.CTkFrame(self.f_controles_fecha, fg_color="transparent")
-        ctk.CTkLabel(self.f_mensual, text="Mes y Año:", font=("Arial", 12, "bold"), width=160, anchor="e").pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(self.f_mensual, text="Mes y Año:", font=("Arial", 12, "bold"), width=130, anchor="e").pack(side="left", padx=(0, 10))
         
         meses = ["Todos los meses", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"]
         self.combo_mes = ctk.CTkComboBox(self.f_mensual, values=meses, state="readonly", width=140)
@@ -241,7 +245,7 @@ class EstadisticasFinancieraApp:
         self.combo_anio.set(str(datetime.now().year))
 
         self.f_rango = ctk.CTkFrame(self.f_controles_fecha, fg_color="transparent")
-        ctk.CTkLabel(self.f_rango, text="Desde:", font=("Arial", 12, "bold"), width=160, anchor="e").pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(self.f_rango, text="Desde:", font=("Arial", 12, "bold"), width=130, anchor="e").pack(side="left", padx=(0, 10))
         
         fmt_fecha = CONFIG_REGIONAL.get("formato_fecha", "DD/MM/AAAA")
         self.ent_fecha_ini = ctk.CTkEntry(self.f_rango, width=100, placeholder_text=fmt_fecha)
@@ -280,9 +284,10 @@ class EstadisticasFinancieraApp:
         f_rentabilidad = ctk.CTkFrame(self.frame_main, fg_color="transparent")
         f_rentabilidad.pack(fill="x", pady=10)
 
-        self.card_rentabilidad = self.crear_tarjeta_larga(f_rentabilidad, "RENTABILIDAD DEL NEGOCIO (Ventas Netas - Compras Netas)", formatear_moneda(0), "#1f538d")
-        self.card_caja = self.crear_tarjeta_larga(f_rentabilidad, "FLUJO DE CAJA DE LA CUENTA (Dinero Efectivo Real: Cobrado - Pagado)", formatear_moneda(0), "#27ae60")
+        self.card_rentabilidad = self.crear_tarjeta_larga(f_rentabilidad, "RENTABILIDAD DEL EVENTO / PERIODO (Ventas Netas - Compras Netas)", formatear_moneda(0), "#1f538d")
+        self.card_caja = self.crear_tarjeta_larga(f_rentabilidad, "FLUJO DE CAJA (Dinero Efectivo Real: Cobrado - Pagado)", formatear_moneda(0), "#27ae60")
         
+        # 🚀 NUEVO BLOQUE: PROVISIÓN DE RENTA ANUAL
         self.card_provision_renta = self.crear_tarjeta_larga(f_rentabilidad, f"PROVISIÓN IMPUESTO A LA RENTA ANUAL ({self.tasa_renta_anual}%)", formatear_moneda(0), "#e67e22")
 
     def toggle_fecha_modo(self):
@@ -313,50 +318,77 @@ class EstadisticasFinancieraApp:
         lbl_valor.pack(pady=(0, 15))
         return lbl_valor
 
-    def cargar_bancos_y_listas(self):
-        # CARGAR BANCOS DESDE LA CONFIGURACIÓN REGIONAL
-        bancos_guardados = CONFIG_REGIONAL.get("cuentas_bancarias", [])
-        lista_cuentas = ["Todas las Cuentas"]
-        for b in bancos_guardados:
-            banco_nom = b.get("banco", "").strip()
-            cuenta_num = b.get("cuenta", "").strip()
-            if banco_nom or cuenta_num:
-                lista_cuentas.append(f"{banco_nom} - {cuenta_num}".strip(" - "))
-        lista_cuentas.extend(["Efectivo / Caja Chica", "Tarjeta de Crédito", "Tarjeta de Débito", "Cheque", "Otro"])
+    # 🚀 FIX: CARGA DE EVENTOS ASÍNCRONA
+    def cargar_eventos(self):
+        clave_cache = "lista_eventos_aprobados"
+        evs = cache_sistema.obtener(clave_cache)
+        if evs is not None:
+            self._aplicar_eventos(evs)
+        else:
+            self.combo_evento.set("Cargando eventos...")
+            def tarea():
+                eventos_db = []
+                conn = conectar_db(silencioso=True)
+                if conn:
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT codigo_cotizacion, nombre_evento FROM cotizaciones WHERE status = 'Aprobada' ORDER BY id DESC")
+                        eventos_db = [f"{r[0]} | {r[1]}" for r in cursor.fetchall()]
+                        cache_sistema.guardar(clave_cache, eventos_db)
+                    except Exception: pass
+                    finally: liberar_conexion(conn)
+                self.parent_frame.after(0, lambda: self._aplicar_eventos(eventos_db))
+            threading.Thread(target=tarea, daemon=True).start()
+
+    def _aplicar_eventos(self, evs):
+        eventos = ["Todos los Eventos"] + (evs if evs else [])
+        self.combo_evento.configure(values=eventos)
+        self.combo_evento.set("Todos los Eventos")
+        self.actualizar_filtros_dinamicos()
+
+    # 🚀 FIX: FILTROS DINÁMICOS ASÍNCRONOS (NO BLOQUEAN LA PANTALLA)
+    def actualizar_filtros_dinamicos(self, choice=None):
+        evento_seleccionado = self.combo_evento.get()
+        self.combo_cliente.set("Cargando...")
+        self.combo_proveedor.set("Cargando...")
         
-        self.combo_banco.configure(values=lista_cuentas)
-        self.combo_banco.set("Todas las Cuentas")
+        def tarea():
+            conn = conectar_db(silencioso=True)
+            clientes = []
+            proveedores = []
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    if evento_seleccionado == "Todos los Eventos":
+                        cursor.execute("SELECT DISTINCT cliente FROM facturas_emitidas WHERE cliente IS NOT NULL AND TRIM(cliente) != '' ORDER BY cliente")
+                        clientes = [str(r[0]).strip() for r in cursor.fetchall()]
 
-        # CARGAR CLIENTES Y PROVEEDORES
-        conn = conectar_db()
-        if not conn: return
-        try:
-            cursor = conn.cursor()
-            
-            cli_mem = getattr(cache_sistema, 'clientes_nombres', [])
-            prov_mem = getattr(cache_sistema, 'proveedores_nombres', [])
-            
-            clientes = list(cli_mem) if cli_mem else []
-            proveedores = list(prov_mem) if prov_mem else []
-            
-            if not clientes:
-                cursor.execute("SELECT DISTINCT cliente FROM facturas_emitidas WHERE cliente IS NOT NULL AND cliente != '' ORDER BY cliente")
-                clientes = [str(r[0]).strip() for r in cursor.fetchall()]
+                        cursor.execute("SELECT DISTINCT proveedor FROM facturas_recibidas WHERE proveedor IS NOT NULL AND TRIM(proveedor) != '' ORDER BY proveedor")
+                        proveedores = [str(r[0]).strip() for r in cursor.fetchall()]
+                    else:
+                        cursor.execute("SELECT DISTINCT cliente FROM facturas_emitidas WHERE cliente IS NOT NULL AND TRIM(cliente) != '' AND evento_asociado = %s ORDER BY cliente", (evento_seleccionado,))
+                        clientes = [str(r[0]).strip() for r in cursor.fetchall()]
 
-            if not proveedores:
-                cursor.execute("SELECT DISTINCT proveedor FROM facturas_recibidas WHERE proveedor IS NOT NULL AND proveedor != '' ORDER BY proveedor")
-                proveedores = [str(r[0]).strip() for r in cursor.fetchall()]
+                        cursor.execute("SELECT DISTINCT proveedor FROM facturas_recibidas WHERE proveedor IS NOT NULL AND TRIM(proveedor) != '' AND evento_asociado = %s ORDER BY proveedor", (evento_seleccionado,))
+                        proveedores = [str(r[0]).strip() for r in cursor.fetchall()]
+                except Exception as e:
+                    print("Error filtros dinámicos:", e)
+                finally:
+                    liberar_conexion(conn)
+            self.parent_frame.after(0, lambda: self._aplicar_filtros_dinamicos(clientes, proveedores))
+        
+        threading.Thread(target=tarea, daemon=True).start()
 
-            clientes.insert(0, "Todos los Clientes")
-            self.combo_cliente.configure(values=clientes)
-            self.combo_cliente.set("Todos los Clientes")
+    def _aplicar_filtros_dinamicos(self, clientes, proveedores):
+        clientes.insert(0, "Todos los Clientes")
+        self.combo_cliente.configure(values=clientes)
+        self.combo_cliente.set("Todos los Clientes")
 
-            proveedores.insert(0, "Todos los Proveedores")
-            self.combo_proveedor.configure(values=proveedores)
-            self.combo_proveedor.set("Todos los Proveedores")
-            
-        except Exception: pass
-        finally: conn.close()
+        proveedores.insert(0, "Todos los Proveedores")
+        self.combo_proveedor.configure(values=proveedores)
+        self.combo_proveedor.set("Todos los Proveedores")
+        
+        self.cargar_kpis()
 
     def convertir_a_fecha(self, fecha_str):
         if not fecha_str: return None
@@ -375,7 +407,7 @@ class EstadisticasFinancieraApp:
             messagebox.showerror("Error", "Falta la librería pandas. Ejecuta: pip install pandas openpyxl")
             return
 
-        banco_analizado = self.combo_banco.get()
+        evento_analizado = self.combo_evento.get()
         cliente_analizado = self.combo_cliente.get()
         proveedor_analizado = self.combo_proveedor.get()
         modo_fecha = self.tipo_fecha_var.get()
@@ -393,8 +425,8 @@ class EstadisticasFinancieraApp:
                 "Compras del Periodo (Neto)",
                 "Pagado en el Periodo",
                 "Deuda Total a Proveedores",
-                "Rentabilidad Global (Ventas - Compras)",
-                "Flujo de Caja Real (Cobrado - Pagado)",
+                "Rentabilidad del Evento / Periodo",
+                "Flujo de Caja (Dinero Real)",
                 f"Provisión Impuesto Renta Anual ({self.tasa_renta_anual}%)"
             ],
             "Valor Registrado": [
@@ -420,8 +452,8 @@ class EstadisticasFinancieraApp:
         if ruta:
             try:
                 df_filtros = pd.DataFrame({
-                    "Indicador Financiero": ["Filtro de Cuenta/Banco:", "Filtro de Cliente:", "Filtro de Proveedor:", "Periodo Analizado:", ""],
-                    "Valor Registrado": [banco_analizado, cliente_analizado, proveedor_analizado, periodo_analizado, ""]
+                    "Indicador Financiero": ["Filtro de Evento:", "Filtro de Cliente:", "Filtro de Proveedor:", "Periodo Analizado:", ""],
+                    "Valor Registrado": [evento_analizado, cliente_analizado, proveedor_analizado, periodo_analizado, ""]
                 })
                 
                 df_datos = pd.DataFrame(datos_reporte)
@@ -436,8 +468,14 @@ class EstadisticasFinancieraApp:
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo crear el archivo:\n{e}")
 
+    # =======================================================
+    # CARGA DE KPIs EN SEGUNDO PLANO (HILO + TOKEN)
+    # =======================================================
     def cargar_kpis(self):
-        banco_seleccionado = self.combo_banco.get()
+        self._carga_kpi_token = getattr(self, "_carga_kpi_token", 0) + 1
+        token = self._carga_kpi_token
+        
+        evento_seleccionado = self.combo_evento.get()
         cliente_seleccionado = self.combo_cliente.get()
         proveedor_seleccionado = self.combo_proveedor.get()
         
@@ -455,150 +493,179 @@ class EstadisticasFinancieraApp:
                 return
             if dt_ini > dt_fin:
                 dt_ini, dt_fin = dt_fin, dt_ini
-        
-        conn = conectar_db()
-        if not conn: return
-        
-        try:
-            cursor = conn.cursor()
 
-            # 🚀 DICCIONARIOS DE PAGOS CON FILTRO DE BANCO
-            pagos_clientes_dict = {}
+        def tarea():
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                self.parent_frame.after(0, lambda: messagebox.showwarning("Modo Lectura", "Estás sin conexión a internet.\nEl Dashboard Gerencial requiere conexión para calcular saldos reales."))
+                return
+            
             try:
-                cursor.execute("SELECT id_factura, monto_pagado, fecha_pago, cuenta_destino FROM pagos_clientes")
-                for fk, m, f, cuenta_dest in cursor.fetchall():
-                    # Si filtramos por banco, solo sumamos los pagos que cayeron en ese banco
-                    if banco_seleccionado != "Todas las Cuentas" and str(cuenta_dest) != banco_seleccionado:
+                cursor = conn.cursor()
+
+                pagos_clientes_dict = {}
+                try:
+                    cursor.execute("SELECT id_factura, monto_pagado, fecha_pago FROM pagos_clientes")
+                    for fk, m, f in cursor.fetchall():
+                        pagos_clientes_dict.setdefault(fk, []).append((m, f))
+                except Exception: conn.rollback()
+
+                pagos_proveedores_dict = {}
+                try:
+                    cursor.execute("SELECT id_factura, monto_pagado, fecha_pago FROM pagos_comprobantes")
+                    for fk, m, f in cursor.fetchall():
+                        pagos_proveedores_dict.setdefault(fk, []).append((m, f))
+                except Exception: conn.rollback()
+
+                def fecha_en_periodo(f_str):
+                    dt_f = self.convertir_a_fecha(f_str)
+                    if not dt_f: return False 
+                    
+                    if modo_fecha == "Rango":
+                        return dt_ini <= dt_f <= dt_fin
+                    else: 
+                        if str(dt_f.year) == anio:
+                            if mes == "Todos los meses": return True
+                            if f"{dt_f.month:02d}" == mes: return True
+                        return False
+
+                # 🚀 FIX: AGREGAMOS estado_sunat PARA EXCLUIR FACTURAS ANULADAS
+                cursor.execute("SELECT id, tipo_documento, total, det_monto, fecha, evento_asociado, cliente, estado_sunat FROM facturas_emitidas")
+                facturas_ventas = cursor.fetchall()
+                
+                ventas_periodo = 0.0
+                cobrado_periodo = 0.0
+                por_cobrar_global = 0.0
+                
+                for v_id, v_tipo, v_tot, v_det, v_f, v_evento, v_cliente, v_estado in facturas_ventas:
+                    # Filtro de Anuladas
+                    if v_estado and "Anulada" in str(v_estado):
                         continue
-                    pagos_clientes_dict.setdefault(fk, []).append((m, f))
-            except Exception: conn.rollback()
-
-            pagos_proveedores_dict = {}
-            try:
-                cursor.execute("SELECT id_factura, monto_pagado, fecha_pago, cuenta_origen FROM pagos_comprobantes")
-                for fk, m, f, cuenta_ori in cursor.fetchall():
-                    # Si filtramos por banco, solo sumamos los pagos que salieron de ese banco
-                    if banco_seleccionado != "Todas las Cuentas" and str(cuenta_ori) != banco_seleccionado:
+                        
+                    # Filtros de Entidad
+                    if evento_seleccionado != "Todos los Eventos" and str(v_evento) != evento_seleccionado:
+                        continue 
+                    if cliente_seleccionado != "Todos los Clientes" and str(v_cliente) != cliente_seleccionado:
                         continue
-                    pagos_proveedores_dict.setdefault(fk, []).append((m, f))
-            except Exception: conn.rollback()
+                    # Si el usuario busca un proveedor específico, las ventas propias no aplican (se aíslan)
+                    if proveedor_seleccionado != "Todos los Proveedores":
+                        continue
 
-            def fecha_en_periodo(f_str):
-                dt_f = self.convertir_a_fecha(f_str)
-                if not dt_f: return False 
+                    t = float(v_tot) if v_tot else 0.0
+                    d = float(v_det) if v_det else 0.0
+                    neto_venta = t - d
+                    
+                    if fecha_en_periodo(str(v_f)):
+                        ventas_periodo += neto_venta
+
+                    pagado_factura_global = 0.0
+                    if v_id in pagos_clientes_dict:
+                        for monto_pago, fecha_pago in pagos_clientes_dict[v_id]:
+                            m = float(monto_pago) if monto_pago else 0.0
+                            pagado_factura_global += m
+                            
+                            if fecha_en_periodo(str(fecha_pago)):
+                                cobrado_periodo += m
+
+                    saldo_pendiente = neto_venta - pagado_factura_global
+                    if saldo_pendiente > 0.01:
+                        por_cobrar_global += saldo_pendiente
+
+                cursor.execute("SELECT id, tipo_documento, total, impuesto, det_monto, fecha, evento_asociado, proveedor FROM facturas_recibidas")
+                facturas_compras = cursor.fetchall()
                 
-                if modo_fecha == "Rango":
-                    return dt_ini <= dt_f <= dt_fin
-                else: 
-                    if str(dt_f.year) == anio:
-                        if mes == "Todos los meses": return True
-                        if f"{dt_f.month:02d}" == mes: return True
-                    return False
-
-            # --- ANÁLISIS DE VENTAS ---
-            cursor.execute("SELECT id, tipo_documento, total, det_monto, fecha, cliente FROM facturas_emitidas")
-            facturas_ventas = cursor.fetchall()
-            
-            ventas_periodo = 0.0
-            cobrado_periodo = 0.0
-            por_cobrar_global = 0.0
-            
-            for v_id, v_tipo, v_tot, v_det, v_f, v_cliente in facturas_ventas:
-                if cliente_seleccionado != "Todos los Clientes" and str(v_cliente) != cliente_seleccionado:
-                    continue
-
-                t = float(v_tot) if v_tot else 0.0
-                d = float(v_det) if v_det else 0.0
-                neto_venta = t - d
+                compras_periodo = 0.0
+                pagado_periodo = 0.0
+                por_pagar_global = 0.0
                 
-                if fecha_en_periodo(str(v_f)):
-                    ventas_periodo += neto_venta
+                for c_id, c_tipo, c_tot, c_imp, c_det, c_f, c_evento, c_proveedor in facturas_compras:
+                    if evento_seleccionado != "Todos los Eventos" and str(c_evento) != evento_seleccionado:
+                        continue 
+                    if proveedor_seleccionado != "Todos los Proveedores" and str(c_proveedor) != proveedor_seleccionado:
+                        continue
+                    # Si el usuario busca un cliente específico, las compras a terceros no aplican (se aíslan)
+                    if cliente_seleccionado != "Todos los Clientes":
+                        continue
 
-                pagado_factura_global = 0.0
-                if v_id in pagos_clientes_dict:
-                    for monto_pago, fecha_pago in pagos_clientes_dict[v_id]:
-                        m = float(monto_pago) if monto_pago else 0.0
-                        pagado_factura_global += m
-                        
-                        if fecha_en_periodo(str(fecha_pago)):
-                            cobrado_periodo += m
+                    tipo = str(c_tipo) if c_tipo else ""
+                    t = float(c_tot) if c_tot else 0.0
+                    i = float(c_imp) if c_imp else 0.0
+                    d = float(c_det) if c_det else 0.0
+                    
+                    if "Recibo" in tipo and "8%" in tipo:
+                        neto_compra = (t - i - d)
+                    else:
+                        neto_compra = (t - d)
 
-                saldo_pendiente = neto_venta - pagado_factura_global
-                if saldo_pendiente > 0.01:
-                    por_cobrar_global += saldo_pendiente
+                    if fecha_en_periodo(str(c_f)):
+                        compras_periodo += neto_compra
 
-            # --- ANÁLISIS DE COMPRAS ---
-            cursor.execute("SELECT id, tipo_documento, total, impuesto, det_monto, fecha, proveedor FROM facturas_recibidas")
-            facturas_compras = cursor.fetchall()
-            
-            compras_periodo = 0.0
-            pagado_periodo = 0.0
-            por_pagar_global = 0.0
-            
-            for c_id, c_tipo, c_tot, c_imp, c_det, c_f, c_proveedor in facturas_compras:
-                if proveedor_seleccionado != "Todos los Proveedores" and str(c_proveedor) != proveedor_seleccionado:
-                    continue
+                    pagado_factura_global = 0.0
+                    if c_id in pagos_proveedores_dict:
+                        for monto_pago, fecha_pago in pagos_proveedores_dict[c_id]:
+                            m = float(monto_pago) if monto_pago else 0.0
+                            pagado_factura_global += m
+                            
+                            if fecha_en_periodo(str(fecha_pago)):
+                                pagado_periodo += m
 
-                tipo = str(c_tipo) if c_tipo else ""
-                t = float(c_tot) if c_tot else 0.0
-                i = float(c_imp) if c_imp else 0.0
-                d = float(c_det) if c_det else 0.0
+                    saldo_pendiente = neto_compra - pagado_factura_global
+                    if saldo_pendiente > 0.01:
+                        por_pagar_global += saldo_pendiente
+
+                resultados = {
+                    "ventas": ventas_periodo,
+                    "cobrado": cobrado_periodo,
+                    "por_cobrar": por_cobrar_global,
+                    "compras": compras_periodo,
+                    "pagado": pagado_periodo,
+                    "por_pagar": por_pagar_global
+                }
                 
-                if "Recibo" in tipo and "8%" in tipo:
-                    neto_compra = (t - i - d)
-                else:
-                    neto_compra = (t - d)
+            except Exception as e:
+                self.parent_frame.after(0, lambda err=e: messagebox.showerror("Error de Cálculo", f"No se pudo calcular las estadísticas:\n{err}"))
+                return
+            finally:
+                liberar_conexion(conn)
+                
+            self.parent_frame.after(0, lambda t=token, res=resultados: self._aplicar_kpis(t, res))
 
-                if fecha_en_periodo(str(c_f)):
-                    compras_periodo += neto_compra
+        threading.Thread(target=tarea, daemon=True).start()
 
-                pagado_factura_global = 0.0
-                if c_id in pagos_proveedores_dict:
-                    for monto_pago, fecha_pago in pagos_proveedores_dict[c_id]:
-                        m = float(monto_pago) if monto_pago else 0.0
-                        pagado_factura_global += m
-                        
-                        if fecha_en_periodo(str(fecha_pago)):
-                            pagado_periodo += m
-
-                saldo_pendiente = neto_compra - pagado_factura_global
-                if saldo_pendiente > 0.01:
-                    por_pagar_global += saldo_pendiente
-
-            self.card_ventas.configure(text=formatear_moneda(ventas_periodo))
-            self.card_cobrado.configure(text=formatear_moneda(cobrado_periodo))
-            self.card_por_cobrar.configure(text=formatear_moneda(por_cobrar_global))
-
-            self.card_compras.configure(text=formatear_moneda(compras_periodo))
-            self.card_pagado.configure(text=formatear_moneda(pagado_periodo))
-            self.card_por_pagar.configure(text=formatear_moneda(por_pagar_global))
-
-            rentabilidad = ventas_periodo - compras_periodo
-            caja = cobrado_periodo - pagado_periodo
+    def _aplicar_kpis(self, token, resultados):
+        if token != getattr(self, "_carga_kpi_token", 0):
+            return
             
-            # 🚀 CÁLCULO DE PROVISIÓN DE RENTA ANUAL (Solo si hay ganancia)
-            provision_renta = 0.0
-            if rentabilidad > 0:
-                provision_renta = rentabilidad * (self.tasa_renta_anual / 100.0)
+        self.card_ventas.configure(text=formatear_moneda(resultados["ventas"]))
+        self.card_cobrado.configure(text=formatear_moneda(resultados["cobrado"]))
+        self.card_por_cobrar.configure(text=formatear_moneda(resultados["por_cobrar"]))
 
-            self.card_rentabilidad.configure(text=formatear_moneda(rentabilidad))
-            self.card_caja.configure(text=formatear_moneda(caja))
-            self.card_provision_renta.configure(text=formatear_moneda(provision_renta))
+        self.card_compras.configure(text=formatear_moneda(resultados["compras"]))
+        self.card_pagado.configure(text=formatear_moneda(resultados["pagado"]))
+        self.card_por_pagar.configure(text=formatear_moneda(resultados["por_pagar"]))
 
-            if rentabilidad < 0:
-                self.card_rentabilidad.configure(text_color="#e74c3c")
-            else:
-                self.card_rentabilidad.configure(text_color="#1f538d")
+        rentabilidad = resultados["ventas"] - resultados["compras"]
+        caja = resultados["cobrado"] - resultados["pagado"]
+        
+        # 🚀 CÁLCULO DE PROVISIÓN DE RENTA ANUAL (Solo si hay ganancia en el periodo)
+        provision_renta = 0.0
+        if rentabilidad > 0:
+            provision_renta = rentabilidad * (self.tasa_renta_anual / 100.0)
 
-            if caja < 0:
-                self.card_caja.configure(text_color="#e74c3c")
-            else:
-                self.card_caja.configure(text_color="#27ae60")
+        self.card_rentabilidad.configure(text=formatear_moneda(rentabilidad))
+        self.card_caja.configure(text=formatear_moneda(caja))
+        self.card_provision_renta.configure(text=formatear_moneda(provision_renta))
 
-        except Exception as e:
-            messagebox.showerror("Error de Cálculo", f"No se pudo calcular las estadísticas:\n{e}")
-        finally:
-            conn.close()
+        if rentabilidad < 0:
+            self.card_rentabilidad.configure(text_color="#e74c3c")
+        else:
+            self.card_rentabilidad.configure(text_color="#1f538d")
+
+        if caja < 0:
+            self.card_caja.configure(text_color="#e74c3c")
+        else:
+            self.card_caja.configure(text_color="#27ae60")
+
 
 if __name__ == "__main__":
     pass

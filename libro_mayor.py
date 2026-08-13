@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from datetime import datetime
 import os
-import sys
+import sys  
 import json
-import subprocess
+import subprocess 
+import webbrowser
+import threading
 import customtkinter as ctk
 from conexion import conectar_db
 
 # =========================================================
-# 🚀 ADAPTACIÓN MULTIPLATAFORMA
+# 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos
 # =========================================================
 def abrir_documento(ruta):
     try:
         if sys.platform == "win32":
             os.startfile(ruta)
-        elif sys.platform == "darwin": 
+        elif sys.platform == "darwin": # macOS
             subprocess.call(["open", ruta])
-        else: 
+        else: # Linux
             subprocess.call(["xdg-open", ruta])
     except Exception as e:
         messagebox.showerror("Error", f"No se pudo abrir el archivo:\n{e}")
@@ -43,7 +46,7 @@ def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
     try: valor = float(valor)
-    except: valor = 0.0
+    except Exception: valor = 0.0
     
     if formato == "1.000,00":
         str_val = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -60,7 +63,7 @@ class LibroMayorApp:
             self.root.configure(fg_color="#f8f9fa")
         except Exception:
             try: self.root.configure(bg="#f8f9fa")
-            except: pass
+            except Exception: pass
             
         if hasattr(self.root, 'title'):
             self.root.title("📊 Libro Mayor - Black Cube")
@@ -83,7 +86,7 @@ class LibroMayorApp:
         header_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         header_frame.pack(fill="x", padx=15, pady=(15, 5))
         
-        ctk.CTkLabel(header_frame, text="LIBRO MAYOR ACUMULADO (DEVENGADO)", font=("Arial", 16, "bold"), text_color="#1f538d").pack(side="left")
+        ctk.CTkLabel(header_frame, text="LIBRO MAYOR ACUMULADO POR CATEGORÍAS", font=("Arial", 16, "bold"), text_color="#1f538d").pack(side="left")
         self.btn_pantalla = ctk.CTkButton(header_frame, text="[ + ] Pantalla Completa", font=("Arial", 12, "bold"), width=160, fg_color="#34495e", hover_color="#2c3e50", command=self.toggle_pantalla_completa)
         self.btn_pantalla.pack(side="right")
 
@@ -107,9 +110,9 @@ class LibroMayorApp:
         columnas = ("categoria", "debe", "haber", "saldo")
         self.tabla = ttk.Treeview(frame_tabla, columns=columnas, show="headings", style="Treeview")
         
-        self.tabla.heading("categoria", text="Cuenta / Categoría (Suministro/Venta)")
-        self.tabla.heading("debe", text="Ingresos Acumulados (Debe)")
-        self.tabla.heading("haber", text="Egresos Acumulados (Haber)")
+        self.tabla.heading("categoria", text="Cuenta / Categoría Suministro")
+        self.tabla.heading("debe", text="Cargos Acumulados (Debe)")
+        self.tabla.heading("haber", text="Abonos Acumulados (Haber)")
         self.tabla.heading("saldo", text="Saldo Neto Final")
         
         self.tabla.column("categoria", width=300, anchor="w")
@@ -135,10 +138,6 @@ class LibroMayorApp:
         
         self.lbl_total_haber = tk.Label(self.frame_totales, text="Total Haber: 0.00", font=("Arial", 14, "bold"), fg="#c0392b", bg="#f8f9fa")
         self.lbl_total_haber.pack(side="right", padx=30)
-
-        # 🚀 EVENTO DE ACTUALIZACIÓN AUTOMÁTICA AL ABRIR LA PESTAÑA
-        if isinstance(self.root, (tk.Frame, ctk.CTkFrame)):
-            self.root.bind("<Visibility>", self.cargar_datos_mayor)
 
         if hasattr(self.root, 'after'):
             self.root.after(100, self.cargar_datos_mayor)
@@ -177,7 +176,7 @@ class LibroMayorApp:
 
         if not filas: return messagebox.showwarning("Aviso", "No hay datos para exportar.")
         
-        cols = ["Cuenta / Categoría", "Ingresos Acumulados (Debe)", "Egresos Acumulados (Haber)", "Saldo Neto Final"]
+        cols = ["Cuenta / Categoría", "Cargos Acumulados (Debe)", "Abonos Acumulados (Haber)", "Saldo Neto Final"]
         
         ruta = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Libro_Mayor_Acumulado.xlsx", filetypes=[("Excel", "*.xlsx")])
         if ruta:
@@ -188,60 +187,76 @@ class LibroMayorApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Fallo al guardar:\n{e}")
 
-    def cargar_datos_mayor(self, event=None):
+    # =======================================================
+    # CARGA DEL MAYOR EN SEGUNDO PLANO (HILO + TOKEN)
+    # =======================================================
+    def cargar_datos_mayor(self):
         for fila in self.tabla.get_children():
             self.tabla.delete(fila)
             
-        agrupado = {}
-        
-        conn = conectar_db()
-        if not conn: return
-            
-        try:
-            cursor = conn.cursor()
-            
-            # 1. INGRESOS (FACTURAS EMITIDAS - DEVENGADO TOTAL)
-            cursor.execute("SELECT total, COALESCE(det_monto, 0), estado_sunat FROM facturas_emitidas")
-            for r in cursor.fetchall():
-                tot_bruto = float(r[0]) if r[0] else 0.0
-                det_monto = float(r[1]) if r[1] else 0.0
-                estado = str(r[2]).lower() if r[2] else ""
-                
-                neto = tot_bruto - det_monto
-                
-                if "anulada" in estado:
-                    cat = "ANULACIÓN DE INGRESOS (REVERSO)"
-                    if cat not in agrupado: agrupado[cat] = {"debe": 0.0, "haber": 0.0}
-                    agrupado[cat]["haber"] += neto
-                else:
-                    cat = "VENTAS E INGRESOS (FACTURADO)"
-                    if cat not in agrupado: agrupado[cat] = {"debe": 0.0, "haber": 0.0}
-                    agrupado[cat]["debe"] += neto
-                
-            # 2. EGRESOS (FACTURAS RECIBIDAS - DEVENGADO TOTAL)
-            cursor.execute("SELECT categoria, total, COALESCE(det_monto, 0), tipo_documento, COALESCE(impuesto, 0) FROM facturas_recibidas")
-            for cat_db, tot, det, tipo, imp in cursor.fetchall():
-                cat_str = str(cat_db).strip().upper() if cat_db and str(cat_db).strip() else "GENERAL / NO ASIGNADO"
-                tot_val = float(tot) if tot else 0.0
-                det_val = float(det) if det else 0.0
-                imp_val = float(imp) if imp else 0.0
-                tipo_str = str(tipo).lower() if tipo else ""
-                
-                if "recibo" in tipo_str and "8%" in tipo_str:
-                    neto = tot_val - imp_val - det_val
-                else:
-                    neto = tot_val - det_val
-                    
-                if cat_str not in agrupado: agrupado[cat_str] = {"debe": 0.0, "haber": 0.0}
-                agrupado[cat_str]["haber"] += neto
+        self._mayor_token = getattr(self, "_mayor_token", 0) + 1
+        token = self._mayor_token
 
-        except Exception as e:
-            messagebox.showerror("Error de Base de Datos", f"No se pudo compilar el mayor:\n{str(e)}")
-        finally:
-            conn.close()
+        def tarea():
+            agrupado = {}
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                self.root.after(0, lambda: messagebox.showwarning("Modo Lectura", "Estás sin conexión a internet.\nEl Libro Mayor no se puede cargar."))
+                return
+                
+            try:
+                cursor = conn.cursor()
+                
+                # 1. Ingresos (COBRO CLIENTE)
+                cursor.execute("SELECT monto_pagado FROM pagos_clientes")
+                for r in cursor.fetchall():
+                    monto = float(r[0]) if r[0] else 0.0
+                    cat = "COBRO CLIENTE"
+                    if cat not in agrupado: agrupado[cat] = {"debe": 0.0, "haber": 0.0}
+                    agrupado[cat]["debe"] += monto
+                    
+                # 2. Egresos (PROVEEDORES por categoría)
+                cursor.execute("SELECT categoria_suministro, monto_pagado FROM pagos_comprobantes")
+                for r in cursor.fetchall():
+                    cat = str(r[0]).strip().upper() if r[0] and str(r[0]).strip() else "GENERAL / NO ASIGNADO"
+                    monto = float(r[1]) if r[1] else 0.0
+                    if cat not in agrupado: agrupado[cat] = {"debe": 0.0, "haber": 0.0}
+                    agrupado[cat]["haber"] += monto
+
+                # 3. Anulaciones y Notas de Crédito (Auditoría visual acumulada)
+                cursor.execute("""
+                    SELECT total, COALESCE(det_monto, 0)
+                    FROM facturas_emitidas
+                    WHERE estado_sunat LIKE '%Anulada%'
+                """)
+                for r in cursor.fetchall():
+                    tot_bruto = float(r[0]) if r[0] else 0.0
+                    det_monto = float(r[1]) if r[1] else 0.0
+                    neto = tot_bruto - det_monto
+                    
+                    cat_rev = "ANULACIÓN DE INGRESOS (REVERSO)"
+                    cat_nc = "NOTAS DE CRÉDITO EMITIDAS"
+                    
+                    if cat_rev not in agrupado: agrupado[cat_rev] = {"debe": 0.0, "haber": 0.0}
+                    if cat_nc not in agrupado: agrupado[cat_nc] = {"debe": 0.0, "haber": 0.0}
+                    
+                    agrupado[cat_rev]["debe"] += neto   # Reverso visual
+                    agrupado[cat_nc]["haber"] += neto   # Salida contable virtual
+                    
+            except Exception as e:
+                self.root.after(0, lambda err=e: messagebox.showerror("Error de Base de Datos", f"No se pudo compilar el mayor:\n{str(err)}"))
+            finally:
+                conn.close()
+                
+            lista_ordenada = sorted(agrupado.items(), key=lambda x: x[0])
+            self.root.after(0, lambda t=token, l=lista_ordenada: self._pintar_mayor(t, l))
+
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _pintar_mayor(self, token, lista_ordenada):
+        if token != getattr(self, "_mayor_token", 0):
+            return
             
-        lista_ordenada = sorted(agrupado.items(), key=lambda x: x[0])
-        
         total_gral_debe = 0.0
         total_gral_haber = 0.0
         
@@ -249,7 +264,7 @@ class LibroMayorApp:
             debe = montos["debe"]
             haber = montos["haber"]
             
-            if debe <= 0.01 and haber <= 0.01:
+            if debe == 0.0 and haber == 0.0:
                 continue
                 
             saldo = debe - haber
