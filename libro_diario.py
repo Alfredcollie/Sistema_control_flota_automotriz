@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+"""
+=========================================================
+LIBRO_DIARIO.PY (ENTERPRISE EDITION)
+=========================================================
+- FIX: Codificación UTF-8 pura (Corregidos caracteres extraños /Mojibake).
+- Carga Asíncrona (Cero congelamientos de interfaz).
+- Protección del Pool de Conexiones (liberar_conexion).
+- Prevención de Race Conditions Visuales (Token de carga).
+"""
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
@@ -7,8 +17,11 @@ import sys
 import json
 import subprocess 
 import webbrowser
+import threading
 import customtkinter as ctk
-from conexion import conectar_db
+
+# 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
+from conexion import conectar_db, registrar_auditoria, liberar_conexion
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos
@@ -30,8 +43,7 @@ def abrir_documento(ruta):
 def cargar_configuracion_regional():
     config = {
         "simbolo_moneda": "S/.",
-        "formato_numero": "1,000.00",
-        "cuentas_bancarias": []
+        "formato_numero": "1,000.00"
     }
     try:
         if os.path.exists("config_local.json"):
@@ -46,7 +58,7 @@ def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
     try: valor = float(valor)
-    except: valor = 0.0
+    except Exception: valor = 0.0
     
     if formato == "1.000,00":
         str_val = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -63,12 +75,12 @@ class LibroDiarioApp:
             self.root.configure(fg_color="#f8f9fa")
         except Exception:
             try: self.root.configure(bg="#f8f9fa")
-            except: pass
+            except Exception: pass
         
         if hasattr(self.root, 'title'):
-            self.root.title("📖 Libro Diario - Black Cube")
+            self.root.title("📘 Libro Diario - Black Cube")
         if hasattr(self.root, 'geometry') and isinstance(self.root, (tk.Tk, tk.Toplevel)):
-            self.root.geometry("1200x650")
+            self.root.geometry("1100x600")
             self.root.update_idletasks()
             ancho = self.root.winfo_width()
             alto = self.root.winfo_height()
@@ -83,37 +95,14 @@ class LibroDiarioApp:
         style.map("Treeview", background=[("selected", "#1f538d")], foreground=[("selected", "#ffffff")])
         style.configure("Treeview.Heading", background="#f0f0f0", foreground="#000000", font=("Arial", 11, "bold"), bordercolor="#e0e0e0", borderwidth=1, relief="flat")
         
-        # 🚀 HEADER CON BOTÓN DE PANTALLA COMPLETA Y FILTROS
+        # 🚀 HEADER CON BOTÓN DE PANTALLA COMPLETA
         header_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         header_frame.pack(fill="x", padx=15, pady=(15, 5))
         
         ctk.CTkLabel(header_frame, text="LIBRO DIARIO GENERAL DE OPERACIONES", font=("Arial", 16, "bold"), text_color="#1f538d").pack(side="left")
-        
         self.btn_pantalla = ctk.CTkButton(header_frame, text="[ + ] Pantalla Completa", font=("Arial", 12, "bold"), width=160, fg_color="#34495e", hover_color="#2c3e50", command=self.toggle_pantalla_completa)
-        self.btn_pantalla.pack(side="right", padx=(10, 0))
-
-        # --- FILTRO 1: CUENTA O FORMA DE PAGO ---
-        bancos_guardados = CONFIG_REGIONAL.get("cuentas_bancarias", [])
-        lista_cuentas = ["Cualquier Cuenta"]
-        for b in bancos_guardados:
-            banco_nom = b.get("banco", "").strip()
-            cuenta_num = b.get("cuenta", "").strip()
-            if banco_nom or cuenta_num:
-                lista_cuentas.append(f"{banco_nom} - {cuenta_num}".strip(" - "))
-        lista_cuentas.extend(["Efectivo / Caja Chica", "Tarjeta de Crédito", "Tarjeta de Débito", "Cheque", "Otro", "No Especificado", "Reversión (N.C.)"])
-
-        self.combo_cuenta = ctk.CTkComboBox(header_frame, values=lista_cuentas, width=170, command=self.aplicar_filtro)
-        self.combo_cuenta.pack(side="right", padx=(5, 10))
-        self.combo_cuenta.set("Cualquier Cuenta")
-        ctk.CTkLabel(header_frame, text="Cuenta / Método:", font=("Arial", 11, "bold")).pack(side="right", padx=(10, 2))
-
-        # --- FILTRO 2: TIPO DE ASIENTO ---
-        self.combo_filtro = ctk.CTkComboBox(header_frame, values=["Ver Todos (General)", "Solo Ingresos (Ventas/Cobros)", "Solo Egresos (Compras/Pagos)", "Solo Anulaciones (N.C.)"], width=190, command=self.aplicar_filtro)
-        self.combo_filtro.pack(side="right", padx=(5, 5))
-        self.combo_filtro.set("Ver Todos (General)")
-        ctk.CTkLabel(header_frame, text="Filtro Asientos:", font=("Arial", 11, "bold")).pack(side="right", padx=(10, 2))
-        # ---------------------------
-
+        self.btn_pantalla.pack(side="right")
+        
         frame_principal = tk.Frame(root, bg="#f8f9fa")
         frame_principal.pack(fill="both", expand=True, padx=15, pady=5)
         
@@ -132,32 +121,24 @@ class LibroDiarioApp:
         lbl_hint = tk.Label(frame_tabla, text="💡 Haz doble clic sobre cualquier asiento contable para visualizar su comprobante o PDF de SUNAT asociado.", font=("Arial", 10, "italic"), fg="gray", bg="#f8f9fa")
         lbl_hint.pack(side="bottom", anchor="w", pady=(5, 0))
 
-        columnas = ("id", "origen", "fecha", "codigo", "concepto", "tipo", "cuenta", "debe", "haber", "ruta_archivo", "categoria_real")
+        columnas = ("id", "origen", "fecha", "codigo", "concepto", "tipo", "debe", "haber", "ruta_archivo")
         self.tabla = ttk.Treeview(frame_tabla, columns=columnas, show="headings", style="Treeview")
         
-        # --- CONFIGURACIÓN DE ETIQUETAS DE COLOR ---
-        self.tabla.tag_configure("ingreso", background="#e8f8f5", foreground="#0e6251") 
-        self.tabla.tag_configure("egreso", background="#fdedec", foreground="#7b241c")  
-        self.tabla.tag_configure("anulacion", background="#fef9e7", foreground="#d35400") 
-        # -------------------------------------------
-
         self.tabla.heading("fecha", text="Fecha Reg.")
         self.tabla.heading("codigo", text="Doc. / Factura") 
         self.tabla.heading("concepto", text="Beneficiario / Concepto")
         self.tabla.heading("tipo", text="Categoría Suministro")
-        self.tabla.heading("cuenta", text="Cuenta / Pago")
         self.tabla.heading("debe", text="Debe (Ingresos)")
         self.tabla.heading("haber", text="Haber (Egresos)")
         
-        self.tabla["displaycolumns"] = ("fecha", "codigo", "concepto", "tipo", "cuenta", "debe", "haber")
+        self.tabla["displaycolumns"] = ("fecha", "codigo", "concepto", "tipo", "debe", "haber")
         
-        self.tabla.column("fecha", width=100, anchor="center")
-        self.tabla.column("codigo", width=110, anchor="center")
+        self.tabla.column("fecha", width=110, anchor="center")
+        self.tabla.column("codigo", width=120, anchor="center")
         self.tabla.column("concepto", width=220, anchor="w")
         self.tabla.column("tipo", width=150, anchor="center")
-        self.tabla.column("cuenta", width=140, anchor="center")
-        self.tabla.column("debe", width=115, anchor="e")
-        self.tabla.column("haber", width=115, anchor="e")
+        self.tabla.column("debe", width=120, anchor="e")
+        self.tabla.column("haber", width=120, anchor="e")
         
         scr_y = ttk.Scrollbar(frame_tabla, orient="vertical", command=self.tabla.yview)
         self.tabla.configure(yscrollcommand=scr_y.set)
@@ -173,15 +154,13 @@ class LibroDiarioApp:
         self.lbl_total_debe = tk.Label(self.frame_totales, text="Total Debe: 0.00", font=("Arial", 14, "bold"), fg="#27ae60", bg="#f8f9fa")
         self.lbl_total_debe.pack(side="left", padx=30)
         
+        # 🚀 SALDO NETO CENTRADO
         self.lbl_saldo_neto = tk.Label(self.frame_totales, text="Saldo Neto: 0.00", font=("Arial", 16, "bold"), fg="#1f538d", bg="#f8f9fa")
         self.lbl_saldo_neto.pack(side="left", expand=True)
         
         self.lbl_total_haber = tk.Label(self.frame_totales, text="Total Haber: 0.00", font=("Arial", 14, "bold"), fg="#c0392b", bg="#f8f9fa")
         self.lbl_total_haber.pack(side="right", padx=30)
         
-        # Variable para almacenar todos los movimientos en memoria (para los filtros)
-        self.todos_los_movimientos = []
-
         if hasattr(self.root, 'after'):
             self.root.after(100, self.cargar_datos_diario)
         else:
@@ -211,8 +190,8 @@ class LibroDiarioApp:
         if not seleccion: return
         valores = self.tabla.item(seleccion[0], "values")
         
-        if len(valores) > 9:
-            ruta = str(valores[9]).strip()
+        if len(valores) > 8:
+            ruta = str(valores[8]).strip()
             if ruta and ruta != "None":
                 if ruta.startswith("http"):
                     webbrowser.open(ruta)
@@ -232,11 +211,11 @@ class LibroDiarioApp:
         filas = []
         for item in self.tabla.get_children():
             vals = self.tabla.item(item)["values"]
-            filas.append([vals[2], vals[3], vals[4], vals[5], vals[6], vals[7], vals[8]])
+            filas.append([vals[2], vals[3], vals[4], vals[5], vals[6], vals[7]])
 
-        if not filas: return messagebox.showwarning("Aviso", "No hay datos para exportar con el filtro actual.")
+        if not filas: return messagebox.showwarning("Aviso", "No hay datos para exportar.")
         
-        cols = ["Fecha", "Doc. / Factura", "Beneficiario / Concepto", "Categoría Suministro", "Cuenta / Pago", "Debe (Ingresos)", "Haber (Egresos)"]
+        cols = ["Fecha", "Doc. / Factura", "Beneficiario / Concepto", "Categoría Suministro", "Debe (Ingresos)", "Haber (Egresos)"]
         
         ruta = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Libro_Diario_BlackCube.xlsx", filetypes=[("Excel", "*.xlsx")])
         if ruta:
@@ -247,167 +226,158 @@ class LibroDiarioApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Fallo al guardar:\n{e}")
 
+    # =======================================================
+    # CARGA DEL DIARIO EN SEGUNDO PLANO (HILO + TOKEN)
+    # =======================================================
     def cargar_datos_diario(self):
-        self.todos_los_movimientos = []
-        conn = conectar_db()
-        if not conn: 
-            self.aplicar_filtro()
-            return
-            
-        try:
-            cursor = conn.cursor()
-            
-            # Garantizar que la columna cuenta_destino exista (Previene errores si es bd vieja)
-            try:
-                cursor.execute("ALTER TABLE pagos_clientes ADD COLUMN cuenta_destino VARCHAR(255) DEFAULT ''")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-
-            # 🚀 1. INGRESOS (CLIENTES) -> DEBE
-            # OJO: Se usa INNER JOIN para que si la factura se eliminó en Ventas, no aparezcan pagos huérfanos.
-            try:
-                cursor.execute("""
-                    SELECT p.id, 'cliente', p.fecha_pago, 
-                           COALESCE(f.numero_documento, p.codigo_cotizacion, 'Sin Ref'), 
-                           p.cliente_nombre, 'Cobro Cliente', p.monto_pagado,
-                           COALESCE(NULLIF(p.archivo_ruta, ''), f.enlace_pdf_sunat, ''),
-                           COALESCE(NULLIF(p.cuenta_destino, ''), 'No Especificado')
-                    FROM pagos_clientes p
-                    INNER JOIN facturas_emitidas f ON p.id_factura = f.id
-                """)
-                for r in cursor.fetchall():
-                    fecha = r[2] if r[2] and str(r[2]).strip() != "" else "Sin Fecha"
-                    doc_ref = str(r[3]).strip()
-                    if not doc_ref or doc_ref.lower() == "none": doc_ref = "Sin Ref"
-                    monto = float(r[6]) if r[6] else 0.0
-                    ruta_arch = r[7] if r[7] else ""
-                    cuenta_pago = r[8] if r[8] else "No Especificado"
-                    self.todos_los_movimientos.append((r[0], r[1], fecha, doc_ref, r[4], r[5], monto, 0.0, ruta_arch, 'ingreso', cuenta_pago))
-            except Exception as e:
-                conn.rollback()
-                print("Error Ingresos:", e)
-                
-            # 🚀 2. EGRESOS (PROVEEDORES) -> HABER
-            # OJO: INNER JOIN para omitir registros huérfanos de facturas borradas en Compras.
-            try:
-                cursor.execute("""
-                    SELECT p.id, 'proveedor', p.fecha_pago, 
-                           COALESCE(f.numero_documento, p.codigo_cotizacion, 'Sin Ref'), 
-                           p.proveedor_nombre, p.categoria_suministro, p.monto_pagado,
-                           COALESCE(NULLIF(p.archivo_ruta, ''), f.archivo_ruta, ''),
-                           COALESCE(NULLIF(p.cuenta_origen, ''), 'No Especificado')
-                    FROM pagos_comprobantes p
-                    INNER JOIN facturas_recibidas f ON p.id_factura = f.id
-                """)
-                for r in cursor.fetchall():
-                    fecha = r[2] if r[2] and str(r[2]).strip() != "" else "Sin Fecha"
-                    doc_ref = str(r[3]).strip()
-                    if not doc_ref or doc_ref.lower() == "none": doc_ref = "Sin Ref"
-                    monto = float(r[6]) if r[6] else 0.0
-                    ruta_arch = r[7] if r[7] else ""
-                    cuenta_pago = r[8] if r[8] else "No Especificado"
-                    self.todos_los_movimientos.append((r[0], r[1], fecha, doc_ref, r[4], r[5], 0.0, monto, ruta_arch, 'egreso', cuenta_pago))
-            except Exception as e:
-                conn.rollback()
-                print("Error Egresos:", e)
-            
-            # 🚀 3. NOTAS DE CRÉDITO Y FACTURAS ANULADAS -> ANULACION
-            try:
-                cursor.execute("""
-                    SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), 
-                           enlace_pdf_sunat, enlace_pdf_nc, archivo_ruta, tipo_documento
-                    FROM facturas_emitidas
-                    WHERE estado_sunat LIKE '%Anulada%'
-                """)
-                for r in cursor.fetchall():
-                    id_fac = r[0]
-                    fecha = r[1] if r[1] and str(r[1]).strip() != "" else "Sin Fecha"
-                    nro_doc = str(r[2]).strip() if r[2] else "S/N"
-                    cliente = str(r[3]).strip()
-                    tot_bruto = float(r[4]) if r[4] else 0.0
-                    det_monto = float(r[5]) if r[5] else 0.0
-                    neto = tot_bruto - det_monto
-                    
-                    pdf_fac = r[6] if r[6] else (r[8] if r[8] else "")
-                    pdf_nc = r[7] if r[7] else ""
-                    tipo_doc = r[9] if r[9] else ""
-                    
-                    serie_nc = "FC01" if "Factura" in tipo_doc else "BC01"
-                    num_orig = nro_doc.split("-")[1] if "-" in nro_doc else "1"
-                    doc_nc = f"{serie_nc}-{num_orig}"
-                    
-                    # Fila 1: Factura Original (Suma al Debe/Ingresos pero pintada como anulación)
-                    self.todos_los_movimientos.append((id_fac, 'factura_anulada', fecha, nro_doc, f"{cliente} (FACTURA ANULADA)", "Ingreso Revertido", neto, 0.0, pdf_fac, 'anulacion', "Reversión (N.C.)"))
-                    
-                    # Fila 2: Nota de Crédito (Suma al Haber/Egresos para cruzar contablemente)
-                    self.todos_los_movimientos.append((id_fac, 'nota_credito', fecha, doc_nc, f"{cliente} (NOTA DE CRÉDITO)", "Anulación de Ingreso", 0.0, neto, pdf_nc, 'anulacion', "Reversión (N.C.)"))
-            except Exception:
-                conn.rollback()
-                
-        except Exception as e:
-            messagebox.showerror("Error de Base de Datos", f"No se pudo compilar el diario:\n{str(e)}")
-        finally:
-            conn.close()
-            
-        # Ordenar cronológicamente por la fecha (índice 2)
-        self.todos_los_movimientos.sort(key=lambda x: x[2])
-        self.aplicar_filtro()
-
-    def aplicar_filtro(self, event=None):
-        filtro_asiento = self.combo_filtro.get()
-        filtro_cuenta = self.combo_cuenta.get()
-        
         self.tabla.config(displaycolumns="")
         for fila in self.tabla.get_children():
             self.tabla.delete(fila)
+
+        self._diario_token = getattr(self, "_diario_token", 0) + 1
+        token = self._diario_token
+
+        def tarea():
+            movimientos = []
+            conn = conectar_db(silencioso=True)
+            if not conn: 
+                if hasattr(self.root, 'after'):
+                    self.root.after(0, lambda: messagebox.showwarning("Modo Lectura", "Estás sin conexión a internet.\nEl Libro Diario no se puede cargar."))
+                    self.root.after(0, lambda: self.tabla.config(displaycolumns=("fecha", "codigo", "concepto", "tipo", "debe", "haber")))
+                return
+                
+            try:
+                cursor = conn.cursor()
+                
+                # 🚀 1. INGRESOS (CLIENTES)
+                try:
+                    cursor.execute("""
+                        SELECT p.id, 'cliente', p.fecha_pago, 
+                               COALESCE(f.numero_documento, p.codigo_cotizacion, 'Sin Ref'), 
+                               p.cliente_nombre, 'Cobro Cliente', p.monto_pagado,
+                               COALESCE(NULLIF(p.archivo_ruta, ''), f.enlace_pdf_sunat, '')
+                        FROM pagos_clientes p
+                        LEFT JOIN facturas_emitidas f ON p.id_factura = f.id
+                    """)
+                    for r in cursor.fetchall():
+                        fecha = r[2] if r[2] and str(r[2]).strip() != "" else "Sin Fecha"
+                        doc_ref = str(r[3]).strip()
+                        if not doc_ref or doc_ref.lower() == "none": doc_ref = "Sin Ref"
+                        monto = float(r[6]) if r[6] else 0.0
+                        ruta_arch = r[7] if r[7] else ""
+                        movimientos.append((r[0], r[1], fecha, doc_ref, r[4], r[5], monto, 0.0, ruta_arch))
+                except Exception:
+                    conn.rollback()
+                    cursor.execute("SELECT id, 'cliente', fecha_pago, codigo_cotizacion, cliente_nombre, 'Cobro Cliente', monto_pagado, archivo_ruta FROM pagos_clientes")
+                    for r in cursor.fetchall():
+                        fecha = r[2] if r[2] and str(r[2]).strip() != "" else "Sin Fecha"
+                        doc_ref = str(r[3]).strip()
+                        if not doc_ref or doc_ref.lower() == "none": doc_ref = "Sin Ref"
+                        monto = float(r[6]) if r[6] else 0.0
+                        ruta_arch = r[7] if r[7] else ""
+                        movimientos.append((r[0], r[1], fecha, doc_ref, r[4], r[5], monto, 0.0, ruta_arch))
+                    
+                # 🚀 2. EGRESOS (PROVEEDORES)
+                try:
+                    cursor.execute("""
+                        SELECT p.id, 'proveedor', p.fecha_pago, 
+                               COALESCE(f.numero_documento, p.codigo_cotizacion, 'Sin Ref'), 
+                               p.proveedor_nombre, p.categoria_suministro, p.monto_pagado,
+                               COALESCE(NULLIF(p.archivo_ruta, ''), f.archivo_ruta, '')
+                        FROM pagos_comprobantes p
+                        LEFT JOIN facturas_recibidas f ON p.id_factura = f.id
+                    """)
+                    for r in cursor.fetchall():
+                        fecha = r[2] if r[2] and str(r[2]).strip() != "" else "Sin Fecha"
+                        doc_ref = str(r[3]).strip()
+                        if not doc_ref or doc_ref.lower() == "none": doc_ref = "Sin Ref"
+                        monto = float(r[6]) if r[6] else 0.0
+                        ruta_arch = r[7] if r[7] else ""
+                        movimientos.append((r[0], r[1], fecha, doc_ref, r[4], r[5], 0.0, monto, ruta_arch))
+                except Exception:
+                    conn.rollback()
+                    cursor.execute("SELECT id, 'proveedor', fecha_pago, codigo_cotizacion, proveedor_nombre, categoria_suministro, monto_pagado, archivo_ruta FROM pagos_comprobantes")
+                    for r in cursor.fetchall():
+                        fecha = r[2] if r[2] and str(r[2]).strip() != "" else "Sin Fecha"
+                        doc_ref = str(r[3]).strip()
+                        if not doc_ref or doc_ref.lower() == "none": doc_ref = "Sin Ref"
+                        monto = float(r[6]) if r[6] else 0.0
+                        ruta_arch = r[7] if r[7] else ""
+                        movimientos.append((r[0], r[1], fecha, doc_ref, r[4], r[5], 0.0, monto, ruta_arch))
+                
+                # 🚀 3. NOTAS DE CRÉDITO Y FACTURAS ANULADAS
+                try:
+                    cursor.execute("""
+                        SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), 
+                               enlace_pdf_sunat, enlace_pdf_nc, archivo_ruta, tipo_documento
+                        FROM facturas_emitidas
+                        WHERE estado_sunat LIKE '%Anulada%'
+                    """)
+                    for r in cursor.fetchall():
+                        id_fac = r[0]
+                        fecha = r[1] if r[1] and str(r[1]).strip() != "" else "Sin Fecha"
+                        nro_doc = str(r[2]).strip() if r[2] else "S/N"
+                        cliente = str(r[3]).strip()
+                        tot_bruto = float(r[4]) if r[4] else 0.0
+                        det_monto = float(r[5]) if r[5] else 0.0
+                        neto = tot_bruto - det_monto
+                        
+                        pdf_fac = r[6] if r[6] else (r[8] if r[8] else "")
+                        pdf_nc = r[7] if r[7] else ""
+                        tipo_doc = r[9] if r[9] else ""
+                        
+                        serie_nc = "FC01" if "Factura" in tipo_doc else "BC01"
+                        num_orig = nro_doc.split("-")[1] if "-" in nro_doc else "1"
+                        doc_nc = f"{serie_nc}-{num_orig}"
+                        
+                        # Fila 1: Factura Original (Suma al Debe/Ingresos)
+                        movimientos.append((id_fac, 'factura_anulada', fecha, nro_doc, f"{cliente} (FACTURA ANULADA)", "Ingreso Revertido", neto, 0.0, pdf_fac))
+                        
+                        # Fila 2: Nota de Crédito (Suma al Haber/Egresos para cruzar contablemente)
+                        movimientos.append((id_fac, 'nota_credito', fecha, doc_nc, f"{cliente} (NOTA DE CRÉDITO)", "Anulación de Ingreso", 0.0, neto, pdf_nc))
+                except Exception:
+                    conn.rollback()
+                    
+            except Exception as e:
+                if hasattr(self.root, 'after'):
+                    self.root.after(0, lambda: messagebox.showerror("Error de Base de Datos", f"No se pudo compilar el diario:\n{str(e)}"))
+            finally:
+                liberar_conexion(conn)
+                
+            movimientos.sort(key=lambda x: x[2])
+            
+            if hasattr(self.root, 'after'):
+                self.root.after(0, lambda t=token, m=movimientos: self._pintar_diario(t, m))
+
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _pintar_diario(self, token, movimientos):
+        if token != getattr(self, "_diario_token", 0):
+            return
             
         total_debe = 0.0
         total_haber = 0.0
         
-        for mov in self.todos_los_movimientos:
-            cat_real = mov[9]
-            cuenta_asociada = str(mov[10]).strip()
+        for mov in movimientos:
+            str_debe = formatear_moneda(mov[6]) if mov[6] > 0 else "-"
+            str_haber = formatear_moneda(mov[7]) if mov[7] > 0 else "-"
             
-            # 1. Filtro Lógico por Tipo (Ingreso / Egreso)
-            mostrar_tipo = False
-            if filtro_asiento == "Ver Todos (General)":
-                mostrar_tipo = True
-            elif filtro_asiento == "Solo Ingresos (Ventas/Cobros)" and cat_real == 'ingreso':
-                mostrar_tipo = True
-            elif filtro_asiento == "Solo Egresos (Compras/Pagos)" and cat_real == 'egreso':
-                mostrar_tipo = True
-            elif filtro_asiento == "Solo Anulaciones (N.C.)" and cat_real == 'anulacion':
-                mostrar_tipo = True
-                
-            # 2. Filtro Lógico por Cuenta / Método de Pago
-            mostrar_cuenta = False
-            if filtro_cuenta == "Cualquier Cuenta":
-                mostrar_cuenta = True
-            elif filtro_cuenta in cuenta_asociada:
-                mostrar_cuenta = True
-                
-            if mostrar_tipo and mostrar_cuenta:
-                str_debe = formatear_moneda(mov[6]) if mov[6] > 0 else "-"
-                str_haber = formatear_moneda(mov[7]) if mov[7] > 0 else "-"
-                
-                # Inserción con etiqueta de color correspondiente
-                self.tabla.insert("", tk.END, values=(
-                    mov[0], mov[1], mov[2], mov[3], mov[4], mov[5], cuenta_asociada, str_debe, str_haber, mov[8], cat_real
-                ), tags=(cat_real,))
-                
-                total_debe += mov[6]
-                total_haber += mov[7]
+            self.tabla.insert("", tk.END, values=(
+                mov[0], mov[1], mov[2], mov[3], mov[4], mov[5], str_debe, str_haber, mov[8]
+            ))
+            total_debe += mov[6]
+            total_haber += mov[7]
             
         self.lbl_total_debe.config(text=f"Total Debe (Ingresos): {formatear_moneda(total_debe)}")
         self.lbl_total_haber.config(text=f"Total Haber (Egresos): {formatear_moneda(total_haber)}")
         
-        # Calcular saldo neto dinámico según lo que se esté mostrando
+        # 🚀 CALCULAR Y PINTAR EL SALDO NETO
         saldo_neto = total_debe - total_haber
         color_saldo = "#27ae60" if saldo_neto >= 0 else "#c0392b"
         self.lbl_saldo_neto.config(text=f"Saldo Neto: {formatear_moneda(saldo_neto)}", fg=color_saldo)
         
-        self.tabla.config(displaycolumns=("fecha", "codigo", "concepto", "tipo", "cuenta", "debe", "haber"))
+        self.tabla.config(displaycolumns=("fecha", "codigo", "concepto", "tipo", "debe", "haber"))
+
 
 if __name__ == "__main__":
     root = tk.Tk()
