@@ -10,8 +10,19 @@ import os
 import sys
 import shutil
 import subprocess
+import threading
 from datetime import datetime
-from conexion import conectar_db, registrar_auditoria
+
+# 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
+from conexion import conectar_db, registrar_auditoria, liberar_conexion
+from buffer_memoria import cache_sistema
+
+try:
+    import fitz  
+    import base64
+    import requests
+except ImportError:
+    pass
 
 # =========================================================
 # CLASE: MINI CALENDARIO (ACTUALIZADO CON COMBOBOX)
@@ -104,6 +115,8 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.target_entry.insert(0, fecha_seleccionada)
         self.destroy()
 
+_SCHEMA_VEHICULOS_OK = False
+
 # =========================================================
 # MÓDULO PRINCIPAL DE FLOTA
 # =========================================================
@@ -114,79 +127,89 @@ class FlotaAutomotrizApp:
         self.id_edicion = None
         self.ruta_tarjeta_temp = ""
         self.ruta_tarjeta_db = ""
+        
+        # 🚀 VARIABLES DE PAGINACIÓN (LAZY LOADING)
+        self.pagina_actual = 1
+        self.registros_por_pagina = 50
+        
         self.inicializar_bd()
         self.crear_interfaz()
 
+    # 🚀 FIX: AUTO-CURACIÓN EN SEGUNDO PLANO
     def inicializar_bd(self):
-        conn = conectar_db()
-        if not conn: return
-        try:
-            cursor = conn.cursor()
-            # 1. Base Flota
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS flota_vehiculos (
-                    id SERIAL PRIMARY KEY,
-                    placa VARCHAR(20) UNIQUE NOT NULL,
-                    marca VARCHAR(100),
-                    modelo VARCHAR(100),
-                    anio VARCHAR(4),
-                    color VARCHAR(50),
-                    serial_motor VARCHAR(150),
-                    serial_carroceria VARCHAR(150),
-                    tipo_combustible VARCHAR(100),
-                    vencimiento_soat VARCHAR(20),
-                    vencimiento_rt VARCHAR(20),
-                    estado VARCHAR(50) DEFAULT 'Operativo'
-                )
-            """)
-            conn.commit()
-            
-            # Agregado seguro de columnas nuevas (Una por una)
-            columnas_nuevas = [
-                "ALTER TABLE flota_vehiculos ADD COLUMN kilometraje VARCHAR(50) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN emision_soat VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN emision_seguro VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN vencimiento_seguro VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN categoria VARCHAR(100) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN nro_titulo VARCHAR(100) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN fecha_titulo VARCHAR(50) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN ruta_tarjeta TEXT DEFAULT ''",
-                # --- COLUMNAS DE MANTENIMIENTO ---
-                "ALTER TABLE flota_vehiculos ADD COLUMN fec_aceite VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN fec_correa VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN fec_rev_gas VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN fec_compra_bat VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN fec_venc_bat VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN extintor_num VARCHAR(100) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN fec_venc_extintor VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE flota_vehiculos ADD COLUMN km_prox_correa VARCHAR(50) DEFAULT ''" # NUEVA
-            ]
-            
-            for query in columnas_nuevas:
-                try:
-                    cursor.execute(query)
-                    conn.commit()
-                except Exception:
-                    conn.rollback() 
+        global _SCHEMA_VEHICULOS_OK
+        if _SCHEMA_VEHICULOS_OK: return
 
-            # 2. Creación segura de Tareas para Cronograma
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tareas_evento (
-                    id SERIAL PRIMARY KEY, evento_asociado VARCHAR(255), nombre_tarea VARCHAR(255),
-                    responsable VARCHAR(100), fecha_limite VARCHAR(20), estado VARCHAR(50),
-                    notas TEXT, orden INTEGER DEFAULT 0, tipo_pago VARCHAR(50) DEFAULT 'Crédito', archivo_pago TEXT
-                )
-            """)
-            conn.commit()
-            
-        except Exception as e:
-            print(f"Error BD Flota: {e}")
-        finally:
-            conn.close()
+        def tarea_curacion():
+            global _SCHEMA_VEHICULOS_OK
+            conn = conectar_db(silencioso=True)
+            if not conn: return
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS flota_vehiculos (
+                        id SERIAL PRIMARY KEY,
+                        placa VARCHAR(20) UNIQUE NOT NULL,
+                        marca VARCHAR(100),
+                        modelo VARCHAR(100),
+                        anio VARCHAR(4),
+                        color VARCHAR(50),
+                        serial_motor VARCHAR(150),
+                        serial_carroceria VARCHAR(150),
+                        tipo_combustible VARCHAR(100),
+                        vencimiento_soat VARCHAR(20),
+                        vencimiento_rt VARCHAR(20),
+                        estado VARCHAR(50) DEFAULT 'Operativo'
+                    )
+                """)
+                conn.commit()
+                
+                columnas_nuevas = [
+                    "ALTER TABLE flota_vehiculos ADD COLUMN kilometraje VARCHAR(50) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN emision_soat VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN emision_seguro VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN vencimiento_seguro VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN categoria VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN nro_titulo VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fecha_titulo VARCHAR(50) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN ruta_tarjeta TEXT DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fec_aceite VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fec_correa VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fec_rev_gas VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fec_compra_bat VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fec_venc_bat VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN extintor_num VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fec_venc_extintor VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN km_prox_correa VARCHAR(50) DEFAULT ''" 
+                ]
+                
+                for query in columnas_nuevas:
+                    try:
+                        cursor.execute(query)
+                        conn.commit()
+                    except Exception:
+                        conn.rollback() 
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS tareas_evento (
+                        id SERIAL PRIMARY KEY, evento_asociado VARCHAR(255), nombre_tarea VARCHAR(255),
+                        responsable VARCHAR(100), fecha_limite VARCHAR(20), estado VARCHAR(50),
+                        notas TEXT, orden INTEGER DEFAULT 0, tipo_pago VARCHAR(50) DEFAULT 'Crédito', archivo_pago TEXT
+                    )
+                """)
+                conn.commit()
+                _SCHEMA_VEHICULOS_OK = True
+                
+            except Exception as e:
+                print(f"Error BD Flota: {e}")
+            finally:
+                liberar_conexion(conn)
+                
+        threading.Thread(target=tarea_curacion, daemon=True).start()
 
     def extraer_datos_tarjeta_pdf(self):
         try:
-            import fitz  # PyMuPDF
+            import fitz  
             import base64
             import requests
             import json
@@ -197,15 +220,12 @@ class FlotaAutomotrizApp:
         ruta_archivo = filedialog.askopenfilename(title="Seleccionar Tarjeta SUNARP", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
         if not ruta_archivo: return
 
-        # Guardamos la ruta temporalmente para poder copiar el archivo al darle "Guardar"
         self.ruta_tarjeta_temp = ruta_archivo
-        # Activamos el botón de ver (para que pueda previsualizar lo que acaba de cargar)
         self.btn_ver_tarjeta.configure(state="normal", fg_color="#27ae60")
 
         messagebox.showinfo("Procesando", "La Inteligencia Artificial está analizando el documento.\nEsto tomará unos segundos, dale Aceptar y espera...")
 
         try:
-            # 1. Convertir PDF a Imagen Base64
             if ruta_archivo.lower().endswith(".pdf"):
                 doc = fitz.open(ruta_archivo)
                 page = doc.load_page(0) 
@@ -220,7 +240,6 @@ class FlotaAutomotrizApp:
 
             img_b64 = base64.b64encode(img_bytes).decode('utf-8')
 
-            # 2. Configuración de QwenCloud
             QWEN_API_KEY = "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
             QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 
@@ -262,7 +281,6 @@ class FlotaAutomotrizApp:
                 ]
             }
 
-            # 3. Llamada a la IA
             respuesta = requests.post(QWEN_API_URL, headers=headers, json=payload)
             respuesta.raise_for_status()
             
@@ -274,7 +292,6 @@ class FlotaAutomotrizApp:
                 
             datos = json.loads(match.group(0))
 
-            # 4. Asignación a la interfaz
             def set_val(entry, clave):
                 val = datos.get(clave, "")
                 if val and val != "-":
@@ -320,7 +337,6 @@ class FlotaAutomotrizApp:
             messagebox.showerror("Error IA", f"No se pudo procesar el documento con Inteligencia Artificial.\nDetalle: {e}")
 
     def abrir_tarjeta(self):
-        # Abre el archivo temporal (si acaba de cargarlo) o el de la BD
         ruta = self.ruta_tarjeta_db if self.ruta_tarjeta_db else self.ruta_tarjeta_temp
         if ruta and os.path.exists(ruta):
             try:
@@ -337,26 +353,32 @@ class FlotaAutomotrizApp:
         if len(placa) < 6 or not placa.isalnum():
             return messagebox.showwarning("Placa Inválida", "Ingrese un número de placa válido (Ej: ABC123).")
 
-        try:
-            url = f"https://api.apis.net.pe/v1/vehiculos?placa={placa}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            
-            with urllib.request.urlopen(req, timeout=5) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode())
-                    if "marca" in data: self.ent_marca.delete(0, tk.END); self.ent_marca.insert(0, data.get("marca", ""))
-                    if "modelo" in data: self.ent_modelo.delete(0, tk.END); self.ent_modelo.insert(0, data.get("modelo", ""))
-                    if "color" in data: self.ent_color.delete(0, tk.END); self.ent_color.insert(0, data.get("color", ""))
-                    messagebox.showinfo("Consulta", "Datos obtenidos exitosamente de la base de datos.")
+        def tarea_api():
+            try:
+                url = f"https://api.apis.net.pe/v1/vehiculos?placa={placa}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.status == 200:
+                        data = json.loads(response.read().decode())
+                        self.parent_frame.after(0, lambda: self._aplicar_datos_api(data))
+                    else:
+                        self.parent_frame.after(0, lambda: messagebox.showwarning("Sin Resultados", "No se encontró la placa en la base de datos pública."))
+            except urllib.error.HTTPError as e:
+                if e.code in [401, 403, 404]:
+                    self.parent_frame.after(0, lambda: messagebox.showinfo("API Restringida", "La consulta automática requiere API Key. Usa el botón 'Leer Tarjeta (IA)'."))
                 else:
-                    messagebox.showwarning("Sin Resultados", "No se encontró la placa en la base de datos pública.")
-        except urllib.error.HTTPError as e:
-            if e.code in [401, 403, 404]:
-                messagebox.showinfo("API Restringida", "La consulta automática requiere API Key. Usa el botón 'Leer Tarjeta (IA)'.")
-            else:
-                messagebox.showwarning("Error de API", f"No se pudo contactar al servidor ({e.code}).")
-        except Exception:
-            messagebox.showinfo("Servicio no disponible", "La conexión a la base de datos vehicular no está disponible. Usa 'Leer Tarjeta (IA)'.")
+                    self.parent_frame.after(0, lambda: messagebox.showwarning("Error de API", f"No se pudo contactar al servidor ({e.code})."))
+            except Exception:
+                self.parent_frame.after(0, lambda: messagebox.showinfo("Servicio no disponible", "La conexión a la base de datos vehicular no está disponible. Usa 'Leer Tarjeta (IA)'."))
+
+        threading.Thread(target=tarea_api, daemon=True).start()
+
+    def _aplicar_datos_api(self, data):
+        if "marca" in data: self.ent_marca.delete(0, tk.END); self.ent_marca.insert(0, data.get("marca", ""))
+        if "modelo" in data: self.ent_modelo.delete(0, tk.END); self.ent_modelo.insert(0, data.get("modelo", ""))
+        if "color" in data: self.ent_color.delete(0, tk.END); self.ent_color.insert(0, data.get("color", ""))
+        messagebox.showinfo("Consulta", "Datos obtenidos exitosamente de la base de datos.")
 
     def crear_interfaz(self):
         style = ttk.Style()
@@ -474,7 +496,9 @@ class FlotaAutomotrizApp:
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 5))
         self.ent_buscar = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por placa, marca, modelo...")
         self.ent_buscar.pack(side="left", fill="x", expand=True)
-        self.ent_buscar.bind("<KeyRelease>", lambda e: self.cargar_datos())
+        
+        self.ent_buscar.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
+        self.ent_buscar.bind("<Return>", lambda e: self.cargar_datos(reset_pagina=True))
 
         f_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
@@ -515,10 +539,35 @@ class FlotaAutomotrizApp:
         f_acciones_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_acciones_tabla.pack(fill="x", pady=10)
         
-        ctk.CTkButton(f_acciones_tabla, text="✏️ Editar Seleccionado", fg_color="#34495e", hover_color="#2c3e50", font=("Arial", 12, "bold"), command=self.cargar_para_edicion).pack(side="left", padx=5)
+        # 🚀 BOTONES DE PAGINACIÓN
+        self.btn_ant = ctk.CTkButton(f_acciones_tabla, text="◀ Ant", width=60, command=self.pagina_anterior)
+        self.btn_ant.pack(side="left", padx=2)
+        
+        self.lbl_pagina = ctk.CTkLabel(f_acciones_tabla, text=f"Pág {self.pagina_actual}", font=("Arial", 11, "bold"))
+        self.lbl_pagina.pack(side="left", padx=5)
+        
+        self.btn_sig = ctk.CTkButton(f_acciones_tabla, text="Sig ▶", width=60, command=self.pagina_siguiente)
+        self.btn_sig.pack(side="left", padx=2)
+        
+        ctk.CTkButton(f_acciones_tabla, text="✏️ Editar Seleccionado", fg_color="#34495e", hover_color="#2c3e50", font=("Arial", 12, "bold"), command=self.cargar_para_edicion).pack(side="left", padx=(15, 5))
         ctk.CTkButton(f_acciones_tabla, text="❌ Eliminar", fg_color="#e74c3c", hover_color="#c0392b", font=("Arial", 12, "bold"), command=self.eliminar_vehiculo).pack(side="right", padx=5)
 
+        self.parent_frame.after(100, lambda: self.cargar_datos(reset_pagina=True))
+
+    def pagina_anterior(self):
+        if self.pagina_actual > 1:
+            self.pagina_actual -= 1
+            self.cargar_datos()
+            
+    def pagina_siguiente(self):
+        self.pagina_actual += 1
         self.cargar_datos()
+
+    def buscar_con_retraso(self):
+        if hasattr(self, "_busqueda_job"):
+            try: self.parent_frame.after_cancel(self._busqueda_job)
+            except: pass
+        self._busqueda_job = self.parent_frame.after(350, lambda: self.cargar_datos(reset_pagina=True))
 
     def limpiar_formulario(self):
         self.id_edicion = None
@@ -553,35 +602,77 @@ class FlotaAutomotrizApp:
         self.ent_rt.delete(0, tk.END)
         self.cmb_estado.set("Operativo")
 
-    def cargar_datos(self):
-        for item in self.tabla.get_children(): self.tabla.delete(item)
-        filtro = self.ent_buscar.get().strip().lower()
-        
-        conn = conectar_db()
-        if not conn: return
-        try:
-            cursor = conn.cursor()
-            if filtro:
-                cursor.execute("""
-                    SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo
-                    FROM flota_vehiculos 
-                    WHERE placa ILIKE %s OR marca ILIKE %s OR modelo ILIKE %s 
-                    ORDER BY id DESC
-                """, (f"%{filtro}%", f"%{filtro}%", f"%{filtro}%"))
-            else:
-                cursor.execute("SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo FROM flota_vehiculos ORDER BY id DESC")
+    # 🚀 FIX: LAZY LOADING Y CACHÉ
+    def cargar_datos(self, reset_pagina=False):
+        if reset_pagina:
+            self.pagina_actual = 1
             
-            for r in cursor.fetchall():
-                v_id, placa, marca, modelo, anio, color, comb, km, est, categoria, nro_titulo, fecha_titulo = r
-                vehiculo_nom = f"{marca} {modelo} ({anio})"
-                km_mostrar = km if km else "0"
-                cat_mostrar = categoria if categoria else "-"
-                
-                self.tabla.insert("", tk.END, values=(v_id, placa, vehiculo_nom, cat_mostrar, color, comb, km_mostrar, est, nro_titulo, fecha_titulo))
-        except Exception as e:
-            print(f"Error cargando tabla: {e}")
-        finally:
-            conn.close()
+        self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
+
+        for item in self.tabla.get_children(): 
+            self.tabla.delete(item)
+            
+        filtro = self.ent_buscar.get().strip().lower()
+        offset = (self.pagina_actual - 1) * self.registros_por_pagina
+        
+        clave_cache = f"vehiculos_flota_{filtro}_pag_{self.pagina_actual}"
+        datos = cache_sistema.obtener(clave_cache)
+        
+        if datos is not None:
+            self._pintar_vehiculos(datos)
+        else:
+            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", "", "", ""))
+            
+            def tarea_descarga():
+                conn = conectar_db(silencioso=True)
+                if not conn: return
+                try:
+                    cursor = conn.cursor()
+                    if filtro:
+                        cursor.execute("""
+                            SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo
+                            FROM flota_vehiculos 
+                            WHERE placa ILIKE %s OR marca ILIKE %s OR modelo ILIKE %s 
+                            ORDER BY id DESC LIMIT %s OFFSET %s
+                        """, (f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", self.registros_por_pagina, offset))
+                    else:
+                        cursor.execute("""
+                            SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo 
+                            FROM flota_vehiculos 
+                            ORDER BY id DESC LIMIT %s OFFSET %s
+                        """, (self.registros_por_pagina, offset))
+                    
+                    datos_db = cursor.fetchall()
+                    cache_sistema.guardar(clave_cache, datos_db)
+                    self.parent_frame.after(0, lambda: self._pintar_vehiculos(datos_db))
+                except Exception as e:
+                    print(f"Error cargando tabla de flota: {e}")
+                finally:
+                    liberar_conexion(conn)
+
+            threading.Thread(target=tarea_descarga, daemon=True).start()
+
+    def _pintar_vehiculos(self, datos):
+        for item in self.tabla.get_children():
+            self.tabla.delete(item)
+
+        for r in datos:
+            v_id, placa, marca, modelo, anio, color, comb, km, est, categoria, nro_titulo, fecha_titulo = r
+            vehiculo_nom = f"{marca} {modelo} ({anio})"
+            km_mostrar = km if km else "0"
+            cat_mostrar = categoria if categoria else "-"
+            
+            self.tabla.insert("", tk.END, values=(v_id, placa, vehiculo_nom, cat_mostrar, color, comb, km_mostrar, est, nro_titulo, fecha_titulo))
+            
+        if self.pagina_actual > 1:
+            self.btn_ant.configure(state="normal")
+        else:
+            self.btn_ant.configure(state="disabled")
+            
+        if len(datos) == self.registros_por_pagina:
+            self.btn_sig.configure(state="normal")
+        else:
+            self.btn_sig.configure(state="disabled")
 
     def guardar_vehiculo(self):
         placa = self.ent_placa.get().strip().upper()
@@ -654,7 +745,7 @@ class FlotaAutomotrizApp:
             else:
                 cursor.execute("SELECT id FROM flota_vehiculos WHERE placa = %s", (placa,))
                 if cursor.fetchone():
-                    conn.close()
+                    liberar_conexion(conn)
                     return messagebox.showwarning("Duplicado", f"La placa {placa} ya existe en el sistema.")
                     
                 cursor.execute("""
@@ -694,13 +785,16 @@ class FlotaAutomotrizApp:
             except Exception as e_crono: print("Aviso - Sincronización Cronograma:", e_crono)
 
             conn.commit()
+            cache_sistema.invalidar() # 🚀 FIX: Borrar caché
+            cache_sistema.invalidar("lista_vehiculos_combobox") # Refrescar lista desplegable de otros módulos
+            
             self.limpiar_formulario()
-            self.cargar_datos()
+            self.cargar_datos(reset_pagina=True)
         except Exception as e:
             conn.rollback()
             messagebox.showerror("Error", str(e))
         finally:
-            conn.close()
+            liberar_conexion(conn)
 
     def cargar_para_edicion(self):
         sel = self.tabla.selection()
@@ -767,7 +861,7 @@ class FlotaAutomotrizApp:
         except Exception as e:
             messagebox.showerror("Error Base de Datos", f"No se pudo cargar el registro.\nDetalle: {e}")
         finally:
-            conn.close()
+            liberar_conexion(conn)
 
     def eliminar_vehiculo(self):
         sel = self.tabla.selection()
@@ -791,13 +885,16 @@ class FlotaAutomotrizApp:
                 cursor.execute("DELETE FROM tareas_evento WHERE evento_asociado = 'FLOTA | Vencimientos' AND responsable = %s", (placa,))
                 conn.commit()
                 
+                cache_sistema.invalidar()
+                cache_sistema.invalidar("lista_vehiculos_combobox")
+                
                 registrar_auditoria(self.usuario_activo, "Flota", f"Eliminó el vehículo placa {placa}")
-                self.cargar_datos()
                 self.limpiar_formulario()
+                self.cargar_datos(reset_pagina=True)
                 
                 messagebox.showinfo("Éxito", "El vehículo ha sido eliminado correctamente del sistema.")
                 
             except Exception as e:
                 messagebox.showerror("Error", f"Fallo al intentar eliminar el registro:\n{e}")
             finally:
-                conn.close()
+                liberar_conexion(conn)

@@ -12,7 +12,7 @@ import keyring
 import threading
 from datetime import datetime
 
-SERVICE_NAME = "ControlEventos"
+SERVICE_NAME = "ControlFlota"
 
 logging.basicConfig(
     level=logging.INFO,

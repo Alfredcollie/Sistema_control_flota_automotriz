@@ -10,8 +10,12 @@ import shutil
 import subprocess
 import urllib.request
 import time
+import threading
 from datetime import datetime
-from conexion import conectar_db, registrar_auditoria
+
+# 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
+from conexion import conectar_db, registrar_auditoria, liberar_conexion
+from buffer_memoria import cache_sistema
 
 def abrir_documento_local(ruta):
     if not ruta: return False
@@ -112,7 +116,6 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.header_frame = ctk.CTkFrame(self, fg_color="#1f538d", corner_radius=0)
         self.header_frame.pack(fill="x")
         
-        # Controles superiores (Desplegables en lugar de solo texto)
         ctk.CTkButton(self.header_frame, text="<", width=25, fg_color="transparent", text_color="white", hover_color="#163b65", font=("Arial", 14, "bold"), command=self.prev_month).pack(side="left", padx=5, pady=10)
         
         self.cmb_mes = ctk.CTkComboBox(self.header_frame, values=self.meses_nombres, width=100, command=self.cambiar_mes_combo)
@@ -145,7 +148,6 @@ class CalendarioNativo(ctk.CTkToplevel):
             pass
 
     def update_calendar(self):
-        # Actualizar los combos a la selección actual
         self.cmb_mes.set(self.meses_nombres[self.current_month - 1])
         self.cmb_anio.set(str(self.current_year))
 
@@ -179,6 +181,8 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.target_entry.insert(0, f"{day:02d}/{self.current_month:02d}/{self.current_year}")
         self.destroy()
 
+_SCHEMA_CHOFERES_OK = False
+
 # =========================================================
 # CLASE PRINCIPAL: PADRÓN DE CHOFERES
 # =========================================================
@@ -189,86 +193,127 @@ class ChoferesApp:
         self.id_edicion = None
         self.rutas_documentos_temp = {}
         self.rutas_documentos_db = {}
+        
+        # 🚀 VARIABLES DE PAGINACIÓN (LAZY LOADING)
+        self.pagina_actual = 1
+        self.registros_por_pagina = 50
+        
         self.inicializar_bd()
         self.crear_interfaz()
 
+    # 🚀 FIX: AUTO-CURACIÓN EN SEGUNDO PLANO
     def inicializar_bd(self):
-        conn = conectar_db()
-        if not conn: return
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS choferes (
-                    id SERIAL PRIMARY KEY,
-                    dni VARCHAR(20) UNIQUE NOT NULL,
-                    nombres VARCHAR(255) NOT NULL,
-                    ruc VARCHAR(20),
-                    telefono VARCHAR(50),
-                    correo VARCHAR(150),
-                    licencia VARCHAR(50),
-                    categoria_licencia VARCHAR(50),
-                    vencimiento_licencia VARCHAR(20),
-                    estado VARCHAR(50) DEFAULT 'Activo'
-                )
-            """)
-            conn.commit()
-            
-            columnas_nuevas = [
-                "ALTER TABLE choferes ADD COLUMN direccion VARCHAR(255) DEFAULT ''",
-                "ALTER TABLE choferes ADD COLUMN seguro_salud_num VARCHAR(100) DEFAULT ''",
-                "ALTER TABLE choferes ADD COLUMN seguro_salud_venc VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE choferes ADD COLUMN fecha_nacimiento VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE choferes ADD COLUMN numero_hijos VARCHAR(10) DEFAULT '0'",
-                "ALTER TABLE choferes ADD COLUMN sexo VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE choferes ADD COLUMN seguro_vida_num VARCHAR(100) DEFAULT ''",
-                "ALTER TABLE choferes ADD COLUMN seguro_vida_venc VARCHAR(20) DEFAULT ''",
-                "ALTER TABLE choferes ADD COLUMN movil_asignado VARCHAR(100) DEFAULT 'Ninguno / Sin Asignar'",
-                "ALTER TABLE choferes ADD COLUMN ruta_documentos TEXT DEFAULT ''"
-            ]
-            
-            for query in columnas_nuevas:
-                try: cursor.execute(query); conn.commit()
-                except: conn.rollback()
+        global _SCHEMA_CHOFERES_OK
+        if _SCHEMA_CHOFERES_OK: return
+        
+        def tarea_curacion():
+            global _SCHEMA_CHOFERES_OK
+            conn = conectar_db(silencioso=True)
+            if not conn: return
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS choferes (
+                        id SERIAL PRIMARY KEY,
+                        dni VARCHAR(20) UNIQUE NOT NULL,
+                        nombres VARCHAR(255) NOT NULL,
+                        ruc VARCHAR(20),
+                        telefono VARCHAR(50),
+                        correo VARCHAR(150),
+                        licencia VARCHAR(50),
+                        categoria_licencia VARCHAR(50),
+                        vencimiento_licencia VARCHAR(20),
+                        estado VARCHAR(50) DEFAULT 'Activo'
+                    )
+                """)
+                conn.commit()
                 
-        except Exception as e:
-            print(f"Error BD Choferes: {e}")
-        finally:
-            conn.close()
+                columnas_nuevas = [
+                    "ALTER TABLE choferes ADD COLUMN direccion VARCHAR(255) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN seguro_salud_num VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN seguro_salud_venc VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN fecha_nacimiento VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN numero_hijos VARCHAR(10) DEFAULT '0'",
+                    "ALTER TABLE choferes ADD COLUMN sexo VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN seguro_vida_num VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN seguro_vida_venc VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN movil_asignado VARCHAR(100) DEFAULT 'Ninguno / Sin Asignar'",
+                    "ALTER TABLE choferes ADD COLUMN ruta_documentos TEXT DEFAULT ''"
+                ]
+                
+                for query in columnas_nuevas:
+                    try: cursor.execute(query); conn.commit()
+                    except: conn.rollback()
+                _SCHEMA_CHOFERES_OK = True
+            except Exception as e:
+                print(f"Error BD Choferes: {e}")
+            finally:
+                liberar_conexion(conn)
 
+        threading.Thread(target=tarea_curacion, daemon=True).start()
+
+    # 🚀 FIX: CONSULTA A SUNAT ASÍNCRONA
     def buscar_documento_api(self, event=None):
         ruc = self.ent_ruc.get().strip()
         if len(ruc) != 11 or not ruc.isdigit():
             return messagebox.showwarning("RUC Inválido", "Por favor, ingrese un RUC válido de 11 dígitos para buscar en SUNAT.")
         
-        try:
-            import json
-            url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode())
-                    self.ent_nombres.delete(0, tk.END)
-                    self.ent_nombres.insert(0, data.get("nombre", ""))
-                    self.ent_direccion.delete(0, tk.END)
-                    self.ent_direccion.insert(0, data.get("direccion", ""))
-                    messagebox.showinfo("Éxito", "Datos de SUNAT recuperados correctamente.")
-                else:
-                    messagebox.showwarning("Sin Resultados", "No se encontró información para este RUC.")
-        except Exception as e:
-            messagebox.showwarning("Error de Conexión", f"No se pudo conectar con la API de SUNAT:\n{e}")
-
-    def cargar_moviles_disponibles(self):
-        conn = conectar_db()
-        moviles = ["Ninguno / Sin Asignar"]
-        if conn:
+        self.ent_nombres.delete(0, tk.END)
+        self.ent_nombres.insert(0, "Consultando...")
+        
+        def tarea_api():
             try:
-                c = conn.cursor()
-                c.execute("SELECT placa, marca, modelo FROM flota_vehiculos WHERE estado = 'Operativo'")
-                for r in c.fetchall():
-                    moviles.append(f"{r[0]} | {r[1]} {r[2]}")
-            except: pass
-            finally: conn.close()
+                url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.status == 200:
+                        data = json.loads(response.read().decode())
+                        self.parent_frame.after(0, lambda: self._aplicar_datos_api(data))
+                    else:
+                        self.parent_frame.after(0, lambda: self._error_api("No se encontró información para este RUC."))
+            except Exception as e:
+                self.parent_frame.after(0, lambda: self._error_api(f"No se pudo conectar con la API de SUNAT:\n{e}"))
+
+        threading.Thread(target=tarea_api, daemon=True).start()
+
+    def _aplicar_datos_api(self, data):
+        self.ent_nombres.delete(0, tk.END)
+        self.ent_nombres.insert(0, data.get("nombre", ""))
+        self.ent_direccion.delete(0, tk.END)
+        self.ent_direccion.insert(0, data.get("direccion", ""))
+        messagebox.showinfo("Éxito", "Datos de SUNAT recuperados correctamente.")
+        
+    def _error_api(self, mensaje):
+        self.ent_nombres.delete(0, tk.END)
+        messagebox.showwarning("Aviso", mensaje)
+
+    # 🚀 FIX: CARGA DE MÓVILES CON CACHÉ Y EN SEGUNDO PLANO
+    def cargar_moviles_disponibles(self):
+        moviles_cache = cache_sistema.obtener("lista_vehiculos_combobox")
+        
+        if moviles_cache is not None:
+            self._aplicar_moviles(moviles_cache)
+        else:
+            if hasattr(self, 'cmb_movil'):
+                self.cmb_movil.set("Cargando vehículos...")
             
+            def tarea_moviles():
+                moviles = ["Ninguno / Sin Asignar"]
+                conn = conectar_db(silencioso=True)
+                if conn:
+                    try:
+                        c = conn.cursor()
+                        c.execute("SELECT placa, marca, modelo FROM flota_vehiculos WHERE estado = 'Operativo'")
+                        for r in c.fetchall():
+                            moviles.append(f"{r[0]} | {r[1]} {r[2]}")
+                        cache_sistema.guardar("lista_vehiculos_combobox", moviles)
+                    except: pass
+                    finally: liberar_conexion(conn)
+                self.parent_frame.after(0, lambda: self._aplicar_moviles(moviles))
+                
+            threading.Thread(target=tarea_moviles, daemon=True).start()
+
+    def _aplicar_moviles(self, moviles):
         if hasattr(self, 'cmb_movil'):
             self.cmb_movil.configure(values=moviles)
             if self.cmb_movil.get() not in moviles:
@@ -448,7 +493,9 @@ class ChoferesApp:
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 5))
         self.ent_buscar = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por DNI, Nombres, Licencia, Móvil...")
         self.ent_buscar.pack(side="left", fill="x", expand=True)
-        self.ent_buscar.bind("<KeyRelease>", lambda e: self.cargar_datos())
+        
+        self.ent_buscar.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
+        self.ent_buscar.bind("<Return>", lambda e: self.cargar_datos(reset_pagina=True))
 
         f_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
@@ -485,10 +532,35 @@ class ChoferesApp:
         f_acciones_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_acciones_tabla.pack(fill="x", pady=10)
         
-        ctk.CTkButton(f_acciones_tabla, text="✏️ Editar Seleccionado", fg_color="#34495e", hover_color="#2c3e50", font=("Arial", 12, "bold"), command=self.cargar_para_edicion).pack(side="left", padx=5)
+        # 🚀 BOTONES DE PAGINACIÓN
+        self.btn_ant = ctk.CTkButton(f_acciones_tabla, text="◀ Ant", width=60, command=self.pagina_anterior)
+        self.btn_ant.pack(side="left", padx=2)
+        
+        self.lbl_pagina = ctk.CTkLabel(f_acciones_tabla, text=f"Pág {self.pagina_actual}", font=("Arial", 11, "bold"))
+        self.lbl_pagina.pack(side="left", padx=5)
+        
+        self.btn_sig = ctk.CTkButton(f_acciones_tabla, text="Sig ▶", width=60, command=self.pagina_siguiente)
+        self.btn_sig.pack(side="left", padx=2)
+        
+        ctk.CTkButton(f_acciones_tabla, text="✏️ Editar Seleccionado", fg_color="#34495e", hover_color="#2c3e50", font=("Arial", 12, "bold"), command=self.cargar_para_edicion).pack(side="left", padx=(15, 5))
         ctk.CTkButton(f_acciones_tabla, text="❌ Eliminar", fg_color="#e74c3c", hover_color="#c0392b", font=("Arial", 12, "bold"), command=self.eliminar_chofer).pack(side="right", padx=5)
 
+        self.parent_frame.after(100, lambda: self.cargar_datos(reset_pagina=True))
+
+    def pagina_anterior(self):
+        if self.pagina_actual > 1:
+            self.pagina_actual -= 1
+            self.cargar_datos()
+            
+    def pagina_siguiente(self):
+        self.pagina_actual += 1
         self.cargar_datos()
+
+    def buscar_con_retraso(self):
+        if hasattr(self, "_busqueda_job"):
+            try: self.parent_frame.after_cancel(self._busqueda_job)
+            except: pass
+        self._busqueda_job = self.parent_frame.after(350, lambda: self.cargar_datos(reset_pagina=True))
 
     def limpiar_formulario(self):
         self.id_edicion = None
@@ -518,30 +590,68 @@ class ChoferesApp:
         self.rutas_documentos_db = {}
         self.actualizar_botones_docs()
 
-    def cargar_datos(self):
-        for item in self.tabla.get_children(): self.tabla.delete(item)
-        filtro = self.ent_buscar.get().strip().lower()
-        
-        conn = conectar_db()
-        if not conn: return
-        try:
-            cursor = conn.cursor()
-            if filtro:
-                cursor.execute("""
-                    SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado 
-                    FROM choferes 
-                    WHERE dni ILIKE %s OR nombres ILIKE %s OR licencia ILIKE %s OR movil_asignado ILIKE %s
-                    ORDER BY nombres ASC
-                """, (f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", f"%{filtro}%"))
-            else:
-                cursor.execute("SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado FROM choferes ORDER BY nombres ASC")
+    # 🚀 FIX: CARGA LAZY LOADING + CACHÉ
+    def cargar_datos(self, reset_pagina=False):
+        if reset_pagina:
+            self.pagina_actual = 1
             
-            for r in cursor.fetchall():
-                self.tabla.insert("", tk.END, values=r)
-        except Exception as e:
-            print(f"Error cargando tabla: {e}")
-        finally:
-            conn.close()
+        self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
+
+        for item in self.tabla.get_children(): 
+            self.tabla.delete(item)
+            
+        filtro = self.ent_buscar.get().strip().lower()
+        offset = (self.pagina_actual - 1) * self.registros_por_pagina
+        
+        clave_cache = f"choferes_{filtro}_pag_{self.pagina_actual}"
+        datos = cache_sistema.obtener(clave_cache)
+        
+        if datos is not None:
+            self._pintar_datos(datos)
+        else:
+            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", ""))
+            
+            def tarea_descarga():
+                conn = conectar_db(silencioso=True)
+                if not conn: return
+                try:
+                    cursor = conn.cursor()
+                    if filtro:
+                        cursor.execute("""
+                            SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado 
+                            FROM choferes 
+                            WHERE dni ILIKE %s OR nombres ILIKE %s OR licencia ILIKE %s OR movil_asignado ILIKE %s
+                            ORDER BY nombres ASC LIMIT %s OFFSET %s
+                        """, (f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", self.registros_por_pagina, offset))
+                    else:
+                        cursor.execute("SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado FROM choferes ORDER BY nombres ASC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+                    
+                    datos_db = cursor.fetchall()
+                    cache_sistema.guardar(clave_cache, datos_db)
+                    self.parent_frame.after(0, lambda: self._pintar_datos(datos_db))
+                except Exception as e:
+                    print(f"Error cargando tabla de choferes: {e}")
+                finally:
+                    liberar_conexion(conn)
+
+            threading.Thread(target=tarea_descarga, daemon=True).start()
+
+    def _pintar_datos(self, datos):
+        for item in self.tabla.get_children():
+            self.tabla.delete(item)
+
+        for r in datos:
+            self.tabla.insert("", tk.END, values=r)
+            
+        if self.pagina_actual > 1:
+            self.btn_ant.configure(state="normal")
+        else:
+            self.btn_ant.configure(state="disabled")
+            
+        if len(datos) == self.registros_por_pagina:
+            self.btn_sig.configure(state="normal")
+        else:
+            self.btn_sig.configure(state="disabled")
 
     def guardar_chofer(self):
         dni = self.ent_dni.get().strip()
@@ -569,7 +679,6 @@ class ChoferesApp:
         if not dni or not nombres:
             return messagebox.showwarning("Atención", "El DNI y los Nombres son obligatorios.")
 
-        # Lógica de guardado masivo de documentos del expediente
         diccionario_final = self.rutas_documentos_db.copy()
         
         if self.rutas_documentos_temp:
@@ -613,7 +722,7 @@ class ChoferesApp:
             else:
                 cursor.execute("SELECT id FROM choferes WHERE dni = %s", (dni,))
                 if cursor.fetchone():
-                    conn.close()
+                    liberar_conexion(conn)
                     return messagebox.showwarning("Duplicado", f"El DNI {dni} ya existe en el sistema.")
                     
                 cursor.execute("""
@@ -625,7 +734,6 @@ class ChoferesApp:
                 registrar_auditoria(self.usuario_activo, "Choferes", f"Registró nuevo conductor/personal: {nombres}")
                 messagebox.showinfo("Éxito", "Personal registrado correctamente.")
             
-            # 🚀 INYECCIÓN AL CRONOGRAMA DE VENCIMIENTOS
             try:
                 c_crono = conn.cursor()
                 identificador_crono = f"{nombres} (DNI: {dni})"
@@ -650,13 +758,14 @@ class ChoferesApp:
             except Exception as e_crono: print("Aviso - Sincronización Cronograma:", e_crono)
 
             conn.commit()
+            cache_sistema.invalidar() # 🚀 FIX: Borrar caché
             self.limpiar_formulario()
-            self.cargar_datos()
+            self.cargar_datos(reset_pagina=True)
         except Exception as e:
             conn.rollback()
             messagebox.showerror("Error", str(e))
         finally:
-            conn.close()
+            liberar_conexion(conn)
 
     def cargar_para_edicion(self):
         sel = self.tabla.selection()
@@ -714,7 +823,7 @@ class ChoferesApp:
         except Exception as e:
             print("Error cargando edición:", e)
         finally:
-            conn.close()
+            liberar_conexion(conn)
 
     def eliminar_chofer(self):
         sel = self.tabla.selection()
@@ -743,10 +852,13 @@ class ChoferesApp:
                 cursor.execute("DELETE FROM choferes WHERE id = %s", (vid,))
                 cursor.execute("DELETE FROM tareas_evento WHERE evento_asociado = 'FLOTA | Vencimientos' AND responsable = %s", (identificador_crono,))
                 conn.commit()
+                
+                cache_sistema.invalidar()
                 registrar_auditoria(self.usuario_activo, "Choferes", f"Eliminó al conductor {nombres}")
-                self.cargar_datos()
+                
                 self.limpiar_formulario()
+                self.cargar_datos(reset_pagina=True)
             except Exception as e:
                 messagebox.showerror("Error", str(e))
             finally:
-                conn.close()
+                liberar_conexion(conn)

@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-CONTROL_GENERAL.PY - SISTEMA DE CONTROL GENERAL DE EVENTOS (ENTERPRISE)
-- Integración de Módulo de Pautas (Minuto a Minuto).
-- Pool de Conexiones Activo y Liberación Correcta.
-- Dashboard de Bienvenida (Alertas) asíncrono y acelerado.
-- Sincronización Rclone Silenciosa en Segundo Plano.
+CONTROL_GENERAL.PY - SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ (v2 SEGURO)
+Mismas mejoras de seguridad y optimización del sistema de Eventos:
+- bcrypt (sin claves planas), sin usuarios hardcoded, migración automática.
+- Usuarios con activo / intentos_fallidos, protección del Super Admin único.
+- Config con ruta absoluta (app_paths), menú con módulos dinámicos.
+- Integración Rclone Inteligente con Sincronización Automática en Segundo Plano.
+- Comparte la MISMA base de datos que el sistema de Eventos.
 """
+import psycopg2
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import messagebox, filedialog, ttk, colorchooser
+import subprocess
 import sys
 import ctypes
 import os
@@ -16,16 +20,9 @@ import json
 import importlib
 import urllib.request
 import bcrypt
-import subprocess
 import threading
 from datetime import datetime, timedelta
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
-# 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
-from conexion import conectar_db, registrar_auditoria, liberar_conexion
+from conexion import conectar_db, registrar_auditoria
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE
 
@@ -35,9 +32,18 @@ try:
 except ImportError:
     PIL_DISPONIBLE = False
 
+try:
+    from seguridad_licencia import verificar_licencia_equipo, VentanaActivacionLicencia
+except ImportError:
+    verificar_licencia_equipo = None
+    VentanaActivacionLicencia = None
+
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
+# =========================================================
+# MULTIPLATAFORMA: Ocultar consola solo en Windows
+# =========================================================
 if sys.platform == "win32":
     try:
         hwnd_cmd = ctypes.windll.kernel32.GetConsoleWindow()
@@ -45,6 +51,7 @@ if sys.platform == "win32":
             ctypes.windll.user32.ShowWindow(hwnd_cmd, 6)
     except Exception:
         pass
+
 
 def maximizar_ventana(ventana):
     try:
@@ -62,13 +69,19 @@ def maximizar_ventana(ventana):
         except Exception:
             pass
 
+
 def ruta_recurso(ruta_relativa):
+    """Ruta absoluta válida en desarrollo y compilado (.exe)."""
     try:
         ruta_base = sys._MEIPASS
     except Exception:
         ruta_base = os.path.abspath(".")
     return os.path.join(ruta_base, ruta_relativa)
 
+
+# =========================================================
+# FUNCIONES GLOBALES DE RCLONE (Sincronización Silenciosa)
+# =========================================================
 def obtener_comando_rclone():
     nombre_ejecutable = "rclone.exe" if sys.platform == "win32" else "rclone"
     if hasattr(sys, '_MEIPASS'):
@@ -87,22 +100,52 @@ def obtener_comando_rclone():
 
 def cargar_configuracion_general():
     config = {
-        "ruta_drive": "", "rclone_remote": "gdrive:", "rclone_ruta_nube": "BlackCube",
-        "impresora": "", "simbolo_moneda": "S/.", "formato_numero": "1,000.00",
-        "formato_fecha": "DD/MM/AAAA", "ruta_logo_cotizacion": "",
-        "color_primario": "#eb337a", "color_secundario": "#000000", "color_franja": "#eb337a",
-        "ruc_empresa": "", "razon_social_empresa": "", "igv_porcentaje": "0",
-        "retencion_porcentaje": "0", "renta_mensual_porcentaje": "0", "renta_anual_porcentaje": "0",
-        "regimen_empresa": "MYPE Tributario", "nombre_cliente_cotizacion": "Razón Social",
-        "proveedor_fe": "Nubefact", "url_api_fe": "", "token_api_fe": "",
-        "ultimo_factura": "F001-0", "ultimo_boleta": "B001-0", "ultimo_recibo": "E001-0",
-        "usuario_sol": "", "clave_sol": "", "client_id_sire": "", "client_secret_sire": "",
-        "2fa_metodo": "Inactivo", "tel_bot_token": "", "tel_chat_id": "",
-        "email_smtp": "smtp.gmail.com", "email_port": "587", "email_user": "", "email_pass": "", "email_dest": "",
-        "twi_sid": "", "twi_token": "", "twi_from": "", "twi_to": "",
-        "color_menu_fondo": "#1a252c", "color_menu_btn": "#1f538d",
-        "color_menu_hover": "#163b65", "color_menu_texto": "white",
-        "orden_operativos": ["clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "inventario", "locaciones"],
+        "ruta_drive": "",
+        "rclone_remote": "gdrive:",
+        "rclone_ruta_nube": "BlackCube",
+        "impresora": "",
+        "simbolo_moneda": "S/.",
+        "formato_numero": "1,000.00",
+        "formato_fecha": "DD/MM/AAAA",
+        "cuentas_bancarias": [],
+        "ruc_empresa": "",
+        "razon_social_empresa": "",
+        "igv_porcentaje": "0",
+        "retencion_porcentaje": "0",
+        "detraccion_porcentaje": "12",
+        "renta_mensual_porcentaje": "0",
+        "renta_anual_porcentaje": "0",
+        "regimen_empresa": "MYPE Tributario",
+        "proveedor_fe": "Nubefact",
+        "url_api_fe": "",
+        "token_api_fe": "",
+        "ultimo_factura": "F001-0",
+        "ultimo_boleta": "B001-0",
+        "ultimo_recibo": "E001-0",
+        "usuario_sol": "",
+        "clave_sol": "",
+        "client_id_sire": "",
+        "client_secret_sire": "",
+        "2fa_metodo": "Inactivo",
+        "tel_bot_token": "",
+        "tel_chat_id": "",
+        "email_smtp": "smtp.gmail.com",
+        "email_port": "587",
+        "email_user": "",
+        "email_pass": "",
+        "email_dest": "",
+        "twi_sid": "",
+        "twi_token": "",
+        "twi_from": "",
+        "twi_to": "",
+        "dias_alerta_vencimiento": "30",
+        "alerta_aceite_km": "5000",
+        "alerta_aceite_meses": "6",
+        "color_menu_fondo": "#1a252c",
+        "color_menu_btn": "#1f538d",
+        "color_menu_hover": "#163b65",
+        "color_menu_texto": "white",
+        "orden_operativos": ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"],
         "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard"],
         "orden_ajustes": ["configuracion", "usuarios", "bitacora"]
     }
@@ -115,118 +158,145 @@ def cargar_configuracion_general():
     return config
 
 def ejecutar_sincronizacion_silenciosa():
+    """Ejecuta una copia bilateral sin bloquear el programa principal."""
     config = cargar_configuracion_general()
     local = config.get("ruta_drive", "").strip()
     remote = config.get("rclone_remote", "gdrive:").strip()
     nube = config.get("rclone_ruta_nube", "BlackCube").strip()
-    if not local or not remote or not nube: return
+
+    if not local or not remote or not nube:
+        return # Faltan parámetros, no hacemos nada
+
     cmd = obtener_comando_rclone()
     ruta_remota = f"{remote}{nube}" if remote.endswith(":") else f"{remote}:{nube}"
+
     kwargs = {}
-    if sys.platform == "win32": kwargs["creationflags"] = 0x08000000
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x08000000 # Oculta la ventana de CMD en Windows
+
     try:
+        # 1. Bajar archivos nuevos (Nube -> Local)
         subprocess.run([cmd, "copy", ruta_remota, local, "--update", "--quiet"], **kwargs)
+        # 2. Subir archivos nuevos (Local -> Nube)
         subprocess.run([cmd, "copy", local, ruta_remota, "--update", "--quiet"], **kwargs)
-    except Exception: pass
+    except Exception:
+        pass # Ignoramos errores para no molestar al usuario si se cae el internet
 
 def lanzar_sync_background():
     threading.Thread(target=ejecutar_sincronizacion_silenciosa, daemon=True).start()
 
+
+# =========================================================
+# SEGURIDAD: HASH DE CONTRASEÑAS (BCRYPT)
+# =========================================================
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 def verify_password(password: str, hashed: str) -> bool:
-    try: return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception: return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
-# 🚀 FIX: AUTO-CURACIÓN DE SEGURIDAD EN SEGUNDO PLANO
-_SCHEMA_SEGURIDAD_OK = False
 
+# =========================================================
+# INICIALIZACIÓN DE TABLAS (SIN CLAVES PLANAS) + MIGRACIÓN
+# =========================================================
 def inicializar_seguridad_db():
-    global _SCHEMA_SEGURIDAD_OK
-    if _SCHEMA_SEGURIDAD_OK: return
-    
-    def tarea_init():
-        global _SCHEMA_SEGURIDAD_OK
-        conn = conectar_db(silencioso=True)
-        if not conn: return
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS usuarios (
-                id SERIAL PRIMARY KEY,
-                usuario VARCHAR(255) UNIQUE NOT NULL,
-                clave VARCHAR(255),
-                clave_hash TEXT,
-                rol VARCHAR(50) NOT NULL,
-                permisos TEXT DEFAULT '{}',
-                activo BOOLEAN DEFAULT TRUE,
-                intentos_fallidos INTEGER DEFAULT 0
-            )
-            """)
-            for sql in (
-                "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS clave_hash TEXT",
-                "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS permisos TEXT DEFAULT '{}'",
-                "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS activo BOOLEAN DEFAULT TRUE",
-                "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS intentos_fallidos INTEGER DEFAULT 0",
-                "ALTER TABLE usuarios ALTER COLUMN clave DROP NOT NULL",
-            ):
-                try: cursor.execute(sql)
-                except Exception: conn.rollback()
-                
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id SERIAL PRIMARY KEY,
+            usuario VARCHAR(255) UNIQUE NOT NULL,
+            clave VARCHAR(255),
+            clave_hash TEXT,
+            rol VARCHAR(50) NOT NULL,
+            permisos TEXT DEFAULT '{}',
+            activo BOOLEAN DEFAULT TRUE,
+            intentos_fallidos INTEGER DEFAULT 0
+        )
+        """)
+        upgrades = [
+            "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS clave_hash TEXT",
+            "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS permisos TEXT DEFAULT '{}'",
+            "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS activo BOOLEAN DEFAULT TRUE",
+            "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS intentos_fallidos INTEGER DEFAULT 0",
+            "ALTER TABLE usuarios ALTER COLUMN clave DROP NOT NULL",
+        ]
+        for sql in upgrades:
             try:
-                cursor.execute("SELECT id, clave FROM usuarios WHERE clave IS NOT NULL AND (clave_hash IS NULL OR clave_hash = '')")
-                for uid, clave_plana in cursor.fetchall():
-                    if clave_plana:
-                        cursor.execute("UPDATE usuarios SET clave_hash = %s, clave = NULL WHERE id = %s", (hash_password(clave_plana), uid))
-                conn.commit()
-            except Exception: conn.rollback()
-            
-            cursor.execute("SELECT COUNT(*) FROM usuarios")
-            if cursor.fetchone()[0] == 0:
-                todos_permisos = json.dumps({k: True for k in (
-                    "clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores",
-                    "inventario", "locaciones", "ventas", "compras", "libro_diario", "libro_mayor",
-                    "impuestos", "dashboard", "configuracion", "usuarios", "bitacora", "solicitud_proveedor")})
-                cursor.execute(
-                    "INSERT INTO usuarios (usuario, clave, clave_hash, rol, permisos) VALUES (%s, NULL, %s, %s, %s)",
-                    ("alfred", hash_password("admin123"), "Super Administrador", todos_permisos)
-                )
-                conn.commit()
-                
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS bitacora_auditoria (
-                id SERIAL PRIMARY KEY, fecha VARCHAR(20), hora VARCHAR(20),
-                usuario VARCHAR(100), modulo VARCHAR(100), accion TEXT
-            )
-            """)
+                cursor.execute(sql)
+            except Exception:
+                conn.rollback()
+        # ---------- MIGRACIÓN ÚNICA: claves planas -> bcrypt ----------
+        try:
+            cursor.execute("SELECT id, clave FROM usuarios WHERE clave IS NOT NULL AND (clave_hash IS NULL OR clave_hash = '')")
+            for uid, clave_plana in cursor.fetchall():
+                if clave_plana:
+                    cursor.execute("UPDATE usuarios SET clave_hash = %s, clave = NULL WHERE id = %s", (hash_password(clave_plana), uid))
             conn.commit()
-            _SCHEMA_SEGURIDAD_OK = True
-        except Exception as e: print("Error inicializando seguridad:", e)
-        finally: liberar_conexion(conn)
+        except Exception:
+            conn.rollback()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bitacora_auditoria (
+            id SERIAL PRIMARY KEY,
+            fecha VARCHAR(20),
+            hora VARCHAR(20),
+            usuario VARCHAR(100),
+            modulo VARCHAR(100),
+            accion TEXT
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS configuracion_geocerca (
+            id SERIAL PRIMARY KEY,
+            latitud NUMERIC,
+            longitud NUMERIC,
+            radio NUMERIC,
+            estado VARCHAR(20) DEFAULT 'Activo'
+        )
+        """)
+        cursor.execute("SELECT COUNT(*) FROM configuracion_geocerca")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO configuracion_geocerca (latitud, longitud, radio) VALUES (-12.046374, -77.042793, 100.0)")
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS registro_asistencia (
+            id SERIAL PRIMARY KEY,
+            placa VARCHAR(50),
+            fecha VARCHAR(20),
+            hora_entrada VARCHAR(20),
+            hora_salida VARCHAR(20),
+            estado VARCHAR(50)
+        )
+        """)
+        conn.commit()
+    except Exception as e:
+        print("Error inicializando seguridad y GPS:", e)
+    finally:
+        conn.close()
 
-    threading.Thread(target=tarea_init, daemon=True).start()
 
 class ControlGeneralEventos:
     def __init__(self, root):
         self.root = root
-        self.root.title("SISTEMA DE CONTROL GENERAL DE EVENTOS")
+        self.root.title("SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ")
         self.root.protocol("WM_DELETE_WINDOW", self.confirmar_salida)
         inicializar_seguridad_db()
         self.usuario_activo = "No autenticado"
         self.rol_activo = "Ninguno"
         self.permisos_activos = {}
-        
         self.modulos_sistema = {
             "clientes": "👥 Gestión de Clientes",
-            "cotizaciones": "🧾 Generador de Cotizaciones",
-            "pautas": "🕒 Pautas de Evento",
             "ordenes_cliente": "📥 Órdenes de Cliente",
-            "cronograma": "📅 Cronograma (Gantt)",
+            "cronograma": "📅 Cronograma y Vencimientos",
             "ordenes": "📝 Órdenes de Servicio / Compra",
             "proveedores": "📦 Gestión de Proveedores",
-            "inventario": "📋 Inventario y Almacén",
-            "locaciones": "📍 Inventario de Locaciones",
+            "flota": "🚙 Flota Automotriz",
+            "choferes": "👤 Control de Choferes",
             "ventas": "💼 Ventas (Facturas y Cobros)",
             "compras": "🛒 Compras (Facturas y Pagos)",
             "libro_diario": "📖 Libro Diario General",
@@ -235,19 +305,16 @@ class ControlGeneralEventos:
             "dashboard": "📈 Dashboard Gerencial",
             "configuracion": "⚙️ Configuración General",
             "usuarios": "🛠️ Configurar Usuarios",
-            "bitacora": "📜 Bitácora de Auditoría",
-            "solicitud_proveedor": "📨 Solicitud a Proveedores",
+            "bitacora": "📜 Bitácora de Auditoría"
         }
         self.funciones_modulos = {
             "clientes": self.abrir_modulo_clientes,
-            "cotizaciones": self.abrir_modulo_cotizaciones,
-            "pautas": self.abrir_modulo_pautas,
             "ordenes_cliente": self.abrir_modulo_ordenes_cliente,
             "cronograma": self.abrir_modulo_cronograma,
             "ordenes": self.abrir_modulo_ordenes,
             "proveedores": self.abrir_modulo_proveedores,
-            "inventario": self.abrir_modulo_inventario,
-            "locaciones": self.abrir_modulo_locaciones,
+            "flota": self.abrir_modulo_flota,
+            "choferes": self.abrir_modulo_choferes,
             "ventas": self.abrir_modulo_ventas,
             "compras": self.abrir_modulo_compras,
             "libro_diario": self.abrir_modulo_libro_diario,
@@ -256,8 +323,7 @@ class ControlGeneralEventos:
             "dashboard": self.abrir_estadisticas_financiera,
             "configuracion": self.abrir_configuracion_general,
             "usuarios": self.abrir_gestion_usuarios,
-            "bitacora": self.abrir_modulo_bitacora,
-            "solicitud_proveedor": self.abrir_modulo_solicitud_proveedor,
+            "bitacora": self.abrir_modulo_bitacora
         }
         self.root.withdraw()
         self.abrir_ventana_login()
@@ -268,12 +334,13 @@ class ControlGeneralEventos:
         return self.permisos_activos.get(modulo_key, False)
 
     # =======================================================
-    # LOGIN SEGURO 
+    # LOGIN SEGURO (SIN USUARIOS HARDCODEADOS)
     # =======================================================
     def abrir_ventana_login(self):
         self.v_login = ctk.CTkToplevel(self.root)
         self.v_login.title("Acceso Seguro")
-        ancho_ventana, alto_ventana = 400, 520
+        ancho_ventana = 400
+        alto_ventana = 520
         self.v_login.geometry(f"{ancho_ventana}x{alto_ventana}")
         self.v_login.resizable(False, False)
         self.v_login.grab_set()
@@ -314,6 +381,7 @@ class ControlGeneralEventos:
                         self.lbl_logo.configure(image=img_animada)
                         if self.fase_animacion != "terminado":
                             self.v_login.after(20, animar_logo)
+
                     animar_logo()
                 except Exception:
                     self.lbl_logo.configure(text="[ Error cargando logo ]", font=("Arial", 10))
@@ -321,7 +389,7 @@ class ControlGeneralEventos:
                 self.lbl_logo.configure(text="[ Logo no encontrado ]", font=("Arial", 12, "italic"))
         else:
             self.lbl_logo.configure(text="[ Instalar Pillow para ver logo ]", font=("Arial", 10))
-        ctk.CTkLabel(frame_log, text="SISTEMA DE CONTROL DE EVENTOS", font=("Arial", 15, "bold"), text_color="#1f538d").pack(pady=(0, 0))
+        ctk.CTkLabel(frame_log, text="SISTEMA DE CONTROL DE FLOTA", font=("Arial", 16, "bold"), text_color="#1f538d").pack(pady=(0, 0))
         ctk.CTkLabel(frame_log, text="Inicio de Sesión", font=("Arial", 11, "italic"), text_color="#7f8c8d").pack(pady=(0, 20))
         ctk.CTkLabel(frame_log, text="Usuario:", font=("Arial", 11, "bold")).pack(anchor="w", padx=30, pady=2)
         ent_user = ctk.CTkEntry(frame_log, width=300, font=("Arial", 12))
@@ -335,19 +403,24 @@ class ControlGeneralEventos:
         def verificar_credenciales():
             user = ent_user.get().strip().lower()
             clave = ent_pass.get().strip()
-            
+            if verificar_licencia_equipo:
+                es_valido, msg_lic, datos_lic = verificar_licencia_equipo()
+                if not es_valido:
+                    self.v_login.withdraw()
+                    VentanaActivacionLicencia(self.root, datos_lic.get("hwid", "DESCONOCIDO"), msg_lic)
+                    return
             conn = conectar_db(silencioso=True)
+            # ---------- MODO LECTURA OFFLINE ----------
             if not conn:
                 messagebox.showinfo(
                     "📡 MODO LECTURA OFFLINE ACTIVADO",
-                    "Sin conexión a Internet.\n\nIniciando en MODO LECTURA:\n"
-                    "• Podrás revisar clientes, cotizaciones y eventos.\n"
-                    "• No se permitirán modificaciones hasta reconectarte."
+                    "Sin conexión a Internet.\n\nIniciando en MODO LECTURA:\n• Podrás revisar clientes, cronograma y flota.\n• No se permitirán modificaciones hasta reconectarte."
                 )
                 self.usuario_activo = user if user else "Invitado"
                 self.rol_activo = "Invitado Offline"
-                self.permisos_activos = {"clientes": True, "cotizaciones": True, "cronograma": True}
-                if hasattr(cache_sistema, "cargar_copia_local"): cache_sistema.cargar_copia_local()
+                self.permisos_activos = {"clientes": True, "cronograma": True, "flota": True}
+                if hasattr(cache_sistema, "cargar_copia_local"):
+                    cache_sistema.cargar_copia_local()
                 cache_sistema.modo_lectura = True
                 self.v_login.destroy()
                 self.construir_dashboard_spa()
@@ -359,7 +432,8 @@ class ControlGeneralEventos:
                 if not resultado:
                     messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
                     registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido (usuario no existe)")
-                    ent_pass.delete(0, tk.END); ent_user.focus()
+                    ent_pass.delete(0, tk.END)
+                    ent_user.focus()
                     return
                 rol_db, permisos_str, clave_hash, activo = resultado
                 if not activo:
@@ -369,19 +443,22 @@ class ControlGeneralEventos:
                 if not clave_hash or not verify_password(clave, clave_hash):
                     messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
                     registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido")
-                    ent_pass.delete(0, tk.END); ent_user.focus()
+                    ent_pass.delete(0, tk.END)
+                    ent_user.focus()
                     return
                 self.usuario_activo = user
                 self.rol_activo = str(rol_db).strip()
-                try: self.permisos_activos = json.loads(permisos_str) if permisos_str else {}
-                except Exception: self.permisos_activos = {}
+                try:
+                    self.permisos_activos = json.loads(permisos_str) if permisos_str else {}
+                except Exception:
+                    self.permisos_activos = {}
                 registrar_auditoria(self.usuario_activo, "Seguridad", "Inicio de sesión exitoso")
                 self.v_login.destroy()
                 self.construir_dashboard_spa()
             except Exception as e:
                 messagebox.showerror("Error Crítico", f"Ocurrió un problema en el sistema:\n{e}")
             finally:
-                liberar_conexion(conn) # 🚀 FIX: Liberar pool
+                conn.close()
 
         btn_entrar = ctk.CTkButton(frame_log, text="Ingresar al Sistema", width=200, height=35, font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=verificar_credenciales)
         btn_entrar.pack(pady=5)
@@ -398,46 +475,27 @@ class ControlGeneralEventos:
         c_hover = config.get("color_menu_hover", "#163b65")
         c_texto = config.get("color_menu_texto", "white")
         fondo_seguro = c_fondo if str(c_fondo).startswith("#") else "#1a252c"
-        orden_ops = config.get("orden_operativos", ["clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "inventario", "locaciones"])
+        orden_ops = config.get("orden_operativos", ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"])
         orden_fin = config.get("orden_finanzas", ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard"])
         orden_aju = config.get("orden_ajustes", ["configuracion", "usuarios", "bitacora"])
-        todas_las_ordenes = orden_ops + orden_fin + orden_aju
+        todas = orden_ops + orden_fin + orden_aju
         for k in self.modulos_sistema:
-            if k not in todas_las_ordenes:
+            if k not in todas:
                 orden_ops.append(k)
         self.root.deiconify()
         maximizar_ventana(self.root)
         cache_sistema.iniciar_ciclo()
         
+        # INICIO DEL CICLO DE SINCRONIZACIÓN (Se ejecuta tras 5 seg, y luego repite)
         self.root.after(5000, self.ciclo_sincronizacion_nube)
         
-        # 🚀 FIX: PRE-CACHÉ EN SEGUNDO PLANO
-        def pre_cargar_listas():
-            conn = conectar_db(silencioso=True)
-            if conn:
-                try:
-                    c = conn.cursor()
-                    c.execute("SELECT nombre_empresa FROM clientes ORDER BY nombre_empresa ASC")
-                    cache_sistema.guardar('lista_clientes_combobox', [str(r[0]).strip() for r in c.fetchall() if r[0]])
-                    
-                    c.execute("SELECT nombre FROM proveedores ORDER BY nombre ASC")
-                    cache_sistema.guardar('lista_proveedores_combobox', [str(r[0]).strip() for r in c.fetchall() if r[0]])
-                    
-                    c.execute("SELECT codigo_cotizacion, nombre_evento FROM cotizaciones WHERE status = 'Aprobada' ORDER BY id DESC")
-                    evs = [f"{r[0]} | {r[1]}" for r in c.fetchall()]
-                    evs.insert(0, "OFICINA | Trabajos Internos")
-                    cache_sistema.guardar('lista_eventos_aprobados', evs)
-                    
-                    c.execute("SELECT numero_oc FROM ordenes_compra_clientes ORDER BY id DESC")
-                    cache_sistema.guardar('lista_ocs_combobox', ["--- Sin Orden de Compra ---"] + [r[0] for r in c.fetchall()])
-                except: pass
-                finally: liberar_conexion(conn)
-        threading.Thread(target=pre_cargar_listas, daemon=True).start()
-        
-        self.root.attributes("-topmost", True); self.root.update(); self.root.attributes("-topmost", False)
+        self.root.attributes("-topmost", True)
+        self.root.update()
+        self.root.attributes("-topmost", False)
         self.root.focus_force()
         self.sidebar = ctk.CTkFrame(self.root, width=280, corner_radius=0, fg_color=fondo_seguro)
-        self.sidebar.pack(side="left", fill="y"); self.sidebar.pack_propagate(False)
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)
         self.contenedor_central = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
         self.contenedor_central.pack(side="right", fill="both", expand=True)
         frame_top_sidebar = ctk.CTkFrame(self.sidebar, fg_color="transparent")
@@ -447,17 +505,19 @@ class ControlGeneralEventos:
             try:
                 self.logo_img = tk.PhotoImage(file=ruta_logo_sidebar)
                 tk.Label(frame_top_sidebar, image=self.logo_img, bg=fondo_seguro).pack(pady=(15, 10))
-            except Exception: pass
+            except Exception:
+                pass
         ctk.CTkLabel(frame_top_sidebar, text=f"👤 {self.usuario_activo.upper()}", font=("Arial", 11, "bold"), text_color="#28a745").pack(pady=(0, 2))
         ctk.CTkLabel(frame_top_sidebar, text=f"Rol: {self.rol_activo}", font=("Arial", 10), text_color="white").pack(pady=(0, 5))
         frame_bottom_sidebar = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         frame_bottom_sidebar.pack(side="bottom", fill="x", pady=(5, 10))
-        lbl_firma_sidebar = ctk.CTkLabel(frame_bottom_sidebar, text="Software desarrollado por Alfred Collie\nVersión 1.5.5 © 2026", font=("Arial", 9, "italic"), text_color="#7f8c8d")
+        lbl_firma_sidebar = ctk.CTkLabel(frame_bottom_sidebar, text="Software desarrollado por Alfred Collie\nVersión 1.5.4 © 2026", font=("Arial", 9, "italic"), text_color="#7f8c8d")
         lbl_firma_sidebar.pack(side="bottom", pady=(2, 5))
 
         def cerrar_sistema():
             registrar_auditoria(self.usuario_activo, "Seguridad", "Cerró el sistema")
-            self.root.quit(); self.root.destroy()
+            self.root.quit()
+            self.root.destroy()
 
         def cambiar_usuario():
             registrar_auditoria(self.usuario_activo, "Seguridad", "Cerró sesión para cambiar de usuario")
@@ -497,20 +557,20 @@ class ControlGeneralEventos:
         self.mostrar_pantalla_bienvenida()
 
     def ciclo_sincronizacion_nube(self):
+        """Bucle infinito invisible para mantener los archivos actualizados."""
         lanzar_sync_background()
-        self.root.after(600000, self.ciclo_sincronizacion_nube) 
+        # Vuelve a llamar a esta función en 10 minutos (600,000 ms)
+        self.root.after(600000, self.ciclo_sincronizacion_nube)
 
     def limpiar_contenedor(self):
-        for widget in self.contenedor_central.winfo_children(): widget.destroy()
+        for widget in self.contenedor_central.winfo_children():
+            widget.destroy()
         def dummy(*args, **kwargs): pass
         if not hasattr(self.contenedor_central, 'title'): self.contenedor_central.title = dummy
         if not hasattr(self.contenedor_central, 'geometry'): self.contenedor_central.geometry = dummy
         if not hasattr(self.contenedor_central, 'resizable'): self.contenedor_central.resizable = dummy
         if not hasattr(self.contenedor_central, 'iconbitmap'): self.contenedor_central.iconbitmap = dummy
-
-    # =======================================================
-    # 🚀 FIX: DASHBOARD DE BIENVENIDA ASÍNCRONO
-    # =======================================================
+            
     def mostrar_pantalla_bienvenida(self):
         self.limpiar_contenedor()
         f_dashboard = ctk.CTkScrollableFrame(self.contenedor_central, fg_color="transparent")
@@ -519,194 +579,212 @@ class ControlGeneralEventos:
         f_header.pack(fill="x", pady=(0, 20))
         ctk.CTkLabel(f_header, text=f"👋 Hola, {self.usuario_activo.upper()}", font=("Arial", 24, "bold"), text_color="#1f538d").pack(side="left")
         ctk.CTkLabel(f_header, text=f"{datetime.now().strftime('%d/%m/%Y')}", font=("Arial", 16, "bold"), text_color="gray").pack(side="right")
-        
         ctk.CTkLabel(f_dashboard, text="🔔 PANEL DE NOTIFICACIONES Y ALERTAS", font=("Arial", 14, "bold"), text_color="#d35400").pack(anchor="w", pady=(0, 10))
-        
-        self.f_alertas_container = ctk.CTkFrame(f_dashboard, fg_color="transparent")
-        self.f_alertas_container.pack(fill="x")
-        
-        ctk.CTkLabel(self.f_alertas_container, text="Buscando alertas del sistema... ⏳", font=("Arial", 12, "italic"), text_color="gray").pack(pady=10)
-
-        ctk.CTkLabel(f_dashboard, text="📅 PRÓXIMOS EVENTOS (AGENDA)", font=("Arial", 14, "bold"), text_color="#27ae60").pack(anchor="w", pady=(25, 10))
-        self.f_agenda_container = ctk.CTkFrame(f_dashboard, fg_color="#f8f9fa", corner_radius=6, border_width=1, border_color="#e0e0e0")
-        self.f_agenda_container.pack(fill="x", pady=0)
-        ctk.CTkLabel(self.f_agenda_container, text="Cargando agenda... ⏳", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
-
-        f_pie = ctk.CTkFrame(f_dashboard, fg_color="transparent")
-        f_pie.pack(fill="x", pady=(40, 20))
-        ctk.CTkLabel(f_pie, text="Bienvenido", font=("Arial", 14, "bold"), text_color="gray").pack()
-        ctk.CTkLabel(f_pie, text="Este es el resumen automático de tu operación para el día de hoy.\nSeleccione un módulo en el menú lateral para gestionar sus operaciones.", font=("Arial", 12, "italic"), text_color="gray", justify="center").pack(pady=(5, 0))
-
-        def tarea_dashboard():
-            config = cargar_configuracion_general()
-            dias_alerta = int(config.get("dias_alerta_vencimiento", "30"))
-            hoy = datetime.now()
-            alertas = []
-            tareas_mostrar = []
-            
-            conn = conectar_db(silencioso=True)
-            if not conn:
-                self.root.after(0, lambda: self._pintar_offline())
-                return
-                
+        config = cargar_configuracion_general()
+        dias_alerta = int(config.get("dias_alerta_vencimiento", "30"))
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            ctk.CTkLabel(f_dashboard, text="📡 MODO LECTURA OFFLINE: Mostrando información desde el respaldo local.", font=("Arial", 12, "bold"), text_color="#d35400").pack(anchor="w", pady=5)
+            return
+        cursor = conn.cursor()
+        hoy = datetime.now()
+        alertas = []
+        # ----------------------------------------------------
+        # RADAR 1: ALERTA DE FLOTA AUTOMOTRIZ (Fechas + KM)
+        # ----------------------------------------------------
+        if self.tiene_permiso("flota"):
             try:
-                cursor = conn.cursor()
-                
-                # RADAR: DEUDAS FINANCIERAS (Ventas)
-                if self.tiene_permiso("ventas"):
-                    try:
-                        cursor.execute("SELECT id, fecha, dias_credito, total, COALESCE(det_monto, 0) FROM facturas_emitidas")
-                        facturas_ventas = cursor.fetchall()
-                        cursor.execute("SELECT id_factura, SUM(monto_pagado) FROM pagos_clientes GROUP BY id_factura")
-                        pagos_ventas = {row[0]: float(row[1]) for row in cursor.fetchall()}
-                        ventas_vencidas, deuda_ventas = 0, 0.0
-                        for f in facturas_ventas:
-                            f_id, fecha_str, dias, total, det = f
-                            try:
-                                f_dt = datetime.strptime(fecha_str, "%d/%m/%Y")
-                                vencimiento = f_dt + timedelta(days=dias)
-                                neto = float(total if total else 0) - float(det if det else 0)
-                                saldo = neto - pagos_ventas.get(f_id, 0.0)
-                                if saldo > 0.01 and hoy > vencimiento:
-                                    ventas_vencidas += 1; deuda_ventas += saldo
-                            except Exception: pass
-                        if ventas_vencidas > 0: alertas.append({"tipo": "peligro", "icono": "⚠️", "titulo": "Cobros Vencidos", "mensaje": f"Tienes {ventas_vencidas} factura(s) de clientes atrasada(s) (S/. {deuda_ventas:,.2f})"})
-                    except Exception: pass
-                    
-                # RADAR: PAGOS FINANCIEROS (Compras)
-                if self.tiene_permiso("compras"):
-                    try:
-                        cursor.execute("SELECT id, fecha, dias_credito, total, COALESCE(det_monto, 0), tipo_documento, impuesto FROM facturas_recibidas")
-                        facturas_compras = cursor.fetchall()
-                        cursor.execute("SELECT id_factura, SUM(monto_pagado) FROM pagos_comprobantes GROUP BY id_factura")
-                        pagos_compras = {row[0]: float(row[1]) for row in cursor.fetchall()}
-                        compras_vencidas, deuda_compras = 0, 0.0
-                        for f in facturas_compras:
-                            f_id, fecha_str, dias, total, det, tipo_doc, imp = f
-                            try:
-                                f_dt = datetime.strptime(fecha_str, "%d/%m/%Y")
-                                vencimiento = f_dt + timedelta(days=dias)
-                                tot_bruto = float(total if total else 0.0)
-                                det_monto = float(det if det else 0.0)
-                                imp_val = float(imp if imp else 0.0)
-                                if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - imp_val - det_monto
-                                else: neto = tot_bruto - det_monto
-                                saldo = neto - pagos_compras.get(f_id, 0.0)
-                                if saldo > 0.01 and hoy > vencimiento:
-                                    compras_vencidas += 1; deuda_compras += saldo
-                            except Exception: pass
-                        if compras_vencidas > 0: alertas.append({"tipo": "peligro", "icono": "🚨", "titulo": "Pagos Vencidos", "mensaje": f"Tienes {compras_vencidas} factura(s) de proveedores atrasada(s) (S/. {deuda_compras:,.2f})"})
-                    except Exception: pass
-                    
-                # RADAR: IMPUESTOS SUNAT
-                if self.tiene_permiso("impuestos"):
-                    try:
-                        mes_ant = hoy.month - 1; anio_ant = hoy.year
-                        if mes_ant == 0: mes_ant = 12; anio_ant -= 1
-                        periodo_ant = f"{mes_ant:02d}/{anio_ant}"
-                        cursor.execute("SELECT COUNT(*) FROM registro_impuestos WHERE periodo = %s", (periodo_ant,))
-                        if cursor.fetchone()[0] == 0: alertas.append({"tipo": "alerta", "icono": "🏦", "titulo": "Impuestos SUNAT", "mensaje": f"Declaración pendiente del mes anterior ({periodo_ant})."})
-                    except Exception: pass
-                    
-                # RADAR: INVENTARIO Y ALMACÉN
-                if self.tiene_permiso("inventario"):
-                    try:
-                        cursor.execute("SELECT COUNT(*) FROM inventario_equipos WHERE estado != 'Operativo'")
-                        equipos_malos = cursor.fetchone()[0]
-                        if equipos_malos > 0: alertas.append({"tipo": "alerta", "icono": "🛠️", "titulo": "Almacén", "mensaje": f"Tienes {equipos_malos} equipo(s) en mantenimiento o dados de baja."})
-                    except Exception: pass
-                    
-                # RADAR: COTIZACIONES SIN OC
-                if self.tiene_permiso("ordenes_cliente"):
-                    try:
-                        cursor.execute("""
-                            SELECT COUNT(*) FROM cotizaciones c
-                            WHERE c.status = 'Aprobada' AND NOT EXISTS (SELECT 1 FROM ordenes_compra_clientes o WHERE o.cotizacion_asociada = c.codigo)
-                        """)
-                        cots_sin_orden = cursor.fetchone()[0]
-                        if cots_sin_orden > 0: alertas.append({"tipo": "alerta", "icono": "📥", "titulo": "Órdenes de Cliente Pendientes", "mensaje": f"Tienes {cots_sin_orden} cotización(es) aprobada(s) que aún no tienen Orden de Compra subida."})
-                    except Exception: pass
-                    
-                # AGENDA Y EVENTOS FUTUROS
                 try:
-                    cursor.execute("SELECT codigo_cotizacion, nombre_evento, fecha_evento FROM cotizaciones WHERE status = 'Aprobada' ORDER BY id DESC")
-                    for ev in cursor.fetchall():
-                        cod, nom, fec_str = ev
-                        try: f_dt = datetime.strptime(fec_str, "%d/%m/%Y").date()
+                    cursor.execute("SELECT placa, vencimiento_soat, vencimiento_seguro, vencimiento_rt, fec_rev_gas, fec_venc_bat, fec_venc_extintor, fec_aceite, km_prox_correa, kilometraje FROM flota_vehiculos WHERE estado = 'Operativo'")
+                    vehiculos = cursor.fetchall()
+                except Exception:
+                    conn.rollback()
+                    cursor.execute("SELECT placa, vencimiento_soat, vencimiento_seguro, vencimiento_rt FROM flota_vehiculos WHERE estado = 'Operativo'")
+                    vehiculos = [(r[0], r[1], r[2], r[3], None, None, None, None, None, None) for r in cursor.fetchall()]
+                for v in vehiculos:
+                    placa = v[0]
+                    docs = {
+                        "SOAT": v[1],
+                        "Seguro": v[2],
+                        "Revisión Técnica": v[3],
+                        "Rev. Sist. Gas": v[4],
+                        "Garantía Batería": v[5],
+                        "Extintor": v[6]
+                    }
+                    for doc_nombre, doc_fecha in docs.items():
+                        if doc_fecha and str(doc_fecha).strip():
+                            try:
+                                dt_venc = datetime.strptime(str(doc_fecha), "%d/%m/%Y").date()
+                                dias_restantes = (dt_venc - hoy.date()).days
+                                if dias_restantes < 0:
+                                    alertas.append({"tipo": "peligro", "icono": "🚨", "titulo": f"{doc_nombre} Vencido ({placa})", "mensaje": f"Venció hace {abs(dias_restantes)} días ({doc_fecha})."})
+                                elif 0 <= dias_restantes <= dias_alerta:
+                                    alertas.append({"tipo": "alerta", "icono": "⚠️", "titulo": f"{doc_nombre} por Vencer ({placa})", "mensaje": f"Vencerá en {dias_restantes} días ({doc_fecha})."})
+                            except Exception:
+                                pass
+                    fec_aceite = v[7]
+                    if fec_aceite and str(fec_aceite).strip():
+                        try:
+                            meses_aceite = int(config.get("alerta_aceite_meses", "6"))
+                            dt_aceite = datetime.strptime(str(fec_aceite), "%d/%m/%Y").date()
+                            dt_prox_aceite = dt_aceite + timedelta(days=30 * meses_aceite)
+                            dias_restantes = (dt_prox_aceite - hoy.date()).days
+                            if dias_restantes < 0:
+                                alertas.append({"tipo": "peligro", "icono": "🛢️", "titulo": f"Cambio de Aceite Vencido ({placa})", "mensaje": f"Venció hace {abs(dias_restantes)} días (por tiempo)."})
+                            elif 0 <= dias_restantes <= dias_alerta:
+                                alertas.append({"tipo": "alerta", "icono": "🛢️", "titulo": f"Próximo Cambio de Aceite ({placa})", "mensaje": f"Vence en {dias_restantes} días (por tiempo)."})
                         except Exception:
-                            try: f_dt = datetime.strptime(fec_str, "%Y-%m-%d").date()
-                            except Exception: f_dt = None
-                            
-                        if f_dt and f_dt >= hoy.date():
-                            dias_faltan = (f_dt - hoy.date()).days
-                            if dias_faltan == 0: texto_dias, color_t = "¡ES HOY!", "#d35400"
-                            elif dias_faltan <= 5: texto_dias, color_t = f"Faltan {dias_faltan} días", "#c0392b"
-                            else: texto_dias, color_t = f"Faltan {dias_faltan} días", "#1f538d"
-                            tareas_mostrar.append((color_t, f"📍 {f_dt.strftime('%d/%m/%Y')} | {nom} ({cod}) - {texto_dias}"))
-                except: pass
-
+                            pass
+                    km_prox = v[8]
+                    km_actual = v[9]
+                    if km_prox and str(km_prox).strip() and km_actual and str(km_actual).strip():
+                        try:
+                            k_p = float(str(km_prox).replace(",", ""))
+                            k_a = float(str(km_actual).replace(",", ""))
+                            km_restantes = k_p - k_a
+                            if km_restantes < 0:
+                                alertas.append({"tipo": "peligro", "icono": "⚙️", "titulo": f"Correa de Distribución Vencida ({placa})", "mensaje": f"Excedido por {abs(km_restantes):g} KM."})
+                            elif 0 <= km_restantes <= 1000:
+                                alertas.append({"tipo": "alerta", "icono": "⚙️", "titulo": f"Correa de Distribución Próxima ({placa})", "mensaje": f"Faltan {km_restantes:g} KM para el cambio."})
+                        except Exception:
+                            pass
             except Exception as e:
-                print("Error general de alertas:", e)
-            finally:
-                liberar_conexion(conn)
-
-            self.root.after(0, lambda: self._pintar_alertas(alertas, tareas_mostrar))
-
-        threading.Thread(target=tarea_dashboard, daemon=True).start()
-
-    def _pintar_offline(self):
-        for widget in self.f_alertas_container.winfo_children(): widget.destroy()
-        ctk.CTkLabel(self.f_alertas_container, text="📡 MODO LECTURA OFFLINE: Mostrando información desde el respaldo local.", font=("Arial", 12, "bold"), text_color="#d35400").pack(anchor="w", pady=5)
-        for widget in self.f_agenda_container.winfo_children(): widget.destroy()
-        
-        evs_mem = getattr(cache_sistema, 'eventos_aprobados', [])
-        if evs_mem:
-            ctk.CTkLabel(self.f_agenda_container, text="📌 EVENTOS GUARDADOS EN MEMORIA:", font=("Arial", 12, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
-            for ev_txt in evs_mem: ctk.CTkLabel(self.f_agenda_container, text=f"📍 {ev_txt}", font=("Arial", 12)).pack(anchor="w", padx=25, pady=3)
-        else:
-            ctk.CTkLabel(self.f_agenda_container, text="No hay eventos guardados en la memoria local aún.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
-
-    def _pintar_alertas(self, alertas, tareas_mostrar):
-        for widget in self.f_alertas_container.winfo_children(): widget.destroy()
-        for widget in self.f_agenda_container.winfo_children(): widget.destroy()
-        
+                print("Error alertas flota:", e)
+        # ----------------------------------------------------
+        # RADAR 2: ALERTA DE CHOFERES (Cumpleaños y Seguros)
+        # ----------------------------------------------------
+        if self.tiene_permiso("choferes") or self.tiene_permiso("flota"):
+            try:
+                cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'choferes')")
+                if cursor.fetchone()[0]:
+                    try:
+                        cursor.execute("SELECT nombres, vencimiento_licencia, seguro_salud_venc, seguro_vida_venc, fecha_nacimiento FROM choferes WHERE estado = 'Activo'")
+                        choferes = cursor.fetchall()
+                    except Exception:
+                        conn.rollback()
+                        cursor.execute("SELECT nombres, vencimiento_licencia FROM choferes WHERE estado = 'Activo'")
+                        choferes = [(r[0], r[1], None, None, None) for r in cursor.fetchall()]
+                    for c in choferes:
+                        nombre, v_lic, v_salud, v_vida, f_nac = c
+                        docs = {
+                            "Licencia": v_lic,
+                            "Seguro de Salud": v_salud,
+                            "Seguro Vida Ley": v_vida
+                        }
+                        for doc_nombre, doc_fecha in docs.items():
+                            if doc_fecha and str(doc_fecha).strip():
+                                try:
+                                    dt_venc = datetime.strptime(str(doc_fecha), "%d/%m/%Y").date()
+                                    dias_restantes = (dt_venc - hoy.date()).days
+                                    if dias_restantes < 0:
+                                        alertas.append({"tipo": "peligro", "icono": "🚨", "titulo": f"{doc_nombre} Vencida ({nombre})", "mensaje": f"Venció hace {abs(dias_restantes)} días ({doc_fecha})."})
+                                    elif 0 <= dias_restantes <= dias_alerta:
+                                        alertas.append({"tipo": "alerta", "icono": "⚠️", "titulo": f"{doc_nombre} por Vencer ({nombre})", "mensaje": f"Vencerá en {dias_restantes} días ({doc_fecha})."})
+                                except Exception:
+                                    pass
+                        if f_nac and str(f_nac).strip():
+                            try:
+                                dt_nac = datetime.strptime(str(f_nac), "%d/%m/%Y").date()
+                                dt_prox = dt_nac.replace(year=hoy.year)
+                                if dt_prox < hoy.date():
+                                    dt_prox = dt_prox.replace(year=hoy.year + 1)
+                                dias_restantes = (dt_prox - hoy.date()).days
+                                if 0 <= dias_restantes <= dias_alerta:
+                                    if dias_restantes == 0:
+                                        alertas.append({"tipo": "peligro", "icono": "🎉", "titulo": f"¡Cumpleaños de {nombre}!", "mensaje": "Hoy es su cumpleaños."})
+                                    else:
+                                        alertas.append({"tipo": "alerta", "icono": "🎂", "titulo": f"Cumpleaños de {nombre}", "mensaje": f"Es en {dias_restantes} días ({dt_prox.strftime('%d/%m')})."})
+                            except Exception:
+                                pass
+            except Exception as e:
+                print("Error alertas choferes:", e)
+        # ----------------------------------------------------
+        # RADAR 3: DEUDAS FINANCIERAS (Ventas/Cobros)
+        # ----------------------------------------------------
+        if self.tiene_permiso("ventas"):
+            try:
+                cursor.execute("SELECT id, fecha, dias_credito, total, COALESCE(det_monto, 0) FROM facturas_emitidas")
+                facturas_ventas = cursor.fetchall()
+                cursor.execute("SELECT id_factura, SUM(monto_pagado) FROM pagos_clientes GROUP BY id_factura")
+                pagos_ventas = {row[0]: float(row[1]) for row in cursor.fetchall()}
+                ventas_vencidas, deuda_ventas = 0, 0.0
+                for f in facturas_ventas:
+                    try:
+                        f_dt = datetime.strptime(f[1], "%d/%m/%Y")
+                        vencimiento = f_dt + timedelta(days=f[2])
+                        neto = float(f[3] if f[3] else 0) - float(f[4] if f[4] else 0)
+                        saldo = neto - pagos_ventas.get(f[0], 0.0)
+                        if saldo > 0.01 and hoy.date() > vencimiento:
+                            ventas_vencidas += 1
+                            deuda_ventas += saldo
+                    except Exception:
+                        pass
+                if ventas_vencidas > 0:
+                    alertas.append({"tipo": "peligro", "icono": "⚠️", "titulo": "Cobros Vencidos", "mensaje": f"Tienes {ventas_vencidas} factura(s) de clientes atrasada(s) (S/. {deuda_ventas:,.2f})"})
+            except Exception:
+                pass
         if not alertas:
-            f_ok = ctk.CTkFrame(self.f_alertas_container, fg_color="#d4edda", corner_radius=6, border_width=1, border_color="#c3e6cb", height=40)
+            f_ok = ctk.CTkFrame(f_dashboard, fg_color="#d4edda", corner_radius=6, border_width=1, border_color="#c3e6cb", height=40)
             f_ok.pack(fill="x", pady=5)
             ctk.CTkLabel(f_ok, text="✅ Todo está al día. No hay notificaciones pendientes.", font=("Arial", 12, "bold"), text_color="#155724").pack(pady=8)
         else:
             for al in alertas:
-                if al["tipo"] == "peligro": c_fondo_al, c_borde_al, c_texto_al = "#f8d7da", "#f5c6cb", "#721c24"
-                elif al["tipo"] == "alerta": c_fondo_al, c_borde_al, c_texto_al = "#fff3cd", "#ffeeba", "#856404"
-                else: c_fondo_al, c_borde_al, c_texto_al = "#d1ecf1", "#bee5eb", "#0c5460"
-                f_al = ctk.CTkFrame(self.f_alertas_container, fg_color=c_fondo_al, corner_radius=6, border_width=1, border_color=c_borde_al)
+                if al["tipo"] == "peligro":
+                    c_fondo_al, c_borde_al, c_texto_al = "#f8d7da", "#f5c6cb", "#721c24"
+                elif al["tipo"] == "alerta":
+                    c_fondo_al, c_borde_al, c_texto_al = "#fff3cd", "#ffeeba", "#856404"
+                else:
+                    c_fondo_al, c_borde_al, c_texto_al = "#d1ecf1", "#bee5eb", "#0c5460"
+                f_al = ctk.CTkFrame(f_dashboard, fg_color=c_fondo_al, corner_radius=6, border_width=1, border_color=c_borde_al)
                 f_al.pack(fill="x", pady=4)
                 ctk.CTkLabel(f_al, text=f"{al['icono']} {al['titulo']}:", font=("Arial", 12, "bold"), text_color=c_texto_al).pack(side="left", padx=(10, 5), pady=6)
                 ctk.CTkLabel(f_al, text=al["mensaje"], font=("Arial", 12), text_color=c_texto_al).pack(side="left", padx=(0, 10), pady=6)
-                
-        if not tareas_mostrar:
-            ctk.CTkLabel(self.f_agenda_container, text="No hay eventos próximos programados en la agenda.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
-        else:
-            for color, txt in tareas_mostrar:
-                ctk.CTkLabel(self.f_agenda_container, text=txt, font=("Arial", 12, "bold"), text_color=color).pack(anchor="w", padx=15, pady=8)
+        # ----------------------------------------------------
+        # AGENDA DEL CRONOGRAMA CENTRAL
+        # ----------------------------------------------------
+        ctk.CTkLabel(f_dashboard, text="📅 TAREAS PENDIENTES DEL CRONOGRAMA", font=("Arial", 14, "bold"), text_color="#27ae60").pack(anchor="w", pady=(25, 10))
+        f_agenda = ctk.CTkFrame(f_dashboard, fg_color="#f8f9fa", corner_radius=6, border_width=1, border_color="#e0e0e0")
+        f_agenda.pack(fill="x", pady=0)
+        try:
+            cursor.execute("SELECT nombre_tarea, evento_asociado, fecha_limite FROM tareas_evento WHERE estado = 'Pendiente' ORDER BY fecha_limite ASC LIMIT 20")
+            tareas_agenda = cursor.fetchall()
+            tareas_mostradas = 0
+            for tar in tareas_agenda:
+                nom_tar, ev, fec_str = tar
+                try:
+                    f_dt = datetime.strptime(fec_str, "%d/%m/%Y").date()
+                    dias_faltan = (f_dt - hoy.date()).days
+                    if dias_faltan < 0:
+                        texto_dias = f"¡VENCIDA HACE {abs(dias_faltan)} DÍAS!"
+                        color_t = "#c0392b"
+                    elif dias_faltan == 0:
+                        texto_dias = "¡ES HOY!"
+                        color_t = "#d35400"
+                    elif dias_faltan <= dias_alerta:
+                        texto_dias = f"Faltan {dias_faltan} días"
+                        color_t = "#e67e22"
+                    else:
+                        continue
+                    lbl_text = f"📍 {f_dt.strftime('%d/%m/%Y')} | {nom_tar} ({ev.split(' | ')[0]}) - {texto_dias}"
+                    ctk.CTkLabel(f_agenda, text=lbl_text, font=("Arial", 12, "bold"), text_color=color_t).pack(anchor="w", padx=15, pady=8)
+                    tareas_mostradas += 1
+                except Exception:
+                    pass
+            if tareas_mostradas == 0:
+                ctk.CTkLabel(f_agenda, text="No hay tareas críticas pendientes en el cronograma.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
+        except Exception:
+            ctk.CTkLabel(f_agenda, text="No se pudo cargar la agenda.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
+        conn.close()
+        f_pie = ctk.CTkFrame(f_dashboard, fg_color="transparent")
+        f_pie.pack(fill="x", pady=(40, 20))
+        ctk.CTkLabel(f_pie, text="Bienvenido", font=("Arial", 14, "bold"), text_color="gray").pack()
+        ctk.CTkLabel(f_pie, text="Este es el resumen automático de tu operación para el día de hoy.\nSeleccione un módulo en el menú lateral para gestionar sus operaciones.", font=("Arial", 12, "italic"), text_color="gray", justify="center").pack(pady=(5, 0))            
 
     # =======================================================
     # FUNCIONES DE APERTURA DE MÓDULOS
     # =======================================================
-    def abrir_modulo_pautas(self):
-        if not self.tiene_permiso("pautas"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
-            import pautas_evento
-            importlib.reload(pautas_evento)
-            app = pautas_evento.PautasEventoApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e:
-            messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
-
     def abrir_modulo_ventas(self):
-        if not self.tiene_permiso("ventas"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("ventas"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import modulo_ventas
@@ -716,8 +794,7 @@ class ControlGeneralEventos:
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
 
     def abrir_modulo_compras(self):
-        if not self.tiene_permiso("compras"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("compras"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import modulo_compras
@@ -727,8 +804,7 @@ class ControlGeneralEventos:
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
 
     def abrir_modulo_ordenes(self):
-        if not self.tiene_permiso("ordenes"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("ordenes"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import ordenes_compra
@@ -737,8 +813,7 @@ class ControlGeneralEventos:
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
 
     def abrir_modulo_ordenes_cliente(self):
-        if not self.tiene_permiso("ordenes_cliente"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("ordenes_cliente"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import ordenes_compra_cliente
@@ -746,52 +821,26 @@ class ControlGeneralEventos:
             app = ordenes_compra_cliente.OrdenesCompraClienteApp(self.contenedor_central, self.usuario_activo)
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
 
-    def abrir_modulo_inventario(self):
-        if not self.tiene_permiso("inventario"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
-            import inventario
-            importlib.reload(inventario)
-            app = inventario.InventarioApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
-
-    def abrir_modulo_locaciones(self):
-        if not self.tiene_permiso("locaciones"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
-            import Inventario_locacion
-            importlib.reload(Inventario_locacion)
-            app = Inventario_locacion.InventarioLocacionesApp(self.contenedor_central)
-            app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
-
     def abrir_estadisticas_financiera(self):
-        if not self.tiene_permiso("dashboard"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("dashboard"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import estadisticas_financiera
             importlib.reload(estadisticas_financiera)
-            app = estadisticas_financiera.EstadisticasFinancieraApp(self.contenedor_central)
-            app.usuario_activo = self.usuario_activo
+            estadisticas_financiera.EstadisticasFinancieraApp(self.contenedor_central)
         except Exception as e: messagebox.showerror("Error", str(e))
 
     def abrir_calculo_impuestos(self):
-        if not self.tiene_permiso("impuestos"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("impuestos"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import calculo_impuestos
             importlib.reload(calculo_impuestos)
-            app = calculo_impuestos.CalculoImpuestosApp(self.contenedor_central)
-            app.usuario_activo = self.usuario_activo
+            calculo_impuestos.CalculoImpuestosApp(self.contenedor_central)
         except Exception as e: messagebox.showerror("Error", str(e))
 
     def abrir_modulo_proveedores(self):
-        if not self.tiene_permiso("proveedores"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("proveedores"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import proveedores
@@ -800,41 +849,26 @@ class ControlGeneralEventos:
             app.usuario_activo = self.usuario_activo
         except Exception as e: messagebox.showerror("Error", str(e))
 
-    def abrir_modulo_solicitud_proveedor(self):
-        if not self.tiene_permiso("solicitud_proveedor"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
-            import solicitud_proveedor
-            importlib.reload(solicitud_proveedor)
-            app = solicitud_proveedor.SolicitudProveedorApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
-
     def abrir_modulo_libro_diario(self):
-        if not self.tiene_permiso("libro_diario"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("libro_diario"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import libro_diario
             importlib.reload(libro_diario)
-            app = libro_diario.LibroDiarioApp(self.contenedor_central)
-            app.usuario_activo = self.usuario_activo
+            libro_diario.LibroDiarioApp(self.contenedor_central)
         except Exception as e: messagebox.showerror("Error", str(e))
 
     def abrir_modulo_libro_mayor(self):
-        if not self.tiene_permiso("libro_mayor"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("libro_mayor"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import libro_mayor
             importlib.reload(libro_mayor)
-            app = libro_mayor.LibroMayorApp(self.contenedor_central)
-            app.usuario_activo = self.usuario_activo
+            libro_mayor.LibroMayorApp(self.contenedor_central)
         except Exception as e: messagebox.showerror("Error", str(e))
 
     def abrir_modulo_clientes(self):
-        if not self.tiene_permiso("clientes"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("clientes"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import clientes
@@ -843,20 +877,8 @@ class ControlGeneralEventos:
             app.usuario_activo = self.usuario_activo
         except Exception as e: messagebox.showerror("Error", str(e))
 
-    def abrir_modulo_cotizaciones(self):
-        if not self.tiene_permiso("cotizaciones"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
-            import cotizaciones
-            importlib.reload(cotizaciones)
-            app = cotizaciones.VentanaCotizaciones(self.contenedor_central)
-            app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", str(e))
-
     def abrir_modulo_cronograma(self):
-        if not self.tiene_permiso("cronograma"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("cronograma"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import cronograma_tareas
@@ -866,8 +888,7 @@ class ControlGeneralEventos:
         except Exception as e: messagebox.showerror("Error", str(e))
 
     def abrir_modulo_bitacora(self):
-        if not self.tiene_permiso("bitacora"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("bitacora"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import bitacora
@@ -877,8 +898,7 @@ class ControlGeneralEventos:
         except Exception as e: messagebox.showerror("Error", f"No se pudo cargar la Bitácora:\n{e}")
 
     def abrir_modulo_flota(self):
-        if not self.tiene_permiso("flota"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("flota"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import flota_automotriz
@@ -887,8 +907,7 @@ class ControlGeneralEventos:
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Flota:\n{e}")
 
     def abrir_modulo_choferes(self):
-        if not self.tiene_permiso("choferes"):
-            return messagebox.showerror("Denegado", "No tiene permisos.")
+        if not self.tiene_permiso("choferes"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
         try:
             import choferes
@@ -897,7 +916,7 @@ class ControlGeneralEventos:
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Padrón de Choferes:\n{e}")
 
     # =======================================================
-    # CONFIGURACIÓN GENERAL (EVENTOS)
+    # CONFIGURACIÓN GENERAL (RUTA ABSOLUTA + CLAVES LIMPIAS)
     # =======================================================
     def abrir_configuracion_general(self):
         if not self.tiene_permiso("configuracion"):
@@ -909,14 +928,19 @@ class ControlGeneralEventos:
         v_conf.grab_set()
         archivo_config = str(CONFIG_FILE)
         config_actual = cargar_configuracion_general()
-        todas_guardadas = (
-            config_actual.get("orden_operativos", []) +
-            config_actual.get("orden_finanzas", []) +
-            config_actual.get("orden_ajustes", [])
-        )
-        for k in self.modulos_sistema:
-            if k not in todas_guardadas:
-                config_actual.setdefault("orden_operativos", []).append(k)
+        lat_val, lon_val, rad_val = "-12.046374", "-77.042793", "100"
+        conn_geo = conectar_db(silencioso=True)
+        if conn_geo:
+            try:
+                c_geo = conn_geo.cursor()
+                c_geo.execute("SELECT latitud, longitud, radio FROM configuracion_geocerca LIMIT 1")
+                res_geo = c_geo.fetchone()
+                if res_geo:
+                    lat_val, lon_val, rad_val = str(res_geo[0]), str(res_geo[1]), str(res_geo[2])
+            except Exception:
+                pass
+            finally:
+                conn_geo.close()
         f_header = ctk.CTkFrame(v_conf, fg_color="transparent")
         f_header.pack(fill="x", padx=25, pady=(20, 10))
         ctk.CTkLabel(f_header, text="⚙️ Configuración General del Sistema", font=("Arial", 22, "bold"), text_color="#1f538d").pack(side="left")
@@ -924,6 +948,7 @@ class ControlGeneralEventos:
         f_scroll = ctk.CTkScrollableFrame(v_conf, fg_color="transparent")
         f_scroll.pack(fill="both", expand=True, padx=20, pady=10)
         ctk.CTkLabel(f_scroll, text="Ajustes locales guardados específicamente para este equipo.", font=("Arial", 12, "italic"), text_color="gray").pack(anchor="w", padx=10, pady=(0, 15))
+        
         # ---------- 1. EMPRESA Y TRIBUTACIÓN ----------
         f_empresa = ctk.CTkFrame(f_scroll, corner_radius=10)
         f_empresa.pack(fill="x", padx=10, pady=10, ipady=10)
@@ -949,41 +974,26 @@ class ControlGeneralEventos:
         f_row2 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row2.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(f_row2, text="IGV (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        ent_igv = ctk.CTkEntry(f_row2, width=60)
-        ent_igv.pack(side="left", padx=5)
-        ent_igv.insert(0, config_actual.get("igv_porcentaje", "0"))
+        ent_igv = ctk.CTkEntry(f_row2, width=60); ent_igv.pack(side="left", padx=5); ent_igv.insert(0, config_actual.get("igv_porcentaje", "0"))
         ctk.CTkLabel(f_row2, text="Retención (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_retencion = ctk.CTkEntry(f_row2, width=60)
-        ent_retencion.pack(side="left", padx=5)
-        ent_retencion.insert(0, config_actual.get("retencion_porcentaje", "0"))
+        ent_retencion = ctk.CTkEntry(f_row2, width=60); ent_retencion.pack(side="left", padx=5); ent_retencion.insert(0, config_actual.get("retencion_porcentaje", "0"))
         ctk.CTkLabel(f_row2, text="Renta Mensual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_renta_m = ctk.CTkEntry(f_row2, width=60)
-        ent_renta_m.pack(side="left", padx=5)
-        ent_renta_m.insert(0, config_actual.get("renta_mensual_porcentaje", "0"))
+        ent_renta_m = ctk.CTkEntry(f_row2, width=60); ent_renta_m.pack(side="left", padx=5); ent_renta_m.insert(0, config_actual.get("renta_mensual_porcentaje", "0"))
         ctk.CTkLabel(f_row2, text="Renta Anual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_renta_a = ctk.CTkEntry(f_row2, width=60)
-        ent_renta_a.pack(side="left", padx=5)
-        ent_renta_a.insert(0, config_actual.get("renta_anual_porcentaje", "0"))
+        ent_renta_a = ctk.CTkEntry(f_row2, width=60); ent_renta_a.pack(side="left", padx=5); ent_renta_a.insert(0, config_actual.get("renta_anual_porcentaje", "0"))
+        ctk.CTkLabel(f_row2, text="Detracción (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
+        ent_detraccion_cfg = ctk.CTkEntry(f_row2, width=60); ent_detraccion_cfg.pack(side="left", padx=5); ent_detraccion_cfg.insert(0, config_actual.get("detraccion_porcentaje", "12"))
         f_row3 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row3.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(f_row3, text="Última Factura SUNAT:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        ent_ult_fac = ctk.CTkEntry(f_row3, width=90, placeholder_text="F001-0")
-        ent_ult_fac.pack(side="left", padx=5)
-        ent_ult_fac.insert(0, config_actual.get("ultimo_factura", "F001-0"))
+        ent_ult_fac = ctk.CTkEntry(f_row3, width=90, placeholder_text="F001-0"); ent_ult_fac.pack(side="left", padx=5); ent_ult_fac.insert(0, config_actual.get("ultimo_factura", "F001-0"))
         ctk.CTkLabel(f_row3, text="Última Boleta:", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_ult_bol = ctk.CTkEntry(f_row3, width=90, placeholder_text="B001-0")
-        ent_ult_bol.pack(side="left", padx=5)
-        ent_ult_bol.insert(0, config_actual.get("ultimo_boleta", "B001-0"))
+        ent_ult_bol = ctk.CTkEntry(f_row3, width=90, placeholder_text="B001-0"); ent_ult_bol.pack(side="left", padx=5); ent_ult_bol.insert(0, config_actual.get("ultimo_boleta", "B001-0"))
         ctk.CTkLabel(f_row3, text="Último Recibo (RH):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_ult_rec = ctk.CTkEntry(f_row3, width=90, placeholder_text="E001-0")
-        ent_ult_rec.pack(side="left", padx=5)
-        ent_ult_rec.insert(0, config_actual.get("ultimo_recibo", "E001-0"))
+        ent_ult_rec = ctk.CTkEntry(f_row3, width=90, placeholder_text="E001-0"); ent_ult_rec.pack(side="left", padx=5); ent_ult_rec.insert(0, config_actual.get("ultimo_recibo", "E001-0"))
 
         def actualizar_tasas_regimen(choice):
-            ent_igv.delete(0, tk.END)
-            ent_retencion.delete(0, tk.END)
-            ent_renta_m.delete(0, tk.END)
-            ent_renta_a.delete(0, tk.END)
+            ent_igv.delete(0, tk.END); ent_retencion.delete(0, tk.END); ent_renta_m.delete(0, tk.END); ent_renta_a.delete(0, tk.END)
             if "NRUS" in choice:
                 ent_igv.insert(0, "0"); ent_retencion.insert(0, "0"); ent_renta_m.insert(0, "0"); ent_renta_a.insert(0, "0")
             elif "RER" in choice:
@@ -1013,122 +1023,110 @@ class ControlGeneralEventos:
             except Exception as e:
                 messagebox.showwarning("Error", f"Problema al consultar RUC:\n{e}", parent=v_conf)
         ent_ruc_empresa.bind("<Return>", buscar_ruc_empresa)
-        # ---------- 2. API SUNAT SIRE ----------
+        
+        # ---------- 1.1 CUENTAS BANCARIAS ----------
+        ctk.CTkLabel(f_empresa, text="🏦 Cuentas Bancarias de la Empresa", font=("Arial", 12, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(15, 5))
+        f_bancos_container = ctk.CTkFrame(f_empresa, fg_color="transparent")
+        f_bancos_container.pack(fill="x", padx=15, pady=0)
+        bancos_peru = ["BCP", "BBVA", "Interbank", "Scotiabank", "Banco de la Nación", "BanBif", "Banco Pichincha", "Banco Falabella", "Banco Ripley", "Mibanco", "Caja Arequipa", "Caja Huancayo", "Caja Piura", "Caja Cusco", "Yape / Plin", "Otro"]
+        filas_bancos = []
+
+        def agregar_fila_banco(banco="", cuenta=""):
+            fila = ctk.CTkFrame(f_bancos_container, fg_color="transparent")
+            fila.pack(fill="x", pady=2)
+            cmb_banco = ctk.CTkComboBox(fila, values=bancos_peru, width=180)
+            cmb_banco.pack(side="left", padx=(0, 5))
+            cmb_banco.set(banco if banco else "BCP")
+            ent_cuenta = ctk.CTkEntry(fila, width=280, placeholder_text="N° de Cuenta / CCI")
+            ent_cuenta.pack(side="left", padx=5)
+            ent_cuenta.insert(0, cuenta)
+
+            def remover_fila(f_eliminar=fila):
+                f_eliminar.destroy()
+                for item in filas_bancos:
+                    if item[0] == f_eliminar:
+                        filas_bancos.remove(item)
+                        break
+            ctk.CTkButton(fila, text="❌", width=30, fg_color="#e74c3c", hover_color="#c0392b", command=remover_fila).pack(side="left", padx=5)
+            filas_bancos.append((fila, cmb_banco, ent_cuenta))
+        ctk.CTkButton(f_empresa, text="➕ Agregar Banco", font=("Arial", 11, "bold"), width=120, fg_color="#27ae60", hover_color="#1e8449", command=agregar_fila_banco).pack(anchor="w", padx=15, pady=(5, 10))
+        bancos_guardados = config_actual.get("cuentas_bancarias", [])
+        if bancos_guardados:
+            for b in bancos_guardados:
+                agregar_fila_banco(b.get("banco", ""), b.get("cuenta", ""))
+        else:
+            agregar_fila_banco()
+            
+        # ---------- 2. SUNAT SIRE ----------
         f_sire = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#f0fdf4", border_width=1, border_color="#bbf7d0")
         f_sire.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_sire, text="🔐 Credenciales de Acceso a SUNAT SIRE (Descarga de Compras)", font=("Arial", 14, "bold"), text_color="#166534").pack(anchor="w", padx=15, pady=(10, 5))
-        f_sire_r1 = ctk.CTkFrame(f_sire, fg_color="transparent")
-        f_sire_r1.pack(fill="x", padx=15, pady=4)
+        f_sire_r1 = ctk.CTkFrame(f_sire, fg_color="transparent"); f_sire_r1.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_sire_r1, text="Usuario SOL:", font=("Arial", 11, "bold"), width=140, anchor="w").pack(side="left")
-        ent_user_sol = ctk.CTkEntry(f_sire_r1, placeholder_text="Ej: MODDATOS")
-        ent_user_sol.pack(side="left", fill="x", expand=True, padx=5)
-        ent_user_sol.insert(0, config_actual.get("usuario_sol", ""))
+        ent_user_sol = ctk.CTkEntry(f_sire_r1, placeholder_text="Ej: MODDATOS"); ent_user_sol.pack(side="left", fill="x", expand=True, padx=5); ent_user_sol.insert(0, config_actual.get("usuario_sol", ""))
         ctk.CTkLabel(f_sire_r1, text="Clave SOL:", font=("Arial", 11, "bold"), width=100, anchor="w").pack(side="left", padx=(15, 5))
-        ent_clave_sol = ctk.CTkEntry(f_sire_r1, show="*", placeholder_text="••••••••")
-        ent_clave_sol.pack(side="left", fill="x", expand=True, padx=5)
-        ent_clave_sol.insert(0, config_actual.get("clave_sol", ""))
-        f_sire_r2 = ctk.CTkFrame(f_sire, fg_color="transparent")
-        f_sire_r2.pack(fill="x", padx=15, pady=4)
+        ent_clave_sol = ctk.CTkEntry(f_sire_r1, show="*", placeholder_text="••••••••"); ent_clave_sol.pack(side="left", fill="x", expand=True, padx=5); ent_clave_sol.insert(0, config_actual.get("clave_sol", ""))
+        f_sire_r2 = ctk.CTkFrame(f_sire, fg_color="transparent"); f_sire_r2.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_sire_r2, text="Client ID (API SIRE):", font=("Arial", 11, "bold"), width=140, anchor="w").pack(side="left")
-        ent_client_id = ctk.CTkEntry(f_sire_r2)
-        ent_client_id.pack(side="left", fill="x", expand=True, padx=5)
-        ent_client_id.insert(0, config_actual.get("client_id_sire", ""))
+        ent_client_id = ctk.CTkEntry(f_sire_r2); ent_client_id.pack(side="left", fill="x", expand=True, padx=5); ent_client_id.insert(0, config_actual.get("client_id_sire", ""))
         ctk.CTkLabel(f_sire_r2, text="Client Secret:", font=("Arial", 11, "bold"), width=100, anchor="w").pack(side="left", padx=(15, 5))
-        ent_client_secret = ctk.CTkEntry(f_sire_r2, show="*")
-        ent_client_secret.pack(side="left", fill="x", expand=True, padx=5)
-        ent_client_secret.insert(0, config_actual.get("client_secret_sire", ""))
+        ent_client_secret = ctk.CTkEntry(f_sire_r2, show="*"); ent_client_secret.pack(side="left", fill="x", expand=True, padx=5); ent_client_secret.insert(0, config_actual.get("client_secret_sire", ""))
+        
         # ---------- 3. FACTURACIÓN ELECTRÓNICA ----------
         f_fe = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#f0f4f8", border_width=1, border_color="#d0d7de")
         f_fe.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_fe, text="⚡ Facturación Electrónica Directa (Emisión de Ventas)", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
-        f_fe_row1 = ctk.CTkFrame(f_fe, fg_color="transparent")
-        f_fe_row1.pack(fill="x", padx=15, pady=4)
+        f_fe_row1 = ctk.CTkFrame(f_fe, fg_color="transparent"); f_fe_row1.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_fe_row1, text="Proveedor Servicio PSE:", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        cmb_pse = ctk.CTkOptionMenu(f_fe_row1, values=["Nubefact", "Facturactiva", "Efact", "Bsale"], width=220)
-        cmb_pse.pack(side="left", padx=5)
-        cmb_pse.set(config_actual.get("proveedor_fe", "Nubefact"))
-        f_fe_row2 = ctk.CTkFrame(f_fe, fg_color="transparent")
-        f_fe_row2.pack(fill="x", padx=15, pady=4)
+        cmb_pse = ctk.CTkOptionMenu(f_fe_row1, values=["Nubefact", "Facturactiva", "Efact", "Bsale"], width=220); cmb_pse.pack(side="left", padx=5); cmb_pse.set(config_actual.get("proveedor_fe", "Nubefact"))
+        f_fe_row2 = ctk.CTkFrame(f_fe, fg_color="transparent"); f_fe_row2.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_fe_row2, text="Ruta API (Endpoint):", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        ent_url_api = ctk.CTkEntry(f_fe_row2)
-        ent_url_api.pack(side="left", fill="x", expand=True, padx=5)
-        ent_url_api.insert(0, config_actual.get("url_api_fe", ""))
-        f_fe_row3 = ctk.CTkFrame(f_fe, fg_color="transparent")
-        f_fe_row3.pack(fill="x", padx=15, pady=(4, 8))
+        ent_url_api = ctk.CTkEntry(f_fe_row2); ent_url_api.pack(side="left", fill="x", expand=True, padx=5); ent_url_api.insert(0, config_actual.get("url_api_fe", ""))
+        f_fe_row3 = ctk.CTkFrame(f_fe, fg_color="transparent"); f_fe_row3.pack(fill="x", padx=15, pady=(4, 8))
         ctk.CTkLabel(f_fe_row3, text="Token de Autorización:", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        ent_token_api = ctk.CTkEntry(f_fe_row3, show="*")
-        ent_token_api.pack(side="left", fill="x", expand=True, padx=5)
-        ent_token_api.insert(0, config_actual.get("token_api_fe", ""))
+        ent_token_api = ctk.CTkEntry(f_fe_row3, show="*"); ent_token_api.pack(side="left", fill="x", expand=True, padx=5); ent_token_api.insert(0, config_actual.get("token_api_fe", ""))
+        
         # ---------- 4. 2FA ----------
         f_2fa = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#fff3cd", border_width=1, border_color="#ffeeba")
         f_2fa.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_2fa, text="🛡️ Seguridad: Clave Dinámica (OTP) para SUNAT", font=("Arial", 14, "bold"), text_color="#856404").pack(anchor="w", padx=15, pady=(10, 5))
-        f_2fa_m = ctk.CTkFrame(f_2fa, fg_color="transparent")
-        f_2fa_m.pack(fill="x", padx=15, pady=5)
+        f_2fa_m = ctk.CTkFrame(f_2fa, fg_color="transparent"); f_2fa_m.pack(fill="x", padx=15, pady=5)
         ctk.CTkLabel(f_2fa_m, text="Método de Envío OTP:", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        cmb_2fa = ctk.CTkOptionMenu(f_2fa_m, values=["Inactivo", "Telegram (Gratis)", "Correo Electrónico (Gratis)", "SMS Twilio (De Pago)"], width=250)
-        cmb_2fa.pack(side="left", padx=5)
-        cmb_2fa.set(config_actual.get("2fa_metodo", "Inactivo"))
+        cmb_2fa = ctk.CTkOptionMenu(f_2fa_m, values=["Inactivo", "Telegram (Gratis)", "Correo Electrónico (Gratis)", "SMS Twilio (De Pago)"], width=250); cmb_2fa.pack(side="left", padx=5); cmb_2fa.set(config_actual.get("2fa_metodo", "Inactivo"))
         f_tel = ctk.CTkFrame(f_2fa, fg_color="transparent")
         ctk.CTkLabel(f_tel, text="Bot Token:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=4)
-        ent_tel_token = ctk.CTkEntry(f_tel, width=350)
-        ent_tel_token.grid(row=0, column=1, sticky="w", pady=4)
-        ent_tel_token.insert(0, config_actual.get("tel_bot_token", ""))
+        ent_tel_token = ctk.CTkEntry(f_tel, width=350); ent_tel_token.grid(row=0, column=1, sticky="w", pady=4); ent_tel_token.insert(0, config_actual.get("tel_bot_token", ""))
         ctk.CTkLabel(f_tel, text="Chat ID:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=4)
-        ent_tel_chat = ctk.CTkEntry(f_tel, width=350)
-        ent_tel_chat.grid(row=1, column=1, sticky="w", pady=4)
-        ent_tel_chat.insert(0, config_actual.get("tel_chat_id", ""))
+        ent_tel_chat = ctk.CTkEntry(f_tel, width=350); ent_tel_chat.grid(row=1, column=1, sticky="w", pady=4); ent_tel_chat.insert(0, config_actual.get("tel_chat_id", ""))
         f_mail = ctk.CTkFrame(f_2fa, fg_color="transparent")
         ctk.CTkLabel(f_mail, text="Servidor SMTP:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=4)
-        ent_mail_smtp = ctk.CTkEntry(f_mail, width=200)
-        ent_mail_smtp.grid(row=0, column=1, sticky="w", pady=4)
-        ent_mail_smtp.insert(0, config_actual.get("email_smtp", "smtp.gmail.com"))
+        ent_mail_smtp = ctk.CTkEntry(f_mail, width=200); ent_mail_smtp.grid(row=0, column=1, sticky="w", pady=4); ent_mail_smtp.insert(0, config_actual.get("email_smtp", "smtp.gmail.com"))
         ctk.CTkLabel(f_mail, text="Puerto:", font=("Arial", 11, "bold"), width=60, anchor="w").grid(row=0, column=2, sticky="w", padx=(10, 0), pady=4)
-        ent_mail_port = ctk.CTkEntry(f_mail, width=80)
-        ent_mail_port.grid(row=0, column=3, sticky="w", pady=4)
-        ent_mail_port.insert(0, config_actual.get("email_port", "587"))
+        ent_mail_port = ctk.CTkEntry(f_mail, width=80); ent_mail_port.grid(row=0, column=3, sticky="w", pady=4); ent_mail_port.insert(0, config_actual.get("email_port", "587"))
         ctk.CTkLabel(f_mail, text="Tu Correo:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=4)
-        ent_mail_user = ctk.CTkEntry(f_mail, width=350)
-        ent_mail_user.grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
-        ent_mail_user.insert(0, config_actual.get("email_user", ""))
+        ent_mail_user = ctk.CTkEntry(f_mail, width=350); ent_mail_user.grid(row=1, column=1, columnspan=3, sticky="w", pady=4); ent_mail_user.insert(0, config_actual.get("email_user", ""))
         ctk.CTkLabel(f_mail, text="Clave de App:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=2, column=0, sticky="w", pady=4)
-        ent_mail_pass = ctk.CTkEntry(f_mail, width=350, show="*")
-        ent_mail_pass.grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
-        ent_mail_pass.insert(0, config_actual.get("email_pass", ""))
+        ent_mail_pass = ctk.CTkEntry(f_mail, width=350, show="*"); ent_mail_pass.grid(row=2, column=1, columnspan=3, sticky="w", pady=4); ent_mail_pass.insert(0, config_actual.get("email_pass", ""))
         ctk.CTkLabel(f_mail, text="Enviar a:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=4)
-        ent_mail_dest = ctk.CTkEntry(f_mail, width=350)
-        ent_mail_dest.grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
-        ent_mail_dest.insert(0, config_actual.get("email_dest", ""))
+        ent_mail_dest = ctk.CTkEntry(f_mail, width=350); ent_mail_dest.grid(row=3, column=1, columnspan=3, sticky="w", pady=4); ent_mail_dest.insert(0, config_actual.get("email_dest", ""))
         f_sms = ctk.CTkFrame(f_2fa, fg_color="transparent")
         ctk.CTkLabel(f_sms, text="Account SID:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=4)
-        ent_twi_sid = ctk.CTkEntry(f_sms, width=350)
-        ent_twi_sid.grid(row=0, column=1, sticky="w", pady=4)
-        ent_twi_sid.insert(0, config_actual.get("twi_sid", ""))
+        ent_twi_sid = ctk.CTkEntry(f_sms, width=350); ent_twi_sid.grid(row=0, column=1, sticky="w", pady=4); ent_twi_sid.insert(0, config_actual.get("twi_sid", ""))
         ctk.CTkLabel(f_sms, text="Auth Token:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=4)
-        ent_twi_token = ctk.CTkEntry(f_sms, width=350, show="*")
-        ent_twi_token.grid(row=1, column=1, sticky="w", pady=4)
-        ent_twi_token.insert(0, config_actual.get("twi_token", ""))
+        ent_twi_token = ctk.CTkEntry(f_sms, width=350, show="*"); ent_twi_token.grid(row=1, column=1, sticky="w", pady=4); ent_twi_token.insert(0, config_actual.get("twi_token", ""))
         ctk.CTkLabel(f_sms, text="N° Twilio:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=2, column=0, sticky="w", pady=4)
-        ent_twi_from = ctk.CTkEntry(f_sms, width=350)
-        ent_twi_from.grid(row=2, column=1, sticky="w", pady=4)
-        ent_twi_from.insert(0, config_actual.get("twi_from", ""))
+        ent_twi_from = ctk.CTkEntry(f_sms, width=350); ent_twi_from.grid(row=2, column=1, sticky="w", pady=4); ent_twi_from.insert(0, config_actual.get("twi_from", ""))
         ctk.CTkLabel(f_sms, text="N° Destino:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=4)
-        ent_twi_to = ctk.CTkEntry(f_sms, width=350)
-        ent_twi_to.grid(row=3, column=1, sticky="w", pady=4)
-        ent_twi_to.insert(0, config_actual.get("twi_to", ""))
+        ent_twi_to = ctk.CTkEntry(f_sms, width=350); ent_twi_to.grid(row=3, column=1, sticky="w", pady=4); ent_twi_to.insert(0, config_actual.get("twi_to", ""))
 
         def actualizar_ui_2fa(choice):
-            f_tel.pack_forget()
-            f_mail.pack_forget()
-            f_sms.pack_forget()
-            if "Telegram" in choice:
-                f_tel.pack(fill="x", padx=15, pady=5)
-            elif "Correo" in choice:
-                f_mail.pack(fill="x", padx=15, pady=5)
-            elif "SMS" in choice:
-                f_sms.pack(fill="x", padx=15, pady=5)
+            f_tel.pack_forget(); f_mail.pack_forget(); f_sms.pack_forget()
+            if "Telegram" in choice: f_tel.pack(fill="x", padx=15, pady=5)
+            elif "Correo" in choice: f_mail.pack(fill="x", padx=15, pady=5)
+            elif "SMS" in choice: f_sms.pack(fill="x", padx=15, pady=5)
         cmb_2fa.configure(command=actualizar_ui_2fa)
         actualizar_ui_2fa(cmb_2fa.get())
+        
         # ---------- 5. PERSONALIZACIÓN VISUAL DE COTIZACIONES ----------
         f_diseno = ctk.CTkFrame(f_scroll, corner_radius=10)
         f_diseno.pack(fill="x", padx=10, pady=10, ipady=10)
@@ -1238,7 +1236,7 @@ class ControlGeneralEventos:
         ctk.CTkLabel(f_rclone_2, text="Carpeta Nube:", font=("Arial", 11, "bold"), width=90, anchor="w").pack(side="left")
         ent_rclone_nube = ctk.CTkEntry(f_rclone_2, placeholder_text="Ej: FlotaCube")
         ent_rclone_nube.pack(side="left", fill="x", expand=True, padx=(0, 5))
-        ent_rclone_nube.insert(0, config_actual.get("rclone_ruta_nube", "BlackCube"))
+        ent_rclone_nube.insert(0, config_actual.get("rclone_ruta_nube", "FlotaCube"))
 
         def vincular_drive_automatico():
             remote = ent_rclone_remote.get().strip().replace(":", "")
@@ -1299,7 +1297,7 @@ class ControlGeneralEventos:
                         res_mkdir = subprocess.run([cmd_rclone, "mkdir", ruta_remota], capture_output=True, text=True, **kwargs)
                         if res_mkdir.returncode == 0:
                             msg_adicional = f"\n\n📁 Se verificó/creó la carpeta en la nube: '{nube}'"
-                            lanzar_sync_background() 
+                            lanzar_sync_background() # Lanzar la primera sincronización para probar
                         else:
                             msg_adicional = f"\n\n⚠️ No se pudo crear la carpeta en la nube. Detalle:\n{res_mkdir.stderr}"
 
@@ -1321,37 +1319,54 @@ class ControlGeneralEventos:
         ent_impresora.pack(fill="x", padx=15)
         ent_impresora.insert(0, config_actual.get("impresora", ""))
 
-        # ---------- 7. DISEÑO Y ORDEN DEL MENÚ ----------
+        # ---------- 6. GEOCERCA GPS ----------
+        f_geo = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#fdf2e9", border_width=1, border_color="#fadbd8")
+        f_geo.pack(fill="x", padx=10, pady=10, ipady=10)
+        ctk.CTkLabel(f_geo, text="📍 Geocerca y Asistencia Automática GPS", font=("Arial", 14, "bold"), text_color="#d35400").pack(anchor="w", padx=15, pady=(10, 5))
+        f_geo_row = ctk.CTkFrame(f_geo, fg_color="transparent"); f_geo_row.pack(fill="x", padx=15, pady=5)
+        ctk.CTkLabel(f_geo_row, text="Latitud:", font=("Arial", 11, "bold")).pack(side="left")
+        ent_lat_geo = ctk.CTkEntry(f_geo_row, width=150); ent_lat_geo.pack(side="left", padx=5); ent_lat_geo.insert(0, lat_val)
+        ctk.CTkLabel(f_geo_row, text="Longitud:", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
+        ent_lon_geo = ctk.CTkEntry(f_geo_row, width=150); ent_lon_geo.pack(side="left", padx=5); ent_lon_geo.insert(0, lon_val)
+        ctk.CTkLabel(f_geo_row, text="Radio (Metros):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
+        ent_rad_geo = ctk.CTkEntry(f_geo_row, width=80); ent_rad_geo.pack(side="left", padx=5); ent_rad_geo.insert(0, rad_val)
+        
+        # ---------- 7. FLOTA ----------
+        f_flota = ctk.CTkFrame(f_scroll, corner_radius=10)
+        f_flota.pack(fill="x", padx=10, pady=10, ipady=10)
+        ctk.CTkLabel(f_flota, text="🚙 Ajustes de Flota Automotriz", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
+        f_flota_row1 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row1.pack(fill="x", padx=15, pady=5)
+        ctk.CTkLabel(f_flota_row1, text="Días de anticipación para alertas de vencimiento (SOAT, Licencias, etc):", font=("Arial", 11, "bold")).pack(side="left")
+        ent_dias_alerta = ctk.CTkEntry(f_flota_row1, width=80); ent_dias_alerta.pack(side="left", padx=10); ent_dias_alerta.insert(0, config_actual.get("dias_alerta_vencimiento", "30"))
+        f_flota_row2 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row2.pack(fill="x", padx=15, pady=5)
+        ctk.CTkLabel(f_flota_row2, text="Alerta Cambio Aceite (Kilómetros):", font=("Arial", 11, "bold")).pack(side="left")
+        ent_km_aceite = ctk.CTkEntry(f_flota_row2, width=80); ent_km_aceite.pack(side="left", padx=10); ent_km_aceite.insert(0, config_actual.get("alerta_aceite_km", "5000"))
+        ctk.CTkLabel(f_flota_row2, text="o Meses:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        ent_meses_aceite = ctk.CTkEntry(f_flota_row2, width=80); ent_meses_aceite.pack(side="left", padx=10); ent_meses_aceite.insert(0, config_actual.get("alerta_aceite_meses", "6"))
+        
+        # ---------- 8. DISEÑO Y ORDEN DEL MENÚ ----------
         f_menu = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#eef2f3", border_width=1, border_color="#ccd1d9")
         f_menu.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_menu, text="🎨 Apariencia y Orden del Menú Principal", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
-        f_menu_colors = ctk.CTkFrame(f_menu, fg_color="transparent")
-        f_menu_colors.pack(fill="x", padx=15, pady=5)
+        f_menu_colors = ctk.CTkFrame(f_menu, fg_color="transparent"); f_menu_colors.pack(fill="x", padx=15, pady=5)
 
         def crear_selector_color_grid(padre, fila, col, texto, key_config, default):
             f_c = ctk.CTkFrame(padre, fg_color="transparent")
             f_c.grid(row=fila, column=col, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(f_c, text=texto, font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-            ent_c = ctk.CTkEntry(f_c, width=80)
-            ent_c.pack(side="left", padx=5)
+            ent_c = ctk.CTkEntry(f_c, width=80); ent_c.pack(side="left", padx=5)
             val = str(config_actual.get(key_config, default)).strip()
             ent_c.insert(0, val)
             color_prev = val if val.startswith("#") else default
-            f_p = ctk.CTkFrame(f_c, width=25, height=25, fg_color=color_prev, corner_radius=5)
-            f_p.pack(side="left", padx=5)
+            f_p = ctk.CTkFrame(f_c, width=25, height=25, fg_color=color_prev, corner_radius=5); f_p.pack(side="left", padx=5)
 
             def elegir():
                 curr = ent_c.get().strip()
-                if not curr.startswith("#"):
-                    curr = default
-                try:
-                    color = colorchooser.askcolor(title=f"Elegir {texto}", color=curr)[1]
-                except Exception:
-                    color = colorchooser.askcolor(title=f"Elegir {texto}")[1]
+                if not curr.startswith("#"): curr = default
+                try: color = colorchooser.askcolor(title=f"Elegir {texto}", color=curr)[1]
+                except Exception: color = colorchooser.askcolor(title=f"Elegir {texto}")[1]
                 if color:
-                    ent_c.delete(0, tk.END)
-                    ent_c.insert(0, color)
-                    f_p.configure(fg_color=color)
+                    ent_c.delete(0, tk.END); ent_c.insert(0, color); f_p.configure(fg_color=color)
             ctk.CTkButton(f_c, text="🎨", width=35, command=elegir).pack(side="left")
             return ent_c
             
@@ -1359,11 +1374,9 @@ class ControlGeneralEventos:
         ent_m_btn = crear_selector_color_grid(f_menu_colors, 0, 1, "Color del Botón:", "color_menu_btn", "#1f538d")
         ent_m_hov = crear_selector_color_grid(f_menu_colors, 1, 0, "Al pasar el Mouse:", "color_menu_hover", "#163b65")
         ent_m_txt = crear_selector_color_grid(f_menu_colors, 1, 1, "Color del Texto:", "color_menu_texto", "#ffffff")
-        f_menu_order = ctk.CTkFrame(f_menu, fg_color="transparent")
-        f_menu_order.pack(fill="both", expand=True, padx=15, pady=(15, 0))
+        f_menu_order = ctk.CTkFrame(f_menu, fg_color="transparent"); f_menu_order.pack(fill="both", expand=True, padx=15, pady=(15, 0))
         ctk.CTkLabel(f_menu_order, text="Orden de los Módulos por Grupo:", font=("Arial", 11, "bold")).pack(anchor="w")
-        f_listas = ctk.CTkFrame(f_menu_order, fg_color="transparent")
-        f_listas.pack(fill="both", expand=True, pady=5)
+        f_listas = ctk.CTkFrame(f_menu_order, fg_color="transparent"); f_listas.pack(fill="both", expand=True, pady=5)
         nombres_a_keys = {v: k for k, v in self.modulos_sistema.items()}
 
         def crear_columna_orden(padre, titulo, lista_keys):
@@ -1375,44 +1388,56 @@ class ControlGeneralEventos:
             for k in lista_keys:
                 if k in self.modulos_sistema:
                     lb.insert(tk.END, self.modulos_sistema[k])
-            f_btns = ctk.CTkFrame(f_col, fg_color="transparent")
-            f_btns.pack(fill="x")
+            f_btns = ctk.CTkFrame(f_col, fg_color="transparent"); f_btns.pack(fill="x")
 
             def subir():
                 sel = lb.curselection()
-                if not sel or sel[0] == 0:
-                    return
-                idx = sel[0]
-                val = lb.get(idx)
-                lb.delete(idx)
-                lb.insert(idx - 1, val)
-                lb.selection_set(idx - 1)
-
+                if not sel or sel[0] == 0: return
+                idx = sel[0]; val = lb.get(idx); lb.delete(idx); lb.insert(idx - 1, val); lb.selection_set(idx - 1)
             def bajar():
                 sel = lb.curselection()
-                if not sel or sel[0] == lb.size() - 1:
-                    return
-                idx = sel[0]
-                val = lb.get(idx)
-                lb.delete(idx)
-                lb.insert(idx + 1, val)
-                lb.selection_set(idx + 1)
+                if not sel or sel[0] == lb.size() - 1: return
+                idx = sel[0]; val = lb.get(idx); lb.delete(idx); lb.insert(idx + 1, val); lb.selection_set(idx + 1)
             ctk.CTkButton(f_btns, text="⬆️", width=30, command=subir).pack(side="left", expand=True, padx=1)
             ctk.CTkButton(f_btns, text="⬇️", width=30, command=bajar).pack(side="left", expand=True, padx=1)
             return lb
             
-        default_ops = ["clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "inventario", "locaciones"]
+        default_ops = ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"]
         default_fin = ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard"]
         default_aju = ["configuracion", "usuarios", "bitacora"]
-        lb_ops = crear_columna_orden(f_listas, "Módulos Operativos", config_actual.get("orden_operativos", default_ops))
-        lb_fin = crear_columna_orden(f_listas, "Finanzas y Reportes", config_actual.get("orden_finanzas", default_fin))
-        lb_aju = crear_columna_orden(f_listas, "Ajustes de Sistema", config_actual.get("orden_ajustes", default_aju))
+        ops = config_actual.get("orden_operativos", default_ops)
+        fin = config_actual.get("orden_finanzas", default_fin)
+        aju = config_actual.get("orden_ajustes", default_aju)
+        todas = ops + fin + aju
+        for k in self.modulos_sistema:
+            if k not in todas:
+                ops.append(k)
+        lb_ops = crear_columna_orden(f_listas, "Módulos Operativos", ops)
+        lb_fin = crear_columna_orden(f_listas, "Finanzas y Reportes", fin)
+        lb_aju = crear_columna_orden(f_listas, "Ajustes de Sistema", aju)
 
         def guardar_configuracion():
             def ext_ord(lb):
                 return [nombres_a_keys[lb.get(i)] for i in range(lb.size())]
+            lista_bancos = []
+            for f_widget, cmb_b, ent_c in filas_bancos:
+                b_val = cmb_b.get().strip(); c_val = ent_c.get().strip()
+                if b_val or c_val:
+                    lista_bancos.append({"banco": b_val, "cuenta": c_val})
+            conn_geo_upd = conectar_db(silencioso=True)
+            if conn_geo_upd:
+                try:
+                    c_geo_upd = conn_geo_upd.cursor()
+                    c_geo_upd.execute("UPDATE configuracion_geocerca SET latitud=%s, longitud=%s, radio=%s", (
+                        float(ent_lat_geo.get().strip() or 0), float(ent_lon_geo.get().strip() or 0), float(ent_rad_geo.get().strip() or 100)))
+                    conn_geo_upd.commit()
+                except Exception as e:
+                    print("Error guardando geocerca:", e)
+                finally:
+                    conn_geo_upd.close()
             nueva_config = config_actual.copy()
             nueva_config.update({
+                "cuentas_bancarias": lista_bancos,
                 "ruta_drive": ent_drive.get().strip(),
                 "rclone_remote": ent_rclone_remote.get().strip(),
                 "rclone_ruta_nube": ent_rclone_nube.get().strip(),
@@ -1420,10 +1445,7 @@ class ControlGeneralEventos:
                 "simbolo_moneda": cmb_moneda.get().strip() or "S/.",
                 "formato_numero": cmb_num.get(),
                 "formato_fecha": cmb_fecha.get(),
-                "ruta_logo_cotizacion": ent_logo.get().strip(),
-                "color_primario": ent_color_1.get().strip(),
-                "color_secundario": ent_color_2.get().strip(),
-                "color_franja": ent_color_3.get().strip(),
+                "detraccion_porcentaje": ent_detraccion_cfg.get().strip(),
                 "ruc_empresa": ent_ruc_empresa.get().strip(),
                 "razon_social_empresa": ent_razon_social.get().strip(),
                 "igv_porcentaje": ent_igv.get().strip(),
@@ -1431,7 +1453,6 @@ class ControlGeneralEventos:
                 "renta_mensual_porcentaje": ent_renta_m.get().strip(),
                 "renta_anual_porcentaje": ent_renta_a.get().strip(),
                 "regimen_empresa": cmb_regimen.get().strip(),
-                "nombre_cliente_cotizacion": cmb_nombre_cot.get().strip(),
                 "proveedor_fe": cmb_pse.get().strip(),
                 "url_api_fe": ent_url_api.get().strip(),
                 "token_api_fe": ent_token_api.get().strip(),
@@ -1454,6 +1475,9 @@ class ControlGeneralEventos:
                 "twi_token": ent_twi_token.get().strip(),
                 "twi_from": ent_twi_from.get().strip(),
                 "twi_to": ent_twi_to.get().strip(),
+                "dias_alerta_vencimiento": ent_dias_alerta.get().strip() or "30",
+                "alerta_aceite_km": ent_km_aceite.get().strip() or "5000",
+                "alerta_aceite_meses": ent_meses_aceite.get().strip() or "6",
                 "color_menu_fondo": ent_m_fondo.get().strip(),
                 "color_menu_btn": ent_m_btn.get().strip(),
                 "color_menu_hover": ent_m_hov.get().strip(),
@@ -1466,7 +1490,7 @@ class ControlGeneralEventos:
                 with open(archivo_config, "w", encoding="utf-8") as f:
                     json.dump(nueva_config, f, indent=4)
                 messagebox.showinfo("Éxito", "Las configuraciones del sistema se guardaron correctamente.\n\nLos cambios en el diseño se aplicarán inmediatamente.", parent=v_conf)
-                lanzar_sync_background()
+                lanzar_sync_background() # Subimos a la nube lo recién guardado
                 v_conf.destroy()
                 self.construir_dashboard_spa()
             except Exception as e:
@@ -1474,7 +1498,7 @@ class ControlGeneralEventos:
         ctk.CTkButton(f_scroll, text="💾 Guardar Todos los Cambios", font=("Arial", 14, "bold"), height=45, fg_color="#1f538d", hover_color="#163b65", command=guardar_configuracion).pack(pady=25)
 
     # =======================================================
-    # GESTIÓN DE USUARIOS Y SUS PERMISOS GRANULARES (SEGURA)
+    # GESTIÓN DE USUARIOS (SEGURA: BCRYPT + PROTECCIÓN SUPER ADMIN)
     # =======================================================
     def abrir_gestion_usuarios(self):
         if not self.tiene_permiso("usuarios"):
@@ -1491,23 +1515,17 @@ class ControlGeneralEventos:
         f_form = ctk.CTkFrame(left_panel, fg_color="transparent")
         f_form.pack(fill="x", padx=10, pady=5)
         ctk.CTkLabel(f_form, text="Usuario:", font=("Arial", 11, "bold")).grid(row=0, column=0, sticky="w", pady=4)
-        ent_u = ctk.CTkEntry(f_form, width=160)
-        ent_u.grid(row=0, column=1, sticky="w", pady=4, padx=5)
+        ent_u = ctk.CTkEntry(f_form, width=160); ent_u.grid(row=0, column=1, sticky="w", pady=4, padx=5)
         ctk.CTkLabel(f_form, text="Clave (Nueva):", font=("Arial", 11, "bold")).grid(row=0, column=2, sticky="w", pady=4, padx=10)
-        ent_c = ctk.CTkEntry(f_form, width=160, placeholder_text="(Dejar en blanco)")
-        ent_c.grid(row=0, column=3, sticky="w", pady=4)
+        ent_c = ctk.CTkEntry(f_form, width=160, placeholder_text="(Dejar en blanco)"); ent_c.grid(row=0, column=3, sticky="w", pady=4)
         ctk.CTkLabel(f_form, text="Rol Nominal:", font=("Arial", 11, "bold")).grid(row=1, column=0, sticky="w", pady=10)
         cmb_r = ctk.CTkComboBox(f_form, values=["Super Administrador", "Administrador", "Comercial", "Logistica"], width=180, state="readonly")
         cmb_r.grid(row=1, column=1, sticky="w", pady=10, padx=5)
         f_tbl = ctk.CTkFrame(left_panel, corner_radius=8)
         f_tbl.pack(fill="both", expand=True, padx=10, pady=5)
         tbl_u = ttk.Treeview(f_tbl, columns=("id", "usuario", "rol"), show="headings", height=8)
-        tbl_u.heading("id", text="ID")
-        tbl_u.heading("usuario", text="Usuario")
-        tbl_u.heading("rol", text="Rol Nominal")
-        tbl_u.column("id", width=55, anchor="center")
-        tbl_u.column("usuario", width=220)
-        tbl_u.column("rol", width=200)
+        tbl_u.heading("id", text="ID"); tbl_u.heading("usuario", text="Usuario"); tbl_u.heading("rol", text="Rol Nominal")
+        tbl_u.column("id", width=55, anchor="center"); tbl_u.column("usuario", width=220); tbl_u.column("rol", width=200)
         scr_u = ttk.Scrollbar(f_tbl, orient="vertical", command=tbl_u.yview)
         tbl_u.configure(yscrollcommand=scr_u.set)
         tbl_u.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
@@ -1527,32 +1545,26 @@ class ControlGeneralEventos:
         self.dict_permisos_usuarios = {}
 
         def cargar_usuarios():
-            for item in tbl_u.get_children():
-                tbl_u.delete(item)
+            for item in tbl_u.get_children(): tbl_u.delete(item)
             conn = conectar_db(silencioso=True)
-            if not conn:
-                return
+            if not conn: return
             try:
                 c = conn.cursor()
                 c.execute("SELECT id, usuario, rol, permisos FROM usuarios ORDER BY usuario ASC")
                 for r in c.fetchall():
                     tbl_u.insert("", tk.END, values=(r[0], r[1], r[2]))
-                    try:
-                        self.dict_permisos_usuarios[r[1]] = json.loads(r[3]) if r[3] else {}
-                    except Exception:
-                        self.dict_permisos_usuarios[r[1]] = {}
+                    try: self.dict_permisos_usuarios[r[1]] = json.loads(r[3]) if r[3] else {}
+                    except Exception: self.dict_permisos_usuarios[r[1]] = {}
             except Exception:
                 pass
             finally:
-                liberar_conexion(conn)
+                conn.close()
 
         def al_seleccionar_usuario(e):
             sel = tbl_u.selection()
-            if not sel:
-                return
+            if not sel: return
             user_sel = tbl_u.item(sel[0], "values")[1]
-            ent_u.delete(0, tk.END)
-            ent_u.insert(0, user_sel)
+            ent_u.delete(0, tk.END); ent_u.insert(0, user_sel)
             ent_c.delete(0, tk.END)
             cmb_r.set(tbl_u.item(sel[0], "values")[2])
             permisos_guardados = self.dict_permisos_usuarios.get(user_sel, {})
@@ -1564,57 +1576,40 @@ class ControlGeneralEventos:
             u = ent_u.get().strip().lower()
             c_str = ent_c.get().strip()
             r = cmb_r.get()
-            if not u:
-                return
+            if not u: return
             nuevos_permisos = {key: var.get() for key, var in self.vars_permisos.items()}
             permisos_json = json.dumps(nuevos_permisos)
             conn = conectar_db()
-            if not conn:
-                return
+            if not conn: return
             try:
                 c = conn.cursor()
                 c.execute("SELECT id FROM usuarios WHERE usuario = %s", (u,))
                 existe = c.fetchone()
                 if existe:
                     if c_str:
-                        c.execute(
-                            "UPDATE usuarios SET clave_hash=%s, clave=NULL, rol=%s, permisos=%s WHERE usuario=%s",
-                            (hash_password(c_str), r, permisos_json, u)
-                        )
+                        c.execute("UPDATE usuarios SET clave_hash=%s, clave=NULL, rol=%s, permisos=%s WHERE usuario=%s", (hash_password(c_str), r, permisos_json, u))
                     else:
-                        c.execute(
-                            "UPDATE usuarios SET rol=%s, permisos=%s WHERE usuario=%s",
-                            (r, permisos_json, u)
-                        )
+                        c.execute("UPDATE usuarios SET rol=%s, permisos=%s WHERE usuario=%s", (r, permisos_json, u))
                     registrar_auditoria(self.usuario_activo, "Seguridad", f"Modificó el usuario '{u}' y sus permisos")
                 else:
-                    if not c_str:
-                        liberar_conexion(conn)
-                        return messagebox.showwarning("Error", "Falta clave obligatoria para usuario nuevo.", parent=v_usr)
-                    c.execute(
-                        "INSERT INTO usuarios (usuario, clave, clave_hash, rol, permisos) VALUES (%s, NULL, %s, %s, %s)",
-                        (u, hash_password(c_str), r, permisos_json)
-                    )
+                    if not c_str: return messagebox.showwarning("Error", "Falta clave obligatoria para usuario nuevo.", parent=v_usr)
+                    c.execute("INSERT INTO usuarios (usuario, clave, clave_hash, rol, permisos) VALUES (%s, NULL, %s, %s, %s)", (u, hash_password(c_str), r, permisos_json))
                     registrar_auditoria(self.usuario_activo, "Seguridad", f"Creó al usuario '{u}'")
                 conn.commit()
                 messagebox.showinfo("Éxito", "Usuario y permisos guardados exitosamente.", parent=v_usr)
             except Exception as e:
                 messagebox.showerror("Error", str(e), parent=v_usr)
             finally:
-                liberar_conexion(conn)
-            ent_u.delete(0, tk.END)
-            ent_c.delete(0, tk.END)
+                conn.close()
+            ent_u.delete(0, tk.END); ent_c.delete(0, tk.END)
             cargar_usuarios()
 
         def eliminar_usuario():
-            if not tbl_u.selection():
-                return
+            if not tbl_u.selection(): return
             u_borrar = tbl_u.item(tbl_u.selection(), "values")[1]
-            if u_borrar == self.usuario_activo:
-                return messagebox.showwarning("Error", "No puedes eliminar tu propia cuenta activa.", parent=v_usr)
+            if u_borrar == self.usuario_activo: return messagebox.showwarning("Error", "No puedes eliminar tu propia cuenta activa.", parent=v_usr)
             conn = conectar_db()
-            if not conn:
-                return
+            if not conn: return
             try:
                 c = conn.cursor()
                 c.execute("SELECT rol FROM usuarios WHERE usuario = %s", (u_borrar,))
@@ -1632,8 +1627,7 @@ class ControlGeneralEventos:
             except Exception as e:
                 messagebox.showerror("Error", str(e), parent=v_usr)
             finally:
-                liberar_conexion(conn)
-                
+                conn.close()
         f_btn = ctk.CTkFrame(left_panel, fg_color="transparent")
         f_btn.pack(fill="x", padx=10, pady=15)
         ctk.CTkButton(f_btn, text="💾 Guardar Usuario", font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=registrar_o_modificar).pack(side="left", padx=5)
@@ -1651,13 +1645,6 @@ class ControlGeneralEventos:
 
 
 if __name__ == "__main__":
-    try:
-        from validacion_licencia import comprobar_acceso
-        if not comprobar_acceso():
-            sys.exit()
-    except ImportError:
-        pass
-
     root = ctk.CTk()
     app = ControlGeneralEventos(root)
     root.mainloop()

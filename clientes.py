@@ -121,7 +121,7 @@ class SistemaClientes:
     def __init__(self, root):
         self.root = root
         self.usuario_activo = "Desconocido"
-        self.root.title("Gestión de Clientes - Control General")
+        self.root.title("Gestión de Clientes - Flota Automotriz")
         
         # 🚀 VARIABLES DE PAGINACIÓN (LAZY LOADING)
         self.pagina_actual = 1
@@ -129,10 +129,10 @@ class SistemaClientes:
         
         inicializar_db_clientes()
         
-        # ENCABEZADO SUPERIOR DE EVENTOS
+        # 🚀 ENCABEZADO SUPERIOR
         header_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         header_frame.pack(fill="x", padx=15, pady=(15, 0))
-        ctk.CTkLabel(header_frame, text="👥 GESTIÓN DE CLIENTES", font=("Arial", 18, "bold"), text_color="#1f538d").pack(side="left")
+        ctk.CTkLabel(header_frame, text="👥 GESTIÓN DE CLIENTES DE FLOTA", font=("Arial", 18, "bold"), text_color="#1f538d").pack(side="left")
         
         self.tabview = ctk.CTkTabview(self.root, segmented_button_selected_color="#1f538d")
         self.tabview.pack(fill="both", expand=True, padx=15, pady=15)
@@ -245,7 +245,7 @@ class SistemaClientes:
         self.cargar_clientes_tabla(reset_pagina=True)
 
     def cargar_clientes_tabla(self, reset_pagina=False):
-        """🚀 Motor Lazy Loading con Caché Inteligente (Reemplaza los hilos)"""
+        """🚀 Motor Lazy Loading con Caché Inteligente"""
         if reset_pagina:
             self.pagina_actual = 1
             
@@ -261,7 +261,7 @@ class SistemaClientes:
         texto = self.ent_buscar.get().strip().lower()
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
         
-        clave_cache = f"clientes_eventos_{texto}_pag_{self.pagina_actual}"
+        clave_cache = f"clientes_flota_{texto}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
         
         if datos is None:
@@ -391,7 +391,7 @@ class SistemaClientes:
         ToolTip(btn_c, f"Copia el contenido de {nombre_campo}.")
 
     # =======================================================
-    # CONSULTA DE RUC (SUNAT) EN SEGUNDO PLANO - MANTENIDO
+    # CONSULTA DE RUC (SUNAT) EN SEGUNDO PLANO 
     # =======================================================
     def consultar_ruc_api(self, ruc_entry, nombre_entry, dir_entry):
         ruc = ruc_entry.get().strip()

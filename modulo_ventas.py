@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-VENTAS.PY (ENTERPRISE EDITION - RENDIMIENTO EXTREMO)
-- FIX STARTUP: Inicialización de formulario 100% asíncrona (Elimina el congelamiento al abrir el módulo).
-- Paginación Lazy Loading (50 en 50) para Facturas, Cobros y Notas de Crédito.
-- Búsqueda Asíncrona en las 3 pestañas.
-- Protección del Pool de Conexiones (liberar_conexion).
-- Auto-curación síncrona en segundo plano (Scope Global corregido).
-"""
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 import customtkinter as ctk
@@ -17,7 +9,6 @@ import calendar
 import re
 import json
 import subprocess 
-import threading
 import ctypes
 import webbrowser
 import random
@@ -26,6 +17,7 @@ from email.mime.text import MIMEText
 import urllib.request
 import urllib.parse
 from datetime import datetime
+import threading
 
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
@@ -57,38 +49,12 @@ if sys.platform == "win32":
 
 def abrir_documento(ruta):
     try:
-        if sys.platform == "win32":
-            os.startfile(ruta)
-        elif sys.platform == "darwin": 
-            subprocess.call(["open", ruta])
-        else: 
-            subprocess.call(["xdg-open", ruta])
+        ruta_abs = os.path.abspath(ruta)
+        if sys.platform == "win32": os.startfile(ruta_abs)
+        elif sys.platform == "darwin": subprocess.call(["open", ruta_abs])
+        else: subprocess.call(["xdg-open", ruta_abs])
     except Exception as e:
-        messagebox.showerror("Error", f"No se pudo abrir el archivo:\n{e}")
-
-# =========================================================
-# 🚀 CONTROL DE ESQUEMA DE 1RA VEZ
-# =========================================================
-_SCHEMA_OK = {
-    "facturas_emitidas": False,
-    "pagos_clientes": False,
-}
-
-# =========================================================
-# 🚀 MODO LECTURA OFFLINE
-# =========================================================
-def obtener_conexion_segura(parent=None, mostrar_aviso=True):
-    conn = conectar_db(silencioso=True)
-    if not conn and mostrar_aviso:
-        messagebox.showwarning(
-            "Modo Lectura",
-            "⚠️ No se pudo conectar a la base de datos.\n\n"
-            "El sistema está en MODO LECTURA: no se permiten cambios "
-            "(crear, editar, anular, eliminar o exportar) hasta que se "
-            "restablezca la conexión a internet / la nube.",
-            parent=parent
-        )
-    return conn
+        messagebox.showerror("Error", f"No se pudo abrir el archivo o carpeta:\n{e}")
 
 # =========================================================
 # 🚀 MOTOR DE CONFIGURACIÓN REGIONAL
@@ -115,7 +81,8 @@ def cargar_configuracion_regional():
         "usuario_sol": "",
         "clave_sol": "",
         "client_id_sire": "",
-        "client_secret_sire": ""
+        "client_secret_sire": "",
+        "detraccion_porcentaje": "12"
     }
     try:
         if os.path.exists("config_local.json"):
@@ -320,6 +287,9 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.target_entry.insert(0, fecha_seleccionada)
         self.destroy()
 
+
+_SCHEMA_VENTAS_OK = False
+
 # =========================================================
 # PESTAÑA 1: FACTURAS EMITIDAS
 # =========================================================
@@ -332,24 +302,22 @@ class FacturasEmitidasTab:
         self.orden_columnas = {}
         self.bloquear_autocompletado_ruc = False
         self.ruta_archivo_temp = ""
-        self._id_debounce_busqueda = None
-        self._carga_tabla_en_curso = False
         
-        # 🚀 VARIABLES DE PAGINACIÓN (LAZY LOADING)
+        # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
         self.registros_por_pagina = 50
         
         self.inicializar_bd()
         self.crear_interfaz()
 
+    # 🚀 FIX: AUTO-CURACIÓN EN SEGUNDO PLANO
     def inicializar_bd(self):
-        global _SCHEMA_OK
-        if _SCHEMA_OK.get("facturas_emitidas"):
-            return
+        global _SCHEMA_VENTAS_OK
+        if _SCHEMA_VENTAS_OK: return
 
-        def tarea_init():
-            global _SCHEMA_OK
-            conn = obtener_conexion_segura(mostrar_aviso=False)
+        def tarea_curacion():
+            global _SCHEMA_VENTAS_OK
+            conn = conectar_db(silencioso=True)
             if not conn: return
             try:
                 cursor = conn.cursor()
@@ -363,40 +331,36 @@ class FacturasEmitidasTab:
                 """)
                 conn.commit()
                 
-                try: cursor.execute("ALTER TABLE facturas_emitidas ADD COLUMN estado_sunat VARCHAR(255) DEFAULT ''"); conn.commit()
-                except: conn.rollback()
-                try: cursor.execute("ALTER TABLE facturas_emitidas ADD COLUMN enlace_pdf_sunat TEXT DEFAULT ''"); conn.commit()
-                except: conn.rollback()
-                try: cursor.execute("ALTER TABLE facturas_emitidas ADD COLUMN enlace_xml_sunat TEXT DEFAULT ''"); conn.commit()
-                except: conn.rollback()
-                try: cursor.execute("ALTER TABLE facturas_emitidas ADD COLUMN enlace_pdf_nc TEXT DEFAULT ''"); conn.commit()
-                except: conn.rollback()
-                try: cursor.execute("ALTER TABLE facturas_emitidas ADD COLUMN orden_compra VARCHAR(255) DEFAULT ''"); conn.commit()
-                except: conn.rollback()
+                columnas_nuevas = [
+                    "ALTER TABLE facturas_emitidas ADD COLUMN estado_sunat VARCHAR(255) DEFAULT ''",
+                    "ALTER TABLE facturas_emitidas ADD COLUMN enlace_pdf_sunat TEXT DEFAULT ''",
+                    "ALTER TABLE facturas_emitidas ADD COLUMN enlace_xml_sunat TEXT DEFAULT ''",
+                    "ALTER TABLE facturas_emitidas ADD COLUMN enlace_pdf_nc TEXT DEFAULT ''",
+                    "ALTER TABLE facturas_emitidas ADD COLUMN orden_compra VARCHAR(255) DEFAULT ''"
+                ]
+                for query in columnas_nuevas:
+                    try: cursor.execute(query); conn.commit()
+                    except: conn.rollback()
 
-                try:
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS ordenes_compra_clientes (
-                            id SERIAL PRIMARY KEY,
-                            numero_oc VARCHAR(100),
-                            cotizacion_asociada VARCHAR(255),
-                            fecha VARCHAR(50),
-                            archivo_ruta TEXT
-                        )
-                    """)
-                    conn.commit()
-                except: conn.rollback()
-
-                _SCHEMA_OK["facturas_emitidas"] = True
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS ordenes_compra_clientes (
+                        id SERIAL PRIMARY KEY,
+                        numero_oc VARCHAR(100),
+                        cotizacion_asociada VARCHAR(255),
+                        fecha VARCHAR(50),
+                        archivo_ruta TEXT
+                    )
+                """)
+                conn.commit()
+                _SCHEMA_VENTAS_OK = True
             except Exception: pass
             finally: liberar_conexion(conn)
-            
-        threading.Thread(target=tarea_init, daemon=True).start()
+
+        threading.Thread(target=tarea_curacion, daemon=True).start()
 
     def abrir_calendario(self, entry_objetivo):
         CalendarioNativo(self.main_root.winfo_toplevel(), entry_objetivo)
 
-    # 🚀 FIX STARTUP: SUGERIR CORRELATIVO 100% ASÍNCRONO
     def sugerir_correlativo(self):
         if not hasattr(self, 'combo_tipo') or not hasattr(self, 'ent_nro_doc'):
             return
@@ -427,7 +391,7 @@ class FacturasEmitidasTab:
             if parts[1].strip().isdigit():
                 cfg_num = int(parts[1].strip())
 
-        def tarea():
+        def tarea_sugerir():
             conn = conectar_db(silencioso=True)
             db_num = 0
             db_serie = cfg_serie
@@ -459,13 +423,12 @@ class FacturasEmitidasTab:
 
             nuevo_doc = f"{final_serie}-{final_num}"
             self.main_root.after(0, lambda: self._aplicar_correlativo(nuevo_doc))
-            
-        threading.Thread(target=tarea, daemon=True).start()
+
+        threading.Thread(target=tarea_sugerir, daemon=True).start()
 
     def _aplicar_correlativo(self, nuevo_doc):
-        if hasattr(self, 'ent_nro_doc'):
-            self.ent_nro_doc.delete(0, tk.END)
-            self.ent_nro_doc.insert(0, nuevo_doc)
+        self.ent_nro_doc.delete(0, tk.END)
+        self.ent_nro_doc.insert(0, nuevo_doc)
 
     def ordenar_por_columna(self, columna, es_numerico):
         elementos = [(self.tabla.set(item, columna), item) for item in self.tabla.get_children("")]
@@ -532,7 +495,7 @@ class FacturasEmitidasTab:
                 det_match = re.search(r"(?:Detracci[oó]n|Porcentaje|Tasa).*?(\d{1,2}(?:\.\d{1,2})?)\s*%", texto, re.IGNORECASE)
                 if not det_match:
                     if re.search(r"Sujeta\s*a\s*detracci[oó]n", texto, re.IGNORECASE):
-                        self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, "12") 
+                        self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, CONFIG_REGIONAL.get("detraccion_porcentaje", "12")) 
                 else: self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, det_match.group(1))
 
             self.ruta_archivo_temp = ruta
@@ -591,10 +554,6 @@ class FacturasEmitidasTab:
         self.ent_desc = ctk.CTkEntry(self.f_form, placeholder_text="Ej: Servicios Generales...")
         self.ent_desc.pack(fill="x", padx=10, pady=(0, 8))
 
-        ctk.CTkLabel(self.f_form, text="Evento Asociado:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.combo_evento = ctk.CTkComboBox(self.f_form, state="readonly", command=self.al_seleccionar_evento)
-        self.combo_evento.pack(fill="x", padx=10, pady=(0, 8))
-
         ctk.CTkLabel(self.f_form, text="Orden de Compra:", font=("Arial", 11, "bold"), text_color="#166534").pack(anchor="w", padx=10)
         self.combo_oc = ctk.CTkComboBox(self.f_form, state="readonly")
         self.combo_oc.pack(fill="x", padx=10, pady=(0, 8))
@@ -608,7 +567,7 @@ class FacturasEmitidasTab:
         self.lbl_titulo_det.pack(anchor="w", padx=10)
         self.ent_detraccion = ctk.CTkEntry(self.f_form)
         self.ent_detraccion.pack(fill="x", padx=10, pady=(0, 8))
-        self.ent_detraccion.insert(0, "12")
+        self.ent_detraccion.insert(0, CONFIG_REGIONAL.get("detraccion_porcentaje", "12"))
         self.ent_detraccion.bind("<KeyRelease>", self.actualizar_totales)
 
         f_tot = ctk.CTkFrame(self.f_form, fg_color="#ffffff", border_width=1, border_color="#ccc")
@@ -623,21 +582,27 @@ class FacturasEmitidasTab:
         btn_guardar = ctk.CTkButton(self.f_form, text="💾 Registrar Documento", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=self.guardar_registro)
         btn_guardar.pack(fill="x", padx=10, pady=(10, 15))
 
+        self.cargar_clientes_bd()
+        self.cargar_ordenes_compra()
+        self.sugerir_correlativo()
+
         self.f_wrapper_derecha = ctk.CTkFrame(frame_split, fg_color="transparent")
         self.f_wrapper_derecha.pack(side="right", fill="both", expand=True)
 
         f_busqueda = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_busqueda.pack(fill="x", pady=(0, 5))
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por N° Doc, cliente, evento, fecha...")
+        self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por N° Doc, cliente, concepto, fecha...")
         self.ent_buscar_facturas.pack(side="left", fill="x", expand=True)
-        self.ent_buscar_facturas.bind("<KeyRelease>", self._on_buscar_facturas_keyrelease)
+        
+        # 🚀 BÚSQUEDA ASÍNCRONA
+        self.ent_buscar_facturas.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_facturas.bind("<Return>", lambda e: self.cargar_datos_tabla(reset_pagina=True))
 
         f_tabla = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
 
-        columnas = ("num", "id", "fecha", "nro_doc", "dias", "tipo", "cliente", "concepto", "evento", "subtotal", "impuesto", "total", "detraccion", "neto", "estado_sunat", "archivo")
+        columnas = ("num", "id", "fecha", "nro_doc", "dias", "tipo", "cliente", "concepto", "subtotal", "impuesto", "total", "detraccion", "neto", "estado_sunat", "archivo")
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
         self.tabla.heading("num", text="N°", anchor="center")
         self.tabla.heading("id", text="ID (Oculto)")
@@ -645,7 +610,6 @@ class FacturasEmitidasTab:
         self.tabla.heading("nro_doc", text="N° Doc. ↕", command=lambda: self.ordenar_por_columna("nro_doc", False))
         self.tabla.heading("cliente", text="Cliente ↕", command=lambda: self.ordenar_por_columna("cliente", False))
         self.tabla.heading("concepto", text="Concepto ↕", command=lambda: self.ordenar_por_columna("concepto", False))
-        self.tabla.heading("evento", text="Evento ↕", command=lambda: self.ordenar_por_columna("evento", False))
         self.tabla.heading("neto", text="Neto Cobrar ↕", command=lambda: self.ordenar_por_columna("neto", True))
         self.tabla.heading("estado_sunat", text="Estado SUNAT ↕", command=lambda: self.ordenar_por_columna("estado_sunat", False))
         
@@ -654,12 +618,11 @@ class FacturasEmitidasTab:
         self.tabla.column("fecha", width=75, anchor="center")
         self.tabla.column("nro_doc", width=90, anchor="center")
         self.tabla.column("cliente", width=120, anchor="w")
-        self.tabla.column("concepto", width=120, anchor="w")
-        self.tabla.column("evento", width=120, anchor="w")
+        self.tabla.column("concepto", width=140, anchor="w")
         self.tabla.column("neto", width=85, anchor="e")
         self.tabla.column("estado_sunat", width=95, anchor="center")
         
-        self.tabla.config(displaycolumns=("num", "fecha", "nro_doc", "cliente", "concepto", "evento", "neto", "estado_sunat"))
+        self.tabla.config(displaycolumns=("num", "fecha", "nro_doc", "cliente", "concepto", "neto", "estado_sunat"))
 
         self.tabla.bind("<Double-1>", self.abrir_archivo_desde_tabla)
 
@@ -668,30 +631,22 @@ class FacturasEmitidasTab:
         self.tabla.pack(side="left", fill="both", expand=True)
         scroll_y.pack(side="right", fill="y")
 
+        # 🚀 BOTONES DE PAGINACIÓN Y ACCIONES
         f_btn_tabla = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_btn_tabla.pack(fill="x", pady=(10, 0))
         
-        # 🚀 BOTONES PAGINACIÓN
-        f_paginacion = ctk.CTkFrame(f_btn_tabla, fg_color="transparent")
-        f_paginacion.pack(side="left", padx=(0, 10))
-        
-        self.btn_ant = ctk.CTkButton(f_paginacion, text="◀ Ant", width=60, command=self.pagina_anterior)
+        self.btn_ant = ctk.CTkButton(f_btn_tabla, text="◀ Ant", width=60, command=self.pagina_anterior)
         self.btn_ant.pack(side="left", padx=2)
         
-        self.lbl_pagina = ctk.CTkLabel(f_paginacion, text=f"Pág {self.pagina_actual}", font=("Arial", 11, "bold"))
+        self.lbl_pagina = ctk.CTkLabel(f_btn_tabla, text=f"Pág {self.pagina_actual}", font=("Arial", 11, "bold"))
         self.lbl_pagina.pack(side="left", padx=5)
         
-        self.btn_sig = ctk.CTkButton(f_paginacion, text="Sig ▶", width=60, command=self.pagina_siguiente)
+        self.btn_sig = ctk.CTkButton(f_btn_tabla, text="Sig ▶", width=60, command=self.pagina_siguiente)
         self.btn_sig.pack(side="left", padx=2)
         
         btn_gestionar = ctk.CTkButton(f_btn_tabla, text="⚙️ Gestionar Registro Seleccionado", command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50")
         btn_gestionar.pack(side="right")
 
-        # 🚀 FIX: TODO EL INICIO AHORA ES ASÍNCRONO SIN BLOQUEOS
-        self.cargar_clientes_bd()
-        self.cargar_eventos_aprobados()
-        self.cargar_ordenes_compra()
-        self.sugerir_correlativo()
         self.main_root.after(100, lambda: self.cargar_datos_tabla(reset_pagina=True))
 
     def pagina_anterior(self):
@@ -703,39 +658,38 @@ class FacturasEmitidasTab:
         self.pagina_actual += 1
         self.cargar_datos_tabla()
 
-    def cargar_ordenes_compra(self, cotizacion_codigo=None):
-        def tarea():
-            conn = conectar_db(silencioso=True)
-            ocs = ["--- Sin Orden de Compra ---"]
-            if conn:
-                try:
-                    c = conn.cursor()
-                    if cotizacion_codigo:
-                        c.execute("SELECT numero_oc FROM ordenes_compra_clientes WHERE cotizacion_asociada = %s ORDER BY id DESC", (cotizacion_codigo,))
-                    else:
+    def buscar_con_retraso(self):
+        if hasattr(self, "_busqueda_job"):
+            try: self.main_root.after_cancel(self._busqueda_job)
+            except: pass
+        self._busqueda_job = self.main_root.after(350, lambda: self.cargar_datos_tabla(reset_pagina=True))
+
+    # 🚀 FIX: CARGA DE OCS CON CACHÉ
+    def cargar_ordenes_compra(self):
+        ocs_cache = cache_sistema.obtener("lista_ocs_combobox")
+        if ocs_cache is not None:
+            if hasattr(self, 'combo_oc'):
+                self.combo_oc.configure(values=ocs_cache)
+                self.combo_oc.set("--- Sin Orden de Compra ---")
+        else:
+            def tarea_ocs():
+                ocs = ["--- Sin Orden de Compra ---"]
+                conn = conectar_db(silencioso=True)
+                if conn:
+                    try:
+                        c = conn.cursor()
                         c.execute("SELECT numero_oc FROM ordenes_compra_clientes ORDER BY id DESC")
-                    for r in c.fetchall():
-                        ocs.append(r[0])
-                except: pass
-                finally: liberar_conexion(conn)
-            self.main_root.after(0, lambda: self._aplicar_ocs(ocs))
-        threading.Thread(target=tarea, daemon=True).start()
+                        for r in c.fetchall(): ocs.append(r[0])
+                        cache_sistema.guardar("lista_ocs_combobox", ocs)
+                    except: pass
+                    finally: liberar_conexion(conn)
+                self.main_root.after(0, lambda: self._aplicar_ocs(ocs))
+            threading.Thread(target=tarea_ocs, daemon=True).start()
 
     def _aplicar_ocs(self, ocs):
         if hasattr(self, 'combo_oc'):
             self.combo_oc.configure(values=ocs)
-            if self.combo_oc.get() not in ocs:
-                self.combo_oc.set("--- Sin Orden de Compra ---")
-
-    def al_seleccionar_evento(self, choice):
-        if not choice or "GENERAL" in choice:
-            self.cargar_ordenes_compra()
-            return
-            
-        partes = choice.split(" | ")
-        if len(partes) > 0:
-            cod_cot = partes[0].strip()
-            self.cargar_ordenes_compra(cod_cot)
+            self.combo_oc.set("--- Sin Orden de Compra ---")
 
     def on_tipo_change(self, choice):
         if hasattr(self, 'ent_detraccion'):
@@ -754,6 +708,7 @@ class FacturasEmitidasTab:
             self.actualizar_totales()
             self.sugerir_correlativo()
 
+    # 🚀 FIX: AUTOCOMPLETADO RUC ASÍNCRONO
     def al_seleccionar_cliente(self, choice=None):
         if not hasattr(self, 'ent_ruc') or not hasattr(self, 'ent_detraccion'):
             return
@@ -763,87 +718,60 @@ class FacturasEmitidasTab:
             if not getattr(self, 'bloquear_autocompletado_ruc', False):
                 self.ent_ruc.configure(state="normal")
                 self.ent_ruc.delete(0, tk.END)
-            self.cargar_eventos_aprobados() 
             self.cargar_ordenes_compra()
             return
         
-        def tarea():
-            conn = obtener_conexion_segura(mostrar_aviso=False)
-            if not conn: return
-            
+        def tarea_ruc():
             ruc_db = ""
-            det_db = "0"
-            eventos_cliente = ["GENERAL / NO ASIGNADO"]
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT ruc FROM clientes WHERE TRIM(UPPER(nombre_empresa)) = TRIM(UPPER(%s))", (cliente,))
+                    res = cursor.fetchone()
+                    if res: ruc_db = res[0]
+                except: pass
+                finally: liberar_conexion(conn)
+            self.main_root.after(0, lambda: self._aplicar_ruc(ruc_db))
             
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT ruc, detraccion FROM clientes WHERE TRIM(UPPER(nombre_empresa)) = TRIM(UPPER(%s))", (cliente,))
-                res = cursor.fetchone()
-                if res:
-                    ruc_db, det_bd_raw = res
-                    det_db = str(float(det_bd_raw)) if det_bd_raw is not None else "12"
+        threading.Thread(target=tarea_ruc, daemon=True).start()
 
-                cursor.execute("SELECT * FROM cotizaciones LIMIT 0")
-                columnas = [desc[0] for desc in cursor.description]
-                col_cod = 'codigo_cotizacion' if 'codigo_cotizacion' in columnas else ('codigo' if 'codigo' in columnas else None)
-                col_cli = 'nombre_empresa' if 'nombre_empresa' in columnas else ('cliente_nombre' if 'cliente_nombre' in columnas else ('cliente' if 'cliente' in columnas else None))
-                col_ev = 'nombre_evento' if 'nombre_evento' in columnas else ('evento' if 'evento' in columnas else None)
-
-                if col_cod and col_cli and col_ev:
-                    query = f"SELECT {col_cod}, {col_ev} FROM cotizaciones WHERE TRIM(UPPER({col_cli})) = TRIM(UPPER(%s)) AND status = 'Aprobada' ORDER BY id DESC"
-                    cursor.execute(query, (cliente,))
-                    for r in cursor.fetchall():
-                        eventos_cliente.append(f"{r[0]} | {r[1]}")
-            except Exception as e: 
-                print("Error al filtrar cliente:", e)
-            finally: 
-                liberar_conexion(conn)
-                
-            self.main_root.after(0, lambda: self._aplicar_datos_cliente(ruc_db, det_db, eventos_cliente))
-
-        threading.Thread(target=tarea, daemon=True).start()
-
-    def _aplicar_datos_cliente(self, ruc_db, det_db, eventos_cliente):
-        if not hasattr(self, 'ent_detraccion'): return
-        self.ent_detraccion.configure(state="normal")
-        if "Factura" in getattr(self.combo_tipo, 'get', lambda: "")():
-            self.ent_detraccion.delete(0, tk.END)
-            self.ent_detraccion.insert(0, det_db)
-            
-        if not getattr(self, 'bloquear_autocompletado_ruc', False) and ruc_db:
+    def _aplicar_ruc(self, ruc_db):
+        if not getattr(self, 'bloquear_autocompletado_ruc', False):
             self.ent_ruc.configure(state="normal")
             self.ent_ruc.delete(0, tk.END)
-            self.ent_ruc.insert(0, str(ruc_db))
-            
+            if ruc_db:
+                self.ent_ruc.insert(0, str(ruc_db))
+                
+        self.ent_detraccion.configure(state="normal")
+        if "Factura" in getattr(self.combo_tipo, 'get', lambda: "")():
+            if not self.ent_detraccion.get().strip() or self.ent_detraccion.get().strip() == "0":
+                self.ent_detraccion.delete(0, tk.END)
+                self.ent_detraccion.insert(0, CONFIG_REGIONAL.get("detraccion_porcentaje", "12"))
+                
         if hasattr(self, 'actualizar_totales'):
             self.actualizar_totales()
 
-        if hasattr(self, 'combo_evento'):
-            self.combo_evento.configure(values=eventos_cliente)
-            if self.combo_evento.get() not in eventos_cliente:
-                self.combo_evento.set("GENERAL / NO ASIGNADO")
-
     def cargar_clientes_bd(self):
-        clis = getattr(cache_sistema, 'clientes_nombres', [])
-        if clis:
-            self._aplicar_clientes(clis)
+        clis = cache_sistema.obtener('lista_clientes_combobox')
+        if clis is not None:
+            self._aplicar_clientes_combo(clis)
         else:
-            def tarea():
+            def tarea_clientes():
+                clis_bd = []
                 conn = conectar_db(silencioso=True)
-                res_clis = []
                 if conn:
                     try:
                         cursor = conn.cursor()
                         cursor.execute("SELECT nombre_empresa FROM clientes ORDER BY nombre_empresa ASC")
-                        res_clis = [str(r[0]).strip() for r in cursor.fetchall() if r[0]]
-                        cache_sistema.guardar('clientes_nombres', res_clis)
+                        clis_bd = [str(r[0]).strip() for r in cursor.fetchall() if r[0]]
+                        cache_sistema.guardar('lista_clientes_combobox', clis_bd)
                     except: pass
                     finally: liberar_conexion(conn)
-                self.main_root.after(0, lambda: self._aplicar_clientes(res_clis))
-            threading.Thread(target=tarea, daemon=True).start()
+                self.main_root.after(0, lambda: self._aplicar_clientes_combo(clis_bd))
+            threading.Thread(target=tarea_clientes, daemon=True).start()
 
-    def _aplicar_clientes(self, clis):
-        if not hasattr(self, 'combo_cliente'): return
+    def _aplicar_clientes_combo(self, clis):
         if clis:
             lista_clis = ["--- Seleccione Cliente ---"] + clis
             self.combo_cliente.configure(values=lista_clis)
@@ -853,14 +781,6 @@ class FacturasEmitidasTab:
         else:
             self.combo_cliente.configure(values=["--- Seleccione Cliente ---"])
             self.combo_cliente.set("--- Seleccione Cliente ---")
-
-    def cargar_eventos_aprobados(self):
-        evs = getattr(cache_sistema, 'eventos_aprobados', [])
-        lista_evs = ["GENERAL / NO ASIGNADO"] + (evs if evs else [])
-        if hasattr(self, 'combo_evento'):
-            self.combo_evento.configure(values=lista_evs)
-            if self.combo_evento.get() not in lista_evs:
-                self.combo_evento.set("GENERAL / NO ASIGNADO")
 
     def actualizar_totales(self, *args):
         if not hasattr(self, 'combo_tipo') or not hasattr(self, 'ent_subtotal') or not hasattr(self, 'ent_detraccion'):
@@ -893,7 +813,7 @@ class FacturasEmitidasTab:
         fecha = self.ent_fecha.get().strip()
         cliente = self.combo_cliente.get().strip()
         desc = self.ent_desc.get().strip()
-        evento = self.combo_evento.get()
+        evento = "GENERAL / NO ASIGNADO"
         oc_sel = self.combo_oc.get()
         
         if not cliente or cliente == "--- Seleccione Cliente ---" or not desc: 
@@ -922,7 +842,7 @@ class FacturasEmitidasTab:
             imp = 0.0; tot_bruto = subtotal; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
             neto_nuevo = tot_bruto - det_monto
 
-        conn = obtener_conexion_segura()
+        conn = conectar_db()
         if not conn: return
         try:
             cursor = conn.cursor()
@@ -1008,119 +928,102 @@ class FacturasEmitidasTab:
             self.sugerir_correlativo()
             
             if hasattr(self.app_padre, 'app_cobros'):
-                self.app_padre.app_cobros.cargar_datos_cobrar(reset_pagina=True)
+                self.app_padre.app_cobros.cargar_datos_cobrar()
             if hasattr(self.app_padre, 'app_nc'):
-                self.app_padre.app_nc.cargar_datos_nc(reset_pagina=True)
+                self.app_padre.app_nc.cargar_datos_nc()
         except Exception as e: messagebox.showerror("Error SQL", str(e))
         finally: liberar_conexion(conn)
 
-    def _on_buscar_facturas_keyrelease(self, event=None):
-        if self._id_debounce_busqueda is not None:
-            try: self.main_root.after_cancel(self._id_debounce_busqueda)
-            except Exception: pass
-        self._id_debounce_busqueda = self.main_root.after(350, lambda: self.cargar_datos_tabla(reset_pagina=True))
-
+    # 🚀 FIX: CARGA LAZY LOADING + CACHÉ
     def cargar_datos_tabla(self, reset_pagina=False):
         if reset_pagina:
             self.pagina_actual = 1
             
-        if hasattr(self, 'lbl_pagina'):
-            self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
+        self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
 
+        for item in self.tabla.get_children(): 
+            self.tabla.delete(item)
+        
         filtro = ""
         if hasattr(self, 'ent_buscar_facturas'):
             filtro = self.ent_buscar_facturas.get().strip().lower()
-
+            
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-
-        self._token_carga_tabla = getattr(self, '_token_carga_tabla', 0) + 1
-        token_actual = self._token_carga_tabla
-
-        clave_cache = f"fac_em_{filtro}_pag_{self.pagina_actual}"
+        clave_cache = f"facturas_{filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
-            self._pintar_tabla_facturas(datos, token_actual)
+            self._pintar_facturas(datos)
         else:
-            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", ""))
+            self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", "", "", "", "", "", ""))
             
-            threading.Thread(
-                target=self._worker_cargar_datos_tabla,
-                args=(filtro, token_actual, offset, clave_cache),
-                daemon=True
-            ).start()
+            def tarea_descarga():
+                conn = conectar_db(silencioso=True)
+                if not conn: return
+                try:
+                    cursor = conn.cursor()
+                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, cliente, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, enlace_pdf_sunat, estado_sunat FROM facturas_emitidas"
+                    
+                    if filtro == "":
+                        cursor.execute(f"{query_base} ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+                    else:
+                        val = f"%{filtro}%"
+                        cursor.execute(f"""
+                            {query_base} 
+                            WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s 
+                            ORDER BY id DESC LIMIT %s OFFSET %s
+                        """, (val, val, val, self.registros_por_pagina, offset))
+                    
+                    datos_db = cursor.fetchall()
+                    cache_sistema.guardar(clave_cache, datos_db)
+                    self.main_root.after(0, lambda: self._pintar_facturas(datos_db))
+                except Exception as e:
+                    print(f"Error cargando tabla de facturas: {e}")
+                finally:
+                    liberar_conexion(conn)
 
-    def _worker_cargar_datos_tabla(self, filtro, token_actual, offset, clave_cache):
-        filas_resultado = []
-        conn = obtener_conexion_segura(mostrar_aviso=False)
-        if not conn:
-            self.main_root.after(0, lambda: self._pintar_tabla_facturas([], token_actual))
-            return
-        try:
-            cursor = conn.cursor()
-            if filtro == "":
-                cursor.execute("SELECT id, fecha, numero_documento, dias_credito, tipo_documento, cliente, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, enlace_pdf_sunat, estado_sunat FROM facturas_emitidas ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+            threading.Thread(target=tarea_descarga, daemon=True).start()
+
+    def _pintar_facturas(self, datos):
+        for item in self.tabla.get_children():
+            self.tabla.delete(item)
+
+        contador = 1
+        for r in datos:
+            tiene_arch = "✅ Ver" if r[12] else "❌ No"
+            tipo_doc = r[4]; impuesto = r[9]; tot_bruto = r[10]; det_monto = r[11]
+            if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
+            else: neto = tot_bruto - det_monto
+            
+            estado_db = r[14]
+            if estado_db and "Anulada" in estado_db:
+                estado_sunat_str = "❌ Anulada"
             else:
-                val = f"%{filtro}%"
-                cursor.execute("""
-                    SELECT id, fecha, numero_documento, dias_credito, tipo_documento, cliente, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, enlace_pdf_sunat, estado_sunat 
-                    FROM facturas_emitidas 
-                    WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR evento_asociado ILIKE %s
-                    ORDER BY id DESC LIMIT %s OFFSET %s
-                """, (val, val, val, self.registros_por_pagina, offset))
-
-            contador = (self.pagina_actual - 1) * self.registros_por_pagina + 1
-            for r in cursor.fetchall():
-                tiene_arch = "✅ Ver" if r[12] else "❌ No"
-                tipo_doc = r[4]; impuesto = r[9]; tot_bruto = r[10]; det_monto = r[11]
-                if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
-                else: neto = tot_bruto - det_monto
-
-                estado_db = r[14]
-                if estado_db and "Anulada" in estado_db:
-                    estado_sunat_str = "❌ Anulada"
-                else:
-                    estado_sunat_str = "✅ Emitido" if r[13] else "⏳ Local"
-
-                row_vals = (
-                    contador, r[0], r[1], r[2] if r[2] else "-", r[3], tipo_doc.split(" ")[0], r[5], r[7],
-                    r[6].split(" | ")[0] if " | " in r[6] else r[6], r[8], formatear_moneda(impuesto), formatear_moneda(tot_bruto), formatear_moneda(det_monto), formatear_moneda(neto), estado_sunat_str, tiene_arch
-                )
-
-                filas_resultado.append(row_vals)
-                contador += 1
+                estado_sunat_str = "✅ Emitido" if r[13] else "⏳ Local"
                 
-            cache_sistema.guardar(clave_cache, filas_resultado)
-        except Exception:
-            pass
-        finally:
-            liberar_conexion(conn)
-
-        self.main_root.after(0, lambda: self._pintar_tabla_facturas(filas_resultado, token_actual))
-
-    def _pintar_tabla_facturas(self, filas_resultado, token_actual):
-        if token_actual != getattr(self, '_token_carga_tabla', token_actual):
-            return
-        for item in self.tabla.get_children(): self.tabla.delete(item)
-        for row_vals in filas_resultado:
+            row_vals = (
+                contador, r[0], r[1], r[2] if r[2] else "-", r[3], tipo_doc.split(" ")[0], r[5],
+                r[7].split(" | ")[0] if " | " in r[7] else r[7], r[8], formatear_moneda(impuesto), formatear_moneda(tot_bruto), formatear_moneda(det_monto), formatear_moneda(neto), estado_sunat_str, tiene_arch
+            )
+            
             self.tabla.insert("", tk.END, values=row_vals)
+            contador += 1
             
-        if hasattr(self, 'btn_ant'):
-            if self.pagina_actual > 1:
-                self.btn_ant.configure(state="normal")
-            else:
-                self.btn_ant.configure(state="disabled")
-                
-            if len(filas_resultado) == self.registros_por_pagina:
-                self.btn_sig.configure(state="normal")
-            else:
-                self.btn_sig.configure(state="disabled")
+        if self.pagina_actual > 1:
+            self.btn_ant.configure(state="normal")
+        else:
+            self.btn_ant.configure(state="disabled")
+            
+        if len(datos) == self.registros_por_pagina:
+            self.btn_sig.configure(state="normal")
+        else:
+            self.btn_sig.configure(state="disabled")
 
     def abrir_archivo_desde_tabla(self, event):
         sel = self.tabla.selection()
         if not sel: return
         id_doc = self.tabla.item(sel[0], "values")[1] 
-        conn = obtener_conexion_segura()
+        conn = conectar_db()
         if not conn: return
         try:
             cursor = conn.cursor()
@@ -1134,7 +1037,7 @@ class FacturasEmitidasTab:
                 elif ruta_local and os.path.exists(ruta_local):
                     abrir_documento(ruta_local)
                 else:
-                    messagebox.showinfo("Aviso", "Este comprobante aún no tiene PDF asociado.")
+                    messagebox.showinfo("Aviso", "No hay PDF asociado a esta factura.")
         except Exception: pass
         finally: liberar_conexion(conn)
 
@@ -1146,19 +1049,21 @@ class FacturasEmitidasTab:
         id_doc = valores[1]
         cli_str = valores[6]
         
-        conn = obtener_conexion_segura()
+        conn = conectar_db()
         if not conn: return
-        cursor = conn.cursor()
-        cursor.execute("SELECT tipo_documento, numero_documento, fecha, cliente, descripcion, evento_asociado, subtotal, dias_credito, COALESCE(det_porcentaje, 0), impuesto, total, enlace_pdf_sunat, estado_sunat, orden_compra FROM facturas_emitidas WHERE id = %s", (id_doc,))
-        reg = cursor.fetchone()
-        
-        cursor.execute("SELECT ruc, direccion_fiscal, correo FROM clientes WHERE TRIM(UPPER(nombre_empresa)) = TRIM(UPPER(%s))", (cli_str,))
-        res_cli = cursor.fetchone()
-        ruc_cliente = res_cli[0] if res_cli and res_cli[0] else ""
-        dir_cliente = res_cli[1] if res_cli and res_cli[1] else "-"
-        correo_cliente = res_cli[2] if res_cli and res_cli[2] else ""
-        liberar_conexion(conn)
-        
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT tipo_documento, numero_documento, fecha, cliente, descripcion, evento_asociado, subtotal, dias_credito, COALESCE(det_porcentaje, 0), impuesto, total, enlace_pdf_sunat, estado_sunat, orden_compra FROM facturas_emitidas WHERE id = %s", (id_doc,))
+            reg = cursor.fetchone()
+            
+            cursor.execute("SELECT ruc, direccion_fiscal, correo FROM clientes WHERE TRIM(UPPER(nombre_empresa)) = TRIM(UPPER(%s))", (cli_str,))
+            res_cli = cursor.fetchone()
+            ruc_cliente = res_cli[0] if res_cli and res_cli[0] else ""
+            dir_cliente = res_cli[1] if res_cli and res_cli[1] else "-"
+            correo_cliente = res_cli[2] if res_cli and res_cli[2] else ""
+        finally:
+            liberar_conexion(conn)
+            
         if not reg: return
         enlace_sunat = reg[11]
         estado_sunat_db = reg[12]
@@ -1202,7 +1107,7 @@ class FacturasEmitidasTab:
         ctk.CTkLabel(f_docs, text="📄 Documentos Asociados:", font=("Arial", 11, "bold")).pack(pady=5)
 
         def descargar_pdf_sunat():
-            conn = obtener_conexion_segura(parent=v_edit)
+            conn = conectar_db()
             if not conn: return
             try:
                 cursor = conn.cursor()
@@ -1220,7 +1125,7 @@ class FacturasEmitidasTab:
             finally: liberar_conexion(conn)
 
         def abrir_oc_asociada(numero_oc):
-            conn = obtener_conexion_segura(parent=v_edit)
+            conn = conectar_db()
             if not conn: return
             try:
                 c = conn.cursor()
@@ -1233,44 +1138,10 @@ class FacturasEmitidasTab:
             except Exception as e: messagebox.showerror("Error", str(e), parent=v_edit)
             finally: liberar_conexion(conn)
 
-        def abrir_cotizacion_asociada(evento_str):
-            codigo_cot = evento_str.split(" | ")[0].strip()
-            ruta_base = obtener_ruta_base_drive()
-            
-            if not ruta_base:
-                messagebox.showwarning("Aviso", "Configure la ruta de Google Drive en Ajustes.", parent=v_edit)
-                return
-                
-            nombre_esperado = f"Cotizacion_{codigo_cot}"
-            
-            carpetas_rapidas = [
-                os.path.join(ruta_base, "Cotizaciones"),
-                os.path.join(ruta_base, "cotizaciones"),
-                ruta_base
-            ]
-            
-            for c in carpetas_rapidas:
-                if os.path.exists(c):
-                    for archivo in os.listdir(c):
-                        if archivo.startswith(nombre_esperado) and archivo.lower().endswith(".pdf"):
-                            abrir_documento(os.path.join(c, archivo))
-                            return
-
-            for root_dir, dirs, files in os.walk(ruta_base):
-                for archivo in files:
-                    if archivo.startswith(nombre_esperado) and archivo.lower().endswith(".pdf"):
-                        abrir_documento(os.path.join(root_dir, archivo))
-                        return
-                        
-            messagebox.showinfo("Aviso", f"No se encontró el PDF '{nombre_esperado}.pdf' en su Google Drive.", parent=v_edit)
-
         ctk.CTkButton(f_docs, text="Ver Factura (Local/SUNAT)", fg_color="#27ae60", hover_color="#1e8449", height=28, command=descargar_pdf_sunat).pack(fill="x", padx=10, pady=2)
         
         if reg[13]: 
             ctk.CTkButton(f_docs, text=f"Ver Orden de Compra: {reg[13]}", fg_color="#d35400", hover_color="#a84300", height=28, command=lambda: abrir_oc_asociada(reg[13])).pack(fill="x", padx=10, pady=2)
-            
-        if reg[5] and "GENERAL" not in reg[5]: 
-            ctk.CTkButton(f_docs, text="Ver Cotización Asociada", fg_color="#8e44ad", hover_color="#732d91", height=28, command=lambda: abrir_cotizacion_asociada(reg[5])).pack(fill="x", padx=10, pady=2)
 
         def modificar_datos_registro():
             v_edit.destroy()
@@ -1327,35 +1198,8 @@ class FacturasEmitidasTab:
             ent_desc = ctk.CTkEntry(f_cont)
             ent_desc.pack(fill="x", pady=(0, 10))
             ent_desc.insert(0, reg[4])
-
-            conn3 = conectar_db(silencioso=True)
-            eventos_lista = ["GENERAL / NO ASIGNADO"]
-            if conn3:
-                try:
-                    c3 = conn3.cursor()
-                    c3.execute("SELECT * FROM cotizaciones LIMIT 0")
-                    cols = [desc[0] for desc in c3.description]
-                    col_cod = 'codigo_cotizacion' if 'codigo_cotizacion' in cols else ('codigo' if 'codigo' in cols else None)
-                    col_cli = 'nombre_empresa' if 'nombre_empresa' in cols else ('cliente_nombre' if 'cliente_nombre' in cols else ('cliente' if 'cliente' in cols else None))
-                    col_ev = 'nombre_evento' if 'nombre_evento' in cols else ('evento' if 'evento' in cols else None)
-
-                    if col_cod and col_cli and col_ev:
-                        query = f"SELECT {col_cod}, {col_ev} FROM cotizaciones WHERE TRIM(UPPER({col_cli})) = TRIM(UPPER(%s)) AND status = 'Aprobada' ORDER BY id DESC"
-                        c3.execute(query, (reg[3],))
-                        for r_ev in c3.fetchall():
-                            eventos_lista.append(f"{r_ev[0]} | {r_ev[1]}")
-                except: pass
-                finally: liberar_conexion(conn3)
-                
-            if reg[5] and reg[5] not in eventos_lista:
-                eventos_lista.append(reg[5])
-
-            ctk.CTkLabel(f_cont, text="Evento Asociado:", font=("Arial", 11, "bold")).pack(anchor="w")
-            cmb_ev = ctk.CTkComboBox(f_cont, values=eventos_lista, state="readonly")
-            cmb_ev.pack(fill="x", pady=(0, 10))
-            cmb_ev.set(reg[5] if reg[5] else "GENERAL / NO ASIGNADO")
             
-            conn = conectar_db(silencioso=True)
+            conn = conectar_db()
             ocs_lista = ["--- Sin Orden de Compra ---"]
             if conn:
                 try:
@@ -1380,7 +1224,7 @@ class FacturasEmitidasTab:
             ent_det = ctk.CTkEntry(f_cont)
             ent_det.pack(fill="x", pady=(0, 10))
             
-            if "Recibo" in reg[0]:
+            if "Recibo" in str(reg[0]):
                 lbl_tit_det.configure(text="Retención (%):")
                 if reg[6] > 0 and reg[9] > 0:
                     pct = (float(reg[9]) / float(reg[6])) * 100
@@ -1389,7 +1233,7 @@ class FacturasEmitidasTab:
                     ent_det.insert(0, "0")
             else:
                 lbl_tit_det.configure(text="Detracción (%):")
-                ent_det.insert(0, str(reg[8]))
+                ent_det.insert(0, str(reg[8]) if reg[8] else CONFIG_REGIONAL.get("detraccion_porcentaje", "12"))
 
             def guardar_cambios():
                 tipo = cmb_tipo.get()
@@ -1397,7 +1241,7 @@ class FacturasEmitidasTab:
                 fecha = ent_f.get().strip()
                 cli = ent_c.get().strip()
                 desc = ent_desc.get().strip()
-                evento = cmb_ev.get()
+                evento = "GENERAL / NO ASIGNADO"
                 oc_sel = cmb_oc.get()
                 if oc_sel == "--- Sin Orden de Compra ---": oc_sel = ""
                 
@@ -1419,7 +1263,7 @@ class FacturasEmitidasTab:
                     imp = 0.0; tot_bruto = sub; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
                     neto_nuevo = tot_bruto - det_monto
 
-                conn2 = obtener_conexion_segura(parent=v_mod)
+                conn2 = conectar_db()
                 if not conn2: return
                 try:
                     c2 = conn2.cursor()
@@ -1487,7 +1331,7 @@ class FacturasEmitidasTab:
                     messagebox.showinfo("Éxito", "Registro modificado correctamente.", parent=v_mod)
                     v_mod.destroy()
                     self.cargar_datos_tabla(reset_pagina=True)
-                    if hasattr(self.app_padre, 'app_cobros'): self.app_padre.app_cobros.cargar_datos_cobrar(reset_pagina=True)
+                    if hasattr(self.app_padre, 'app_cobros'): self.app_padre.app_cobros.cargar_datos_cobrar()
                 except Exception as e: messagebox.showerror("Error SQL", str(e), parent=v_mod)
                 finally: liberar_conexion(conn2)
 
@@ -1496,8 +1340,7 @@ class FacturasEmitidasTab:
         def eliminar_registro():
             if messagebox.askyesno("Confirmar Eliminación", "⚠️ ¿Desea eliminar completamente este registro?\n\nSe borrará de la base de datos y el archivo físico asociado.", parent=v_edit):
                 try:
-                    conn = obtener_conexion_segura(parent=v_edit)
-                    if not conn: return
+                    conn = conectar_db()
                     cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM facturas_emitidas WHERE id = %s", (id_doc,))
                     row = cursor.fetchone()
@@ -1505,22 +1348,22 @@ class FacturasEmitidasTab:
                     if ruta_archivo and os.path.exists(ruta_archivo): os.remove(ruta_archivo)
                     cursor.execute("DELETE FROM facturas_emitidas WHERE id = %s", (id_doc,))
                     conn.commit()
+                    liberar_conexion(conn)
                     
                     cache_sistema.invalidar()
                     registrar_auditoria(self.app_padre.usuario_activo, "Facturas Emitidas", f"Eliminó completamente la factura ID {id_doc}")
                     messagebox.showinfo("Éxito", "Registro eliminado.", parent=v_edit)
                     v_edit.destroy()
                     self.cargar_datos_tabla(reset_pagina=True)
-                    if hasattr(self.app_padre, 'app_cobros'): self.app_padre.app_cobros.cargar_datos_cobrar(reset_pagina=True)
+                    if hasattr(self.app_padre, 'app_cobros'): self.app_padre.app_cobros.cargar_datos_cobrar()
                 except Exception as e: messagebox.showerror("Error", str(e), parent=v_edit)
-                finally: liberar_conexion(conn)
 
         def emitir_sunat():
             if not abrir_ventana_emision_sunat:
                 return messagebox.showerror("Error", "El módulo 'facturacion_sunat.py' no se encuentra disponible.", parent=v_edit)
                 
             def accion_post_otp():
-                abrir_ventana_emision_sunat(v_edit, datos_factura, self.app_padre.usuario_activo, callback_exito=lambda: self.cargar_datos_tabla(reset_pagina=True))
+                abrir_ventana_emision_sunat(v_edit, datos_factura, self.app_padre.usuario_activo, callback_exito=self.cargar_datos_tabla)
 
             solicitar_otp(f"Emitir comprobante {reg[1]} a SUNAT", accion_post_otp, v_edit)
 
@@ -1578,21 +1421,18 @@ class CuentasPorCobrarTab:
         self.main_root = main_root
         self.app_padre = app_padre
         self.orden_columnas = {}
-        self._id_debounce_busqueda = None
         
-        # 🚀 VARIABLES LAZY LOADING
+        # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
         self.registros_por_pagina = 50
         
         self.inicializar_entorno()
         self.crear_interfaz()
 
+    # 🚀 FIX: INICIALIZACIÓN ASÍNCRONA
     def inicializar_entorno(self):
-        if _SCHEMA_OK.get("pagos_clientes"):
-            return
-
         def tarea_init():
-            conn = obtener_conexion_segura(mostrar_aviso=False)
+            conn = conectar_db(silencioso=True)
             if not conn: return
             try:
                 cursor = conn.cursor()
@@ -1604,10 +1444,15 @@ class CuentasPorCobrarTab:
                     )
                 """)
                 conn.commit()
-                _SCHEMA_OK["pagos_clientes"] = True
+                
+                try:
+                    cursor.execute("ALTER TABLE pagos_clientes ADD COLUMN cuenta_destino VARCHAR(255) DEFAULT ''")
+                    conn.commit()
+                except Exception: conn.rollback()
+                
             except Exception: pass
             finally: liberar_conexion(conn)
-            
+        
         threading.Thread(target=tarea_init, daemon=True).start()
 
     def crear_interfaz(self):
@@ -1632,16 +1477,21 @@ class CuentasPorCobrarTab:
         f_busqueda = ctk.CTkFrame(self.tab_frame, fg_color="transparent")
         f_busqueda.pack(fill="x", padx=15, pady=(0, 5))
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        self.ent_buscar_cobros = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por documento, cliente, evento, concepto...")
+        self.ent_buscar_cobros = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por documento, cliente, concepto...")
         self.ent_buscar_cobros.pack(side="left", fill="x", expand=True)
-        self.ent_buscar_cobros.bind("<KeyRelease>", self._on_buscar_cobros_keyrelease)
+        
+        self.ent_buscar_cobros.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_cobros.bind("<Return>", lambda e: self.cargar_datos_cobrar(reset_pagina=True))
 
         f_tabla = ctk.CTkFrame(self.tab_frame, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True, padx=15, pady=0)
 
-        columnas = ("num", "id_factura", "fecha", "nro_doc", "cliente", "concepto", "evento", "subtotal", "igv", "detraccion", "neto_facturado", "cobrado", "saldo", "archivos")
+        # SE OMITIÓ LA COLUMNA EVENTO VISUALMENTE
+        columnas = ("num", "id_factura", "fecha", "nro_doc", "cliente", "concepto", "subtotal", "igv", "detraccion", "neto_facturado", "cobrado", "saldo", "archivos")
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
+
+        self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251") 
+        self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c") 
 
         self.tabla.heading("num", text="N°")
         self.tabla.heading("id_factura", text="ID (Oculto)")
@@ -1649,7 +1499,6 @@ class CuentasPorCobrarTab:
         self.tabla.heading("nro_doc", text="N° Documento")
         self.tabla.heading("cliente", text="Cliente")
         self.tabla.heading("concepto", text="Concepto")
-        self.tabla.heading("evento", text="Evento Asociado")
         self.tabla.heading("neto_facturado", text="Neto Facturado")
         self.tabla.heading("cobrado", text="Total Cobrado")
         self.tabla.heading("saldo", text="Saldo Pendiente")
@@ -1661,13 +1510,12 @@ class CuentasPorCobrarTab:
         self.tabla.column("nro_doc", width=100, anchor="center")
         self.tabla.column("cliente", width=140, anchor="w")
         self.tabla.column("concepto", width=150, anchor="w")
-        self.tabla.column("evento", width=120, anchor="w")
         self.tabla.column("neto_facturado", width=95, anchor="e")
         self.tabla.column("cobrado", width=90, anchor="e")
         self.tabla.column("saldo", width=90, anchor="e")
         self.tabla.column("archivos", width=100, anchor="center")
 
-        self.tabla.config(displaycolumns=("num", "fecha", "nro_doc", "cliente", "concepto", "evento", "neto_facturado", "cobrado", "saldo", "archivos"))
+        self.tabla.config(displaycolumns=("num", "fecha", "nro_doc", "cliente", "concepto", "neto_facturado", "cobrado", "saldo", "archivos"))
         self.tabla.bind("<Double-1>", self.abrir_todos_los_archivos)
 
         scroll_y = ctk.CTkScrollbar(f_tabla, orientation="vertical", command=self.tabla.yview)
@@ -1678,23 +1526,37 @@ class CuentasPorCobrarTab:
         self.frame_bottom = ctk.CTkFrame(self.tab_frame, fg_color="transparent")
         self.frame_bottom.pack(fill="x", padx=15, pady=10)
 
-        # 🚀 BOTONES PAGINACIÓN
+        # 🚀 BOTONES DE PAGINACIÓN (Agregados a la izquierda del bottom frame)
         f_paginacion = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
-        f_paginacion.pack(side="left")
+        f_paginacion.pack(side="left", padx=(0, 20))
+        
         self.btn_ant = ctk.CTkButton(f_paginacion, text="◀ Ant", width=60, command=self.pagina_anterior)
         self.btn_ant.pack(side="left", padx=2)
+        
         self.lbl_pagina = ctk.CTkLabel(f_paginacion, text=f"Pág {self.pagina_actual}", font=("Arial", 11, "bold"))
         self.lbl_pagina.pack(side="left", padx=5)
+        
         self.btn_sig = ctk.CTkButton(f_paginacion, text="Sig ▶", width=60, command=self.pagina_siguiente)
         self.btn_sig.pack(side="left", padx=2)
 
         self.btn_excel = ctk.CTkButton(self.frame_bottom, text="📊 Exportar a Excel", font=("Arial", 12, "bold"), width=160, fg_color="#27ae60", hover_color="#1e8449", command=self.exportar_excel)
-        self.btn_excel.pack(side="left", padx=20)
+        self.btn_excel.pack(side="left")
+
+        # --- LEYENDA ---
+        f_leyenda = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
+        f_leyenda.pack(side="left", padx=30)
+        
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#c0392b").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Sin Cuenta Asignada / Pendiente", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,10))
+        
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#27ae60").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,5))
+        # ---------------
 
         self.lbl_total_general = ctk.CTkLabel(self.frame_bottom, text="Total Pendiente General por Cobrar: 0.00", font=("Arial", 12, "bold"), text_color="#c0392b")
         self.lbl_total_general.pack(side="right")
 
-        self.main_root.after(100, lambda: self.cargar_datos_cobrar(reset_pagina=True))
+        self.main_root.after(150, lambda: self.cargar_datos_cobrar(reset_pagina=True))
 
     def pagina_anterior(self):
         if self.pagina_actual > 1:
@@ -1705,16 +1567,21 @@ class CuentasPorCobrarTab:
         self.pagina_actual += 1
         self.cargar_datos_cobrar()
 
+    def buscar_con_retraso(self):
+        if hasattr(self, "_busqueda_job"):
+            try: self.main_root.after_cancel(self._busqueda_job)
+            except: pass
+        self._busqueda_job = self.main_root.after(350, lambda: self.cargar_datos_cobrar(reset_pagina=True))
+
     def exportar_excel(self):
         try: import pandas as pd
         except ImportError: return messagebox.showerror("Error", "Falta librería pandas.")
         filas = [self.tabla.item(item)["values"][2:] for item in self.tabla.get_children()]
         if not filas: return messagebox.showwarning("Aviso", "No hay registros.")
-        columnas = ["Fecha Fac.", "N° Documento", "Cliente", "Concepto", "Evento Asociado", "Subtotal", "IGV", "Detracción", "Neto Facturado", "Cobrado", "Saldo Pendiente", "Archivos"]
+        columnas = ["Fecha Fac.", "N° Documento", "Cliente", "Concepto", "Subtotal", "IGV", "Detracción", "Neto Facturado", "Cobrado", "Saldo Pendiente", "Archivos"]
         ruta = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Cuentas_por_Cobrar.xlsx", filetypes=[("Excel", "*.xlsx")])
         if ruta:
             pd.DataFrame(filas, columns=columnas).to_excel(ruta, index=False)
-            registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar", f"Exportó reporte Excel de Cuentas por Cobrar ({len(filas)} registros) a '{ruta}'")
             messagebox.showinfo("Éxito", f"Reporte exportado a:\n{ruta}")
             abrir_documento(ruta)
 
@@ -1724,7 +1591,7 @@ class CuentasPorCobrarTab:
             vals = self.tabla.item(item, "values")
             cli = vals[4] 
             try:
-                saldo = desformatear_numero(vals[12]) 
+                saldo = desformatear_numero(vals[11]) 
                 if saldo > 0: saldos[cli] = saldos.get(cli, 0.0) + saldo
             except ValueError: pass
             
@@ -1749,126 +1616,147 @@ class CuentasPorCobrarTab:
 
         ctk.CTkLabel(v_resumen, text=f"Total cuentas por cobrar : {formatear_moneda(total_cobrar)}", font=("Arial", 14, "bold")).pack(anchor="e", padx=15, pady=(5, 15))
 
-    def _on_buscar_cobros_keyrelease(self, event=None):
-        if self._id_debounce_busqueda is not None:
-            try: self.main_root.after_cancel(self._id_debounce_busqueda)
-            except Exception: pass
-        self._id_debounce_busqueda = self.main_root.after(350, lambda: self.cargar_datos_cobrar(reset_pagina=True))
-
+    # 🚀 FIX: CARGA LAZY LOADING + CACHÉ
     def cargar_datos_cobrar(self, reset_pagina=False):
         if reset_pagina:
             self.pagina_actual = 1
             
-        if hasattr(self, 'lbl_pagina'):
-            self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
+        self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
 
+        for fila in self.tabla.get_children(): 
+            self.tabla.delete(fila)
+        
         filtro = ""
         if hasattr(self, 'ent_buscar_cobros'):
             filtro = self.ent_buscar_cobros.get().strip().lower()
 
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-
-        self._token_carga_cobros = getattr(self, '_token_carga_cobros', 0) + 1
-        token_actual = self._token_carga_cobros
-
         clave_cache = f"cobros_{filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
-        
+
         if datos is not None:
-            self._pintar_tabla_cobros(datos["filas"], datos["total"], token_actual)
+            self._pintar_cobros(datos["filas"], datos["total_pendiente"], datos["facturas_con_cuenta"])
         else:
-            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", ""))
+            self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", "", "", "", ""))
             
-            threading.Thread(
-                target=self._worker_cargar_datos_cobrar,
-                args=(filtro, token_actual, offset, clave_cache),
-                daemon=True
-            ).start()
-
-    def _worker_cargar_datos_cobrar(self, filtro, token_actual, offset, clave_cache):
-        filas_resultado = []
-        total_pendiente = 0.0
-        conn = obtener_conexion_segura(mostrar_aviso=False)
-        if not conn:
-            self.main_root.after(0, lambda: self._pintar_tabla_cobros([], 0.0, token_actual))
-            return
-        try:
-            cursor = conn.cursor()
-            
-            if filtro == "":
-                cursor.execute("SELECT id, fecha, numero_documento, cliente, evento_asociado, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, descripcion, enlace_pdf_sunat, archivo_ruta, estado_sunat FROM facturas_emitidas ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
-            else:
-                val = f"%{filtro}%"
-                cursor.execute("""
-                    SELECT id, fecha, numero_documento, cliente, evento_asociado, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, descripcion, enlace_pdf_sunat, archivo_ruta, estado_sunat 
-                    FROM facturas_emitidas 
-                    WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s
-                    ORDER BY id DESC LIMIT %s OFFSET %s
-                """, (val, val, val, val, self.registros_por_pagina, offset))
+            def tarea_descarga():
+                conn = conectar_db(silencioso=True)
+                if not conn: return
                 
-            registros = cursor.fetchall()
-
-            contador = (self.pagina_actual - 1) * self.registros_por_pagina + 1
-            for reg in registros:
-                id_factura, fecha, nro_doc, cliente, evento, sub, imp, det_monto, tot_bruto, tipo_doc, concepto, enlace_sunat, arch_ruta, est_sunat = reg
-
-                if not enlace_sunat and not arch_ruta: continue
-                if est_sunat and "Anulada" in str(est_sunat): continue
-
-                sub_val = float(sub) if sub else 0.0
-                imp_val = float(imp) if imp else 0.0
-                det_monto_val = float(det_monto) if det_monto else 0.0
-                tot_bruto_val = float(tot_bruto) if tot_bruto else 0.0
-
-                if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc:
-                    neto_facturado = tot_bruto_val - imp_val - det_monto_val
-                else:
-                    neto_facturado = tot_bruto_val - det_monto_val
-
-                cursor.execute("SELECT SUM(monto_pagado), COUNT(archivo_ruta) FROM pagos_clientes WHERE id_factura = %s AND archivo_ruta != ''", (id_factura,))
-                cobrado_res, cant_archivos = cursor.fetchone()
-                monto_cobrado = float(cobrado_res) if cobrado_res else 0.0
-
-                saldo_pendiente = max(0.0, neto_facturado - monto_cobrado)
-
-                txt_adjuntos = f"📁 {cant_archivos} archivo(s)" if cant_archivos > 0 else "❌ Sin adjuntos"
-
-                row_vals = (
-                    contador, id_factura, fecha, nro_doc if nro_doc else "S/N", cliente if cliente else "Cliente Sin Nombre", concepto, evento, 
-                    formatear_moneda(sub_val), formatear_moneda(imp_val), formatear_moneda(det_monto_val),
-                    formatear_moneda(neto_facturado), formatear_moneda(monto_cobrado), formatear_moneda(saldo_pendiente), txt_adjuntos
-                )
-
-                total_pendiente += saldo_pendiente
-                filas_resultado.append(row_vals)
-                contador += 1
+                filas_procesadas = []
+                total_pendiente_global = 0.0
+                facturas_con_cuenta = set()
                 
-            cache_sistema.guardar(clave_cache, {"filas": filas_resultado, "total": total_pendiente})
-        except Exception:
-            pass
-        finally:
-            liberar_conexion(conn)
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT DISTINCT id_factura FROM pagos_clientes WHERE cuenta_destino IS NOT NULL AND cuenta_destino != ''")
+                    facturas_con_cuenta = {row[0] for row in cursor.fetchall()}
 
-        self.main_root.after(0, lambda: self._pintar_tabla_cobros(filas_resultado, total_pendiente, token_actual))
+                    if filtro == "":
+                        cursor.execute("SELECT id, fecha, numero_documento, cliente, evento_asociado, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, descripcion, enlace_pdf_sunat, archivo_ruta, estado_sunat FROM facturas_emitidas ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+                    else:
+                        val = f"%{filtro}%"
+                        cursor.execute(f"""
+                            SELECT id, fecha, numero_documento, cliente, evento_asociado, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, descripcion, enlace_pdf_sunat, archivo_ruta, estado_sunat 
+                            FROM facturas_emitidas 
+                            WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s
+                            ORDER BY id DESC LIMIT %s OFFSET %s
+                        """, (val, val, val, self.registros_por_pagina, offset))
+                        
+                    registros = cursor.fetchall()
+                    
+                    # Calcular el total global pendiente sin importar paginación (Solo para el Label inferior)
+                    if filtro == "":
+                        cursor.execute("SELECT id, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, estado_sunat FROM facturas_emitidas")
+                    else:
+                        cursor.execute("SELECT id, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, estado_sunat FROM facturas_emitidas WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s", (val, val, val))
+                        
+                    todos_los_regs = cursor.fetchall()
+                    for r_tot in todos_los_regs:
+                        id_f_tot, s_tot, i_tot, d_tot, t_bruto_tot, tipo_doc_tot, est_tot = r_tot
+                        if est_tot and "Anulada" in str(est_tot): continue
+                        
+                        sub_v = float(s_tot) if s_tot else 0.0
+                        imp_v = float(i_tot) if i_tot else 0.0
+                        det_v = float(d_tot) if d_tot else 0.0
+                        tot_v = float(t_bruto_tot) if t_bruto_tot else 0.0
+                        
+                        if tipo_doc_tot and "Recibo" in tipo_doc_tot and "8%" in tipo_doc_tot: neto_fac = tot_v - imp_v - det_v
+                        else: neto_fac = tot_v - det_v
+                        
+                        cursor.execute("SELECT SUM(monto_pagado) FROM pagos_clientes WHERE id_factura = %s", (id_f_tot,))
+                        cobrado_res = cursor.fetchone()[0]
+                        m_cobrado = float(cobrado_res) if cobrado_res else 0.0
+                        total_pendiente_global += max(0.0, neto_fac - m_cobrado)
 
-    def _pintar_tabla_cobros(self, filas_resultado, total_pendiente, token_actual):
-        if token_actual != getattr(self, '_token_carga_cobros', token_actual):
-            return
+                    for reg in registros:
+                        id_factura, fecha, nro_doc, cliente, evento, sub, imp, det_monto, tot_bruto, tipo_doc, concepto, enlace_sunat, arch_ruta, est_sunat = reg
+                        
+                        if not enlace_sunat and not arch_ruta: continue
+                        if est_sunat and "Anulada" in str(est_sunat): continue
+
+                        sub_val = float(sub) if sub else 0.0
+                        imp_val = float(imp) if imp else 0.0
+                        det_monto_val = float(det_monto) if det_monto else 0.0
+                        tot_bruto_val = float(tot_bruto) if tot_bruto else 0.0
+                        
+                        if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc:
+                            neto_facturado = tot_bruto_val - imp_val - det_monto_val
+                        else:
+                            neto_facturado = tot_bruto_val - det_monto_val
+                        
+                        cursor.execute("SELECT SUM(monto_pagado), COUNT(archivo_ruta) FROM pagos_clientes WHERE id_factura = %s AND archivo_ruta != ''", (id_factura,))
+                        cobrado_res, cant_archivos = cursor.fetchone()
+                        monto_cobrado = float(cobrado_res) if cobrado_res else 0.0
+                        
+                        saldo_pendiente = max(0.0, neto_facturado - monto_cobrado)
+                        
+                        filas_procesadas.append({
+                            "id_factura": id_factura, "fecha": fecha, "nro_doc": nro_doc, "cliente": cliente, "concepto": concepto,
+                            "sub_val": sub_val, "imp_val": imp_val, "det_monto_val": det_monto_val, "neto_facturado": neto_facturado,
+                            "monto_cobrado": monto_cobrado, "saldo_pendiente": saldo_pendiente, "cant_archivos": cant_archivos
+                        })
+                        
+                    datos_cache = {"filas": filas_procesadas, "total_pendiente": total_pendiente_global, "facturas_con_cuenta": facturas_con_cuenta}
+                    cache_sistema.guardar(clave_cache, datos_cache)
+                    
+                except Exception as e:
+                    print("Error cargando cobros:", e)
+                finally:
+                    liberar_conexion(conn)
+
+                self.main_root.after(0, lambda: self._pintar_cobros(filas_procesadas, total_pendiente_global, facturas_con_cuenta))
+                
+            threading.Thread(target=tarea_descarga, daemon=True).start()
+
+    def _pintar_cobros(self, filas, total_pendiente, facturas_con_cuenta):
         for fila in self.tabla.get_children(): self.tabla.delete(fila)
-        for row_vals in filas_resultado:
-            self.tabla.insert("", tk.END, values=row_vals)
+        
+        contador = 1
+        for f in filas:
+            txt_adjuntos = f"📁 {f['cant_archivos']} archivo(s)" if f['cant_archivos'] > 0 else "❌ Sin adjuntos"
+            etiqueta_color = "con_cuenta" if f['id_factura'] in facturas_con_cuenta else "sin_cuenta"
+
+            row_vals = (
+                contador, f['id_factura'], f['fecha'], f['nro_doc'] if f['nro_doc'] else "S/N", f['cliente'] if f['cliente'] else "Cliente Sin Nombre", f['concepto'], 
+                formatear_moneda(f['sub_val']), formatear_moneda(f['imp_val']), formatear_moneda(f['det_monto_val']),
+                formatear_moneda(f['neto_facturado']), formatear_moneda(f['monto_cobrado']), formatear_moneda(f['saldo_pendiente']), txt_adjuntos
+            )
+
+            self.tabla.insert("", tk.END, values=row_vals, tags=(etiqueta_color,))
+            contador += 1
+
         self.lbl_total_general.configure(text=f"Total Pendiente Filtrado: {formatear_moneda(total_pendiente)}")
         
-        if hasattr(self, 'btn_ant'):
-            if self.pagina_actual > 1:
-                self.btn_ant.configure(state="normal")
-            else:
-                self.btn_ant.configure(state="disabled")
-                
-            if len(filas_resultado) == self.registros_por_pagina:
-                self.btn_sig.configure(state="normal")
-            else:
-                self.btn_sig.configure(state="disabled")
+        if self.pagina_actual > 1:
+            self.btn_ant.configure(state="normal")
+        else:
+            self.btn_ant.configure(state="disabled")
+            
+        if len(filas) == self.registros_por_pagina:
+            self.btn_sig.configure(state="normal")
+        else:
+            self.btn_sig.configure(state="disabled")
 
     def cargar_comprobante_cobro(self):
         ruta_base = obtener_ruta_base_drive()
@@ -1881,13 +1769,13 @@ class CuentasPorCobrarTab:
         
         valores = self.tabla.item(seleccion[0], "values")
         id_factura, nro_doc, cliente = valores[1], valores[3], valores[4] 
-        saldo_actual = desformatear_numero(valores[12]) 
+        saldo_actual = desformatear_numero(valores[11]) 
         
         if saldo_actual <= 0: return messagebox.showinfo("Aviso", "Esta factura ya está cobrada por completo.")
 
         v_cobro = ctk.CTkToplevel(self.main_root)
         v_cobro.title("Registrar Nuevo Cobro")
-        v_cobro.geometry("400x350")
+        v_cobro.geometry("450x420")
         v_cobro.transient(self.main_root)
         v_cobro.grab_set()
 
@@ -1896,6 +1784,21 @@ class CuentasPorCobrarTab:
 
         f_form = ctk.CTkFrame(v_cobro, fg_color="transparent")
         f_form.pack(fill="x", padx=20)
+
+        config = cargar_configuracion_regional()
+        bancos_guardados = config.get("cuentas_bancarias", [])
+        lista_cuentas = []
+        for b in bancos_guardados:
+            banco_nom = b.get("banco", "").strip()
+            cuenta_num = b.get("cuenta", "").strip()
+            if banco_nom or cuenta_num:
+                lista_cuentas.append(f"{banco_nom} - {cuenta_num}".strip(" - "))
+        lista_cuentas.extend(["Efectivo / Caja Chica", "Tarjeta de Crédito", "Tarjeta de Débito", "Cheque", "Otro"])
+
+        ctk.CTkLabel(f_form, text="Cuenta Destino / Método:", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_cuenta = ctk.CTkComboBox(f_form, values=lista_cuentas, width=400)
+        cmb_cuenta.pack(fill="x", pady=(0, 10))
+        if lista_cuentas: cmb_cuenta.set(lista_cuentas[0])
 
         ctk.CTkLabel(f_form, text="Monto a Cobrar (S/.):", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_monto = ctk.CTkEntry(f_form)
@@ -1922,6 +1825,8 @@ class CuentasPorCobrarTab:
             fecha_val = ent_fecha.get().strip()
             if not fecha_val:
                 fecha_val = datetime.now().strftime("%Y-%m-%d")
+                
+            cuenta_val = cmb_cuenta.get().strip()
 
             v_cobro.destroy()
 
@@ -1931,26 +1836,27 @@ class CuentasPorCobrarTab:
                 try:
                     carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_ingresos")
                     if not os.path.exists(carpeta_comprobantes): os.makedirs(carpeta_comprobantes)
-                    conn = obtener_conexion_segura()
-                    if not conn: return
-                    c = conn.cursor(); c.execute("SELECT COUNT(*) FROM pagos_clientes"); idx = c.fetchone()[0] + 1; liberar_conexion(conn)
+                    conn = conectar_db(); c = conn.cursor(); c.execute("SELECT COUNT(*) FROM pagos_clientes"); idx = c.fetchone()[0] + 1; liberar_conexion(conn)
                     ruta_destino = os.path.join(carpeta_comprobantes, f"Ingreso_Fac_{id_factura}_{cliente.replace(' ', '_')}_{idx}{os.path.splitext(ruta_origen)[1]}")
                     shutil.copy2(ruta_origen, ruta_destino)
                 except Exception as e:
                     return messagebox.showerror("Error", f"Fallo al copiar archivo:\n{e}")
 
             try:
-                conn = obtener_conexion_segura()
-                if not conn: return
+                conn = conectar_db()
                 cursor = conn.cursor()
-                cursor.execute("INSERT INTO pagos_clientes (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago) VALUES (%s, %s, %s, %s, %s)", (id_factura, monto_val, ruta_destino, cliente, fecha_val))
+                cursor.execute("""
+                    INSERT INTO pagos_clientes (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago, cuenta_destino) 
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (id_factura, monto_val, ruta_destino, cliente, fecha_val, cuenta_val))
                 conn.commit()
+                liberar_conexion(conn)
+                
                 cache_sistema.invalidar()
-                registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar", f"Cobró {formatear_moneda(monto_val)} a Fac. {nro_doc} ({cliente})")
-                messagebox.showinfo("Éxito", f"Cobro de {formatear_moneda(monto_val)} registrado.")
+                registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar", f"Cobró {formatear_moneda(monto_val)} a Fac. {nro_doc} en {cuenta_val}")
+                messagebox.showinfo("Éxito", f"Cobro de {formatear_moneda(monto_val)} registrado exitosamente.")
                 self.cargar_datos_cobrar(reset_pagina=True)
             except Exception as e: messagebox.showerror("Error", str(e))
-            finally: liberar_conexion(conn)
 
         ent_monto.bind("<Return>", procesar_cobro)
         ent_fecha.bind("<Return>", procesar_cobro)
@@ -1971,8 +1877,7 @@ class CuentasPorCobrarTab:
         if not seleccion: return
         id_factura = self.tabla.item(seleccion[0], "values")[1] 
         try:
-            conn = obtener_conexion_segura()
-            if not conn: return
+            conn = conectar_db()
             cursor = conn.cursor()
             cursor.execute("SELECT archivo_ruta FROM pagos_clientes WHERE id_factura = %s AND archivo_ruta != ''", (id_factura,))
             rutas = cursor.fetchall()
@@ -1989,11 +1894,11 @@ class CuentasPorCobrarTab:
         if not sel: return messagebox.showwarning("Selección", "Seleccione la factura para editar sus cobros.")
         valores = self.tabla.item(sel[0], "values")
         id_factura, nro_doc, cliente = valores[1], valores[3], valores[4] 
-        saldo_actual_global = desformatear_numero(valores[12]) 
+        saldo_actual_global = desformatear_numero(valores[11]) 
 
         v_edit = ctk.CTkToplevel(self.main_root)
         v_edit.title(f"✏️ Gestión de Cobros - Fac. {nro_doc}")
-        v_edit.geometry("720x400")
+        v_edit.geometry("820x400")
         v_edit.transient(self.main_root)
         v_edit.grab_set()
 
@@ -2002,19 +1907,18 @@ class CuentasPorCobrarTab:
         frame_cuerpo = ctk.CTkFrame(v_edit, fg_color="transparent")
         frame_cuerpo.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        sub_tabla = ttk.Treeview(frame_cuerpo, columns=("id", "monto", "fecha", "tiene_archivo"), show="headings", height=8)
-        sub_tabla.heading("id", text="ID Cobro"); sub_tabla.heading("monto", text="Monto"); sub_tabla.heading("fecha", text="Fecha"); sub_tabla.heading("tiene_archivo", text="¿Soporte?")
-        sub_tabla.column("id", width=60, anchor="center"); sub_tabla.column("monto", width=110, anchor="e"); sub_tabla.column("fecha", width=110, anchor="center"); sub_tabla.column("tiene_archivo", width=130, anchor="center")
+        sub_tabla = ttk.Treeview(frame_cuerpo, columns=("id", "monto", "fecha", "cuenta", "tiene_archivo"), show="headings", height=8)
+        sub_tabla.heading("id", text="ID Cobro"); sub_tabla.heading("monto", text="Monto"); sub_tabla.heading("fecha", text="Fecha"); sub_tabla.heading("cuenta", text="Cuenta / Destino"); sub_tabla.heading("tiene_archivo", text="¿Soporte?")
+        sub_tabla.column("id", width=60, anchor="center"); sub_tabla.column("monto", width=110, anchor="e"); sub_tabla.column("fecha", width=110, anchor="center"); sub_tabla.column("cuenta", width=160, anchor="w"); sub_tabla.column("tiene_archivo", width=130, anchor="center")
         sub_tabla.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
         def refrescar_subtabla():
             for f in sub_tabla.get_children(): sub_tabla.delete(f)
             try:
-                conn = obtener_conexion_segura(parent=v_edit)
-                if not conn: return
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, monto_pagado, fecha_pago, archivo_ruta FROM pagos_clientes WHERE id_factura = %s", (id_factura,))
-                for a in cursor.fetchall(): sub_tabla.insert("", tk.END, values=(a[0], formatear_moneda(a[1]), a[2] if a[2] else "Sin fecha", "✅ Sí" if (a[3] and os.path.exists(a[3])) else "❌ No"))
+                conn = conectar_db(); cursor = conn.cursor()
+                cursor.execute("SELECT id, monto_pagado, fecha_pago, archivo_ruta, cuenta_destino FROM pagos_clientes WHERE id_factura = %s", (id_factura,))
+                for a in cursor.fetchall(): 
+                    sub_tabla.insert("", tk.END, values=(a[0], formatear_moneda(a[1]), a[2] if a[2] else "Sin fecha", a[4] if a[4] else "-", "✅ Sí" if (a[3] and os.path.exists(a[3])) else "❌ No"))
                 liberar_conexion(conn)
             except Exception: pass
         refrescar_subtabla()
@@ -2024,16 +1928,14 @@ class CuentasPorCobrarTab:
             sub_sel = sub_tabla.selection()
             if not sub_sel: return
             id_pago = sub_tabla.item(sub_sel[0], "values")[0]
-            conn = obtener_conexion_segura(parent=v_edit)
-            if not conn: return
-            cursor = conn.cursor()
-            cursor.execute("SELECT monto_pagado, fecha_pago FROM pagos_clientes WHERE id = %s", (id_pago,))
-            monto_actual, fecha_actual = cursor.fetchone()
+            conn = conectar_db(); cursor = conn.cursor()
+            cursor.execute("SELECT monto_pagado, fecha_pago, cuenta_destino FROM pagos_clientes WHERE id = %s", (id_pago,))
+            monto_actual, fecha_actual, cuenta_actual = cursor.fetchone()
             liberar_conexion(conn)
 
             v_mod_cobro = ctk.CTkToplevel(v_edit)
             v_mod_cobro.title("Modificar Cobro")
-            v_mod_cobro.geometry("350x250")
+            v_mod_cobro.geometry("400x320")
             v_mod_cobro.transient(v_edit)
             v_mod_cobro.grab_set()
 
@@ -2041,6 +1943,22 @@ class CuentasPorCobrarTab:
 
             f_form = ctk.CTkFrame(v_mod_cobro, fg_color="transparent")
             f_form.pack(fill="x", padx=20)
+            
+            config = cargar_configuracion_regional()
+            bancos_guardados = config.get("cuentas_bancarias", [])
+            lista_cuentas = []
+            for b in bancos_guardados:
+                banco_nom = b.get("banco", "").strip()
+                cuenta_num = b.get("cuenta", "").strip()
+                if banco_nom or cuenta_num:
+                    lista_cuentas.append(f"{banco_nom} - {cuenta_num}".strip(" - "))
+            lista_cuentas.extend(["Efectivo / Caja Chica", "Tarjeta de Crédito", "Tarjeta de Débito", "Cheque", "Otro"])
+
+            ctk.CTkLabel(f_form, text="Cuenta Destino / Método:", font=("Arial", 11, "bold")).pack(anchor="w")
+            ent_mod_cuenta = ctk.CTkComboBox(f_form, values=lista_cuentas, width=400)
+            ent_mod_cuenta.pack(fill="x", pady=(0, 10))
+            if cuenta_actual: ent_mod_cuenta.set(cuenta_actual)
+            elif lista_cuentas: ent_mod_cuenta.set(lista_cuentas[0])
 
             ctk.CTkLabel(f_form, text="Nuevo Monto (0 = Eliminar):", font=("Arial", 11, "bold")).pack(anchor="w")
             ent_mod_monto = ctk.CTkEntry(f_form)
@@ -2065,9 +1983,7 @@ class CuentasPorCobrarTab:
 
                 if nuevo_monto == 0:
                     if messagebox.askyesno("Confirmar", "¿Eliminar registro?", parent=v_mod_cobro):
-                        conn = obtener_conexion_segura(parent=v_mod_cobro)
-                        if not conn: return
-                        cursor = conn.cursor()
+                        conn = conectar_db(); cursor = conn.cursor()
                         cursor.execute("SELECT archivo_ruta FROM pagos_clientes WHERE id = %s", (id_pago,))
                         r = cursor.fetchone()
                         if r and r[0] and os.path.exists(r[0]): os.remove(r[0])
@@ -2077,10 +1993,9 @@ class CuentasPorCobrarTab:
                         registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar", f"Eliminó el cobro ID {id_pago}")
                 else:
                     nueva_fecha = ent_mod_fecha.get().strip() or fecha_actual
-                    conn = obtener_conexion_segura(parent=v_mod_cobro)
-                    if not conn: return
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE pagos_clientes SET monto_pagado = %s, fecha_pago = %s WHERE id = %s", (nuevo_monto, nueva_fecha, id_pago))
+                    nueva_cuenta = ent_mod_cuenta.get().strip()
+                    conn = conectar_db(); cursor = conn.cursor()
+                    cursor.execute("UPDATE pagos_clientes SET monto_pagado = %s, fecha_pago = %s, cuenta_destino = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, id_pago))
                     conn.commit(); liberar_conexion(conn)
                     cache_sistema.invalidar()
                     registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar", f"Modificó el cobro ID {id_pago} a {formatear_moneda(nuevo_monto)}")
@@ -2111,9 +2026,7 @@ class CuentasPorCobrarTab:
                 try:
                     carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_ingresos")
                     if not os.path.exists(carpeta_comprobantes): os.makedirs(carpeta_comprobantes)
-                    conn = obtener_conexion_segura(parent=v_edit)
-                    if not conn: return
-                    cursor = conn.cursor()
+                    conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM pagos_clientes WHERE id = %s", (id_pago,))
                     antigua_ruta = cursor.fetchone()[0]
                     if antigua_ruta and os.path.exists(antigua_ruta): os.remove(antigua_ruta)
@@ -2134,9 +2047,7 @@ class CuentasPorCobrarTab:
             id_pago = sub_tabla.item(sub_sel[0], "values")[0]
             if messagebox.askyesno("Confirmar", "¿Eliminar soporte digital?", parent=v_edit):
                 try:
-                    conn = obtener_conexion_segura(parent=v_edit)
-                    if not conn: return
-                    cursor = conn.cursor()
+                    conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM pagos_clientes WHERE id = %s", (id_pago,))
                     ruta_archivo = cursor.fetchone()[0]
                     if ruta_archivo and os.path.exists(ruta_archivo): os.remove(ruta_archivo)
@@ -2156,9 +2067,7 @@ class CuentasPorCobrarTab:
 
             if messagebox.askyesno("Confirmar Eliminación", "⚠️ ¿Eliminar este registro de cobro por completo?", parent=v_edit):
                 try:
-                    conn = obtener_conexion_segura(parent=v_edit)
-                    if not conn: return
-                    cursor = conn.cursor()
+                    conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM pagos_clientes WHERE id = %s", (id_pago,))
                     r = cursor.fetchone()
                     if r and r[0] and os.path.exists(r[0]): os.remove(r[0])
@@ -2172,7 +2081,7 @@ class CuentasPorCobrarTab:
 
         frame_lateral_btns = ctk.CTkFrame(frame_cuerpo, fg_color="transparent")
         frame_lateral_btns.pack(side="right", fill="y")
-        ctk.CTkButton(frame_lateral_btns, text="✏️ Modificar Monto", font=("Arial", 12, "bold"), fg_color="#34495e", hover_color="#2c3e50", command=ejecutar_modificacion).pack(fill="x", pady=3)
+        ctk.CTkButton(frame_lateral_btns, text="✏️ Modificar Monto/Cuenta", font=("Arial", 12, "bold"), fg_color="#34495e", hover_color="#2c3e50", command=ejecutar_modificacion).pack(fill="x", pady=3)
         ctk.CTkButton(frame_lateral_btns, text="📂 Cambiar Soporte", font=("Arial", 12, "bold"), fg_color="#7f8c8d", hover_color="#606b6b", command=cambiar_soporte).pack(fill="x", pady=3)
         ctk.CTkButton(frame_lateral_btns, text="🗑️ Eliminar Soporte", font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#c0392b", command=eliminar_soporte).pack(fill="x", pady=3)
         ctk.CTkButton(frame_lateral_btns, text="❌ Eliminar Cobro Completo", font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#c0392b", command=eliminar_cobro_completo).pack(fill="x", pady=(15, 3))
@@ -2197,7 +2106,7 @@ class CuentasPorCobrarTab:
         f_cli.pack(fill="x", pady=5)
         ctk.CTkLabel(f_cli, text="Cliente:", font=("Arial", 11, "bold"), width=100, anchor="e").pack(side="left", padx=5)
         
-        clis_mem = getattr(cache_sistema, 'clientes_nombres', [])
+        clis_mem = cache_sistema.obtener('lista_clientes_combobox')
         clis = ["Todos"] + (clis_mem if clis_mem else [])
         combo_cli = ctk.CTkComboBox(f_cli, values=clis, state="readonly", width=300)
         combo_cli.pack(side="left", padx=5)
@@ -2251,7 +2160,7 @@ class CuentasPorCobrarTab:
             if d_desde and d_hasta and d_desde > d_hasta:
                 d_desde, d_hasta = d_hasta, d_desde
 
-            conn = obtener_conexion_segura(parent=v_rep)
+            conn = conectar_db()
             if not conn: return
             try:
                 c = conn.cursor()
@@ -2334,9 +2243,8 @@ class NotasCreditoTab:
         self.tab_frame = tab_frame
         self.main_root = main_root
         self.app_padre = app_padre
-        self._id_debounce_busqueda = None
         
-        # 🚀 VARIABLES LAZY LOADING
+        # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
         self.registros_por_pagina = 50
         
@@ -2443,6 +2351,7 @@ class NotasCreditoTab:
                     txt_info.insert("1.0", f"Fallo al conectar con SUNAT:\n{e}")
                 v_sire.after(0, mostrar_err)
 
+        import threading
         threading.Thread(target=ejecucion_sire, daemon=True).start()
 
     def crear_interfaz(self):
@@ -2455,7 +2364,8 @@ class NotasCreditoTab:
         ctk.CTkLabel(f_top, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
         self.ent_buscar_nc = ctk.CTkEntry(f_top, placeholder_text="Filtrar por documento, cliente...")
         self.ent_buscar_nc.pack(side="left", fill="x", expand=True, padx=5)
-        self.ent_buscar_nc.bind("<KeyRelease>", self._on_buscar_nc_keyrelease)
+        
+        self.ent_buscar_nc.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_nc.bind("<Return>", lambda e: self.cargar_datos_nc(reset_pagina=True))
 
         btn_refresh = ctk.CTkButton(f_top, text="🔄 Actualizar Tabla", font=("Arial", 12, "bold"), fg_color="#7f8c8d", hover_color="#606b6b", command=lambda: self.cargar_datos_nc(reset_pagina=True))
@@ -2495,19 +2405,22 @@ class NotasCreditoTab:
         self.tabla.pack(side="left", fill="both", expand=True)
         scroll_y.pack(side="right", fill="y")
         
-        # 🚀 BOTONES PAGINACIÓN
+        # 🚀 BOTONES DE PAGINACIÓN
         f_paginacion = ctk.CTkFrame(self.tab_frame, fg_color="transparent")
-        f_paginacion.pack(fill="x", padx=15, pady=(5, 5))
-        self.btn_ant = ctk.CTkButton(f_paginacion, text="◀ Ant", width=60, command=self.pagina_anterior)
-        self.btn_ant.pack(side="left", padx=2)
-        self.lbl_pagina = ctk.CTkLabel(f_paginacion, text=f"Pág {self.pagina_actual}", font=("Arial", 11, "bold"))
-        self.lbl_pagina.pack(side="left", padx=5)
-        self.btn_sig = ctk.CTkButton(f_paginacion, text="Sig ▶", width=60, command=self.pagina_siguiente)
-        self.btn_sig.pack(side="left", padx=2)
+        f_paginacion.pack(fill="x", padx=15, pady=10)
         
-        ctk.CTkLabel(f_paginacion, text="💡 Haz doble clic sobre un registro para descargar/visualizar el PDF oficial de la Nota de Crédito.", font=("Arial", 11, "italic"), text_color="gray").pack(side="right", padx=10)
+        self.btn_ant = ctk.CTkButton(f_paginacion, text="◀ Ant", width=60, command=self.pagina_anterior)
+        self.btn_ant.pack(side="left")
+        
+        self.lbl_pagina = ctk.CTkLabel(f_paginacion, text=f"Pág {self.pagina_actual}", font=("Arial", 11, "bold"))
+        self.lbl_pagina.pack(side="left", padx=10)
+        
+        self.btn_sig = ctk.CTkButton(f_paginacion, text="Sig ▶", width=60, command=self.pagina_siguiente)
+        self.btn_sig.pack(side="left")
+        
+        ctk.CTkLabel(f_paginacion, text="💡 Haz doble clic sobre un registro para descargar/visualizar el PDF oficial de la Nota de Crédito.", font=("Arial", 11, "italic"), text_color="gray").pack(side="right", pady=10)
 
-        self.main_root.after(200, lambda: self.cargar_datos_nc(reset_pagina=True))
+        self.main_root.after(250, lambda: self.cargar_datos_nc(reset_pagina=True))
 
     def pagina_anterior(self):
         if self.pagina_actual > 1:
@@ -2518,120 +2431,100 @@ class NotasCreditoTab:
         self.pagina_actual += 1
         self.cargar_datos_nc()
 
-    def _on_buscar_nc_keyrelease(self, event=None):
-        if self._id_debounce_busqueda is not None:
-            try: self.main_root.after_cancel(self._id_debounce_busqueda)
-            except Exception: pass
-        self._id_debounce_busqueda = self.main_root.after(350, lambda: self.cargar_datos_nc(reset_pagina=True))
+    def buscar_con_retraso(self):
+        if hasattr(self, "_busqueda_job"):
+            try: self.main_root.after_cancel(self._busqueda_job)
+            except: pass
+        self._busqueda_job = self.main_root.after(350, lambda: self.cargar_datos_nc(reset_pagina=True))
 
+    # 🚀 FIX: CARGA LAZY LOADING + CACHÉ
     def cargar_datos_nc(self, reset_pagina=False):
         if reset_pagina:
             self.pagina_actual = 1
             
-        if hasattr(self, 'lbl_pagina'):
-            self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
+        self.lbl_pagina.configure(text=f"Pág {self.pagina_actual}")
 
+        for fila in self.tabla.get_children(): 
+            self.tabla.delete(fila)
+        
         filtro = ""
         if hasattr(self, 'ent_buscar_nc'):
             filtro = self.ent_buscar_nc.get().strip().lower()
 
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-
-        self._token_carga_nc = getattr(self, '_token_carga_nc', 0) + 1
-        token_actual = self._token_carga_nc
-        
         clave_cache = f"notas_credito_{filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
-        
+
         if datos is not None:
-            self._pintar_tabla_nc(datos, token_actual)
+            self._pintar_notas_credito(datos)
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", ""))
             
-            threading.Thread(
-                target=self._worker_cargar_datos_nc,
-                args=(filtro, token_actual, offset, clave_cache),
-                daemon=True
-            ).start()
+            def tarea_descarga():
+                conn = conectar_db(silencioso=True)
+                if not conn: return
+                try:
+                    cursor = conn.cursor()
+                    if filtro == "":
+                        cursor.execute("SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), estado_sunat, enlace_pdf_nc, tipo_documento FROM facturas_emitidas WHERE estado_sunat LIKE '%Anulada%' ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+                    else:
+                        val = f"%{filtro}%"
+                        cursor.execute(f"""
+                            SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), estado_sunat, enlace_pdf_nc, tipo_documento 
+                            FROM facturas_emitidas 
+                            WHERE estado_sunat LIKE '%%Anulada%%' AND (numero_documento ILIKE %s OR cliente ILIKE %s)
+                            ORDER BY id DESC LIMIT %s OFFSET %s
+                        """, (val, val, self.registros_por_pagina, offset))
+                        
+                    datos_db = cursor.fetchall()
+                    cache_sistema.guardar(clave_cache, datos_db)
+                    self.main_root.after(0, lambda: self._pintar_notas_credito(datos_db))
+                except Exception as e:
+                    print("Error cargando Notas de Crédito:", e)
+                finally:
+                    liberar_conexion(conn)
 
-    def _worker_cargar_datos_nc(self, filtro, token_actual, offset, clave_cache):
-        filas_resultado = []
-        conn = obtener_conexion_segura(mostrar_aviso=False)
-        if not conn:
-            self.main_root.after(0, lambda: self._pintar_tabla_nc([], token_actual))
-            return
-        try:
-            cursor = conn.cursor()
-            
-            if filtro == "":
-                cursor.execute("SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), estado_sunat, enlace_pdf_nc, tipo_documento FROM facturas_emitidas WHERE estado_sunat LIKE '%Anulada%' ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
-            else:
-                val = f"%{filtro}%"
-                cursor.execute("""
-                    SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), estado_sunat, enlace_pdf_nc, tipo_documento 
-                    FROM facturas_emitidas 
-                    WHERE estado_sunat LIKE '%Anulada%' AND (numero_documento ILIKE %s OR cliente ILIKE %s)
-                    ORDER BY id DESC LIMIT %s OFFSET %s
-                """, (val, val, self.registros_por_pagina, offset))
-                
-            registros = cursor.fetchall()
+            threading.Thread(target=tarea_descarga, daemon=True).start()
 
-            contador = (self.pagina_actual - 1) * self.registros_por_pagina + 1
-            for reg in registros:
-                id_fac, fecha, nro_doc, cliente, tot_bruto, det_monto, estado, link_nc, tipo_doc = reg
-
-                tot_bruto_val = float(tot_bruto) if tot_bruto else 0.0
-                det_monto_val = float(det_monto) if det_monto else 0.0
-                neto_anulado = tot_bruto_val - det_monto_val
-
-                serie_nc = "FC01" if tipo_doc and "Factura" in tipo_doc else "BC01"
-                num_orig = str(nro_doc).split("-")[1] if nro_doc and "-" in str(nro_doc) else "1"
-                doc_nc_str = f"{serie_nc}-{num_orig}"
-
-                if not link_nc:
-                    txt_pdf = "❌ Sin PDF / SIRE"
-                else:
-                    txt_pdf = "✅ Ver PDF NC"
-
-                row_vals = (
-                    contador, id_fac, fecha, nro_doc, doc_nc_str, cliente, formatear_moneda(neto_anulado), estado, txt_pdf
-                )
-
-                filas_resultado.append(row_vals)
-                contador += 1
-                
-            cache_sistema.guardar(clave_cache, filas_resultado)
-        except Exception:
-            pass
-        finally:
-            liberar_conexion(conn)
-
-        self.main_root.after(0, lambda: self._pintar_tabla_nc(filas_resultado, token_actual))
-
-    def _pintar_tabla_nc(self, filas_resultado, token_actual):
-        if token_actual != getattr(self, '_token_carga_nc', token_actual):
-            return
+    def _pintar_notas_credito(self, registros):
         for fila in self.tabla.get_children(): self.tabla.delete(fila)
-        for row_vals in filas_resultado:
-            self.tabla.insert("", tk.END, values=row_vals)
+
+        contador = 1
+        for reg in registros:
+            id_fac, fecha, nro_doc, cliente, tot_bruto, det_monto, estado, link_nc, tipo_doc = reg
             
-        if hasattr(self, 'btn_ant'):
-            if self.pagina_actual > 1:
-                self.btn_ant.configure(state="normal")
-            else:
-                self.btn_ant.configure(state="disabled")
-                
-            if len(filas_resultado) == self.registros_por_pagina:
-                self.btn_sig.configure(state="normal")
-            else:
-                self.btn_sig.configure(state="disabled")
+            tot_bruto_val = float(tot_bruto) if tot_bruto else 0.0
+            det_monto_val = float(det_monto) if det_monto else 0.0
+            neto_anulado = tot_bruto_val - det_monto_val
+            
+            serie_nc = "FC01" if tipo_doc and "Factura" in tipo_doc else "BC01"
+            num_orig = str(nro_doc).split("-")[1] if nro_doc and "-" in str(nro_doc) else "1"
+            doc_nc_str = f"{serie_nc}-{num_orig}"
+            
+            if not link_nc: txt_pdf = "❌ Sin PDF / SIRE"
+            else: txt_pdf = "✅ Ver PDF NC"
+
+            row_vals = (contador, id_fac, fecha, nro_doc, doc_nc_str, cliente, formatear_moneda(neto_anulado), estado, txt_pdf)
+
+            self.tabla.insert("", tk.END, values=row_vals)
+            contador += 1
+            
+        if self.pagina_actual > 1:
+            self.btn_ant.configure(state="normal")
+        else:
+            self.btn_ant.configure(state="disabled")
+            
+        if len(registros) == self.registros_por_pagina:
+            self.btn_sig.configure(state="normal")
+        else:
+            self.btn_sig.configure(state="disabled")
 
     def abrir_pdf_nc(self, event):
         seleccion = self.tabla.selection()
         if not seleccion: return
         id_fac = self.tabla.item(seleccion[0], "values")[1] 
         
-        conn = obtener_conexion_segura()
+        conn = conectar_db()
         if not conn: return
         try:
             cursor = conn.cursor()
@@ -2708,8 +2601,6 @@ class ModuloVentasApp:
             self.app_cobros.cargar_datos_cobrar(reset_pagina=True)
         elif self.tabview.get() == " 📄 3. Notas de Crédito ":
             self.app_nc.cargar_datos_nc(reset_pagina=True)
-        else:
-            self.app_facturas.cargar_datos_tabla(reset_pagina=True)
 
 if __name__ == "__main__":
     pass
