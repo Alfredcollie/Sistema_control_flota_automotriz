@@ -38,10 +38,10 @@ jobs:
         cp $(which rclone) .
         chmod +x rclone
 
-    - name: 🏗️ Compilar la Aplicación (Black Cube)
+    - name: 🏗️ Compilar la Aplicación (Black Riders)
       run: |
         # 🚀 FIX: Se empaqueta Rclone y se asigna el ICONO OFICIAL (.icns)
-        pyinstaller --noconfirm --windowed --name "BlackCube" --icon "Ico_Collie_Software.icns" --hidden-import keyring.backends.macOS --add-binary "rclone:." --add-data ".:." control_general.py
+        pyinstaller --noconfirm --windowed --name "BlackRiders" --icon "Ico_Collie_Software.icns" --hidden-import keyring.backends.macOS --add-binary "rclone:." --add-data ".:." control_general.py
         
         echo "Forzando Modo Claro en Info.plist..."
         defaults write "$PWD/dist/BlackCube.app/Contents/Info.plist" NSRequiresAquaSystemAppearance -bool YES
@@ -51,22 +51,22 @@ jobs:
       run: |
         echo "Fabricando el disco de instalación..."
         mkdir -p Instalador_Temp
-        cp -R "dist/BlackCube.app" Instalador_Temp/
+        cp -R "dist/BlackRiders.app" Instalador_Temp/
         ln -s /Applications Instalador_Temp/Applications
-        hdiutil create -volname "BlackCube" -srcfolder Instalador_Temp -ov -format UDZO "Instalador.Black.Cube.dmg"
+        hdiutil create -volname "BlackRiders" -srcfolder Instalador_Temp -ov -format UDZO "Instalador.Black.Riders.dmg"
 
     - name: 🚀 Publicar Automáticamente en Releases
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.version }}
-        name: Sistema Black Cube ${{ github.event.inputs.version }}
+        name: Sistema Black Riders ${{ github.event.inputs.version }}
         body: |
-          🚀 **Nueva actualización de Black Cube para Mac**
+          🚀 **Nueva actualización de Black Riders para Mac**
           - 🎨 FIX: Logotipo oficial de Collie Software integrado en el Dock y aplicación.
           - 🔌 FIX: Conexión segura a Supabase reparada.
           - ☁️ FIX: Motor de sincronización Rclone integrado nativamente.
           - 🔄 FIX: Sistema de Auto-Actualizaciones incorporado.
-        files: Instalador.Black.Cube.dmg
+        files: Instalador.Black.Riders.dmg
         draft: false
         prerelease: false
         make_latest: true
