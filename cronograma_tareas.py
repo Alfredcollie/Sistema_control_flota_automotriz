@@ -866,6 +866,22 @@ class CronogramaApp:
                 try: cursor.execute("ALTER TABLE tareas_evento ADD COLUMN tiempo_aviso VARCHAR(50) DEFAULT 'Sin aviso'"); conn.commit()
                 except: conn.rollback()
 
+                # 🚀 TABLA PARA TIPOS DE ENTRADA DINÁMICOS
+                try:
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS tipos_entrada_cronograma (
+                            id SERIAL PRIMARY KEY,
+                            nombre VARCHAR(255) UNIQUE NOT NULL
+                        )
+                    """)
+                    conn.commit()
+                    cursor.execute("SELECT COUNT(*) FROM tipos_entrada_cronograma")
+                    if cursor.fetchone()[0] == 0:
+                        cursor.execute("INSERT INTO tipos_entrada_cronograma (nombre) VALUES ('Tarea'), ('Mantenimiento'), ('Renovación Documento')")
+                        conn.commit()
+                except Exception:
+                    conn.rollback()
+
             except Exception as e:
                 print("Error BD Tareas:", e)
             finally:
@@ -900,6 +916,141 @@ class CronogramaApp:
             self.btn_pantalla.configure(text="[ - ] Restaurar Vista", fg_color="#34495e", hover_color="#2c3e50")
             self.pantalla_expandida = True
 
+    def cargar_tipos_combos(self, combobox, valor_default=None):
+        def tarea():
+            conn = conectar_db(silencioso=True)
+            tipos = ["Tarea", "Mantenimiento", "Renovación Documento"] 
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT nombre FROM tipos_entrada_cronograma ORDER BY id ASC")
+                    tipos_db = [str(r[0]) for r in cursor.fetchall()]
+                    if tipos_db:
+                        tipos = tipos_db
+                except Exception: pass
+                finally: liberar_conexion(conn)
+            
+            if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
+                self.parent_frame.after(0, lambda: self._actualizar_combo_tipos(combobox, tipos, valor_default))
+        threading.Thread(target=tarea, daemon=True).start()
+
+    def _actualizar_combo_tipos(self, combobox, tipos, valor_default):
+        if combobox.winfo_exists():
+            combobox.configure(values=tipos)
+            if valor_default and valor_default in tipos:
+                combobox.set(valor_default)
+            elif not valor_default and "Tarea" in tipos:
+                combobox.set("Tarea")
+            elif tipos:
+                combobox.set(tipos[0])
+
+    def ventana_emergente_tipos(self, combo_widget, string_var, callback_toggle=None):
+        v_cat = ctk.CTkToplevel(self.parent_frame.winfo_toplevel())
+        v_cat.title("Tipos de Entrada")
+        v_cat.geometry("400x500")
+        v_cat.grab_set() 
+        v_cat.resizable(False, False)
+        
+        ctk.CTkLabel(v_cat, text="Gestione los tipos de entrada:", font=("Arial", 12, "bold")).pack(pady=10)
+        
+        frame_lista = ctk.CTkFrame(v_cat)
+        frame_lista.pack(fill="both", expand=True, padx=20, pady=5)
+        
+        lista_box = tk.Listbox(frame_lista, font=("Arial", 10), bg="#ffffff", fg="black", selectbackground="#1f538d", borderwidth=1)
+        scroll_list = ttk.Scrollbar(frame_lista, orient="vertical", command=lista_box.yview)
+        lista_box.configure(yscrollcommand=scroll_list.set)
+        lista_box.pack(side="left", fill="both", expand=True, padx=(10,0), pady=10)
+        scroll_list.pack(side="right", fill="y", pady=10, padx=(0,10))
+        
+        def cargar_lista():
+            lista_box.delete(0, tk.END)
+            conn = conectar_db(silencioso=True)
+            if not conn: return
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT nombre FROM tipos_entrada_cronograma ORDER BY id ASC")
+                for row in cursor.fetchall():
+                    lista_box.insert(tk.END, str(row[0]).strip())
+            except Exception: pass
+            finally: liberar_conexion(conn)
+                
+        cargar_lista()
+        
+        frame_ctrl = ctk.CTkFrame(v_cat, fg_color="transparent")
+        frame_ctrl.pack(fill="x", padx=20, pady=5)
+        
+        ent_nueva = ctk.CTkEntry(frame_ctrl, width=180, placeholder_text="Nuevo tipo...")
+        ent_nueva.pack(side="left", padx=5)
+        
+        def agregar():
+            nueva = ent_nueva.get().strip()
+            if nueva:
+                conn = conectar_db()
+                if not conn: return
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM tipos_entrada_cronograma WHERE nombre ILIKE %s", (nueva,))
+                    if cursor.fetchone():
+                        messagebox.showerror("Error", "El tipo ya existe.", parent=v_cat)
+                        return
+                    cursor.execute("INSERT INTO tipos_entrada_cronograma (nombre) VALUES (%s)", (nueva,))
+                    conn.commit()
+                    cache_sistema.invalidar()
+                    registrar_auditoria(self.usuario_activo, "Cronograma", f"Creó tipo de entrada '{nueva}'")
+                    ent_nueva.delete(0, tk.END)
+                    cargar_lista()
+                    self.cargar_tipos_combos(combo_widget, string_var.get())
+                except psycopg2.IntegrityError:
+                    conn.rollback()
+                    messagebox.showerror("Error", "Ya existe.", parent=v_cat)
+                except Exception:
+                    conn.rollback()
+                finally:
+                    liberar_conexion(conn)
+
+        def eliminar():
+            if not lista_box.curselection(): return
+            tipo_a_borrar = lista_box.get(lista_box.curselection())
+            
+            if messagebox.askyesno("Confirmar", f"¿Eliminar el tipo '{tipo_a_borrar}'?", parent=v_cat):
+                conn = conectar_db()
+                if not conn: return
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM tipos_entrada_cronograma WHERE nombre = %s", (tipo_a_borrar,))
+                    cursor.execute("UPDATE tareas_evento SET tipo_entrada = 'Tarea' WHERE tipo_entrada = %s", (tipo_a_borrar,))
+                    conn.commit()
+                    cache_sistema.invalidar()
+                    registrar_auditoria(self.usuario_activo, "Cronograma", f"Eliminó tipo '{tipo_a_borrar}'")
+                    
+                    if string_var.get() == tipo_a_borrar:
+                        string_var.set("Tarea")
+                    
+                    cargar_lista()
+                    self.cargar_tipos_combos(combo_widget, string_var.get())
+                except Exception:
+                    conn.rollback()
+                finally:
+                    liberar_conexion(conn)
+
+        def seleccionar():
+            if lista_box.curselection():
+                item = lista_box.get(lista_box.curselection())
+                string_var.set(item)
+                if callback_toggle:
+                    callback_toggle()
+                v_cat.destroy()
+
+        btn_add = ctk.CTkButton(frame_ctrl, text="[ + ]", width=60, command=agregar)
+        btn_add.pack(side="left", padx=2)
+        
+        btn_eli = ctk.CTkButton(frame_ctrl, text="[ - ]", width=60, fg_color="#D32F2F", hover_color="#B71C1C", command=eliminar)
+        btn_eli.pack(side="left", padx=2)
+        
+        btn_sel = ctk.CTkButton(v_cat, text="[ OK ] Seleccionar", width=200, command=seleccionar)
+        btn_sel.pack(pady=(15, 15))
+
+
     def crear_interfaz(self):
         self.frame_main = ctk.CTkFrame(self.parent_frame, fg_color="transparent")
         self.frame_main.pack(fill="both", expand=True, padx=15, pady=15)
@@ -912,6 +1063,8 @@ class CronogramaApp:
         ctk.CTkLabel(f_top, text="Seleccione el Grupo / Proyecto de Trabajo:", font=("Arial", 12, "bold"), text_color="#333333").pack(side="left", padx=(10, 10), pady=10)
         self.combo_evento_global = ctk.CTkComboBox(f_top, width=400, state="readonly", command=self.cargar_tareas_tabla)
         self.combo_evento_global.pack(side="left", padx=10, pady=10)
+        
+        self.cargar_flota_activa()
 
         frame_split = ctk.CTkFrame(self.frame_main, fg_color="transparent")
         frame_split.pack(fill="both", expand=True)
@@ -922,10 +1075,19 @@ class CronogramaApp:
         ctk.CTkLabel(self.f_form, text="Gestión de Entradas", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(10, 15))
 
         ctk.CTkLabel(self.f_form, text="Tipo de Entrada:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        # 🚀 TIPO DE ENTRADAS ADAPTADAS A FLOTA AUTOMOTRIZ
-        self.combo_tipo_entrada = ctk.CTkComboBox(self.f_form, values=["Tarea", "Mantenimiento", "Renovación Documento"], state="readonly", command=self.toggle_vista_google)
-        self.combo_tipo_entrada.pack(fill="x", padx=10, pady=(0, 10))
-        self.combo_tipo_entrada.set("Tarea")
+        
+        # 🚀 FIX: COMBOBOX DE TIPO DE ENTRADA CON BOTÓN GESTIONAR
+        f_tipo_inline = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_tipo_inline.pack(fill="x", padx=10, pady=(0, 10))
+        
+        self.tipo_entrada_var = tk.StringVar(value="Tarea")
+        self.combo_tipo_entrada = ctk.CTkComboBox(f_tipo_inline, variable=self.tipo_entrada_var, state="readonly", command=self.toggle_vista_google)
+        self.combo_tipo_entrada.pack(side="left", fill="x", expand=True)
+        
+        btn_gestionar_tipo = ctk.CTkButton(f_tipo_inline, text="Gestionar", width=70, command=lambda: self.ventana_emergente_tipos(self.combo_tipo_entrada, self.tipo_entrada_var, self.toggle_vista_google))
+        btn_gestionar_tipo.pack(side="right", padx=(5, 0))
+        
+        self.cargar_tipos_combos(self.combo_tipo_entrada)
         
         ctk.CTkLabel(self.f_form, text="Título / Descripción:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.ent_tarea = ctk.CTkEntry(self.f_form, placeholder_text="Ej: Cambio de aceite")
@@ -972,7 +1134,7 @@ class CronogramaApp:
         self.btn_limpiar = ctk.CTkButton(self.f_form, text="🧹 Limpiar Formulario", font=("Arial", 12, "bold"), fg_color="#7f8c8d", hover_color="#606b6b", command=self.limpiar_formulario)
         self.btn_limpiar.pack(fill="x", padx=10, pady=5)
 
-        self.toggle_vista_google("Tarea")
+        self.toggle_vista_google()
         self.id_tarea_seleccionada = None
 
         self.f_wrapper_derecha = ctk.CTkFrame(frame_split, fg_color="transparent")
@@ -1044,7 +1206,7 @@ class CronogramaApp:
         self.cargar_flota_activa()
 
     def toggle_vista_google(self, choice=None):
-        tipo = self.combo_tipo_entrada.get()
+        tipo = self.tipo_entrada_var.get()
         
         self.f_evento_options.pack_forget()
         self.f_operativo.pack_forget()
@@ -1052,10 +1214,11 @@ class CronogramaApp:
         if tipo == "Mantenimiento":
             self.f_evento_options.pack(fill="x", padx=10, pady=(0, 0), after=self.f_repeticion)
             self.f_operativo.pack(fill="x", padx=10, pady=(0, 0), after=self.f_evento_options)
-        elif tipo == "Tarea":
-            self.f_operativo.pack(fill="x", padx=10, pady=(0, 0), after=self.f_repeticion)
         elif tipo == "Renovación Documento":
             self.combo_repeticion.set("Anualmente")
+            self.f_operativo.pack(fill="x", padx=10, pady=(0, 0), after=self.f_repeticion)
+        else:
+            self.f_operativo.pack(fill="x", padx=10, pady=(0, 0), after=self.f_repeticion)
 
     def abrir_ventana_edicion(self):
         sel = self.tabla.selection()
@@ -1078,9 +1241,19 @@ class CronogramaApp:
         f_cont.pack(fill="both", expand=True, padx=20, pady=5)
 
         ctk.CTkLabel(f_cont, text="Tipo de Entrada:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_tipo_e = ctk.CTkComboBox(f_cont, values=["Tarea", "Mantenimiento", "Renovación Documento"], state="readonly")
-        cmb_tipo_e.pack(fill="x", pady=(0, 10))
-        cmb_tipo_e.set(valores[2])
+        
+        # 🚀 FIX: COMBOBOX DE EDICIÓN CON BOTÓN GESTIONAR
+        f_tipo_e_inline = ctk.CTkFrame(f_cont, fg_color="transparent")
+        f_tipo_e_inline.pack(fill="x", pady=(0, 10))
+        
+        var_tipo_e = tk.StringVar(value=valores[2])
+        cmb_tipo_e = ctk.CTkComboBox(f_tipo_e_inline, variable=var_tipo_e, state="readonly")
+        cmb_tipo_e.pack(side="left", fill="x", expand=True)
+        
+        btn_gestionar_tipo_e = ctk.CTkButton(f_tipo_e_inline, text="Gestionar", width=80, command=lambda: self.ventana_emergente_tipos(cmb_tipo_e, var_tipo_e, toggle_edit))
+        btn_gestionar_tipo_e.pack(side="right", padx=(5, 0))
+        
+        self.cargar_tipos_combos(cmb_tipo_e, var_tipo_e.get())
 
         ctk.CTkLabel(f_cont, text="Título / Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_t = ctk.CTkEntry(f_cont)
@@ -1134,10 +1307,11 @@ class CronogramaApp:
             if t == "Mantenimiento":
                 f_ev.pack(fill="x", pady=(0, 0), after=f_rep)
                 f_op.pack(fill="x", pady=(0, 0), after=f_ev)
-            elif t == "Tarea":
-                f_op.pack(fill="x", pady=(0, 0), after=f_rep)
             elif t == "Renovación Documento":
                 cmb_rep.set("Anualmente")
+                f_op.pack(fill="x", pady=(0, 0), after=f_rep)
+            else:
+                f_op.pack(fill="x", pady=(0, 0), after=f_rep)
 
         cmb_tipo_e.configure(command=toggle_edit)
         toggle_edit()
@@ -1194,7 +1368,6 @@ class CronogramaApp:
                 if conn:
                     try:
                         cursor = conn.cursor()
-                        # APUNTANDO EXACTAMENTE A LA TABLA DE LA IMAGEN DE SUPABASE
                         cursor.execute("SELECT placa, marca FROM flota_vehiculos ORDER BY placa ASC")
                         for r in cursor.fetchall():
                             evts.append(f"{r[0]} | {r[1]}")
@@ -1205,19 +1378,20 @@ class CronogramaApp:
                     finally:
                         liberar_conexion(conn)
                         
-                self.parent_frame.after(0, lambda: self._pintar_eventos(evts))
+                if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
+                    self.parent_frame.after(0, lambda: self._pintar_eventos(evts))
 
             threading.Thread(target=tarea_eventos, daemon=True).start()
 
     def _pintar_eventos(self, eventos):
-        if eventos:
+        if eventos and hasattr(self, 'combo_evento_global') and self.combo_evento_global.winfo_exists():
             self.combo_evento_global.configure(values=eventos)
             self.combo_evento_global.set(eventos[0])
             self.cargar_tareas_tabla()
 
     def limpiar_formulario(self):
         self.id_tarea_seleccionada = None
-        self.combo_tipo_entrada.set("Tarea")
+        self.tipo_entrada_var.set("Tarea")
         self.ent_tarea.delete(0, tk.END)
         self.ent_responsable.delete(0, tk.END)
         self.ent_fecha.delete(0, tk.END)
@@ -1234,7 +1408,7 @@ class CronogramaApp:
         valores = self.tabla.item(sel[0], "values")
         
         self.id_tarea_seleccionada = valores[1] 
-        self.combo_tipo_entrada.set(valores[2]) 
+        self.tipo_entrada_var.set(valores[2]) 
         self.toggle_vista_google()
         
         self.ent_tarea.delete(0, tk.END)
@@ -1305,7 +1479,7 @@ class CronogramaApp:
             messagebox.showwarning("Atención", "Debe seleccionar un vehículo válido.")
             return
 
-        tipo_entrada = self.combo_tipo_entrada.get()
+        tipo_entrada = self.tipo_entrada_var.get()
         tarea = self.ent_tarea.get().strip()
         fecha_limite = self.ent_fecha.get().strip()
         repeticion = self.combo_repeticion.get()
@@ -1358,6 +1532,7 @@ class CronogramaApp:
 
     # 🚀 FIX: CARGA DE TAREAS ASÍNCRONA
     def cargar_tareas_tabla(self, choice=None):
+        if not hasattr(self, 'tabla') or not self.tabla.winfo_exists(): return
         for item in self.tabla.get_children(): self.tabla.delete(item)
         evento_seleccionado = self.combo_evento_global.get()
         if "Sin vehículos" in evento_seleccionado or "Cargando" in evento_seleccionado or not evento_seleccionado.strip(): return
@@ -1388,11 +1563,13 @@ class CronogramaApp:
                         print("Error leyendo tareas:", e)
                     finally:
                         liberar_conexion(conn)
-                self.parent_frame.after(0, lambda: self._pintar_tareas_tabla(datos_db))
+                if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
+                    self.parent_frame.after(0, lambda: self._pintar_tareas_tabla(datos_db))
                 
             threading.Thread(target=tarea_descarga, daemon=True).start()
 
     def _pintar_tareas_tabla(self, datos):
+        if not hasattr(self, 'tabla') or not self.tabla.winfo_exists(): return
         for item in self.tabla.get_children(): self.tabla.delete(item)
         contador_visual = 1
         for r in datos:
