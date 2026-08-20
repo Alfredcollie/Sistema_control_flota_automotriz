@@ -12,13 +12,30 @@ import calendar
 import ctypes
 from datetime import datetime, timedelta
 import threading
+import json
 
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 
 # =========================================================
-# 🚀 ADAPTACIÓN MULTIPLATAFORMA: Ocultar consola solo en Windows
+# 🚀 LECTURA DE CONFIGURACIÓN GLOBAL
+# =========================================================
+def cargar_configuracion_regional():
+    config = {
+        "alerta_cambio_aceite_km": "5000"
+    }
+    try:
+        if os.path.exists("config_local.json"):
+            with open("config_local.json", "r", encoding="utf-8") as f:
+                config.update(json.load(f))
+    except Exception: pass
+    return config
+
+CONFIG_REGIONAL = cargar_configuracion_regional()
+
+# =========================================================
+# 🚀 ADAPTACIÓN MULTIPLATAFORMA
 # =========================================================
 if sys.platform == "win32":
     try:
@@ -28,9 +45,6 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# =========================================================
-# 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos
-# =========================================================
 def abrir_documento(ruta):
     try:
         if sys.platform == "win32":
@@ -200,9 +214,6 @@ class CalendarioDashboard(ctk.CTkToplevel):
 
         ctk.CTkButton(f_btns, text="📥 Exportar Todo", font=("Arial", 12, "bold"), fg_color="#28a745", hover_color="#218838", height=32, command=self.exportar_calendario_completo_ics).pack(side="left", padx=5)
 
-        ctk.CTkButton(f_btns, text="[ + ] Mantenimiento / Prov.", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", height=32, command=self.abrir_agendar_proveedor).pack(side="left", padx=5)
-        ctk.CTkButton(f_btns, text="[ + ] Trabajo (Oficina)", font=("Arial", 12, "bold"), fg_color="#34495e", hover_color="#2c3e50", height=32, command=self.abrir_agendar_interno).pack(side="left", padx=5)
-
         self.f_grid = ctk.CTkFrame(self, fg_color="#ecf0f1", corner_radius=0)
         self.f_grid.pack(fill="both", expand=True, padx=5, pady=5)
 
@@ -258,7 +269,8 @@ class CalendarioDashboard(ctk.CTkToplevel):
         filtro_p = self.combo_filtro_principal.get() if hasattr(self, 'combo_filtro_principal') else "Todo"
         filtro_s = self.combo_filtro_secundario.get() if hasattr(self, 'combo_filtro_secundario') else "-"
         
-        clave_cache = f"calendario_{filtro_p}_{filtro_s}"
+        # 🚀 CLAVE CACHÉ ACTUALIZADA PARA FORZAR RECALCULO
+        clave_cache = f"calendario_v4_{filtro_p}_{filtro_s}"
         datos_calendario = cache_sistema.obtener(clave_cache)
 
         if datos_calendario is not None:
@@ -270,6 +282,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
                 conn = conectar_db(silencioso=True)
                 if conn:
                     try:
+                        # 1. CARGA DE TAREAS REALES
                         query = "SELECT id, fecha_limite, nombre_tarea, evento_asociado, responsable, notas, tipo_entrada, ubicacion, repeticion, tiempo_aviso FROM tareas_evento"
                         params = []
                         condiciones = []
@@ -288,7 +301,118 @@ class CalendarioDashboard(ctk.CTkToplevel):
 
                         cursor = conn.cursor()
                         cursor.execute(query, tuple(params))
-                        datos_db = cursor.fetchall()
+                        datos_db = list(cursor.fetchall())
+
+                        # 2. 🚀 INYECCIÓN DE PROYECCIONES VIRTUALES 100% SEGURA
+                        if filtro_p in ["Todo", "Por Vehículo"]:
+                            lim_aceite = int(CONFIG_REGIONAL.get("alerta_aceite_km", "5000"))
+                            
+                            try:
+                                cursor.execute("SELECT placa, marca FROM flota_vehiculos")
+                                flota_raw = cursor.fetchall()
+                                
+                                for vehiculo in flota_raw:
+                                    placa = str(vehiculo[0]).strip()
+                                    marca = str(vehiculo[1]).strip()
+                                    evt_name = f"{placa} | {marca}"
+                                    
+                                    if filtro_p == "Por Vehículo" and filtro_s != "-" and filtro_s != "Sin registros" and evt_name != filtro_s:
+                                        continue
+                                        
+                                    km_correa_limite = 0.0
+                                    km_ultimo_aceite = 0.0
+                                    
+                                    # Extraer parámetros seguros (no rompe si faltan)
+                                    try:
+                                        cursor.execute("SELECT km_prox_cambio_correa FROM flota_vehiculos WHERE placa = %s", (placa,))
+                                        r_corr = cursor.fetchone()
+                                        if r_corr and r_corr[0]: km_correa_limite = float(r_corr[0])
+                                    except Exception: conn.rollback()
+                                    
+                                    try:
+                                        cursor.execute("SELECT km_ultimo_aceite FROM flota_vehiculos WHERE placa = %s", (placa,))
+                                        r_ac = cursor.fetchone()
+                                        if r_ac and r_ac[0]: km_ultimo_aceite = float(r_ac[0])
+                                    except Exception: conn.rollback()
+                                    
+                                    # Extraer historial
+                                    hist_crudo = []
+                                    cols_pos = ["evento_asociado", "vehiculo", "vehiculo_placa", "placa_vehiculo", "placa"]
+                                    for col_v in cols_pos:
+                                        try:
+                                            cursor.execute(f"SELECT fecha, kilometraje FROM facturas_recibidas WHERE {col_v} = %s AND kilometraje IS NOT NULL AND kilometraje != ''", (placa,))
+                                            hist_crudo = cursor.fetchall()
+                                            if hist_crudo: break
+                                        except: conn.rollback()
+                                        
+                                    if not hist_crudo:
+                                        for col_desc in ["concepto", "descripcion"]:
+                                            try:
+                                                cursor.execute(f"SELECT fecha, kilometraje FROM facturas_recibidas WHERE {col_desc} LIKE %s AND kilometraje IS NOT NULL AND kilometraje != ''", (f"%{placa}%",))
+                                                hist_crudo = cursor.fetchall()
+                                                if hist_crudo: break
+                                            except: conn.rollback()
+                                            
+                                    hist_proc = []
+                                    for reg in hist_crudo:
+                                        if not reg[0] or not reg[1]: continue
+                                        f_str = str(reg[0]).strip()
+                                        km_str = str(reg[1]).replace(',', '').strip()
+                                        try:
+                                            km_val = float(km_str)
+                                            if km_val <= 0: continue
+                                            if "/" in f_str: dt_obj = datetime.strptime(f_str, "%d/%m/%Y")
+                                            elif "-" in f_str: dt_obj = datetime.strptime(f_str, "%Y-%m-%d")
+                                            else: continue
+                                            hist_proc.append((dt_obj, km_val))
+                                        except: pass
+                                        
+                                    hist_proc.sort(key=lambda x: x[0])
+                                    if len(hist_proc) < 2: continue
+                                    
+                                    # MATEMÁTICA EXACTA Y AISLADA A 30 DÍAS
+                                    fecha_mas_reciente = hist_proc[-1][0]
+                                    fecha_limite_mes = fecha_mas_reciente - timedelta(days=30)
+                                    hist_reciente = [h for h in hist_proc if h[0] >= fecha_limite_mes]
+                                    
+                                    if len(hist_reciente) < 2:
+                                        hist_reciente = hist_proc[-5:] if len(hist_proc) >= 5 else hist_proc
+                                        
+                                    dt_ini, km_ini = hist_reciente[0]
+                                    dt_fin, km_fin = hist_reciente[-1]
+
+                                    dias_diff = (dt_fin - dt_ini).days
+                                    if dias_diff <= 0: dias_diff = 1 
+                                    
+                                    km_recorridos = km_fin - km_ini
+                                    if km_recorridos <= 0: km_recorridos = 1 
+                                    
+                                    prom_diario = km_recorridos / dias_diff
+
+                                    # Proyectar Aceite
+                                    if km_ultimo_aceite > 0:
+                                        prox_aceite_km = km_ultimo_aceite + lim_aceite
+                                    else:
+                                        prox_aceite_km = ((km_fin // lim_aceite) + 1) * lim_aceite
+                                        
+                                    km_faltantes_aceite = prox_aceite_km - km_fin
+                                    dias_restantes_aceite = int(km_faltantes_aceite / prom_diario)
+                                    if dias_restantes_aceite < 0: dias_restantes_aceite = 0
+                                    
+                                    fecha_aceite = datetime.now() + timedelta(days=dias_restantes_aceite)
+                                    datos_db.append(("PROY", fecha_aceite.strftime("%d/%m/%Y"), f"⚠️ Proy. Aceite ({prox_aceite_km:,.0f} Km)", evt_name, "Sistema Automático", f"Estimación basada en {prom_diario:.1f} Km/día", "Proyección", "", "No", "Sin aviso"))
+
+                                    # Proyectar Correa
+                                    if km_correa_limite > 0 and km_correa_limite > km_fin:
+                                        dias_correa = int((km_correa_limite - km_fin) / prom_diario)
+                                        if dias_correa < 0: dias_correa = 0
+                                        fecha_correa = datetime.now() + timedelta(days=dias_correa)
+                                        datos_db.append(("PROY", fecha_correa.strftime("%d/%m/%Y"), f"⚠️ Proy. Correa ({km_correa_limite:,.0f} Km)", evt_name, "Sistema Automático", f"Estimación basada en {prom_diario:.1f} Km/día", "Proyección", "", "No", "Sin aviso"))
+                            
+                            except Exception as e:
+                                print("Error Inyección Virtual Calendario:", e)
+                                conn.rollback()
+
                         cache_sistema.guardar(clave_cache, datos_db)
                     except Exception as e:
                         print("Error SQL Calendario:", e)
@@ -499,7 +623,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
             ctk.CTkLabel(f_info, text="📍 UBICACIÓN:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(10, 0))
             ctk.CTkLabel(f_info, text=td.get('ubicacion'), font=("Arial", 13), justify="left").pack(anchor="w", padx=5)
 
-        if td.get('tipo_entrada') != 'Cumpleaños':
+        if td.get('tipo_entrada') != 'Renovación Documento':
             ctk.CTkLabel(f_info, text="👤 RESPONSABLE / TALLER:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(10, 0))
             ent_resp = ctk.CTkEntry(f_info, font=("Arial", 12))
             ent_resp.pack(fill="x", padx=5, pady=(2, 0))
@@ -514,7 +638,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
         f_botones.pack(fill="x", pady=(5, 15), padx=20)
 
         def click_guardar_rapido():
-            r_val = ent_resp.get() if td.get('tipo_entrada') != 'Cumpleaños' else ""
+            r_val = ent_resp.get() if td.get('tipo_entrada') != 'Renovación Documento' else ""
             self.guardar_edicion_rapida(det_id, ent_tarea.get(), r_val, txt_notas.get("1.0", "end-1c"), pop)
 
         btn_guardar = ctk.CTkButton(f_botones, text="💾 Guardar Cambios", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", height=32, command=click_guardar_rapido)
@@ -605,6 +729,9 @@ class CalendarioDashboard(ctk.CTkToplevel):
                             elif t_tipo == "Mantenimiento":
                                 color_estado = "#d1ecf1"
                                 text_color = "#0c5460"
+                            elif t_tipo == "Proyección":
+                                color_estado = "#fdebd0" 
+                                text_color = "#d35400"  
                                 
                             titulo_corto = tarea_data["tarea"][:34] + ".." if len(tarea_data["tarea"]) > 34 else tarea_data["tarea"]
                             
@@ -621,7 +748,11 @@ class CalendarioDashboard(ctk.CTkToplevel):
                                 height=16 
                             )
                             lbl_tarea.pack(side="top", fill="x", pady=(0, 1))
-                            lbl_tarea.bind("<Button-1>", lambda e, td=tarea_data: self.mostrar_detalle_tarea(td))
+                            
+                            if str(tarea_data['id']) == "PROY":
+                                lbl_tarea.bind("<Button-1>", lambda e, td=tarea_data: messagebox.showinfo("Proyección Inteligente", f"Esta es una estimación generada por el sistema según el consumo de combustible de {td['evento_nombre']}.\n\nPara confirmarla, diríjase a la pestaña 'Proyecciones de Flota'.", parent=self))
+                            else:
+                                lbl_tarea.bind("<Button-1>", lambda e, td=tarea_data: self.mostrar_detalle_tarea(td))
 
     def mes_anterior(self):
         self.mes_actual -= 1
@@ -637,199 +768,18 @@ class CalendarioDashboard(ctk.CTkToplevel):
             self.anio_actual += 1
         self.dibujar_calendario()
 
-    def abrir_agendar_proveedor(self):
-        v_prov = ctk.CTkToplevel(self.parent_frame.winfo_toplevel())
-        v_prov.title("Agendar Mantenimiento a Flota")
-        v_prov.geometry("420x450")
-        v_prov.transient(self.parent_frame.winfo_toplevel())
-        v_prov.grab_set()
 
-        ctk.CTkLabel(v_prov, text="📋 AGENDAR TAREA A FLOTA", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
-
-        f_cont = ctk.CTkFrame(v_prov, fg_color="transparent")
-        f_cont.pack(fill="both", expand=True, padx=20, pady=5)
-
-        ctk.CTkLabel(f_cont, text="Vehículo / Flota:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_flota = ctk.CTkComboBox(f_cont, state="readonly")
-        cmb_flota.pack(fill="x", pady=(0, 10))
-
-        ctk.CTkLabel(f_cont, text="Proveedor Asignado (Taller/Mecánico):", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_prov = ctk.CTkComboBox(f_cont, state="readonly", values=["Cargando..."])
-        cmb_prov.pack(fill="x", pady=(0, 10))
-
-        ctk.CTkLabel(f_cont, text="Título / Descripción de la Tarea:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_t = ctk.CTkEntry(f_cont, placeholder_text="Ej: Cambio de Aceite / Revisión Técnica")
-        ent_t.pack(fill="x", pady=(0, 10))
-
-        ctk.CTkLabel(f_cont, text="Fecha Programada (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w")
-        f_fecha = ctk.CTkFrame(f_cont, fg_color="transparent")
-        f_fecha.pack(fill="x", pady=(0, 10))
-        ent_f = ctk.CTkEntry(f_fecha, placeholder_text="Seleccione fecha...")
-        ent_f.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(f_fecha, text="[ 📅 ]", width=40, fg_color="#1f538d", hover_color="#163b65", command=lambda: CalendarioNativo(v_prov, ent_f)).pack(side="right", padx=(5, 0))
-
-        conn = conectar_db(silencioso=True)
-        if conn:
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT placa, marca FROM flota_vehiculos ORDER BY placa ASC")
-                eventos = [f"{r[0]} | {r[1]}" for r in cursor.fetchall()]
-                if eventos:
-                    cmb_flota.configure(values=eventos)
-                    cmb_flota.set(eventos[0])
-                else:
-                    cmb_flota.configure(values=["Sin vehículos registrados"])
-                    cmb_flota.set("Sin vehículos registrados")
-            except Exception as e: 
-                print("Error cargando flota_vehiculos:", e)
-            finally: 
-                liberar_conexion(conn)
-
-        def cargar_proveedores():
-            conn2 = conectar_db(silencioso=True)
-            if conn2:
-                try:
-                    c2 = conn2.cursor()
-                    c2.execute("SELECT nombre FROM proveedores ORDER BY nombre ASC")
-                    provs = [str(r[0]).strip() for r in c2.fetchall() if r[0]]
-                    if provs:
-                        cmb_prov.configure(values=provs)
-                        cmb_prov.set(provs[0])
-                    else:
-                        cmb_prov.configure(values=["Sin proveedores registrados"])
-                        cmb_prov.set("Sin proveedores registrados")
-                except Exception as e: pass
-                finally: liberar_conexion(conn2)
-
-        cargar_proveedores()
-
-        def guardar_prov():
-            ev = cmb_flota.get()
-            pr = cmb_prov.get()
-            t_base = ent_t.get().strip()
-            f = ent_f.get().strip()
-            
-            if ev == "Sin vehículos registrados" or not ev:
-                messagebox.showwarning("Atención", "Debe registrar un vehículo en el sistema primero.", parent=v_prov)
-                return
-            if not t_base:
-                messagebox.showwarning("Atención", "La descripción de la tarea es obligatoria.", parent=v_prov)
-                return
-
-            conn3 = conectar_db()
-            if not conn3: return
-            try:
-                c3 = conn3.cursor()
-                
-                c3.execute("SELECT id FROM tareas_evento WHERE evento_asociado = %s AND nombre_tarea = %s", (ev, t_base))
-                if c3.fetchone():
-                    if not messagebox.askyesno("Tarea Existente", f"Ya registraste:\n'{t_base}'\n\n¿Seguro que deseas agregarla otra vez para este mismo vehículo?", parent=v_prov):
-                        liberar_conexion(conn3)
-                        return
-
-                c3.execute("SELECT COALESCE(MAX(orden), 0) FROM tareas_evento WHERE evento_asociado = %s", (ev,))
-                nuevo_orden = c3.fetchone()[0] + 1
-                
-                c3.execute("""
-                    INSERT INTO tareas_evento (evento_asociado, nombre_tarea, responsable, fecha_limite, estado, notas, orden, tipo_pago, tipo_entrada, repeticion, ubicacion, tiempo_aviso)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (ev, t_base, pr, f, "Pendiente", "Entrada registrada directamente desde el calendario.", nuevo_orden, "No aplica", "Mantenimiento", "No se repite", "", "Sin aviso"))
-                conn3.commit()
-                cache_sistema.invalidar()
-                registrar_auditoria(self.usuario_activo, "Cronograma", f"Agendó mantenimiento: '{t_base}' para proveedor {pr}")
-                
-                self.cargar_tareas_tabla()
-                
-                ent_t.delete(0, tk.END)
-                messagebox.showinfo("Éxito", "Entrada de mantenimiento guardada correctamente.", parent=v_prov)
-            except Exception as ex:
-                messagebox.showerror("Error", str(ex), parent=v_prov)
-            finally:
-                liberar_conexion(conn3)
-
-        ctk.CTkButton(f_cont, text="💾 Guardar y Agregar Otra Entrada", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=guardar_prov).pack(fill="x", pady=10)
-
-    def abrir_agendar_interno(self):
-        v_int = ctk.CTkToplevel(self.parent_frame.winfo_toplevel())
-        v_int.title("Agendar Trabajo de Oficina")
-        v_int.geometry("380x380")
-        v_int.transient(self.parent_frame.winfo_toplevel())
-        v_int.grab_set()
-
-        ctk.CTkLabel(v_int, text="🏢 NUEVA TAREA INTERNA", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
-
-        f_cont = ctk.CTkFrame(v_int, fg_color="transparent")
-        f_cont.pack(fill="both", expand=True, padx=20, pady=5)
-
-        ctk.CTkLabel(f_cont, text="Título / Descripción de la Tarea:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_t = ctk.CTkEntry(f_cont)
-        ent_t.pack(fill="x", pady=(0, 10))
-
-        ctk.CTkLabel(f_cont, text="Responsable / Área:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_r = ctk.CTkEntry(f_cont)
-        ent_r.pack(fill="x", pady=(0, 10))
-
-        ctk.CTkLabel(f_cont, text="Fecha Programada (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w")
-        f_fecha = ctk.CTkFrame(f_cont, fg_color="transparent")
-        f_fecha.pack(fill="x", pady=(0, 10))
-        ent_f = ctk.CTkEntry(f_fecha, placeholder_text="Seleccione fecha...")
-        ent_f.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(f_fecha, text="[ 📅 ]", width=40, fg_color="#1f538d", hover_color="#163b65", command=lambda: CalendarioNativo(v_int, ent_f)).pack(side="right", padx=(5, 0))
-
-        def guardar_interno():
-            t_base = ent_t.get().strip()
-            r = ent_r.get().strip()
-            f = ent_f.get().strip()
-            
-            if not t_base:
-                messagebox.showwarning("Atención", "La descripción de la tarea es obligatoria.", parent=v_int)
-                return
-
-            conn = conectar_db()
-            if not conn: return
-            try:
-                cursor = conn.cursor()
-                
-                cursor.execute("SELECT id FROM tareas_evento WHERE evento_asociado = %s AND nombre_tarea = %s", ("OFICINA | Trabajos Internos", t_base))
-                if cursor.fetchone():
-                    if not messagebox.askyesno("Entrada Existente", f"Ya registraste:\n'{t_base}'\n\n¿Seguro que deseas agregarla otra vez?", parent=v_int):
-                        liberar_conexion(conn)
-                        return
-
-                cursor.execute("SELECT COALESCE(MAX(orden), 0) FROM tareas_evento WHERE evento_asociado = 'OFICINA | Trabajos Internos'")
-                nuevo_orden = cursor.fetchone()[0] + 1
-                
-                cursor.execute("""
-                    INSERT INTO tareas_evento (evento_asociado, nombre_tarea, responsable, fecha_limite, estado, notas, orden, tipo_pago, tipo_entrada, repeticion, ubicacion, tiempo_aviso)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, ("OFICINA | Trabajos Internos", t_base, r, f, "Pendiente", "Asignación interna de oficina.", nuevo_orden, "No aplica", "Tarea", "No se repite", "", "Sin aviso"))
-                conn.commit()
-                cache_sistema.invalidar()
-                registrar_auditoria(self.usuario_activo, "Cronograma", f"Agendó trabajo interno: '{t_base}'")
-                v_int.destroy()
-                self.cargar_tareas_tabla()
-                messagebox.showinfo("Éxito", "Trabajo interno agendado y visible en el calendario.")
-            except Exception as ex:
-                messagebox.showerror("Error", str(ex), parent=v_int)
-            finally:
-                liberar_conexion(conn)
-
-        ctk.CTkButton(f_cont, text="💾 Agendar Tarea", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=guardar_interno).pack(fill="x", pady=10)
-
-
-# =========================================================
-# CLASE PRINCIPAL: GANTT Y CRONOGRAMA
-# =========================================================
 class CronogramaApp:
     def __init__(self, parent_frame):
         self.parent_frame = parent_frame
         self.usuario_activo = "Desconocido"
         self.pantalla_expandida = False
         
+        self.limite_aceite = int(CONFIG_REGIONAL.get("alerta_aceite_km", "5000"))
+        
         self.inicializar_bd()
         self.crear_interfaz()
 
-    # 🚀 FIX: AUTO-CURACIÓN EN SEGUNDO PLANO
     def inicializar_bd(self):
         def tarea_init():
             conn = conectar_db(silencioso=True)
@@ -856,7 +806,6 @@ class CronogramaApp:
                 except: conn.rollback()
                 try: cursor.execute("UPDATE tareas_evento SET orden = id WHERE orden = 0"); conn.commit()
                 except: conn.rollback()
-
                 try: cursor.execute("ALTER TABLE tareas_evento ADD COLUMN tipo_entrada VARCHAR(50) DEFAULT 'Tarea'"); conn.commit()
                 except: conn.rollback()
                 try: cursor.execute("ALTER TABLE tareas_evento ADD COLUMN repeticion VARCHAR(50) DEFAULT 'No se repite'"); conn.commit()
@@ -866,7 +815,6 @@ class CronogramaApp:
                 try: cursor.execute("ALTER TABLE tareas_evento ADD COLUMN tiempo_aviso VARCHAR(50) DEFAULT 'Sin aviso'"); conn.commit()
                 except: conn.rollback()
 
-                # 🚀 TABLA PARA TIPOS DE ENTRADA DINÁMICOS
                 try:
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS tipos_entrada_cronograma (
@@ -881,6 +829,16 @@ class CronogramaApp:
                         conn.commit()
                 except Exception:
                     conn.rollback()
+                    
+                try:
+                    cursor.execute("""
+                        ALTER TABLE flota_vehiculos 
+                        ADD COLUMN IF NOT EXISTS km_ultimo_aceite NUMERIC DEFAULT 0,
+                        ADD COLUMN IF NOT EXISTS fecha_ultimo_aceite VARCHAR(20) DEFAULT ''
+                    """)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
 
             except Exception as e:
                 print("Error BD Tareas:", e)
@@ -891,9 +849,6 @@ class CronogramaApp:
 
     def abrir_calendario(self, entry_objetivo):
         CalendarioNativo(self.parent_frame.winfo_toplevel(), entry_objetivo)
-
-    def abrir_calendario_dashboard(self):
-        CalendarioDashboard(self.parent_frame.winfo_toplevel(), self.usuario_activo)
 
     def toggle_pantalla_completa(self):
         sidebar = None
@@ -1050,23 +1005,36 @@ class CronogramaApp:
         btn_sel = ctk.CTkButton(v_cat, text="[ OK ] Seleccionar", width=200, command=seleccionar)
         btn_sel.pack(pady=(15, 15))
 
+    def abrir_calendario_dashboard(self):
+        CalendarioDashboard(self.parent_frame.winfo_toplevel(), self.usuario_activo)
 
     def crear_interfaz(self):
         self.frame_main = ctk.CTkFrame(self.parent_frame, fg_color="transparent")
         self.frame_main.pack(fill="both", expand=True, padx=15, pady=15)
 
-        ctk.CTkLabel(self.frame_main, text="📅 CRONOGRAMA DE MANTENIMIENTO Y TAREAS", font=("Arial", 18, "bold"), text_color="#1f538d").pack(anchor="w", pady=(0, 10))
+        ctk.CTkLabel(self.frame_main, text="📅 CRONOGRAMA Y MANTENIMIENTO PREDICTIVO", font=("Arial", 18, "bold"), text_color="#1f538d").pack(anchor="w", pady=(0, 10))
 
-        f_top = ctk.CTkFrame(self.frame_main, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0", corner_radius=8)
+        # 🚀 TABS PRINCIPALES
+        self.tabview = ctk.CTkTabview(self.frame_main, segmented_button_selected_color="#1f538d")
+        self.tabview.pack(fill="both", expand=True)
+        
+        self.tab_agenda = self.tabview.add(" 📅 Agenda y Cronograma ")
+        self.tab_proyecciones = self.tabview.add(" 🚨 Proyecciones de Flota ")
+
+        self.crear_tab_agenda()
+        self.crear_tab_proyecciones()
+        
+        self.cargar_flota_activa()
+
+    def crear_tab_agenda(self):
+        f_top = ctk.CTkFrame(self.tab_agenda, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0", corner_radius=8)
         f_top.pack(fill="x", pady=(0, 15), ipadx=10, ipady=5)
         
         ctk.CTkLabel(f_top, text="Seleccione el Grupo / Proyecto de Trabajo:", font=("Arial", 12, "bold"), text_color="#333333").pack(side="left", padx=(10, 10), pady=10)
         self.combo_evento_global = ctk.CTkComboBox(f_top, width=400, state="readonly", command=self.cargar_tareas_tabla)
         self.combo_evento_global.pack(side="left", padx=10, pady=10)
-        
-        self.cargar_flota_activa()
 
-        frame_split = ctk.CTkFrame(self.frame_main, fg_color="transparent")
+        frame_split = ctk.CTkFrame(self.tab_agenda, fg_color="transparent")
         frame_split.pack(fill="both", expand=True)
 
         self.f_form = ctk.CTkScrollableFrame(frame_split, corner_radius=10, width=320)
@@ -1076,7 +1044,6 @@ class CronogramaApp:
 
         ctk.CTkLabel(self.f_form, text="Tipo de Entrada:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         
-        # 🚀 FIX: COMBOBOX DE TIPO DE ENTRADA CON BOTÓN GESTIONAR
         f_tipo_inline = ctk.CTkFrame(self.f_form, fg_color="transparent")
         f_tipo_inline.pack(fill="x", padx=10, pady=(0, 10))
         
@@ -1084,7 +1051,7 @@ class CronogramaApp:
         self.combo_tipo_entrada = ctk.CTkComboBox(f_tipo_inline, variable=self.tipo_entrada_var, state="readonly", command=self.toggle_vista_google)
         self.combo_tipo_entrada.pack(side="left", fill="x", expand=True)
         
-        btn_gestionar_tipo = ctk.CTkButton(f_tipo_inline, text="Gestionar", width=70, command=lambda: self.ventana_emergente_tipos(self.combo_tipo_entrada, self.tipo_entrada_var, self.toggle_vista_google))
+        btn_gestionar_tipo = ctk.CTkButton(f_tipo_inline, text="⚙️", width=40, fg_color="#34495e", hover_color="#2c3e50", command=lambda: self.ventana_emergente_tipos(self.combo_tipo_entrada, self.tipo_entrada_var, self.toggle_vista_google))
         btn_gestionar_tipo.pack(side="right", padx=(5, 0))
         
         self.cargar_tipos_combos(self.combo_tipo_entrada)
@@ -1160,7 +1127,7 @@ class CronogramaApp:
         
         self.tabla.column("num", width=40, anchor="center")
         self.tabla.column("id", width=0, stretch=tk.NO) 
-        self.tabla.column("tipo_entrada", width=100, anchor="center")
+        self.tabla.column("tipo_entrada", width=120, anchor="center")
         self.tabla.column("tarea", width=220, anchor="w")
         self.tabla.column("responsable", width=120, anchor="w")
         self.tabla.column("fecha_limite", width=120, anchor="center")
@@ -1188,6 +1155,7 @@ class CronogramaApp:
         self.btn_pantalla = ctk.CTkButton(f_btn_tabla, text="[ + ] Pantalla Completa", font=("Arial", 12, "bold"), width=160, fg_color="#34495e", hover_color="#2c3e50", command=self.toggle_pantalla_completa)
         self.btn_pantalla.pack(side="left")
 
+        # 🚀 BOTÓN RESTAURADO
         btn_ver_calendario = ctk.CTkButton(f_btn_tabla, text="🗓️ Ver Calendario General", font=("Arial", 12, "bold"), width=180, fg_color="#1f538d", hover_color="#163b65", command=self.abrir_calendario_dashboard)
         btn_ver_calendario.pack(side="left", padx=(15, 5))
 
@@ -1202,8 +1170,322 @@ class CronogramaApp:
         btn_eliminar = ctk.CTkButton(f_btn_tabla, text="❌ Eliminar", font=("Arial", 12, "bold"), width=90, fg_color="#e74c3c", hover_color="#c0392b", command=self.eliminar_tarea)
         btn_eliminar.pack(side="right")
 
-        # 🚀 AL FINAL: CARGAR DATOS CUANDO LA UI ESTÉ LISTA
-        self.cargar_flota_activa()
+    # =========================================================
+    # 🚀 NUEVO MÓDULO: PROYECCIONES DE FLOTA Y RESETEO
+    # =========================================================
+    def crear_tab_proyecciones(self):
+        f_controles = ctk.CTkFrame(self.tab_proyecciones, fg_color="transparent")
+        f_controles.pack(fill="x", pady=(5, 10))
+
+        ctk.CTkLabel(f_controles, text="💡 Motor de Mantenimiento Predictivo", font=("Arial", 14, "bold"), text_color="#27ae60").pack(side="left", padx=10)
+        
+        btn_recalcular = ctk.CTkButton(f_controles, text="🔄 Analizar Facturas y Recalcular", font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=self.calcular_proyecciones)
+        btn_recalcular.pack(side="right", padx=10)
+
+        # BOTÓN DE RESET 
+        btn_reset = ctk.CTkButton(f_controles, text="🔧 Registrar / Resetear Mantenimiento", font=("Arial", 12, "bold"), fg_color="#e67e22", hover_color="#d35400", command=self.abrir_reset_mantenimiento)
+        btn_reset.pack(side="right", padx=(10, 0))
+
+        f_leyenda = ctk.CTkFrame(self.tab_proyecciones, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0", corner_radius=5)
+        f_leyenda.pack(fill="x", pady=(0, 10), ipadx=5, ipady=5)
+        
+        ctk.CTkLabel(f_leyenda, text="Límites Configurables:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        ctk.CTkLabel(f_leyenda, text=f"Aceite: {self.limite_aceite} Km", font=("Arial", 11)).pack(side="left", padx=10)
+        ctk.CTkLabel(f_leyenda, text="Correa: (Según Ficha de Vehículo)", font=("Arial", 11)).pack(side="left", padx=10)
+
+        f_tabla_p = ctk.CTkFrame(self.tab_proyecciones, fg_color="transparent")
+        f_tabla_p.pack(fill="both", expand=True)
+
+        # Se elimina "falta_general"
+        cols = ("placa", "km_actual", "uso_diario", "falta_aceite", "faltan_dias_aceite", "falta_correa", "estado")
+        self.tabla_proy = ttk.Treeview(f_tabla_p, columns=cols, show="headings", style="Treeview")
+        
+        self.tabla_proy.heading("placa", text="Vehículo (Placa)")
+        self.tabla_proy.heading("km_actual", text="KM Actual (Registrado)")
+        self.tabla_proy.heading("uso_diario", text="Uso Diario Promedio")
+        self.tabla_proy.heading("falta_aceite", text="Próx. Aceite (Km)")
+        self.tabla_proy.heading("faltan_dias_aceite", text="Días Restantes (Est.)")
+        self.tabla_proy.heading("falta_correa", text="Próx. Correa (Km)")
+        self.tabla_proy.heading("estado", text="Estado General")
+        
+        self.tabla_proy.column("placa", width=120, anchor="center")
+        self.tabla_proy.column("km_actual", width=140, anchor="center")
+        self.tabla_proy.column("uso_diario", width=140, anchor="center")
+        self.tabla_proy.column("falta_aceite", width=130, anchor="center")
+        self.tabla_proy.column("faltan_dias_aceite", width=140, anchor="center")
+        self.tabla_proy.column("falta_correa", width=130, anchor="center")
+        self.tabla_proy.column("estado", width=150, anchor="center")
+        
+        self.tabla_proy.tag_configure("estado_verde", background="#d4edda", foreground="#155724")
+        self.tabla_proy.tag_configure("estado_amarillo", background="#fff3cd", foreground="#856404")
+        self.tabla_proy.tag_configure("estado_rojo", background="#f8d7da", foreground="#721c24")
+        
+        scroll_py = ttk.Scrollbar(f_tabla_p, orient="vertical", command=self.tabla_proy.yview)
+        self.tabla_proy.configure(yscrollcommand=scroll_py.set)
+        self.tabla_proy.pack(side="left", fill="both", expand=True)
+        scroll_py.pack(side="right", fill="y")
+
+        self.parent_frame.after(500, self.calcular_proyecciones)
+
+    def abrir_reset_mantenimiento(self):
+        v_res = ctk.CTkToplevel(self.parent_frame.winfo_toplevel())
+        v_res.title("Registrar / Resetear Mantenimiento")
+        v_res.geometry("420x420")
+        v_res.transient(self.parent_frame.winfo_toplevel())
+        v_res.grab_set()
+
+        ctk.CTkLabel(v_res, text="🔧 REGISTRAR MANTENIMIENTO", font=("Arial", 14, "bold"), text_color="#e67e22").pack(pady=(15, 10))
+
+        f_cont = ctk.CTkFrame(v_res, fg_color="transparent")
+        f_cont.pack(fill="both", expand=True, padx=20, pady=5)
+
+        ctk.CTkLabel(f_cont, text="Vehículo (Placa):", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_vehiculo = ctk.CTkComboBox(f_cont, state="readonly")
+        cmb_vehiculo.pack(fill="x", pady=(0, 10))
+
+        conn = conectar_db(silencioso=True)
+        if conn:
+            try:
+                c = conn.cursor()
+                c.execute("SELECT placa FROM flota_vehiculos ORDER BY placa ASC")
+                v_list = [str(r[0]) for r in c.fetchall()]
+                if v_list:
+                    cmb_vehiculo.configure(values=v_list)
+                    cmb_vehiculo.set(v_list[0])
+                else:
+                    cmb_vehiculo.configure(values=["Sin vehículos"])
+                    cmb_vehiculo.set("Sin vehículos")
+            except: pass
+            finally: liberar_conexion(conn)
+
+        def toggle_correa(choice):
+            if choice == "Cambio de Correa":
+                lbl_limite_correa.pack(anchor="w", after=ent_km, pady=(10, 0))
+                ent_limite_correa.pack(fill="x", after=lbl_limite_correa, pady=(0, 10))
+            else:
+                lbl_limite_correa.pack_forget()
+                ent_limite_correa.pack_forget()
+
+        ctk.CTkLabel(f_cont, text="Tipo de Mantenimiento Realizado:", font=("Arial", 11, "bold")).pack(anchor="w")
+        
+        # 🚀 SÓLO ACEITE Y CORREA
+        cmb_tipo = ctk.CTkComboBox(f_cont, values=["Cambio de Aceite", "Cambio de Correa"], state="readonly", command=toggle_correa)
+        cmb_tipo.pack(fill="x", pady=(0, 10))
+        cmb_tipo.set("Cambio de Aceite")
+
+        ctk.CTkLabel(f_cont, text="Kilometraje Exacto del Mantenimiento:", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_km = ctk.CTkEntry(f_cont, placeholder_text="Ej: 19800")
+        ent_km.pack(fill="x", pady=(0, 10))
+
+        lbl_limite_correa = ctk.CTkLabel(f_cont, text="Próximo Cambio de Correa a los (Km):", font=("Arial", 11, "bold"), text_color="#1f538d")
+        ent_limite_correa = ctk.CTkEntry(f_cont, placeholder_text="Ej: 80000")
+
+        ctk.CTkLabel(f_cont, text="Fecha del Servicio:", font=("Arial", 11, "bold")).pack(anchor="w")
+        f_fecha = ctk.CTkFrame(f_cont, fg_color="transparent")
+        f_fecha.pack(fill="x", pady=(0, 10))
+        ent_f = ctk.CTkEntry(f_fecha, placeholder_text=datetime.now().strftime("%d/%m/%Y"))
+        ent_f.pack(side="left", fill="x", expand=True)
+        ent_f.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        ctk.CTkButton(f_fecha, text="[ 📅 ]", width=40, fg_color="#1f538d", hover_color="#163b65", command=lambda: self.abrir_calendario(ent_f)).pack(side="right", padx=(5, 0))
+
+        def ejecutar_reset():
+            placa = cmb_vehiculo.get()
+            tipo = cmb_tipo.get()
+            km_str = ent_km.get().strip()
+            fecha = ent_f.get().strip()
+            
+            if placa == "Sin vehículos" or not km_str:
+                messagebox.showwarning("Atención", "Todos los campos principales son obligatorios.", parent=v_res)
+                return
+                
+            try:
+                km_val = float(km_str)
+            except:
+                messagebox.showerror("Error", "El kilometraje debe ser un número válido.", parent=v_res)
+                return
+
+            conn2 = conectar_db()
+            if not conn2: return
+            try:
+                c2 = conn2.cursor()
+                if tipo == "Cambio de Aceite":
+                    c2.execute("UPDATE flota_vehiculos SET km_ultimo_aceite = %s, fecha_ultimo_aceite = %s WHERE placa = %s", (km_val, fecha, placa))
+                elif tipo == "Cambio de Correa":
+                    limite_str = ent_limite_correa.get().strip()
+                    if not limite_str:
+                        messagebox.showwarning("Atención", "Especifique el próximo límite de kilometraje para la correa.", parent=v_res)
+                        liberar_conexion(conn2)
+                        return
+                    limite_val = float(limite_str)
+                    c2.execute("UPDATE flota_vehiculos SET km_prox_cambio_correa = %s WHERE placa = %s", (limite_val, placa))
+                
+                conn2.commit()
+                registrar_auditoria(self.usuario_activo, "Cronograma", f"Reseteó {tipo} de {placa} a los {km_val} Km")
+                messagebox.showinfo("Éxito", f"Mantenimiento de {placa} registrado correctamente.\nLas proyecciones se recalcularán al instante.", parent=v_res)
+                v_res.destroy()
+                self.calcular_proyecciones()
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=v_res)
+            finally:
+                liberar_conexion(conn2)
+
+        ctk.CTkButton(f_cont, text="💾 Guardar Registro y Resetear", font=("Arial", 12, "bold"), fg_color="#e67e22", hover_color="#d35400", command=ejecutar_reset).pack(fill="x", pady=15)
+
+    def calcular_proyecciones(self):
+        for item in self.tabla_proy.get_children(): self.tabla_proy.delete(item)
+        self.tabla_proy.insert("", tk.END, values=("", "", "", "Analizando historial de compras...", "", "", ""))
+        
+        def tarea_math():
+            datos_calculados = []
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("SELECT placa FROM flota_vehiculos")
+                    flota_raw = cursor.fetchall()
+
+                    for vehiculo in flota_raw:
+                        placa = str(vehiculo[0]).strip()
+                        
+                        km_correa_limite = 0.0
+                        km_ultimo_aceite = 0.0
+                        
+                        try:
+                            cursor.execute("SELECT km_prox_cambio_correa FROM flota_vehiculos WHERE placa = %s", (placa,))
+                            r_corr = cursor.fetchone()
+                            if r_corr and r_corr[0]: km_correa_limite = float(r_corr[0])
+                        except Exception: conn.rollback()
+                        
+                        try:
+                            cursor.execute("SELECT km_ultimo_aceite FROM flota_vehiculos WHERE placa = %s", (placa,))
+                            r_ac = cursor.fetchone()
+                            if r_ac and r_ac[0]: km_ultimo_aceite = float(r_ac[0])
+                        except Exception: conn.rollback()
+
+                        historial_crudo = []
+                        columnas_posibles = ["evento_asociado", "vehiculo", "vehiculo_placa", "placa_vehiculo", "placa"]
+                        
+                        for col_v in columnas_posibles:
+                            try:
+                                cursor.execute(f"SELECT fecha, kilometraje FROM facturas_recibidas WHERE {col_v} = %s AND kilometraje IS NOT NULL AND kilometraje != ''", (placa,))
+                                historial_crudo = cursor.fetchall()
+                                if historial_crudo: break 
+                            except Exception:
+                                conn.rollback()
+                                
+                        if not historial_crudo:
+                            for col_desc in ["concepto", "descripcion"]:
+                                try:
+                                    cursor.execute(f"SELECT fecha, kilometraje FROM facturas_recibidas WHERE {col_desc} LIKE %s AND kilometraje IS NOT NULL AND kilometraje != ''", (f"%{placa}%",))
+                                    historial_crudo = cursor.fetchall()
+                                    if historial_crudo: break
+                                except Exception:
+                                    conn.rollback()
+
+                        historial_procesado = []
+                        for reg in historial_crudo:
+                            if not reg[0] or not reg[1]: continue
+                            f_str = str(reg[0]).strip()
+                            km_str = str(reg[1]).replace(',', '').strip()
+                            try:
+                                km_val = float(km_str)
+                                if km_val <= 0: continue
+                                
+                                if "/" in f_str: dt_obj = datetime.strptime(f_str, "%d/%m/%Y")
+                                elif "-" in f_str: dt_obj = datetime.strptime(f_str, "%Y-%m-%d")
+                                else: continue
+                                
+                                historial_procesado.append((dt_obj, km_val))
+                            except Exception:
+                                pass
+                                
+                        historial_procesado.sort(key=lambda x: x[0])
+
+                        if len(historial_procesado) < 2:
+                            datos_calculados.append((placa, "No hay historial", "N/A", "N/A", "N/A", "N/A", "estado_amarillo", "Requiere 2+ cargas de gas"))
+                            continue
+
+                        # 🚀 MATEMÁTICA EXACTA BASADA EN EL RITMO ACTUAL (Últimos 30 días)
+                        fecha_mas_reciente = historial_procesado[-1][0]
+                        fecha_limite_mes = fecha_mas_reciente - timedelta(days=30)
+                        
+                        historial_reciente = [h for h in historial_procesado if h[0] >= fecha_limite_mes]
+                        
+                        if len(historial_reciente) < 2:
+                            historial_reciente = historial_procesado[-5:] if len(historial_procesado) >= 5 else historial_procesado
+                        
+                        try:
+                            dt_ini, km_ini = historial_reciente[0]
+                            dt_fin, km_fin = historial_reciente[-1]
+
+                            dias_diff = (dt_fin - dt_ini).days
+                            if dias_diff <= 0: dias_diff = 1 
+                            
+                            km_recorridos = km_fin - km_ini
+                            if km_recorridos <= 0: km_recorridos = 1 
+                            
+                            promedio_diario = km_recorridos / dias_diff
+
+                            if km_ultimo_aceite > 0:
+                                prox_aceite_km = km_ultimo_aceite + self.limite_aceite
+                            else:
+                                prox_aceite_km = ((km_fin // self.limite_aceite) + 1) * self.limite_aceite
+                                
+                            km_faltantes_aceite = prox_aceite_km - km_fin
+                            dias_restantes_aceite = int(km_faltantes_aceite / promedio_diario)
+
+                            # Correa
+                            km_faltantes_correa = (km_correa_limite - km_fin) if km_correa_limite > 0 else -1
+
+                            # Definir Color (Semáforo)
+                            tag_color = "estado_verde"
+                            estado_texto = "Óptimo"
+
+                            if dias_restantes_aceite <= 0 or (km_correa_limite > 0 and km_faltantes_correa <= 0):
+                                tag_color = "estado_rojo"
+                                estado_texto = "¡MANTENIMIENTO URGENTE!"
+                            elif dias_restantes_aceite <= 15 or (km_correa_limite > 0 and km_faltantes_correa <= 1000):
+                                tag_color = "estado_amarillo"
+                                estado_texto = "Próximo a Vencer"
+
+                            datos_calculados.append((
+                                placa, 
+                                f"{km_fin:,.0f} Km", 
+                                f"{promedio_diario:.1f} Km/día", 
+                                f"Faltan {km_faltantes_aceite:,.0f} Km", 
+                                f"~ {dias_restantes_aceite} Días", 
+                                f"Faltan {km_faltantes_correa:,.0f} Km" if km_correa_limite > 0 else "Sin configurar",
+                                tag_color,
+                                estado_texto
+                            ))
+
+                        except Exception as e:
+                            print("Error matemático en vehículo:", placa, "-", e)
+                            continue
+
+                except Exception as e:
+                    print("Error Proyecciones general:", e)
+                finally:
+                    liberar_conexion(conn)
+
+            if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
+                self.parent_frame.after(0, lambda: self._dibujar_proyecciones(datos_calculados))
+
+        threading.Thread(target=tarea_math, daemon=True).start()
+
+    def _dibujar_proyecciones(self, datos):
+        if not hasattr(self, 'tabla_proy') or not self.tabla_proy.winfo_exists(): return
+        for item in self.tabla_proy.get_children(): self.tabla_proy.delete(item)
+
+        if not datos:
+            self.tabla_proy.insert("", tk.END, values=("", "", "", "No hay facturas de combustible suficientes.", "", "", ""))
+            return
+
+        for r in datos:
+            # (placa, km_actual, uso_diario, falta_aceite, dias, falta_correa, tag, texto)
+            valores = (r[0], r[1], r[2], r[3], r[4], r[5], r[7])
+            self.tabla_proy.insert("", tk.END, values=valores, tags=(r[6],))
 
     def toggle_vista_google(self, choice=None):
         tipo = self.tipo_entrada_var.get()
@@ -1250,7 +1532,7 @@ class CronogramaApp:
         cmb_tipo_e = ctk.CTkComboBox(f_tipo_e_inline, variable=var_tipo_e, state="readonly")
         cmb_tipo_e.pack(side="left", fill="x", expand=True)
         
-        btn_gestionar_tipo_e = ctk.CTkButton(f_tipo_e_inline, text="Gestionar", width=80, command=lambda: self.ventana_emergente_tipos(cmb_tipo_e, var_tipo_e, toggle_edit))
+        btn_gestionar_tipo_e = ctk.CTkButton(f_tipo_e_inline, text="⚙️", width=40, fg_color="#34495e", hover_color="#2c3e50", command=lambda: self.ventana_emergente_tipos(cmb_tipo_e, var_tipo_e, toggle_edit))
         btn_gestionar_tipo_e.pack(side="right", padx=(5, 0))
         
         self.cargar_tipos_combos(cmb_tipo_e, var_tipo_e.get())
@@ -1353,7 +1635,6 @@ class CronogramaApp:
 
         ctk.CTkButton(f_cont, text="💾 Guardar Cambios", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=guardar_edicion).pack(fill="x", pady=15)
 
-    # 🚀 FIX: CARGA DIRECTA DESDE LA TABLA 'flota_vehiculos'
     def cargar_flota_activa(self):
         clave_cache = "lista_flotas_activas"
         eventos = cache_sistema.obtener(clave_cache)
@@ -1530,7 +1811,6 @@ class CronogramaApp:
         finally:
             liberar_conexion(conn)
 
-    # 🚀 FIX: CARGA DE TAREAS ASÍNCRONA
     def cargar_tareas_tabla(self, choice=None):
         if not hasattr(self, 'tabla') or not self.tabla.winfo_exists(): return
         for item in self.tabla.get_children(): self.tabla.delete(item)
