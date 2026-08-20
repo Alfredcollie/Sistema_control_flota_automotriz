@@ -155,7 +155,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
     def __init__(self, parent, usuario_activo):
         super().__init__(parent)
         self.usuario_activo = usuario_activo
-        self.title("Calendario General de Tareas y Eventos")
+        self.title("Calendario General de Flota y Tareas")
         self.geometry("1200x700")
         
         self.after(100, lambda: maximizar_ventana(self))
@@ -188,7 +188,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
         
         ctk.CTkLabel(f_filtros, text="Filtrar por:", text_color="white", font=("Arial", 12, "bold")).pack(side="left", padx=5)
         
-        self.combo_filtro_principal = ctk.CTkComboBox(f_filtros, values=["Todo", "Por Evento", "Trabajo Interno", "Por Proveedor"], command=self.actualizar_opciones_filtro, width=150)
+        self.combo_filtro_principal = ctk.CTkComboBox(f_filtros, values=["Todo", "Por Vehículo", "Trabajo Interno", "Por Proveedor"], command=self.actualizar_opciones_filtro, width=150)
         self.combo_filtro_principal.pack(side="left", padx=5)
         self.combo_filtro_principal.set("Todo")
 
@@ -200,7 +200,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
 
         ctk.CTkButton(f_btns, text="📥 Exportar Todo", font=("Arial", 12, "bold"), fg_color="#28a745", hover_color="#218838", height=32, command=self.exportar_calendario_completo_ics).pack(side="left", padx=5)
 
-        ctk.CTkButton(f_btns, text="[ + ] Entrada Prov / Evento", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", height=32, command=self.abrir_agendar_proveedor).pack(side="left", padx=5)
+        ctk.CTkButton(f_btns, text="[ + ] Mantenimiento / Prov.", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", height=32, command=self.abrir_agendar_proveedor).pack(side="left", padx=5)
         ctk.CTkButton(f_btns, text="[ + ] Trabajo (Oficina)", font=("Arial", 12, "bold"), fg_color="#34495e", hover_color="#2c3e50", height=32, command=self.abrir_agendar_interno).pack(side="left", padx=5)
 
         self.f_grid = ctk.CTkFrame(self, fg_color="#ecf0f1", corner_radius=0)
@@ -213,7 +213,6 @@ class CalendarioDashboard(ctk.CTkToplevel):
         for i, d in enumerate(dias):
             ctk.CTkLabel(self.f_grid, text=d, font=("Arial", 12, "bold"), fg_color="#2980b9", text_color="white", corner_radius=5).grid(row=0, column=i, sticky="ew", padx=1, pady=1, ipadx=5, ipady=3)
 
-    # 🚀 FIX: FILTROS DE DASHBOARD ASÍNCRONOS
     def actualizar_opciones_filtro(self, choice):
         if choice in ["Todo", "Trabajo Interno"]:
             self.combo_filtro_secundario.configure(values=["-"], state="disabled")
@@ -229,7 +228,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
                 if conn:
                     try:
                         cursor = conn.cursor()
-                        if choice == "Por Evento":
+                        if choice == "Por Vehículo":
                             cursor.execute("SELECT DISTINCT evento_asociado FROM tareas_evento WHERE evento_asociado != 'OFICINA | Trabajos Internos' AND evento_asociado IS NOT NULL")
                             opc_db = [str(r[0]) for r in cursor.fetchall()]
                             if opc_db: opciones = opc_db
@@ -253,7 +252,6 @@ class CalendarioDashboard(ctk.CTkToplevel):
     def aplicar_filtro(self, choice=None):
         self.cargar_datos_db()
 
-    # 🚀 FIX: CARGA DEL DASHBOARD EN SEGUNDO PLANO
     def cargar_datos_db(self):
         self.tareas_db.clear()
         
@@ -278,7 +276,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
 
                         if filtro_p == "Trabajo Interno":
                             condiciones.append("evento_asociado = 'OFICINA | Trabajos Internos'")
-                        elif filtro_p == "Por Evento" and filtro_s != "-" and filtro_s != "Sin registros":
+                        elif filtro_p == "Por Vehículo" and filtro_s != "-" and filtro_s != "Sin registros":
                             condiciones.append("evento_asociado = %s")
                             params.append(filtro_s)
                         elif filtro_p == "Por Proveedor" and filtro_s != "-" and filtro_s != "Sin registros":
@@ -350,7 +348,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
                     str_end = dt_end.strftime("%Y%m%d")
                     dtstamp = datetime.now().strftime('%Y%m%dT%H%M%SZ')
                     
-                    desc = f"📌 Grupo/Proyecto: {td['evento_completo']}\\n👤 Responsable: {td['responsable']}\\n📋 Detalles: {td['notas']}".replace("\n", "\\n")
+                    desc = f"📌 Vehículo/Proyecto: {td['evento_completo']}\\n👤 Responsable: {td['responsable']}\\n📋 Detalles: {td['notas']}".replace("\n", "\\n")
                     
                     ubic_ics = f"\nLOCATION:{td.get('ubicacion', '')}" if td.get('ubicacion', '') else ""
 
@@ -397,7 +395,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
             str_end = dt_end.strftime("%Y%m%d")
             
             titulo = f"{td['tarea']} - {td['evento_nombre']}"
-            desc = f"📌 Grupo/Proyecto: {td['evento_completo']}\n👤 Responsable: {td['responsable']}\n📋 Detalles: {td['notas']}"
+            desc = f"📌 Vehículo/Proyecto: {td['evento_completo']}\n👤 Responsable: {td['responsable']}\n📋 Detalles: {td['notas']}"
             
             base_url = "https://calendar.google.com/calendar/render?action=TEMPLATE"
             text_param = urllib.parse.quote(titulo)
@@ -420,7 +418,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
             str_end = dt_end.strftime("%Y%m%d")
             dtstamp = datetime.now().strftime('%Y%m%dT%H%M%SZ')
             
-            desc = f"📌 Grupo/Proyecto: {td['evento_completo']}\\n👤 Responsable: {td['responsable']}\\n📋 Detalles: {td['notas']}".replace("\n", "\\n")
+            desc = f"📌 Vehículo/Proyecto: {td['evento_completo']}\\n👤 Responsable: {td['responsable']}\\n📋 Detalles: {td['notas']}".replace("\n", "\\n")
             ubic_ics = f"\nLOCATION:{td.get('ubicacion', '')}" if td.get('ubicacion', '') else ""
 
             ics_content = [
@@ -489,7 +487,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
         f_info = ctk.CTkFrame(pop, fg_color="transparent")
         f_info.pack(fill="both", expand=True, padx=20, pady=5)
 
-        ctk.CTkLabel(f_info, text="📌 GRUPO / PROYECTO:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(5, 0))
+        ctk.CTkLabel(f_info, text="📌 VEHÍCULO / PROYECTO:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(5, 0))
         ctk.CTkLabel(f_info, text=det_evento, font=("Arial", 13), justify="left").pack(anchor="w", padx=5)
 
         ctk.CTkLabel(f_info, text="📝 TÍTULO / DESCRIPCIÓN:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(10, 0))
@@ -502,7 +500,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
             ctk.CTkLabel(f_info, text=td.get('ubicacion'), font=("Arial", 13), justify="left").pack(anchor="w", padx=5)
 
         if td.get('tipo_entrada') != 'Cumpleaños':
-            ctk.CTkLabel(f_info, text="👤 RESPONSABLE:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(10, 0))
+            ctk.CTkLabel(f_info, text="👤 RESPONSABLE / TALLER:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(10, 0))
             ent_resp = ctk.CTkEntry(f_info, font=("Arial", 12))
             ent_resp.pack(fill="x", padx=5, pady=(2, 0))
             ent_resp.insert(0, det_resp)
@@ -601,10 +599,10 @@ class CalendarioDashboard(ctk.CTkToplevel):
                             color_estado = "#fff3cd"
                             text_color = "#856404"
                             
-                            if t_tipo == "Cumpleaños":
+                            if t_tipo == "Renovación Documento":
                                 color_estado = "#e8daef"
                                 text_color = "#8e44ad"
-                            elif t_tipo == "Evento":
+                            elif t_tipo == "Mantenimiento":
                                 color_estado = "#d1ecf1"
                                 text_color = "#0c5460"
                                 
@@ -640,27 +638,27 @@ class CalendarioDashboard(ctk.CTkToplevel):
         self.dibujar_calendario()
 
     def abrir_agendar_proveedor(self):
-        v_prov = ctk.CTkToplevel(self)
-        v_prov.title("Agendar Entrada a Proveedor / Evento")
+        v_prov = ctk.CTkToplevel(self.parent_frame.winfo_toplevel())
+        v_prov.title("Agendar Mantenimiento a Flota")
         v_prov.geometry("420x450")
-        v_prov.transient(self)
+        v_prov.transient(self.parent_frame.winfo_toplevel())
         v_prov.grab_set()
 
-        ctk.CTkLabel(v_prov, text="📋 ENTRADA PARA PROVEEDOR", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
+        ctk.CTkLabel(v_prov, text="📋 AGENDAR TAREA A FLOTA", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
 
         f_cont = ctk.CTkFrame(v_prov, fg_color="transparent")
         f_cont.pack(fill="both", expand=True, padx=20, pady=5)
 
-        ctk.CTkLabel(f_cont, text="Evento Aprobado:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_ev = ctk.CTkComboBox(f_cont, state="readonly")
-        cmb_ev.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(f_cont, text="Vehículo / Flota:", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_flota = ctk.CTkComboBox(f_cont, state="readonly")
+        cmb_flota.pack(fill="x", pady=(0, 10))
 
-        ctk.CTkLabel(f_cont, text="Proveedor del Evento:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_prov = ctk.CTkComboBox(f_cont, state="readonly", values=["Seleccione un evento primero"])
+        ctk.CTkLabel(f_cont, text="Proveedor Asignado (Taller/Mecánico):", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_prov = ctk.CTkComboBox(f_cont, state="readonly", values=["Cargando..."])
         cmb_prov.pack(fill="x", pady=(0, 10))
 
         ctk.CTkLabel(f_cont, text="Título / Descripción de la Tarea:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_t = ctk.CTkEntry(f_cont, placeholder_text="Ej: Toldo 8x4 / Catering")
+        ent_t = ctk.CTkEntry(f_cont, placeholder_text="Ej: Cambio de Aceite / Revisión Técnica")
         ent_t.pack(fill="x", pady=(0, 10))
 
         ctk.CTkLabel(f_cont, text="Fecha Programada (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w")
@@ -670,56 +668,49 @@ class CalendarioDashboard(ctk.CTkToplevel):
         ent_f.pack(side="left", fill="x", expand=True)
         ctk.CTkButton(f_fecha, text="[ 📅 ]", width=40, fg_color="#1f538d", hover_color="#163b65", command=lambda: CalendarioNativo(v_prov, ent_f)).pack(side="right", padx=(5, 0))
 
-        conn = conectar_db()
+        conn = conectar_db(silencioso=True)
         if conn:
             try:
                 cursor = conn.cursor()
-                cursor.execute("SELECT codigo_cotizacion, nombre_evento FROM cotizaciones WHERE status = 'Aprobada' ORDER BY id DESC")
+                cursor.execute("SELECT placa, marca FROM flota_vehiculos ORDER BY placa ASC")
                 eventos = [f"{r[0]} | {r[1]}" for r in cursor.fetchall()]
                 if eventos:
-                    cmb_ev.configure(values=eventos)
-                    cmb_ev.set(eventos[0])
+                    cmb_flota.configure(values=eventos)
+                    cmb_flota.set(eventos[0])
                 else:
-                    cmb_ev.configure(values=["Sin eventos"])
-                    cmb_ev.set("Sin eventos")
-            except Exception as e: pass
-            finally: liberar_conexion(conn)
+                    cmb_flota.configure(values=["Sin vehículos registrados"])
+                    cmb_flota.set("Sin vehículos registrados")
+            except Exception as e: 
+                print("Error cargando flota_vehiculos:", e)
+            finally: 
+                liberar_conexion(conn)
 
-        def cargar_proveedores(choice):
-            if "Sin eventos" in choice: return
-            cod = choice.split(" | ")[0].strip()
-            conn2 = conectar_db()
+        def cargar_proveedores():
+            conn2 = conectar_db(silencioso=True)
             if conn2:
                 try:
                     c2 = conn2.cursor()
-                    c2.execute("SELECT proveedor_nombre FROM cotizacion_proveedores WHERE codigo_cotizacion = %s", (cod,))
-                    provs = []
-                    for r in c2.fetchall():
-                        p = str(r[0]).strip()
-                        if p and p not in provs:
-                            provs.append(p)
-
+                    c2.execute("SELECT nombre FROM proveedores ORDER BY nombre ASC")
+                    provs = [str(r[0]).strip() for r in c2.fetchall() if r[0]]
                     if provs:
                         cmb_prov.configure(values=provs)
                         cmb_prov.set(provs[0])
                     else:
-                        cmb_prov.configure(values=["Sin proveedores asignados"])
-                        cmb_prov.set("Sin proveedores asignados")
+                        cmb_prov.configure(values=["Sin proveedores registrados"])
+                        cmb_prov.set("Sin proveedores registrados")
                 except Exception as e: pass
                 finally: liberar_conexion(conn2)
 
-        cmb_ev.configure(command=cargar_proveedores)
-        if cmb_ev.get() != "Sin eventos":
-            cargar_proveedores(cmb_ev.get())
+        cargar_proveedores()
 
         def guardar_prov():
-            ev = cmb_ev.get()
+            ev = cmb_flota.get()
             pr = cmb_prov.get()
             t_base = ent_t.get().strip()
             f = ent_f.get().strip()
             
-            if ev == "Sin eventos" or not ev:
-                messagebox.showwarning("Atención", "Debe seleccionar un evento.", parent=v_prov)
+            if ev == "Sin vehículos registrados" or not ev:
+                messagebox.showwarning("Atención", "Debe registrar un vehículo en el sistema primero.", parent=v_prov)
                 return
             if not t_base:
                 messagebox.showwarning("Atención", "La descripción de la tarea es obligatoria.", parent=v_prov)
@@ -732,7 +723,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
                 
                 c3.execute("SELECT id FROM tareas_evento WHERE evento_asociado = %s AND nombre_tarea = %s", (ev, t_base))
                 if c3.fetchone():
-                    if not messagebox.askyesno("Tarea Existente", f"Ya registraste:\n'{t_base}'\n\n¿Seguro que deseas agregarla otra vez para este mismo evento?", parent=v_prov):
+                    if not messagebox.askyesno("Tarea Existente", f"Ya registraste:\n'{t_base}'\n\n¿Seguro que deseas agregarla otra vez para este mismo vehículo?", parent=v_prov):
                         liberar_conexion(conn3)
                         return
 
@@ -742,15 +733,15 @@ class CalendarioDashboard(ctk.CTkToplevel):
                 c3.execute("""
                     INSERT INTO tareas_evento (evento_asociado, nombre_tarea, responsable, fecha_limite, estado, notas, orden, tipo_pago, tipo_entrada, repeticion, ubicacion, tiempo_aviso)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (ev, t_base, pr, f, "Pendiente", "Entrada registrada directamente desde el calendario.", nuevo_orden, "No aplica", "Tarea", "No se repite", "", "Sin aviso"))
+                """, (ev, t_base, pr, f, "Pendiente", "Entrada registrada directamente desde el calendario.", nuevo_orden, "No aplica", "Mantenimiento", "No se repite", "", "Sin aviso"))
                 conn3.commit()
                 cache_sistema.invalidar()
-                registrar_auditoria(self.usuario_activo, "Cronograma", f"Agendó tarea: '{t_base}' para proveedor {pr}")
+                registrar_auditoria(self.usuario_activo, "Cronograma", f"Agendó mantenimiento: '{t_base}' para proveedor {pr}")
                 
-                self.cargar_datos_db()
+                self.cargar_tareas_tabla()
                 
                 ent_t.delete(0, tk.END)
-                messagebox.showinfo("Éxito", "Entrada guardada correctamente.", parent=v_prov)
+                messagebox.showinfo("Éxito", "Entrada de mantenimiento guardada correctamente.", parent=v_prov)
             except Exception as ex:
                 messagebox.showerror("Error", str(ex), parent=v_prov)
             finally:
@@ -759,10 +750,10 @@ class CalendarioDashboard(ctk.CTkToplevel):
         ctk.CTkButton(f_cont, text="💾 Guardar y Agregar Otra Entrada", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=guardar_prov).pack(fill="x", pady=10)
 
     def abrir_agendar_interno(self):
-        v_int = ctk.CTkToplevel(self)
+        v_int = ctk.CTkToplevel(self.parent_frame.winfo_toplevel())
         v_int.title("Agendar Trabajo de Oficina")
         v_int.geometry("380x380")
-        v_int.transient(self)
+        v_int.transient(self.parent_frame.winfo_toplevel())
         v_int.grab_set()
 
         ctk.CTkLabel(v_int, text="🏢 NUEVA TAREA INTERNA", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
@@ -816,7 +807,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
                 cache_sistema.invalidar()
                 registrar_auditoria(self.usuario_activo, "Cronograma", f"Agendó trabajo interno: '{t_base}'")
                 v_int.destroy()
-                self.cargar_datos_db()
+                self.cargar_tareas_tabla()
                 messagebox.showinfo("Éxito", "Trabajo interno agendado y visible en el calendario.")
             except Exception as ex:
                 messagebox.showerror("Error", str(ex), parent=v_int)
@@ -913,7 +904,7 @@ class CronogramaApp:
         self.frame_main = ctk.CTkFrame(self.parent_frame, fg_color="transparent")
         self.frame_main.pack(fill="both", expand=True, padx=15, pady=15)
 
-        ctk.CTkLabel(self.frame_main, text="📅 CRONOGRAMA DE EJECUCIÓN Y CALENDARIO", font=("Arial", 18, "bold"), text_color="#1f538d").pack(anchor="w", pady=(0, 10))
+        ctk.CTkLabel(self.frame_main, text="📅 CRONOGRAMA DE MANTENIMIENTO Y TAREAS", font=("Arial", 18, "bold"), text_color="#1f538d").pack(anchor="w", pady=(0, 10))
 
         f_top = ctk.CTkFrame(self.frame_main, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0", corner_radius=8)
         f_top.pack(fill="x", pady=(0, 15), ipadx=10, ipady=5)
@@ -921,8 +912,6 @@ class CronogramaApp:
         ctk.CTkLabel(f_top, text="Seleccione el Grupo / Proyecto de Trabajo:", font=("Arial", 12, "bold"), text_color="#333333").pack(side="left", padx=(10, 10), pady=10)
         self.combo_evento_global = ctk.CTkComboBox(f_top, width=400, state="readonly", command=self.cargar_tareas_tabla)
         self.combo_evento_global.pack(side="left", padx=10, pady=10)
-        
-        self.cargar_eventos_aprobados()
 
         frame_split = ctk.CTkFrame(self.frame_main, fg_color="transparent")
         frame_split.pack(fill="both", expand=True)
@@ -933,12 +922,13 @@ class CronogramaApp:
         ctk.CTkLabel(self.f_form, text="Gestión de Entradas", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(10, 15))
 
         ctk.CTkLabel(self.f_form, text="Tipo de Entrada:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.combo_tipo_entrada = ctk.CTkComboBox(self.f_form, values=["Tarea", "Evento", "Cumpleaños"], state="readonly", command=self.toggle_vista_google)
+        # 🚀 TIPO DE ENTRADAS ADAPTADAS A FLOTA AUTOMOTRIZ
+        self.combo_tipo_entrada = ctk.CTkComboBox(self.f_form, values=["Tarea", "Mantenimiento", "Renovación Documento"], state="readonly", command=self.toggle_vista_google)
         self.combo_tipo_entrada.pack(fill="x", padx=10, pady=(0, 10))
         self.combo_tipo_entrada.set("Tarea")
         
         ctk.CTkLabel(self.f_form, text="Título / Descripción:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.ent_tarea = ctk.CTkEntry(self.f_form, placeholder_text="Ej: Reunión de equipo")
+        self.ent_tarea = ctk.CTkEntry(self.f_form, placeholder_text="Ej: Cambio de aceite")
         self.ent_tarea.pack(fill="x", padx=10, pady=(0, 10))
         
         ctk.CTkLabel(self.f_form, text="Fecha Programada:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
@@ -956,7 +946,7 @@ class CronogramaApp:
         self.combo_repeticion.set("No se repite")
 
         self.f_evento_options = ctk.CTkFrame(self.f_form, fg_color="transparent")
-        ctk.CTkLabel(self.f_evento_options, text="Ubicación:", font=("Arial", 11, "bold")).pack(anchor="w")
+        ctk.CTkLabel(self.f_evento_options, text="Ubicación / Taller:", font=("Arial", 11, "bold")).pack(anchor="w")
         self.ent_ubicacion = ctk.CTkEntry(self.f_evento_options, placeholder_text="Ej. Sede Central / Dirección")
         self.ent_ubicacion.pack(fill="x", pady=(0, 10))
         
@@ -968,7 +958,7 @@ class CronogramaApp:
 
         self.f_operativo = ctk.CTkFrame(self.f_form, fg_color="transparent")
         ctk.CTkLabel(self.f_operativo, text="Responsable Asignado:", font=("Arial", 11, "bold")).pack(anchor="w")
-        self.ent_responsable = ctk.CTkEntry(self.f_operativo, placeholder_text="Ej. Juan Pérez / Logística")
+        self.ent_responsable = ctk.CTkEntry(self.f_operativo, placeholder_text="Ej. Juan Pérez / Taller")
         self.ent_responsable.pack(fill="x", pady=(0, 10))
         self.f_operativo.pack(fill="x", padx=10, pady=0)
 
@@ -1019,9 +1009,10 @@ class CronogramaApp:
 
         self.tabla.config(displaycolumns=("num", "tipo_entrada", "tarea", "responsable", "fecha_limite"))
         
+        # 🚀 COLORES DE TABLA ADAPTADOS A FLOTA
         self.tabla.tag_configure("Tarea", background="#fff3cd", foreground="#856404")     
-        self.tabla.tag_configure("Evento", background="#d1ecf1", foreground="#0c5460")   
-        self.tabla.tag_configure("Cumpleaños", background="#e8daef", foreground="#8e44ad")    
+        self.tabla.tag_configure("Mantenimiento", background="#d1ecf1", foreground="#0c5460")   
+        self.tabla.tag_configure("Renovación Documento", background="#e8daef", foreground="#8e44ad")    
         self.tabla.bind("<<TreeviewSelect>>", self.seleccionar_tarea_tabla)
 
         scroll_y = ttk.Scrollbar(f_tabla, orient="vertical", command=self.tabla.yview)
@@ -1049,18 +1040,21 @@ class CronogramaApp:
         btn_eliminar = ctk.CTkButton(f_btn_tabla, text="❌ Eliminar", font=("Arial", 12, "bold"), width=90, fg_color="#e74c3c", hover_color="#c0392b", command=self.eliminar_tarea)
         btn_eliminar.pack(side="right")
 
+        # 🚀 AL FINAL: CARGAR DATOS CUANDO LA UI ESTÉ LISTA
+        self.cargar_flota_activa()
+
     def toggle_vista_google(self, choice=None):
         tipo = self.combo_tipo_entrada.get()
         
         self.f_evento_options.pack_forget()
         self.f_operativo.pack_forget()
         
-        if tipo == "Evento":
+        if tipo == "Mantenimiento":
             self.f_evento_options.pack(fill="x", padx=10, pady=(0, 0), after=self.f_repeticion)
             self.f_operativo.pack(fill="x", padx=10, pady=(0, 0), after=self.f_evento_options)
         elif tipo == "Tarea":
             self.f_operativo.pack(fill="x", padx=10, pady=(0, 0), after=self.f_repeticion)
-        elif tipo == "Cumpleaños":
+        elif tipo == "Renovación Documento":
             self.combo_repeticion.set("Anualmente")
 
     def abrir_ventana_edicion(self):
@@ -1084,7 +1078,7 @@ class CronogramaApp:
         f_cont.pack(fill="both", expand=True, padx=20, pady=5)
 
         ctk.CTkLabel(f_cont, text="Tipo de Entrada:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_tipo_e = ctk.CTkComboBox(f_cont, values=["Tarea", "Evento", "Cumpleaños"], state="readonly")
+        cmb_tipo_e = ctk.CTkComboBox(f_cont, values=["Tarea", "Mantenimiento", "Renovación Documento"], state="readonly")
         cmb_tipo_e.pack(fill="x", pady=(0, 10))
         cmb_tipo_e.set(valores[2])
 
@@ -1108,9 +1102,9 @@ class CronogramaApp:
         cmb_rep.pack(fill="x")
         cmb_rep.set(valores[7] if len(valores) > 7 and valores[7] else "No se repite")
 
-        # FRAME EVENTO
+        # FRAME MANTENIMIENTO
         f_ev = ctk.CTkFrame(f_cont, fg_color="transparent")
-        ctk.CTkLabel(f_ev, text="Ubicación:", font=("Arial", 11, "bold")).pack(anchor="w")
+        ctk.CTkLabel(f_ev, text="Ubicación / Taller:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_ub = ctk.CTkEntry(f_ev)
         ent_ub.pack(fill="x", pady=(0, 10))
         ent_ub.insert(0, valores[8] if len(valores) > 8 else "")
@@ -1137,12 +1131,12 @@ class CronogramaApp:
             f_ev.pack_forget()
             f_op.pack_forget()
             
-            if t == "Evento":
+            if t == "Mantenimiento":
                 f_ev.pack(fill="x", pady=(0, 0), after=f_rep)
                 f_op.pack(fill="x", pady=(0, 0), after=f_ev)
             elif t == "Tarea":
                 f_op.pack(fill="x", pady=(0, 0), after=f_rep)
-            elif t == "Cumpleaños":
+            elif t == "Renovación Documento":
                 cmb_rep.set("Anualmente")
 
         cmb_tipo_e.configure(command=toggle_edit)
@@ -1154,9 +1148,9 @@ class CronogramaApp:
             f = ent_f.get().strip()
             rep = cmb_rep.get()
             
-            ub = ent_ub.get().strip() if tipo_e == "Evento" else ""
-            avi = cmb_avi.get() if tipo_e == "Evento" else "Sin aviso"
-            r = ent_r.get().strip() if tipo_e != "Cumpleaños" else ""
+            ub = ent_ub.get().strip() if tipo_e == "Mantenimiento" else ""
+            avi = cmb_avi.get() if tipo_e == "Mantenimiento" else "Sin aviso"
+            r = ent_r.get().strip() if tipo_e != "Renovación Documento" else ""
             n = txt_n.get("1.0", "end-1c").strip()
             
             if not t_base:
@@ -1185,26 +1179,29 @@ class CronogramaApp:
 
         ctk.CTkButton(f_cont, text="💾 Guardar Cambios", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=guardar_edicion).pack(fill="x", pady=15)
 
-    # 🚀 FIX: CARGA DE EVENTOS ASÍNCRONA
-    def cargar_eventos_aprobados(self):
-        clave_cache = "lista_eventos_aprobados"
+    # 🚀 FIX: CARGA DIRECTA DESDE LA TABLA 'flota_vehiculos'
+    def cargar_flota_activa(self):
+        clave_cache = "lista_flotas_activas"
         eventos = cache_sistema.obtener(clave_cache)
         
         if eventos is not None:
             self._pintar_eventos(eventos)
         else:
-            self.combo_evento_global.set("Cargando eventos...")
+            self.combo_evento_global.set("Cargando vehículos...")
             def tarea_eventos():
                 evts = ["OFICINA | Trabajos Internos"]
                 conn = conectar_db(silencioso=True)
                 if conn:
                     try:
                         cursor = conn.cursor()
-                        cursor.execute("SELECT codigo_cotizacion, nombre_evento FROM cotizaciones WHERE status = 'Aprobada' ORDER BY id DESC")
-                        evts += [f"{r[0]} | {r[1]}" for r in cursor.fetchall()]
+                        # APUNTANDO EXACTAMENTE A LA TABLA DE LA IMAGEN DE SUPABASE
+                        cursor.execute("SELECT placa, marca FROM flota_vehiculos ORDER BY placa ASC")
+                        for r in cursor.fetchall():
+                            evts.append(f"{r[0]} | {r[1]}")
+                        
                         cache_sistema.guardar(clave_cache, evts)
                     except Exception as e:
-                        print("Error descargando eventos aprobados:", e)
+                        print("Error descargando flota activa:", e)
                     finally:
                         liberar_conexion(conn)
                         
@@ -1304,17 +1301,17 @@ class CronogramaApp:
 
     def guardar_tarea(self):
         evento = self.combo_evento_global.get()
-        if "Sin eventos aprobados" in evento or "Cargando" in evento or not evento.strip():
-            messagebox.showwarning("Atención", "Debe seleccionar un evento válido.")
+        if "Sin vehículos" in evento or "Cargando" in evento or not evento.strip():
+            messagebox.showwarning("Atención", "Debe seleccionar un vehículo válido.")
             return
 
         tipo_entrada = self.combo_tipo_entrada.get()
         tarea = self.ent_tarea.get().strip()
         fecha_limite = self.ent_fecha.get().strip()
         repeticion = self.combo_repeticion.get()
-        ubicacion = self.ent_ubicacion.get().strip() if tipo_entrada == "Evento" else ""
-        tiempo_aviso = self.combo_aviso.get() if tipo_entrada == "Evento" else "Sin aviso"
-        responsable = self.ent_responsable.get().strip() if tipo_entrada != "Cumpleaños" else ""
+        ubicacion = self.ent_ubicacion.get().strip() if tipo_entrada == "Mantenimiento" else ""
+        tiempo_aviso = self.combo_aviso.get() if tipo_entrada == "Mantenimiento" else "Sin aviso"
+        responsable = self.ent_responsable.get().strip() if tipo_entrada != "Renovación Documento" else ""
         notas = self.txt_notas.get("1.0", "end-1c").strip()
 
         if not tarea:
@@ -1363,7 +1360,7 @@ class CronogramaApp:
     def cargar_tareas_tabla(self, choice=None):
         for item in self.tabla.get_children(): self.tabla.delete(item)
         evento_seleccionado = self.combo_evento_global.get()
-        if "Sin eventos" in evento_seleccionado or "Cargando" in evento_seleccionado or not evento_seleccionado.strip(): return
+        if "Sin vehículos" in evento_seleccionado or "Cargando" in evento_seleccionado or not evento_seleccionado.strip(): return
 
         clave_cache = f"tareas_evento_{evento_seleccionado}"
         datos = cache_sistema.obtener(clave_cache)

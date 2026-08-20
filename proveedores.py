@@ -1,15 +1,28 @@
 # -*- coding: utf-8 -*-
+"""
+PROVEEDORES.PY - GESTIÓN CORPORATIVA DE PROVEEDORES (FLOTA Y EVENTOS)
+- 100% Compatible con macOS, Windows y Linux.
+- Búsqueda Asíncrona con Lazy Loading y Paginación sin congelamientos.
+- Consulta RUC SUNAT con soporte SSL para macOS.
+- Importador de Fichas PDF interactivo con pypdf.
+- ✅ Mensajes Flash Flotantes (Toast) inferiores al Guardar/Eliminar.
+- 🚀 Scroll fluido en todo el formulario.
+- 🔇 Búsqueda de RUC totalmente silenciosa y segura (Bypass SSL & Anti-Error 404).
+"""
 import psycopg2
 import tkinter as tk
 import customtkinter as ctk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, ttk
 import ctypes
 import urllib.request
+import urllib.error
+import ssl
 import json
 import sys
 import threading
+import queue
 
-# 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
+# Herramientas de Conexión y Buffer
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 
@@ -17,7 +30,7 @@ ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
 # =========================================================
-# 🚀 ADAPTACIÓN MULTIPLATAFORMA
+# MULTIPLATAFORMA: Ocultar consola solo en Windows
 # =========================================================
 if sys.platform == "win32":
     try:
@@ -27,19 +40,35 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+
 def maximizar_ventana(ventana):
-    if sys.platform == "win32":
-        try:
+    """Maximiza ventanas de forma segura en macOS, Windows y Linux."""
+    try:
+        if sys.platform == "win32":
             ventana.state("zoomed")
-        except Exception:
-            pass
-    else:
+        else:
+            w = ventana.winfo_screenwidth()
+            h = ventana.winfo_screenheight()
+            ventana.geometry(f"{w}x{h}+0+0")
+    except Exception:
         try:
             w = ventana.winfo_screenwidth()
             h = ventana.winfo_screenheight()
             ventana.geometry(f"{w}x{h}+0+0")
         except Exception:
             pass
+
+
+def crear_contexto_ssl_seguro():
+    """Bypass SSL para macOS/Linux."""
+    try:
+        ctx = ssl._create_unverified_context()
+    except AttributeError:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
 
 ZONAS_LIMA = [
     "Lima Centro (Cercado, Breña, Victoria, Rímac, San Luis)",
@@ -53,12 +82,10 @@ ZONAS_LIMA = [
 ]
 
 BANCOS_PERU = ["BCP", "BBVA", "Interbank", "Scotiabank", "BanBif", "Banco de la Nación", "Pichincha", "Falabella"]
-
 OPCIONES_SERVICIOS = ["Taller Mecánico", "Repuestos automotrices", "Llantero / Vulcanizadora", "Combustible / Grifo", "Lavadero", "Seguros / Corredor", "Otro"]
 
 _SCHEMA_PROVEEDORES_OK = False
 
-# 🚀 FIX 1: AUTO-CURACIÓN EN SEGUNDO PLANO
 def inicializar_db_proveedores():
     global _SCHEMA_PROVEEDORES_OK
     if _SCHEMA_PROVEEDORES_OK:
@@ -121,6 +148,7 @@ def inicializar_db_proveedores():
 
     threading.Thread(target=tarea_curacion, daemon=True).start()
 
+
 class ToolTip:
     def __init__(self, widget, text):
         self.widget = widget
@@ -154,13 +182,14 @@ class SistemaProveedores:
     def __init__(self, root):
         self.root = root
         self.usuario_activo = "Desconocido"
+        self._esta_destruido = False
+        self.ui_queue = queue.Queue()
         
-        # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
         self.registros_por_pagina = 50
 
         try:
-            self.root.title("Gestión de Proveedores - Flota Automotriz")
+            self.root.title("Gestión de Proveedores - Flota y Eventos")
             if isinstance(self.root, (ctk.CTkToplevel, tk.Tk, ctk.CTk)):
                 self.root.geometry("1200x750")
             else:
@@ -169,6 +198,7 @@ class SistemaProveedores:
             pass 
             
         inicializar_db_proveedores()
+        self._iniciar_procesador_cola_ui()
         
         header_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         header_frame.pack(fill="x", padx=15, pady=(15, 0))
@@ -183,7 +213,39 @@ class SistemaProveedores:
         self.crear_tab_buscar()
         self.crear_tab_incluir()
 
+        try:
+            self.root.bind("<Destroy>", self._al_destruir, add="+")
+        except Exception:
+            pass
+
+    def _al_destruir(self, event=None):
+        self._esta_destruido = True
+
+    def _iniciar_procesador_cola_ui(self):
+        if self._esta_destruido: return
+        try:
+            while not self.ui_queue.empty():
+                fn, args = self.ui_queue.get_nowait()
+                try:
+                    fn(*args)
+                except Exception as ex:
+                    print(f"[UI Queue Error] {ex}")
+        except Exception:
+            pass
+        finally:
+            if not self._esta_destruido and self.root.winfo_exists():
+                self.root.after(40, self._iniciar_procesador_cola_ui)
+
+    def ejecutar_en_ui(self, fn, *args):
+        self.ui_queue.put((fn, args))
+
     def crear_tab_buscar(self):
+        # 🚀 MENSAJE FLASH FLOTANTE PARA ELIMINACIÓN (ROJO) EN LA PARTE INFERIOR
+        self.frame_flash_buscar = ctk.CTkFrame(self.tab_buscar, fg_color="#e74c3c", corner_radius=8, border_width=2, border_color="#c0392b")
+        self.lbl_flash_buscar = ctk.CTkLabel(self.frame_flash_buscar, text="❌ Proveedor eliminado correctamente", font=("Arial", 14, "bold"), text_color="white")
+        self.lbl_flash_buscar.pack(padx=30, pady=12)
+        self.frame_flash_buscar.pack_forget()
+
         frame_busqueda = ctk.CTkFrame(self.tab_buscar, corner_radius=8, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
         frame_busqueda.pack(fill="x", padx=10, pady=10, ipady=5)
         
@@ -214,15 +276,17 @@ class SistemaProveedores:
         
         columnas = ("num", "id", "ruc", "nombre", "categoria", "contacto", "whatsapp", "ubicacion")
         
-        style = tk.ttk.Style()
-        style.theme_use("clam")
+        style = ttk.Style()
+        if sys.platform == "darwin":
+            style.theme_use("clam")
+            
         bg_blanco, fg_negro, bg_seleccion, border_color = "#ffffff", "#000000", "#1f538d", "#e0e0e0"
         
         style.configure("Treeview", background=bg_blanco, foreground=fg_negro, fieldbackground=bg_blanco, rowheight=28, font=("Arial", 10), bordercolor=border_color, borderwidth=1)
         style.map("Treeview", background=[("selected", bg_seleccion)], foreground=[("selected", bg_blanco)])
         style.configure("Treeview.Heading", background="#f0f0f0", foreground=fg_negro, font=("Arial", 10, "bold"), bordercolor=border_color, borderwidth=1, relief="flat")
         
-        self.tabla = tk.ttk.Treeview(frame_tabla, columns=columnas, show="headings")
+        self.tabla = ttk.Treeview(frame_tabla, columns=columnas, show="headings")
         
         self.tabla.heading("num", text="N°", anchor="center")
         self.tabla.heading("id", text="ID (Oculto)")
@@ -288,7 +352,6 @@ class SistemaProveedores:
         self.ent_buscar.delete(0, tk.END)
         self.cargar_proveedores_tabla(reset_pagina=True)
 
-    # 🚀 FIX 2: CARGA ASÍNCRONA + LAZY LOADING (Cero Congelamientos)
     def cargar_proveedores_tabla(self, reset_pagina=False):
         if reset_pagina:
             self.pagina_actual = 1
@@ -316,7 +379,7 @@ class SistemaProveedores:
             def tarea_descarga():
                 conn = conectar_db(silencioso=True)
                 if not conn: 
-                    self.root.after(0, lambda: messagebox.showwarning("Modo Lectura", "Sin conexión."))
+                    self.ejecutar_en_ui(messagebox.showwarning, "Modo Lectura", "Sin conexión.")
                     return
                     
                 try:
@@ -336,9 +399,9 @@ class SistemaProveedores:
                     
                     datos_bd = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_bd)
-                    self.root.after(0, lambda: self._pintar_datos_en_tabla(datos_bd, offset))
+                    self.ejecutar_en_ui(self._pintar_datos_en_tabla, datos_bd, offset)
                 except Exception as e:
-                    print(f"Error DB Proveedores Flota: {e}")
+                    print(f"Error DB Proveedores: {e}")
                 finally:
                     liberar_conexion(conn)
 
@@ -354,22 +417,15 @@ class SistemaProveedores:
             self.tabla.insert("", tk.END, values=valores)
             contador_visual += 1
             
-        if self.pagina_actual > 1:
-            self.btn_ant.configure(state="normal")
-        else:
-            self.btn_ant.configure(state="disabled")
-            
-        if len(datos) == self.registros_por_pagina:
-            self.btn_sig.configure(state="normal")
-        else:
-            self.btn_sig.configure(state="disabled")
+        self.btn_ant.configure(state="normal" if self.pagina_actual > 1 else "disabled")
+        self.btn_sig.configure(state="normal" if len(datos) == self.registros_por_pagina else "disabled")
 
     def ordenar_columna(self, col, reverse):
         l = [(self.tabla.set(k, col), k) for k in self.tabla.get_children('')]
         try:
-            l.sort(key=lambda t: float(t[0].replace(",", "") if t[0] else 0), reverse=reverse)
+            l.sort(key=lambda t: float(str(t[0]).replace(",", "") if t[0] else 0), reverse=reverse)
         except ValueError:
-            l.sort(key=lambda t: str(t[0]).lower(), reverse=reverse)
+            l.sort(key=lambda t: str(t[0]).lower() if t[0] else "", reverse=reverse)
 
         for index, (val, k) in enumerate(l):
             self.tabla.move(k, '', index)
@@ -394,22 +450,35 @@ class SistemaProveedores:
         id_prov = valores[1]
         nombre_prov = valores[3]
         
-        if messagebox.askyesno("Confirmar Eliminación", f"¿Desea eliminar al proveedor:\n\n'{nombre_prov}' (ID: {id_prov})?"):
-            conn = conectar_db()
-            if not conn: return
-            try:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM proveedores WHERE id = %s", (id_prov,))
-                conn.commit()
-                cache_sistema.invalidar()
-                registrar_auditoria(self.usuario_activo, "Proveedores", f"Eliminó al proveedor '{nombre_prov}' (ID: {id_prov})")
-                messagebox.showinfo("Éxito", "Proveedor eliminado correctamente.")
-                self.cargar_proveedores_tabla(reset_pagina=True)
-            except Exception as e:
-                conn.rollback()
-                messagebox.showerror("Error", f"No se pudo eliminar: {str(e)}")
-            finally:
-                liberar_conexion(conn)
+        # 🚀 PREGUNTA DE CONFIRMACIÓN ANTES DE ELIMINAR
+        if not messagebox.askyesno("Confirmar Eliminación", f"¿Desea eliminar permanentemente al proveedor:\n\n'{nombre_prov}' (Ref. Interna: {id_prov})?"):
+            return
+
+        conn = conectar_db()
+        if not conn:
+            messagebox.showwarning("Modo Lectura", "Estás sin conexión a internet.\nNo se pueden eliminar proveedores en Modo Lectura.")
+            return
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM proveedores WHERE id = %s", (id_prov,))
+            conn.commit()
+            cache_sistema.invalidar()
+            registrar_auditoria(self.usuario_activo, "Proveedores", f"Eliminó al proveedor '{nombre_prov}' (ID: {id_prov})")
+            
+            self.cargar_proveedores_tabla(reset_pagina=True)
+            
+            # 🚀 MENSAJE FLASH FLOTANTE DE ELIMINACIÓN (ROJO) EN LA PARTE INFERIOR
+            self.frame_flash_buscar.place(relx=0.5, rely=0.95, anchor="s")
+            self.frame_flash_buscar.lift()
+            self.root.update_idletasks()
+            self.root.after(1500, self.frame_flash_buscar.place_forget)
+            
+        except Exception as e:
+            conn.rollback()
+            messagebox.showerror("Error", f"No se pudo eliminar: {str(e)}")
+        finally:
+            liberar_conexion(conn)
 
     def portapapeles_copiar(self, widget, nombre_campo):
         self.root.clipboard_clear()
@@ -438,7 +507,23 @@ class SistemaProveedores:
         btn_c = ctk.CTkButton(f_btn, text="↗", width=32, height=32, font=("Arial", 12), fg_color="#e0e0e0", hover_color="#c8c8c8", text_color="black", command=lambda: self.portapapeles_copiar(widget, nombre_campo))
         btn_c.pack(side="left", padx=2)
 
-    # 🚀 API RUC EN SEGUNDO PLANO (THREADING)
+    # 🚀 FIX SCROLL: Velocidad aumentada (delta/6 en Win, +-3 en Linux)
+    def _propagar_scroll_incluir(self, event):
+        try:
+            if sys.platform == 'win32':
+                self.scroll_frame._parent_canvas.yview_scroll(int(-1*(event.delta/6)), "units")
+            elif sys.platform == 'darwin':
+                self.scroll_frame._parent_canvas.yview_scroll(int(-1 * event.delta), "units")
+            else:
+                if event.num == 4: self.scroll_frame._parent_canvas.yview_scroll(-3, "units")
+                elif event.num == 5: self.scroll_frame._parent_canvas.yview_scroll(3, "units")
+        except Exception:
+            pass
+        return "break"
+
+    # =======================================================
+    # ⚡ CONSULTA DE RUC (SUNAT) ASÍNCRONA (BYPASS SSL)
+    # =======================================================
     def consultar_ruc_api(self, ruc_entry, nombre_entry, dir_entry):
         ruc = ruc_entry.get().strip()
         if len(ruc) != 11 or not ruc.isdigit():
@@ -446,18 +531,52 @@ class SistemaProveedores:
 
         def tarea():
             try:
+                # 🚀 SUPER FIX SSL: Ignorar certificados defectuosos de la SUNAT
+                try:
+                    ctx = ssl._create_unverified_context()
+                except AttributeError:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                
+                token = ""
+                try:
+                    from app_paths import CONFIG_FILE
+                    ruta_segura = str(CONFIG_FILE)
+                    if os.path.exists(ruta_segura):
+                        with open(ruta_segura, "r", encoding="utf-8") as f:
+                            data_conf = json.load(f)
+                            token = data_conf.get("token_api_ruc", "")
+                except Exception:
+                    pass
+
+                headers = {'User-Agent': 'Mozilla/5.0'}
                 url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=5) as response:
+                
+                if token:
+                    headers['Authorization'] = f'Bearer {token}'
+
+                req = urllib.request.Request(url, headers=headers)
+                
+                with urllib.request.urlopen(req, context=ctx, timeout=8) as response:
                     if response.status == 200:
                         data = json.loads(response.read().decode())
-                        self.root.after(0, lambda: self._aplicar_datos_ruc(data, nombre_entry, dir_entry))
-                    else:
-                        self.root.after(0, lambda: messagebox.showwarning("Sin Resultados", "No se encontró información para este RUC o el servicio está inactivo."))
-            except urllib.error.URLError:
-                self.root.after(0, lambda: messagebox.showerror("Error de Conexión", "No se pudo conectar al servicio de consulta de RUC. Verifique su internet."))
+                        self.ejecutar_en_ui(self._aplicar_datos_ruc, data, nombre_entry, dir_entry)
+            
+            except urllib.error.HTTPError as e:
+                # 🚀 FIX API: Omitir cartel rojo en caso de RUC falso o no encontrado.
+                if e.code in [404, 422]:
+                    self.ejecutar_en_ui(messagebox.showwarning, "RUC Inválido", "El RUC ingresado no existe en SUNAT o no es válido.")
+                elif e.code in [401, 403]:
+                    self.ejecutar_en_ui(messagebox.showwarning, "API Restringida", "Se requiere un Token de API válido o el servicio está bloqueado.")
+                else:
+                    self.ejecutar_en_ui(messagebox.showwarning, "Error de Servidor", f"El servidor de SUNAT devolvió un error (Código {e.code}).")
+            
+            except urllib.error.URLError as e:
+                error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+                self.ejecutar_en_ui(messagebox.showerror, "Error de Red", f"Conexión bloqueada o sin internet.\nDetalle: {error_msg}")
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showwarning("Error", f"Ocurrió un problema al consultar el RUC: {e}"))
+                self.ejecutar_en_ui(messagebox.showwarning, "Error", f"Ocurrió un problema: {e}")
 
         threading.Thread(target=tarea, daemon=True).start()
 
@@ -490,10 +609,10 @@ class SistemaProveedores:
                 direccion = str_ubicacion
                 
         if not direccion:
-            direccion = "Dirección no pública o no registrada en SUNAT"
+            direccion = "Dirección no registrada en SUNAT"
         
         dir_entry.insert(0, direccion)
-        messagebox.showinfo("Consulta Exitosa", f"Datos recuperados para:\n{data.get('nombre', '')}")
+        # 🚀 SILENCIADO: Autocompleta directo sin MessageBox
 
     def ejecutar_importacion_pdf(self):
         try:
@@ -502,7 +621,11 @@ class SistemaProveedores:
             messagebox.showerror("Librería Faltante", "Para activar el lector de Fichas PDF, ejecute en su consola:\npip install pypdf")
             return
 
-        archivo_pdf = filedialog.askopenfilename(title="Seleccionar Ficha PDF de Proveedor", filetypes=[("Archivos PDF de Fichas", "*.pdf")])
+        archivo_pdf = filedialog.askopenfilename(
+            title="Seleccionar Ficha PDF de Proveedor",
+            filetypes=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")],
+            parent=self.root
+        )
         if not archivo_pdf: return
 
         try:
@@ -570,18 +693,27 @@ class SistemaProveedores:
 
             messagebox.showinfo("Ficha Importada", "¡Datos extraídos del PDF!\nRevisa el formulario y dale a guardar.")
         except Exception as e:
-            messagebox.showerror("Error de Lectura", f"No se pudo procesar el PDF:\n\n{str(e)}")
+            messagebox.showerror("Error de Lectura", f"No se pudo procesar el PDF:\n\n{e}")
 
     def crear_tab_incluir(self):
-        scroll_frame = ctk.CTkScrollableFrame(self.tab_incluir, fg_color="transparent")
-        scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        self.scroll_frame = ctk.CTkScrollableFrame(self.tab_incluir, fg_color="transparent")
+        self.scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        f_pdf = ctk.CTkFrame(scroll_frame, corner_radius=12)
+        # 🚀 CONTENEDOR SEGURO Y PERMANENTE PARA EL MENSAJE FLASH
+        self.flash_container = ctk.CTkFrame(self.scroll_frame, fg_color="transparent", height=0)
+        self.flash_container.pack(fill="x", pady=0)
+        
+        self.frame_flash = ctk.CTkFrame(self.flash_container, fg_color="#27ae60", corner_radius=8)
+        self.lbl_flash = ctk.CTkLabel(self.frame_flash, text="✅ Proveedor guardado correctamente", font=("Arial", 14, "bold"), text_color="white")
+        self.lbl_flash.pack(padx=20, pady=10)
+        self.frame_flash.pack_forget()
+
+        f_pdf = ctk.CTkFrame(self.scroll_frame, corner_radius=12)
         f_pdf.pack(fill="x", padx=10, pady=(0, 10))
         btn_importar_rapido = ctk.CTkButton(f_pdf, text="📄 Importar Datos de Ficha PDF", font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=self.ejecutar_importacion_pdf)
         btn_importar_rapido.pack(fill="x", padx=15, pady=12)
 
-        f1 = ctk.CTkFrame(scroll_frame, corner_radius=12)
+        f1 = ctk.CTkFrame(self.scroll_frame, corner_radius=12)
         f1.pack(fill="x", padx=10, pady=10, ipady=15)
         
         f1.columnconfigure(1, weight=1)
@@ -605,6 +737,17 @@ class SistemaProveedores:
         ctk.CTkLabel(f1, text="Dirección Fiscal:", font=("Arial", 12, "bold")).grid(row=2, column=0, sticky="w", padx=(20, 5), pady=8)
         self.ent_direccion = ctk.CTkEntry(f1)
         self.ent_direccion.grid(row=2, column=1, columnspan=2, sticky="ew", pady=8)
+        
+        # 🚀 APLICAMOS EL FIX DE SCROLL A TODAS LAS CAJAS BLANCAS (f1, f2, f3)
+        for frame_caja in [f1]:
+            frame_caja.bind("<MouseWheel>", self._propagar_scroll_incluir, add="+")
+            frame_caja.bind("<Button-4>", self._propagar_scroll_incluir, add="+")
+            frame_caja.bind("<Button-5>", self._propagar_scroll_incluir, add="+")
+            if hasattr(frame_caja, '_canvas'):
+                frame_caja._canvas.bind("<MouseWheel>", self._propagar_scroll_incluir, add="+")
+                frame_caja._canvas.bind("<Button-4>", self._propagar_scroll_incluir, add="+")
+                frame_caja._canvas.bind("<Button-5>", self._propagar_scroll_incluir, add="+")
+
         self.crear_botones_cp(f1, 2, 3, self.ent_direccion, "la Dirección Fiscal")
         
         ctk.CTkLabel(f1, text="Servicio / Categoría:", font=("Arial", 12, "bold")).grid(row=3, column=0, sticky="w", padx=(20, 5), pady=8)
@@ -616,6 +759,11 @@ class SistemaProveedores:
         self.txt_descripcion = ctk.CTkTextbox(f1, height=110, font=("Arial", 12), border_width=1)
         self.txt_descripcion.grid(row=4, column=1, columnspan=4, sticky="ew", pady=12)
         self.crear_botones_cp(f1, 4, 5, self.txt_descripcion, "la Descripción")
+        
+        # 🚀 ACTIVANDO SCROLL PARA LA CAJA DE TEXTO
+        self.txt_descripcion._textbox.bind("<MouseWheel>", self._propagar_scroll_incluir, add="+")
+        self.txt_descripcion._textbox.bind("<Button-4>", self._propagar_scroll_incluir, add="+")
+        self.txt_descripcion._textbox.bind("<Button-5>", self._propagar_scroll_incluir, add="+")
         
         self.lbl_contador = ctk.CTkLabel(f1, text="Caracteres restantes: 400", font=("Arial", 11), text_color="gray")
         self.lbl_contador.grid(row=5, column=1, sticky="w", padx=2)
@@ -630,9 +778,18 @@ class SistemaProveedores:
 
         self.txt_descripcion.bind("<KeyRelease>", limitar_caracteres_inc)
 
-        f2 = ctk.CTkFrame(scroll_frame, corner_radius=12)
+        f2 = ctk.CTkFrame(self.scroll_frame, corner_radius=12)
         f2.pack(fill="x", padx=10, pady=10, ipady=15)
         
+        for frame_caja in [f2]:
+            frame_caja.bind("<MouseWheel>", self._propagar_scroll_incluir, add="+")
+            frame_caja.bind("<Button-4>", self._propagar_scroll_incluir, add="+")
+            frame_caja.bind("<Button-5>", self._propagar_scroll_incluir, add="+")
+            if hasattr(frame_caja, '_canvas'):
+                frame_caja._canvas.bind("<MouseWheel>", self._propagar_scroll_incluir, add="+")
+                frame_caja._canvas.bind("<Button-4>", self._propagar_scroll_incluir, add="+")
+                frame_caja._canvas.bind("<Button-5>", self._propagar_scroll_incluir, add="+")
+
         f2.columnconfigure(1, weight=1)
         f2.columnconfigure(4, weight=1)
         
@@ -683,9 +840,18 @@ class SistemaProveedores:
         self.ent_catalogo_link.grid(row=5, column=1, sticky="ew", pady=8)
         self.crear_botones_cp(f2, 5, 2, self.ent_catalogo_link, "el Catálogo")
 
-        f3 = ctk.CTkFrame(scroll_frame, corner_radius=12)
+        f3 = ctk.CTkFrame(self.scroll_frame, corner_radius=12)
         f3.pack(fill="x", padx=10, pady=10, ipady=15)
         
+        for frame_caja in [f3]:
+            frame_caja.bind("<MouseWheel>", self._propagar_scroll_incluir, add="+")
+            frame_caja.bind("<Button-4>", self._propagar_scroll_incluir, add="+")
+            frame_caja.bind("<Button-5>", self._propagar_scroll_incluir, add="+")
+            if hasattr(frame_caja, '_canvas'):
+                frame_caja._canvas.bind("<MouseWheel>", self._propagar_scroll_incluir, add="+")
+                frame_caja._canvas.bind("<Button-4>", self._propagar_scroll_incluir, add="+")
+                frame_caja._canvas.bind("<Button-5>", self._propagar_scroll_incluir, add="+")
+
         f3.columnconfigure(1, weight=1)
         f3.columnconfigure(4, weight=1)
 
@@ -734,7 +900,7 @@ class SistemaProveedores:
         self.ent_porcentaje_detraccion.grid(row=6, column=4, sticky="ew", pady=5)
         self.crear_botones_cp(f3, 6, 5, self.ent_porcentaje_detraccion, "el % de Detracción")
 
-        btn_guardar = ctk.CTkButton(scroll_frame, text="💾 Guardar Nuevo Proveedor", font=("Arial", 14, "bold"), width=250, height=40, command=self.guardar_proveedor)
+        btn_guardar = ctk.CTkButton(self.scroll_frame, text="💾 Guardar Nuevo Proveedor", font=("Arial", 14, "bold"), width=250, height=40, command=self.guardar_proveedor)
         btn_guardar.pack(pady=25)
 
     def guardar_proveedor(self):
@@ -768,7 +934,9 @@ class SistemaProveedores:
             return
 
         conn = conectar_db()
-        if not conn: return
+        if not conn:
+            messagebox.showwarning("Modo Lectura", "Estás sin conexión a internet.")
+            return
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -779,9 +947,17 @@ class SistemaProveedores:
             
             cache_sistema.invalidar()
             registrar_auditoria(self.usuario_activo, "Proveedores", f"Registró al proveedor '{nombre}'")
-            messagebox.showinfo("Éxito", f"El proveedor '{nombre}' se registró correctamente.")
+            
             self.limpiar_formulario_incluir()
             self.cargar_proveedores_tabla(reset_pagina=True)
+            
+            # 🚀 MENSAJE FLASH FLOTANTE EN LA PARTE INFERIOR
+            self.scroll_frame._parent_canvas.yview_moveto(0.0) 
+            self.frame_flash.place(relx=0.5, rely=0.95, anchor="s")
+            self.frame_flash.lift()
+            self.root.update_idletasks()
+            self.root.after(1500, self.frame_flash.place_forget)
+            
         except psycopg2.IntegrityError:
             conn.rollback()
             messagebox.showerror("Error de Duplicidad", "Este número de RUC ya se encuentra registrado.")
@@ -850,8 +1026,27 @@ class SistemaProveedores:
         v_edit.after(0, lambda: maximizar_ventana(v_edit))
         v_edit.grab_set()
         
+        # 🚀 MENSAJE FLASH FLOTANTE EN EDICIÓN
+        frame_flash_edit = ctk.CTkFrame(v_edit, fg_color="#27ae60", corner_radius=8, border_width=2, border_color="#2ecc71")
+        lbl_flash_edit = ctk.CTkLabel(frame_flash_edit, text="✅ Cambios guardados correctamente", font=("Arial", 14, "bold"), text_color="white")
+        lbl_flash_edit.pack(padx=30, pady=12)
+        
         scroll_frame_e = ctk.CTkScrollableFrame(v_edit, fg_color="transparent")
         scroll_frame_e.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # 🚀 PUENTE DE SCROLL PARA LA VENTANA DE EDICIÓN
+        def _propagar_scroll_editar(event):
+            try:
+                if sys.platform == 'win32':
+                    scroll_frame_e._parent_canvas.yview_scroll(int(-1*(event.delta/6)), "units")
+                elif sys.platform == 'darwin':
+                    scroll_frame_e._parent_canvas.yview_scroll(int(-1 * event.delta), "units")
+                else:
+                    if event.num == 4: scroll_frame_e._parent_canvas.yview_scroll(-3, "units")
+                    elif event.num == 5: scroll_frame_e._parent_canvas.yview_scroll(3, "units")
+            except Exception:
+                pass
+            return "break"
 
         f1 = ctk.CTkFrame(scroll_frame_e, corner_radius=12)
         f1.pack(fill="x", padx=10, pady=10, ipady=15)
@@ -880,6 +1075,15 @@ class SistemaProveedores:
         ent_e_direccion.insert(0, str(p[21]) if len(p)>21 and p[21] else "")
         self.crear_botones_cp(f1, 2, 3, ent_e_direccion, "la Dirección Fiscal")
 
+        for frame_caja in [f1]:
+            frame_caja.bind("<MouseWheel>", _propagar_scroll_editar, add="+")
+            frame_caja.bind("<Button-4>", _propagar_scroll_editar, add="+")
+            frame_caja.bind("<Button-5>", _propagar_scroll_editar, add="+")
+            if hasattr(frame_caja, '_canvas'):
+                frame_caja._canvas.bind("<MouseWheel>", _propagar_scroll_editar, add="+")
+                frame_caja._canvas.bind("<Button-4>", _propagar_scroll_editar, add="+")
+                frame_caja._canvas.bind("<Button-5>", _propagar_scroll_editar, add="+")
+
         ent_e_ruc.bind("<Return>", lambda e: self.consultar_ruc_api(ent_e_ruc, ent_e_nombre, ent_e_direccion))
         
         ctk.CTkLabel(f1, text="Servicio / Categoría:", font=("Arial", 12, "bold")).grid(row=3, column=0, sticky="w", padx=(20, 5), pady=8)
@@ -895,6 +1099,11 @@ class SistemaProveedores:
         txt_e_descripcion.grid(row=4, column=1, columnspan=4, sticky="ew", pady=12)
         txt_e_descripcion.insert("1.0", str(p[20]) if p[20] else "")
         self.crear_botones_cp(f1, 4, 5, txt_e_descripcion, "la Descripción")
+        
+        # 🚀 APLICAMOS EL PUENTE DE SCROLL TAMBIÉN A LA CAJA DE EDICIÓN
+        txt_e_descripcion._textbox.bind("<MouseWheel>", _propagar_scroll_editar, add="+")
+        txt_e_descripcion._textbox.bind("<Button-4>", _propagar_scroll_editar, add="+")
+        txt_e_descripcion._textbox.bind("<Button-5>", _propagar_scroll_editar, add="+")
         
         lbl_e_contador = ctk.CTkLabel(f1, text=f"Caracteres restantes: {400 - len(txt_e_descripcion.get('1.0', 'end-1c'))}", font=("Arial", 11), text_color="gray")
         lbl_e_contador.grid(row=5, column=1, sticky="w", padx=2)
@@ -912,6 +1121,15 @@ class SistemaProveedores:
         f2 = ctk.CTkFrame(scroll_frame_e, corner_radius=12)
         f2.pack(fill="x", padx=10, pady=10, ipady=15)
         
+        for frame_caja in [f2]:
+            frame_caja.bind("<MouseWheel>", _propagar_scroll_editar, add="+")
+            frame_caja.bind("<Button-4>", _propagar_scroll_editar, add="+")
+            frame_caja.bind("<Button-5>", _propagar_scroll_editar, add="+")
+            if hasattr(frame_caja, '_canvas'):
+                frame_caja._canvas.bind("<MouseWheel>", _propagar_scroll_editar, add="+")
+                frame_caja._canvas.bind("<Button-4>", _propagar_scroll_editar, add="+")
+                frame_caja._canvas.bind("<Button-5>", _propagar_scroll_editar, add="+")
+
         f2.columnconfigure(1, weight=1)
         f2.columnconfigure(4, weight=1)
         
@@ -947,7 +1165,7 @@ class SistemaProveedores:
         ent_e_correo.insert(0, str(p[8]) if p[8] else "")
         self.crear_botones_cp(f2, 3, 2, ent_e_correo, "el Correo")
         
-        ctk.CTkLabel(f2, text="Ubicación (Zonas Lima):", font=("Arial", 12, "bold")).grid(row=3, column=3, sticky="w", padx=(30, 5), pady=8)
+        ctk.CTkLabel(f2, text="Ubicación (Zonas):", font=("Arial", 12, "bold")).grid(row=3, column=3, sticky="w", padx=(30, 5), pady=8)
         cmb_e_ubicacion = ctk.CTkOptionMenu(f2, values=ZONAS_LIMA)
         cmb_e_ubicacion.grid(row=3, column=4, sticky="ew", pady=8)
         if p[9] in ZONAS_LIMA: cmb_e_ubicacion.set(p[9])
@@ -958,11 +1176,11 @@ class SistemaProveedores:
         ent_e_web.insert(0, str(p[10]) if p[10] else "")
         self.crear_botones_cp(f2, 4, 2, ent_e_web, "el Link Web")
         
-        ctk.CTkLabel(f2, text="Zona:", font=("Arial", 12, "bold")).grid(row=4, column=3, sticky="w", padx=(30, 5), pady=8)
+        ctk.CTkLabel(f2, text="Zona/Distrito Fijo:", font=("Arial", 12, "bold")).grid(row=4, column=3, sticky="w", padx=(30, 5), pady=8)
         ent_e_catalogo = ctk.CTkEntry(f2)
         ent_e_catalogo.grid(row=4, column=4, sticky="ew", pady=8)
         ent_e_catalogo.insert(0, str(p[11]) if p[11] else "")
-        self.crear_botones_cp(f2, 4, 5, ent_e_catalogo, "la Zona")
+        self.crear_botones_cp(f2, 4, 5, ent_e_catalogo, "la Zona Fija")
 
         ctk.CTkLabel(f2, text="Enlace Catálogo:", font=("Arial", 12, "bold")).grid(row=5, column=0, sticky="w", padx=(20, 5), pady=8)
         ent_e_catalogo_link = ctk.CTkEntry(f2)
@@ -973,6 +1191,15 @@ class SistemaProveedores:
         f3 = ctk.CTkFrame(scroll_frame_e, corner_radius=12)
         f3.pack(fill="x", padx=10, pady=10, ipady=15)
         
+        for frame_caja in [f3]:
+            frame_caja.bind("<MouseWheel>", _propagar_scroll_editar, add="+")
+            frame_caja.bind("<Button-4>", _propagar_scroll_editar, add="+")
+            frame_caja.bind("<Button-5>", _propagar_scroll_editar, add="+")
+            if hasattr(frame_caja, '_canvas'):
+                frame_caja._canvas.bind("<MouseWheel>", _propagar_scroll_editar, add="+")
+                frame_caja._canvas.bind("<Button-4>", _propagar_scroll_editar, add="+")
+                frame_caja._canvas.bind("<Button-5>", _propagar_scroll_editar, add="+")
+
         f3.columnconfigure(1, weight=1)
         f3.columnconfigure(4, weight=1)
 
@@ -1029,10 +1256,10 @@ class SistemaProveedores:
 
         def ejecutar_update():
             if len(ent_e_ruc.get().strip()) != 11 or not ent_e_ruc.get().strip().isdigit():
-                messagebox.showwarning("Error", "El RUC debe tener 11 dígitos numéricos.")
+                messagebox.showwarning("Error", "El RUC debe tener 11 dígitos numéricos.", parent=v_edit)
                 return
             if not ent_e_nombre.get().strip():
-                messagebox.showwarning("Error", "Falta Razón Social.")
+                messagebox.showwarning("Error", "Falta Razón Social.", parent=v_edit)
                 return
             
             conn_u = conectar_db()
@@ -1053,20 +1280,30 @@ class SistemaProveedores:
                 conn_u.commit()
                 cache_sistema.invalidar()
                 registrar_auditoria(self.usuario_activo, "Proveedores", f"Modificó los datos del proveedor ID {id_prov} ({ent_e_nombre.get().strip()})")
-                messagebox.showinfo("Éxito", "Cambios guardados.")
-                v_edit.destroy()
+                
                 self.cargar_proveedores_tabla(reset_pagina=True)
+                
+                # 🚀 MENSAJE FLASH FLOTANTE EN EDICIÓN EN LA PARTE INFERIOR
+                scroll_frame_e._parent_canvas.yview_moveto(0.0)
+                frame_flash_edit.place(relx=0.5, rely=0.95, anchor="s")
+                frame_flash_edit.lift()
+                v_edit.update_idletasks()
+                
+                btn_actualizar.configure(state="disabled")
+                v_edit.after(1500, lambda: v_edit.destroy() if v_edit.winfo_exists() else None)
+                
             except psycopg2.IntegrityError:
                 conn_u.rollback()
-                messagebox.showerror("Error", "Este RUC ya pertenece a otra empresa.")
+                messagebox.showerror("Error", "Este RUC ya pertenece a otra empresa.", parent=v_edit)
             except Exception as e:
                 conn_u.rollback()
-                messagebox.showerror("Error SQL", f"No se pudo guardar la edición:\n{e}")
+                messagebox.showerror("Error SQL", f"No se pudo guardar la edición:\n{e}", parent=v_edit)
             finally:
                 liberar_conexion(conn_u)
 
         btn_actualizar = ctk.CTkButton(scroll_frame_e, text="💾 Guardar Cambios", font=("Arial", 14, "bold"), fg_color="#1f538d", hover_color="#163b65", width=250, height=40, command=ejecutar_update)
         btn_actualizar.pack(pady=20)
+
 
 if __name__ == "__main__":
     root = ctk.CTk()

@@ -195,7 +195,6 @@ class EstadisticasFinancieraApp:
         f_entidades = ctk.CTkFrame(f_filtro, fg_color="transparent")
         f_entidades.pack(fill="x", pady=(5, 10), padx=10)
 
-        # 🚀 SECCIÓN REEMPLAZADA: FILTRO POR BANCO/CUENTA
         f_banco = ctk.CTkFrame(f_entidades, fg_color="transparent")
         f_banco.pack(fill="x", pady=2)
         ctk.CTkLabel(f_banco, text="Filtrar por Cuenta / Banco:", font=("Arial", 12, "bold"), width=160, anchor="e").pack(side="left", padx=(0, 10))
@@ -206,10 +205,11 @@ class EstadisticasFinancieraApp:
         f_cp = ctk.CTkFrame(f_entidades, fg_color="transparent")
         f_cp.pack(fill="x", pady=(8,0))
         
-        ctk.CTkLabel(f_cp, text="Filtrar por Cliente:", font=("Arial", 12, "bold"), width=160, anchor="e").pack(side="left", padx=(0, 10))
-        self.combo_cliente = ctk.CTkComboBox(f_cp, values=["Todos los Clientes"], state="readonly", width=250)
+        # 🚀 FIX: ETIQUETA ADAPTADA A VEHÍCULO / CLIENTE
+        ctk.CTkLabel(f_cp, text="Filtrar por Vehículo / Cliente:", font=("Arial", 12, "bold"), width=180, anchor="e").pack(side="left", padx=(0, 10))
+        self.combo_cliente = ctk.CTkComboBox(f_cp, values=["Todos los Vehículos / Clientes"], state="readonly", width=250)
         self.combo_cliente.pack(side="left", padx=(0, 20))
-        self.combo_cliente.set("Todos los Clientes")
+        self.combo_cliente.set("Todos los Vehículos / Clientes")
 
         ctk.CTkLabel(f_cp, text="Filtrar por Proveedor:", font=("Arial", 12, "bold"), width=140, anchor="e").pack(side="left", padx=(0, 10))
         self.combo_proveedor = ctk.CTkComboBox(f_cp, values=["Todos los Proveedores"], state="readonly", width=250)
@@ -318,7 +318,6 @@ class EstadisticasFinancieraApp:
         return lbl_valor
 
     def cargar_bancos_y_listas(self):
-        # CARGAR BANCOS DESDE LA CONFIGURACIÓN REGIONAL
         bancos_guardados = CONFIG_REGIONAL.get("cuentas_bancarias", [])
         lista_cuentas = ["Todas las Cuentas"]
         for b in bancos_guardados:
@@ -331,8 +330,8 @@ class EstadisticasFinancieraApp:
         self.combo_banco.configure(values=lista_cuentas)
         self.combo_banco.set("Todas las Cuentas")
 
-        # 🚀 FIX: CARGAR CLIENTES Y PROVEEDORES DESDE EL CACHÉ O HILO
-        cli_mem = cache_sistema.obtener('lista_clientes_combobox')
+        # 🚀 FIX: CARGAMOS LA FLOTA DE VEHÍCULOS ADEMÁS DE CLIENTES
+        cli_mem = cache_sistema.obtener('lista_clientes_flota_combobox')
         prov_mem = cache_sistema.obtener('lista_proveedores_combobox')
         
         if cli_mem is not None and prov_mem is not None:
@@ -345,10 +344,24 @@ class EstadisticasFinancieraApp:
                 if conn:
                     try:
                         cursor = conn.cursor()
-                        cursor.execute("SELECT DISTINCT cliente FROM facturas_emitidas WHERE cliente IS NOT NULL AND cliente != '' ORDER BY cliente")
-                        clis = [str(r[0]).strip() for r in cursor.fetchall()]
-                        cache_sistema.guardar('lista_clientes_combobox', clis)
+                        # Extraer placas de vehículos
+                        try:
+                            cursor.execute("SELECT placa, marca FROM flota_vehiculos ORDER BY placa ASC")
+                            clis = [f"{r[0]} | {r[1]}" for r in cursor.fetchall()]
+                        except Exception as e:
+                            print("No se encontró tabla flota_vehiculos:", e)
+                            conn.rollback()
                         
+                        # Extraer también clientes (para mantener compatibilidad si facturas a nombre de personas)
+                        cursor.execute("SELECT DISTINCT cliente FROM facturas_emitidas WHERE cliente IS NOT NULL AND cliente != '' ORDER BY cliente")
+                        for r in cursor.fetchall():
+                            nom = str(r[0]).strip()
+                            if nom not in clis:
+                                clis.append(nom)
+                                
+                        cache_sistema.guardar('lista_clientes_flota_combobox', clis)
+                        
+                        # Extraer proveedores
                         cursor.execute("SELECT DISTINCT proveedor FROM facturas_recibidas WHERE proveedor IS NOT NULL AND proveedor != '' ORDER BY proveedor")
                         provs = [str(r[0]).strip() for r in cursor.fetchall()]
                         cache_sistema.guardar('lista_proveedores_combobox', provs)
@@ -359,9 +372,9 @@ class EstadisticasFinancieraApp:
             threading.Thread(target=tarea_listas, daemon=True).start()
             
     def _aplicar_listas(self, clientes, proveedores):
-        clientes.insert(0, "Todos los Clientes")
+        clientes.insert(0, "Todos los Vehículos / Clientes")
         self.combo_cliente.configure(values=clientes)
-        self.combo_cliente.set("Todos los Clientes")
+        self.combo_cliente.set("Todos los Vehículos / Clientes")
 
         proveedores.insert(0, "Todos los Proveedores")
         self.combo_proveedor.configure(values=proveedores)
@@ -429,7 +442,7 @@ class EstadisticasFinancieraApp:
         if ruta:
             try:
                 df_filtros = pd.DataFrame({
-                    "Indicador Financiero": ["Filtro de Cuenta/Banco:", "Filtro de Cliente:", "Filtro de Proveedor:", "Periodo Analizado:", ""],
+                    "Indicador Financiero": ["Filtro de Cuenta/Banco:", "Filtro Vehículo/Cliente:", "Filtro de Proveedor:", "Periodo Analizado:", ""],
                     "Valor Registrado": [banco_analizado, cliente_analizado, proveedor_analizado, periodo_analizado, ""]
                 })
                 
@@ -445,7 +458,6 @@ class EstadisticasFinancieraApp:
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo crear el archivo:\n{e}")
 
-    # 🚀 FIX: CÁLCULO DE KPIS EN SEGUNDO PLANO
     def cargar_kpis(self):
         banco_seleccionado = self.combo_banco.get()
         cliente_seleccionado = self.combo_cliente.get()
@@ -519,7 +531,7 @@ class EstadisticasFinancieraApp:
                     if v_estado and "Anulada" in str(v_estado):
                         continue
                         
-                    if cliente_seleccionado != "Todos los Clientes" and str(v_cliente) != cliente_seleccionado:
+                    if cliente_seleccionado != "Todos los Vehículos / Clientes" and str(v_cliente) != cliente_seleccionado:
                         continue
 
                     t = float(v_tot) if v_tot else 0.0
