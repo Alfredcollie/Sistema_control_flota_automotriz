@@ -12,12 +12,32 @@ class CacheInteligente:
         self.almacen = {}
         # Tiempo de vida por defecto del caché: 300 segundos (5 minutos)
         self.ttl_segundos = 300 
+        # 🚀 RENDIMIENTO: límite de entradas para que el caché no crezca sin control
+        self.max_entradas = 5000
         self.modo_lectura = False
         self._ciclo_activo = False
+
+    def _podar_memoria(self):
+        """Elimina entradas caducadas y, si sigue lleno, las más antiguas (FIFO)."""
+        if self.modo_lectura:
+            return  # en modo lectura los datos no caducan: no se poda
+        ahora = time.time()
+        claves_viejas = [k for k, v in self.almacen.items() if (ahora - v['timestamp']) >= v['ttl']]
+        for c in claves_viejas:
+            del self.almacen[c]
+        while len(self.almacen) >= self.max_entradas:
+            claves_ordenadas = sorted(self.almacen, key=lambda k: self.almacen[k]['timestamp'])
+            if not claves_ordenadas:
+                break
+            del self.almacen[claves_ordenadas[0]]
 
     def guardar(self, clave, datos, ttl_personalizado=None):
         """Guarda un dato en memoria con su marca de tiempo actual."""
         tiempo_expiracion = ttl_personalizado if ttl_personalizado else self.ttl_segundos
+        if len(self.almacen) >= self.max_entradas and clave not in self.almacen:
+            self._podar_memoria()
+            if len(self.almacen) >= self.max_entradas:
+                return  # caché lleno (modo lectura): no se guarda para no crecer sin límite
         self.almacen[clave] = {
             'contenido': datos,
             'timestamp': time.time(),

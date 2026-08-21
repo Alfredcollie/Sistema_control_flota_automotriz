@@ -22,7 +22,7 @@ import urllib.request
 import bcrypt
 import threading
 from datetime import datetime, timedelta
-from conexion import conectar_db, registrar_auditoria
+from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE
 
@@ -126,6 +126,25 @@ def obtener_comando_rclone():
     return "rclone"
 
 
+def normalizar_ruta_local(ruta):
+    """Convierte rutas locales a una ruta válida del sistema actual.
+
+    Si la configuración guarda una ruta absoluta de Windows (ej: C:\\Users\\...
+    o C:/Users/...) y el programa corre en macOS/Linux, esa ruta no existe y
+    debe ignorarse (el usuario elegirá una carpeta válida en cada equipo).
+    """
+    if not ruta:
+        return ""
+    ruta = ruta.strip()
+    if sys.platform != "win32":
+        # Detectar prefijo de unidad de Windows (C:, D:, ...) sin importar el separador
+        if len(ruta) >= 2 and ruta[1] == ":" and ruta[0].isalpha():
+            return ""
+        # Normalizar separadores de ruta para el sistema actual
+        ruta = ruta.replace("\\", "/")
+    return ruta
+
+
 def cargar_configuracion_general():
     config = {
         "ruta_drive": "",
@@ -190,7 +209,7 @@ def cargar_configuracion_general():
 def ejecutar_sincronizacion_silenciosa():
     """Ejecuta una copia bilateral sin bloquear el programa principal."""
     config = cargar_configuracion_general()
-    local = os.path.expanduser(config.get("ruta_drive", "").strip())
+    local = os.path.expanduser(normalizar_ruta_local(config.get("ruta_drive", "")))
     remote = config.get("rclone_remote", "gdrive:").strip()
     nube = config.get("rclone_ruta_nube", "BlackCube").strip()
 
@@ -309,7 +328,7 @@ def inicializar_seguridad_db():
     except Exception as e:
         print("Error inicializando seguridad y GPS:", e)
     finally:
-        conn.close()
+        liberar_conexion(conn)
 
 
 class ControlGeneralEventos:
@@ -507,7 +526,7 @@ class ControlGeneralEventos:
             except Exception as e:
                 messagebox.showerror("Error Crítico", f"Ocurrió un problema en el sistema:\n{e}")
             finally:
-                conn.close()
+                liberar_conexion(conn)
 
         btn_entrar = ctk.CTkButton(
             frame_log,
@@ -862,7 +881,7 @@ class ControlGeneralEventos:
         except Exception as e:
             print("Error cargando dashboard:", e)
         finally:
-            conn.close()
+            liberar_conexion(conn)
 
         f_pie = ctk.CTkFrame(f_dashboard, fg_color="transparent")
         f_pie.pack(fill="x", pady=(40, 20))
@@ -1032,7 +1051,7 @@ class ControlGeneralEventos:
             except Exception:
                 pass
             finally:
-                conn_geo.close()
+                liberar_conexion(conn_geo)
                 
         f_header = ctk.CTkFrame(v_conf, fg_color="transparent")
         f_header.pack(fill="x", padx=25, pady=(20, 10))
@@ -1363,7 +1382,7 @@ class ControlGeneralEventos:
         def probar_rclone():
             remote = ent_rclone_remote.get().strip()
             nube = ent_rclone_nube.get().strip()
-            local = os.path.expanduser(ent_drive.get().strip())
+            local = os.path.expanduser(normalizar_ruta_local(ent_drive.get().strip()))
             
             if not remote:
                 messagebox.showwarning("Aviso", "Ingresa el nombre del remote primero.", parent=v_conf)
@@ -1539,7 +1558,7 @@ class ControlGeneralEventos:
                 except Exception as e:
                     print("Error guardando geocerca:", e)
                 finally:
-                    conn_geo_upd.close()
+                    liberar_conexion(conn_geo_upd)
                     
             nueva_config = config_actual.copy()
             nueva_config.update({
@@ -1695,7 +1714,7 @@ class ControlGeneralEventos:
             except Exception:
                 pass
             finally:
-                conn.close()
+                liberar_conexion(conn)
 
         def al_seleccionar_usuario(e):
             sel = tbl_u.selection()
@@ -1743,7 +1762,7 @@ class ControlGeneralEventos:
             except Exception as e:
                 messagebox.showerror("Error", str(e), parent=v_usr)
             finally:
-                conn.close()
+                liberar_conexion(conn)
             ent_u.delete(0, tk.END)
             ent_c.delete(0, tk.END)
             cargar_usuarios()
@@ -1774,7 +1793,7 @@ class ControlGeneralEventos:
             except Exception as e:
                 messagebox.showerror("Error", str(e), parent=v_usr)
             finally:
-                conn.close()
+                liberar_conexion(conn)
 
         f_btn = ctk.CTkFrame(left_panel, fg_color="transparent")
         f_btn.pack(fill="x", padx=10, pady=15)

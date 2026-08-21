@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import customtkinter as ctk
-from conexion import conectar_db
+from conexion import conectar_db, liberar_conexion
 
 class BitacoraApp:
     def __init__(self, parent_frame):
@@ -55,13 +55,15 @@ class BitacoraApp:
         if not conn: return
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, fecha, hora, usuario, modulo, accion FROM bitacora_auditoria ORDER BY id DESC")
+            # LIMIT 500: solo se muestran los registros más recientes para no congelar la UI
+            # con miles de filas; el historial completo sigue en la base de datos.
+            cursor.execute("SELECT id, fecha, hora, usuario, modulo, accion FROM bitacora_auditoria ORDER BY id DESC LIMIT 500")
             for r in cursor.fetchall():
                 self.tabla.insert("", tk.END, values=r)
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar la bitácora:\n{e}")
         finally:
-            conn.close()
+            liberar_conexion(conn)
 
 if __name__ == "__main__":
     pass

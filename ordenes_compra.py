@@ -41,13 +41,33 @@ def abrir_documento(ruta):
         messagebox.showerror("Error", f"No se pudo abrir el archivo o carpeta:\n{e}")
 
 def copiar_archivo_portapapeles(ruta):
+    """Copia un archivo al portapapeles de forma nativa en Windows, macOS y Linux."""
     try:
         ruta_absoluta = os.path.abspath(ruta)
-        if sys.platform == "darwin": 
-            os.system(f'osascript -e \'set the clipboard to POSIX file "{ruta_absoluta}"\'')
-        elif sys.platform == "win32": 
-            os.system(f'powershell -command "Set-Clipboard -Path \'{ruta_absoluta}\'"')
-    except Exception as e: print("Error copiando al portapapeles:", e)
+        if sys.platform == "darwin":
+            # AppleScript con escape correcto de comillas y barras invertidas
+            ruta_esc = ruta_absoluta.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.run(
+                ["osascript", "-e", f'set the clipboard to POSIX file "{ruta_esc}"'],
+                check=False, timeout=10
+            )
+        elif sys.platform == "win32":
+            # PowerShell: las comillas simples se duplican para escapar el path
+            ruta_ps = ruta_absoluta.replace("'", "''")
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", f"Set-Clipboard -Path '{ruta_ps}'"],
+                check=False, timeout=10
+            )
+        else:
+            # Linux: xclip o xsel si están disponibles
+            if shutil.which("xclip"):
+                subprocess.run(["xclip", "-selection", "clipboard", "-t", "text/uri-list"],
+                               input=ruta_absoluta.encode("utf-8"), timeout=10)
+            elif shutil.which("xsel"):
+                subprocess.run(["xsel", "--clipboard", "--input"],
+                               input=ruta_absoluta.encode("utf-8"), timeout=10)
+    except Exception as e:
+        print("Error copiando al portapapeles:", e)
 
 def maximizar_ventana(ventana):
     if sys.platform == "win32":

@@ -142,72 +142,82 @@ def solicitar_otp(accion, callback_exito, parent_window):
     codigo_otp = str(random.randint(100000, 999999))
     mensaje = f"🔐 CÓDIGO DE SEGURIDAD SUNAT\n\nAcción solicitada: {accion}\n\nTu clave dinámica (OTP) es: {codigo_otp}\n\nNo compartas este código con nadie."
 
-    exito_envio = False
-    try:
-        if "Telegram" in metodo:
-            token = config.get("tel_bot_token", "").strip()
-            chat_id = config.get("tel_chat_id", "").strip()
-            if not token or not chat_id:
-                messagebox.showerror("Error", "Faltan credenciales de Telegram en Configuración General.", parent=parent_window)
-                return
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            data = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje}).encode("utf-8")
-            req = urllib.request.Request(url, data=data)
-            with urllib.request.urlopen(req, timeout=5) as response:
+    def _mostrar_ventana_otp():
+        v_otp = ctk.CTkToplevel(parent_window)
+        v_otp.title("Verificación de Seguridad")
+        v_otp.geometry("380x250")
+        v_otp.grab_set()
+
+        ctk.CTkLabel(v_otp, text="🔒 Verificación en Dos Pasos", font=("Arial", 16, "bold"), text_color="#1f538d").pack(pady=(20, 5))
+        ctk.CTkLabel(v_otp, text=f"Se ha enviado un código por {metodo}.\nIngrese los 6 dígitos para autorizar.", font=("Arial", 11)).pack(pady=(0, 15))
+
+        ent_codigo = ctk.CTkEntry(v_otp, placeholder_text="Ej: 123456", justify="center", font=("Arial", 18, "bold"), width=150)
+        ent_codigo.pack(pady=10)
+
+        def verificar():
+            if ent_codigo.get().strip() == codigo_otp:
+                v_otp.destroy()
+                callback_exito()
+            else:
+                messagebox.showerror("Código Incorrecto", "El código ingresado no es válido.", parent=v_otp)
+
+        ctk.CTkButton(v_otp, text="✅ Validar y Autorizar", font=("Arial", 13, "bold"), fg_color="#27ae60", hover_color="#1e8449", height=40, command=verificar).pack(pady=10)
+
+    # 🚀 RENDIMIENTO: el envío (Telegram/SMTP) corre en un hilo para no congelar la
+    # interfaz; la ventana OTP se muestra recién cuando el código fue enviado.
+    def _enviar_y_continuar():
+        exito_envio = False
+        try:
+            if "Telegram" in metodo:
+                token = config.get("tel_bot_token", "").strip()
+                chat_id = config.get("tel_chat_id", "").strip()
+                if not token or not chat_id:
+                    parent_window.after(0, lambda: messagebox.showerror("Error", "Faltan credenciales de Telegram en Configuración General.", parent=parent_window))
+                    return
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                data = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje}).encode("utf-8")
+                req = urllib.request.Request(url, data=data)
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    exito_envio = True
+
+            elif "Correo" in metodo:
+                smtp_server = config.get("email_smtp", "smtp.gmail.com").strip()
+                port = int(config.get("email_port", 587))
+                user = config.get("email_user", "").strip()
+                password = config.get("email_pass", "").strip()
+                dest = config.get("email_dest", "").strip()
+
+                if not user or not password or not dest:
+                    parent_window.after(0, lambda: messagebox.showerror("Error", "Faltan credenciales de correo en Configuración General.", parent=parent_window))
+                    return
+
+                msg = MIMEText(mensaje)
+                msg['Subject'] = 'Código de Seguridad SUNAT - Black Cube'
+                msg['From'] = user
+                msg['To'] = dest
+
+                server = smtplib.SMTP(smtp_server, port)
+                server.starttls()
+                server.login(user, password)
+                server.send_message(msg)
+                server.quit()
                 exito_envio = True
 
-        elif "Correo" in metodo:
-            smtp_server = config.get("email_smtp", "smtp.gmail.com").strip()
-            port = int(config.get("email_port", 587))
-            user = config.get("email_user", "").strip()
-            password = config.get("email_pass", "").strip()
-            dest = config.get("email_dest", "").strip()
-            
-            if not user or not password or not dest:
-                messagebox.showerror("Error", "Faltan credenciales de correo en Configuración General.", parent=parent_window)
-                return
-            
-            msg = MIMEText(mensaje)
-            msg['Subject'] = 'Código de Seguridad SUNAT - Black Cube'
-            msg['From'] = user
-            msg['To'] = dest
-            
-            server = smtplib.SMTP(smtp_server, port)
-            server.starttls()
-            server.login(user, password)
-            server.send_message(msg)
-            server.quit()
-            exito_envio = True
-            
-        elif "SMS" in metodo:
-            messagebox.showwarning("Aviso", "El módulo SMS Twilio requiere instalación externa. Se imprimirá el código en la consola del servidor por ahora.", parent=parent_window)
-            print(f"--- [ALERTA SMS TWILIO] CÓDIGO OTP --- : {codigo_otp}")
-            exito_envio = True
-    except Exception as e:
-        messagebox.showerror("Error de Envío OTP", f"No se pudo conectar con el servicio {metodo}:\n{e}", parent=parent_window)
-        return
+            elif "SMS" in metodo:
+                parent_window.after(0, lambda: messagebox.showwarning("Aviso", "El módulo SMS Twilio requiere instalación externa. Se imprimirá el código en la consola del servidor por ahora.", parent=parent_window))
+                print(f"--- [ALERTA SMS TWILIO] CÓDIGO OTP --- : {codigo_otp}")
+                exito_envio = True
+        except Exception as e:
+            parent_window.after(0, lambda: messagebox.showerror("Error de Envío OTP", f"No se pudo conectar con el servicio {metodo}:\n{e}", parent=parent_window))
+            return
 
-    if not exito_envio: return
+        if not exito_envio:
+            parent_window.after(0, lambda: messagebox.showerror("Error de Envío OTP", "No se pudo enviar el código de verificación. Verifique las credenciales en Configuración General.", parent=parent_window))
+            return
 
-    v_otp = ctk.CTkToplevel(parent_window)
-    v_otp.title("Verificación de Seguridad")
-    v_otp.geometry("380x250")
-    v_otp.grab_set()
+        parent_window.after(0, _mostrar_ventana_otp)
 
-    ctk.CTkLabel(v_otp, text="🔒 Verificación en Dos Pasos", font=("Arial", 16, "bold"), text_color="#1f538d").pack(pady=(20, 5))
-    ctk.CTkLabel(v_otp, text=f"Se ha enviado un código por {metodo}.\nIngrese los 6 dígitos para autorizar.", font=("Arial", 11)).pack(pady=(0, 15))
-    
-    ent_codigo = ctk.CTkEntry(v_otp, placeholder_text="Ej: 123456", justify="center", font=("Arial", 18, "bold"), width=150)
-    ent_codigo.pack(pady=10)
-
-    def verificar():
-        if ent_codigo.get().strip() == codigo_otp:
-            v_otp.destroy()
-            callback_exito()
-        else:
-            messagebox.showerror("Código Incorrecto", "El código ingresado no es válido.", parent=v_otp)
-
-    ctk.CTkButton(v_otp, text="✅ Validar y Autorizar", font=("Arial", 13, "bold"), fg_color="#27ae60", hover_color="#1e8449", height=40, command=verificar).pack(pady=10)
+    threading.Thread(target=_enviar_y_continuar, daemon=True).start()
 
 # =========================================================
 # CLASE: MINI CALENDARIO COMPARTIDO

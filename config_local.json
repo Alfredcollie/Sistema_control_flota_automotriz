@@ -45,6 +45,7 @@
     "dias_alerta_vencimiento": "30",
     "alerta_aceite_km": "5000",
     "alerta_aceite_meses": "6",
+    "alerta_mantenimiento_general_km": "5000",
     "color_menu_fondo": "#000000",
     "color_menu_btn": "#4b4b4b",
     "color_menu_hover": "#e745b3",

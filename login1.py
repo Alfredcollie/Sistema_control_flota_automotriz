@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import messagebox
 import customtkinter as ctk
-from conexion import conectar_db
+from conexion import conectar_db, liberar_conexion
 from buffer_memoria import cache_sistema
 
 class LoginApp:
@@ -57,7 +57,7 @@ class LoginApp:
         except Exception as e:
             messagebox.showerror("Error", f"Fallo al validar usuario:\n{e}")
         finally:
-            conn.close()
+            liberar_conexion(conn)
 
     def abrir_ventana_principal(self, usuario_activo):
         self.root.destroy() # Cerramos el login

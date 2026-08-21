@@ -8,7 +8,7 @@ import json
 import subprocess 
 import webbrowser
 import customtkinter as ctk
-from conexion import conectar_db
+from conexion import conectar_db, liberar_conexion
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos
@@ -348,7 +348,7 @@ class LibroDiarioApp:
         except Exception as e:
             messagebox.showerror("Error de Base de Datos", f"No se pudo compilar el diario:\n{str(e)}")
         finally:
-            conn.close()
+            liberar_conexion(conn)
             
         # Ordenar cronológicamente por la fecha (índice 2)
         self.todos_los_movimientos.sort(key=lambda x: x[2])

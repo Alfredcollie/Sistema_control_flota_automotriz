@@ -223,74 +223,84 @@ class FlotaAutomotrizApp:
         self.ruta_tarjeta_temp = ruta_archivo
         self.btn_ver_tarjeta.configure(state="normal", fg_color="#27ae60")
 
-        messagebox.showinfo("Procesando", "La Inteligencia Artificial está analizando el documento.\nEsto tomará unos segundos, dale Aceptar y espera...")
+        messagebox.showinfo("Procesando", "La Inteligencia Artificial está analizando el documento.\nEsto tomará unos segundos; la ventana seguirá respondiendo...")
 
-        try:
-            if ruta_archivo.lower().endswith(".pdf"):
-                doc = fitz.open(ruta_archivo)
-                page = doc.load_page(0) 
-                pix = page.get_pixmap(dpi=150)
-                img_bytes = pix.tobytes("jpeg")
-                mime_type = "image/jpeg"
-                doc.close()
-            else:
-                with open(ruta_archivo, "rb") as f:
-                    img_bytes = f.read()
-                mime_type = "image/jpeg" if ruta_archivo.lower().endswith(("jpg", "jpeg")) else "image/png"
+        # 🚀 RENDIMIENTO: el análisis de la IA (PyMuPDF + API) corre en un hilo para
+        # no congelar la interfaz. Los campos se rellenan en el hilo principal con after(0).
+        def procesar_en_hilo():
+            try:
+                if ruta_archivo.lower().endswith(".pdf"):
+                    doc = fitz.open(ruta_archivo)
+                    page = doc.load_page(0)
+                    pix = page.get_pixmap(dpi=150)
+                    img_bytes = pix.tobytes("jpeg")
+                    mime_type = "image/jpeg"
+                    doc.close()
+                else:
+                    with open(ruta_archivo, "rb") as f:
+                        img_bytes = f.read()
+                    mime_type = "image/jpeg" if ruta_archivo.lower().endswith(("jpg", "jpeg")) else "image/png"
 
-            img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+                img_b64 = base64.b64encode(img_bytes).decode('utf-8')
 
-            QWEN_API_KEY = "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
-            QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+                QWEN_API_KEY = "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
+                QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 
-            prompt = """
-            Eres un auditor experto en vehículos de Perú. Lee esta Tarjeta de Identificación Vehicular (TIVe) y extrae los datos en formato JSON estricto:
-            - "placa": (Ej: ABC-123)
-            - "titulo": (Ej: 2025-2927390)
-            - "fecha_titulo": (Ej: 01/10/2025)
-            - "categoria": (Ej: N1)
-            - "marca": (Ej: DFSK)
-            - "modelo": (Ej: C35)
-            - "anio": (Año modelo o fabricación, Ej: 2026)
-            - "color": (Ej: BLANCO)
-            - "vin": (Número de VIN o Chasis)
-            - "serie": (Número de serie)
-            - "motor": (Número de motor)
-            - "combustible": (Ej: BI-COMBUSTIBLE GNV)
-            Si algún dato no existe, devuélvelo como "".
-            """
-            
-            headers = {
-                "Authorization": f"Bearer {QWEN_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": "qwen-vl-plus",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}
-                            },
-                            {"type": "text", "text": prompt}
-                        ]
-                    }
-                ]
-            }
+                prompt = """
+                Eres un auditor experto en vehículos de Perú. Lee esta Tarjeta de Identificación Vehicular (TIVe) y extrae los datos en formato JSON estricto:
+                - "placa": (Ej: ABC-123)
+                - "titulo": (Ej: 2025-2927390)
+                - "fecha_titulo": (Ej: 01/10/2025)
+                - "categoria": (Ej: N1)
+                - "marca": (Ej: DFSK)
+                - "modelo": (Ej: C35)
+                - "anio": (Año modelo o fabricación, Ej: 2026)
+                - "color": (Ej: BLANCO)
+                - "vin": (Número de VIN o Chasis)
+                - "serie": (Número de serie)
+                - "motor": (Número de motor)
+                - "combustible": (Ej: BI-COMBUSTIBLE GNV)
+                Si algún dato no existe, devuélvelo como "".
+                """
 
-            respuesta = requests.post(QWEN_API_URL, headers=headers, json=payload)
-            respuesta.raise_for_status()
-            
-            datos_respuesta = respuesta.json()
-            texto_ia = datos_respuesta['choices'][0]['message']['content']
-            
-            match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
-            if not match: raise ValueError("No se encontró JSON válido en la respuesta de la IA.")
-                
-            datos = json.loads(match.group(0))
+                headers = {
+                    "Authorization": f"Bearer {QWEN_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+
+                payload = {
+                    "model": "qwen-vl-plus",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}
+                                },
+                                {"type": "text", "text": prompt}
+                            ]
+                        }
+                    ]
+                }
+
+                respuesta = requests.post(QWEN_API_URL, headers=headers, json=payload)
+                respuesta.raise_for_status()
+
+                datos_respuesta = respuesta.json()
+                texto_ia = datos_respuesta['choices'][0]['message']['content']
+
+                match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
+                if not match: raise ValueError("No se encontró JSON válido en la respuesta de la IA.")
+
+                return json.loads(match.group(0))
+            except Exception as e:
+                return e
+
+        def aplicar_resultado(datos):
+            if isinstance(datos, Exception):
+                messagebox.showerror("Error IA", f"No se pudo procesar el documento con Inteligencia Artificial.\nDetalle: {datos}")
+                return
 
             def set_val(entry, clave):
                 val = datos.get(clave, "")
@@ -305,9 +315,9 @@ class FlotaAutomotrizApp:
             set_val(self.ent_marca, "marca")
             set_val(self.ent_modelo, "modelo")
             set_val(self.ent_anio, "anio")
-            set_val(self.ent_color, "color") 
+            set_val(self.ent_color, "color")
             set_val(self.ent_motor, "motor")
-            
+
             vin = datos.get("vin", "")
             serie = datos.get("serie", "")
             chasis_final = vin if vin else serie
@@ -318,23 +328,26 @@ class FlotaAutomotrizApp:
             combustible = datos.get("combustible", "").upper()
             if combustible:
                 es_dual = any(palabra in combustible for palabra in ["BI-COMBUSTIBLE", "BICOMBUSTIBLE", "DUAL", "GASOLINA"])
-                if es_dual and "GNV" in combustible: 
+                if es_dual and "GNV" in combustible:
                     self.cmb_combustible.set("Dual (Gasolina + GNV)")
-                elif es_dual and "GLP" in combustible: 
+                elif es_dual and "GLP" in combustible:
                     self.cmb_combustible.set("Dual (Gasolina + GLP)")
-                elif "DIESEL" in combustible: 
+                elif "DIESEL" in combustible:
                     self.cmb_combustible.set("Diésel")
-                elif "GASOLINA" in combustible: 
+                elif "GASOLINA" in combustible:
                     self.cmb_combustible.set("Gasolina")
-                elif "GNV" in combustible: 
+                elif "GNV" in combustible:
                     self.cmb_combustible.set("GNV (Solo Gas)")
-                elif "GLP" in combustible: 
+                elif "GLP" in combustible:
                     self.cmb_combustible.set("GLP (Solo Gas)")
 
             messagebox.showinfo("Lectura Exitosa", "La IA ha extraído los datos. El archivo está listo para ser guardado con el vehículo.")
-            
-        except Exception as e:
-            messagebox.showerror("Error IA", f"No se pudo procesar el documento con Inteligencia Artificial.\nDetalle: {e}")
+
+        def correr():
+            resultado = procesar_en_hilo()
+            self.parent_frame.after(0, lambda: aplicar_resultado(resultado))
+
+        threading.Thread(target=correr, daemon=True).start()
 
     def abrir_tarjeta(self):
         ruta = self.ruta_tarjeta_db if self.ruta_tarjeta_db else self.ruta_tarjeta_temp
@@ -453,7 +466,6 @@ class FlotaAutomotrizApp:
         self.ent_fec_aceite = crear_campo_fecha("Último Cambio de Aceite:")
         self.ent_fec_correa = crear_campo_fecha("Cambio Correa/Cadena Distribución:")
         self.ent_km_prox_correa = crear_campo("KM Próx. Cambio Correa:", "Ej: 100000")
-        self.ent_fec_rev_gas = crear_campo_fecha("Venc. Rev. Sist. Gas:")
         self.ent_fec_compra_bat = crear_campo_fecha("Compra de Batería:")
         self.ent_fec_venc_bat = crear_campo_fecha("Vencimiento Garantía Batería:")
 
@@ -472,6 +484,7 @@ class FlotaAutomotrizApp:
         # 6. Revisiones y Estado
         ctk.CTkLabel(self.f_form, text="--- Revisiones y Estado ---", font=("Arial", 11, "bold"), text_color="#8e44ad").pack(anchor="w", padx=10, pady=(10,5))
         self.ent_rt = crear_campo_fecha("Venc. Revisión Técnica:")
+        self.ent_fec_rev_gas = crear_campo_fecha("Venc. Rev. Sist. Gas:")
 
         ctk.CTkLabel(self.f_form, text="Estado Operativo:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.cmb_estado = ctk.CTkComboBox(self.f_form, values=["Operativo", "En Mantenimiento", "Fuera de Servicio", "Vendido"], state="readonly")

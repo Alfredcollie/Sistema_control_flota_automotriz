@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import tkinter as tk
 from tkinter import messagebox
 import customtkinter as ctk
@@ -6,6 +6,7 @@ import psycopg2
 import subprocess
 import sys
 import uuid
+import re
 from datetime import datetime
 
 # =========================================================
@@ -23,17 +24,56 @@ SUPABASE_PORT = "6543"
 # Cambia este texto por el nombre exacto del software.
 SOFTWARE_ASIGNADO = "Control de Flota Automotriz" 
 
+def _ejecutar_comando(comando):
+    """Ejecuta un comando sin shell y devuelve su salida como texto (o vacío si falla)."""
+    try:
+        return subprocess.check_output(
+            comando, stderr=subprocess.DEVNULL, text=True, timeout=10
+        ).strip()
+    except Exception:
+        return ""
+
+
 def obtener_hwid():
-    """Genera o extrae el ID de Hardware único de la PC (HWID)"""
+    """Genera o extrae el ID de Hardware único del equipo (HWID).
+    Compatible con Windows, macOS (Intel y Apple Silicon M1/M2/M3/M4) y Linux."""
     hwid = ""
     try:
         if sys.platform == "win32":
-            hwid = subprocess.check_output('wmic csproduct get uuid').decode().split('\n')[1].strip()
+            # WMIC fue eliminado en Windows 11 24H2+; usamos fuentes alternativas en orden.
+            salida = _ejecutar_comando(["wmic", "csproduct", "get", "uuid"])
+            if not salida:
+                salida = _ejecutar_comando([
+                    "powershell", "-NoProfile", "-Command",
+                    "(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID"
+                ])
+            for linea in salida.splitlines():
+                linea = linea.strip()
+                if linea and linea.lower() != "uuid":
+                    hwid = linea
+                    break
         elif sys.platform == "darwin":
-            hwid = subprocess.check_output('ioreg -rd1 -c IOPlatformExpertDevice | grep -E "IOPlatformUUID"', shell=True).decode().split('"')[-2]
+            # ioreg sin shell: extraemos el UUID con expresiones regulares.
+            salida = _ejecutar_comando(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"])
+            for linea in salida.splitlines():
+                if "IOPlatformUUID" in linea:
+                    m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', linea)
+                    if m:
+                        hwid = m.group(1)
+                        break
+            if not hwid:
+                salida = _ejecutar_comando(["system_profiler", "SPHardwareDataType"])
+                m = re.search(r"Hardware\s+UUID:\s*([A-Fa-f0-9-]+)", salida, re.IGNORECASE)
+                if m:
+                    hwid = m.group(1)
         else:
-            hwid = subprocess.check_output('cat /etc/machine-id', shell=True).decode().strip()
+            hwid = _ejecutar_comando(["cat", "/etc/machine-id"])
+            if not hwid:
+                hwid = _ejecutar_comando(["cat", "/var/lib/dbus/machine-id"])
     except Exception:
+        hwid = ""
+    if not hwid:
+        # Último recurso multiplataforma: identificador derivado del hardware base de Python
         hwid = str(uuid.UUID(int=uuid.getnode())).upper()
     return hwid
 

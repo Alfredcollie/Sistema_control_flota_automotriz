@@ -458,7 +458,21 @@ class CalculoImpuestosApp:
                         credito_fiscal_ant = float(res_ant[0])
                         saldo_bn_ant = float(res_ant[1])
                         
-                    cursor.execute("SELECT tipo_documento, subtotal, impuesto, det_monto, fecha FROM facturas_emitidas")
+                    # Filtro en SQL por el periodo (mes/año) en los formatos de fecha usados
+                    # por el sistema. Evita traer TODAS las facturas de todos los tiempos,
+                    # lo que aceleraba cada vez más lento con el paso de los meses.
+                    mes_sin_cero = str(int(mes))  # "01" -> "1"
+                    patrones_periodo = [
+                        f"__/{mes}/{anio}", f"_/{mes}/{anio}",      # dd/mm/yyyy y d/mm/yyyy
+                        f"__-{mes}-{anio}", f"_-{mes}-{anio}",      # dd-mm-yyyy y d-mm-yyyy
+                        f"{anio}-{mes}-__", f"{anio}-{mes}-_",      # yyyy-mm-dd y yyyy-m-dd
+                        f"{anio}-{mes_sin_cero}-__", f"{anio}-{mes_sin_cero}-_",  # yyyy-m-dd y yyyy-m-d
+                    ]
+                    sql_filtro = "fecha LIKE %s OR fecha LIKE %s OR fecha LIKE %s OR fecha LIKE %s OR fecha LIKE %s OR fecha LIKE %s OR fecha LIKE %s OR fecha LIKE %s"
+                    cursor.execute(
+                        f"SELECT tipo_documento, subtotal, impuesto, det_monto, fecha FROM facturas_emitidas WHERE {sql_filtro}",
+                        tuple(patrones_periodo)
+                    )
                     ventas_netas = 0.0
                     igv_ventas = 0.0
                     detracciones_del_mes = 0.0
@@ -471,7 +485,10 @@ class CalculoImpuestosApp:
                                 igv_ventas += float(imp or 0)
                             detracciones_del_mes += float(det or 0)
                             
-                    cursor.execute("SELECT tipo_documento, subtotal, impuesto, det_monto, fecha FROM facturas_recibidas")
+                    cursor.execute(
+                        f"SELECT tipo_documento, subtotal, impuesto, det_monto, fecha FROM facturas_recibidas WHERE {sql_filtro}",
+                        tuple(patrones_periodo)
+                    )
                     compras_netas = 0.0
                     igv_compras = 0.0
                     detracciones_compras = 0.0

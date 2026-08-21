@@ -12,7 +12,7 @@ from datetime import datetime
 import webbrowser
 import shutil
 
-from conexion import conectar_db, registrar_auditoria
+from conexion import conectar_db, registrar_auditoria, liberar_conexion
 
 def obtener_configuracion_fe():
     config = {
@@ -166,7 +166,7 @@ def enviar_factura_sunat(datos_factura):
                                            (sunat_description, pdf_link, xml_link, id_factura))
                         conn.commit()
                     except Exception: pass
-                    finally: conn.close()
+                    finally: liberar_conexion(conn)
 
             res_resumen = (
                 f"✅ ENVIADO EXITOSAMENTE A TRAVÉS DE {proveedor.upper()}\n\n"

@@ -6,7 +6,7 @@ import sys
 import json
 import subprocess
 import customtkinter as ctk
-from conexion import conectar_db
+from conexion import conectar_db, liberar_conexion
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA
@@ -238,7 +238,7 @@ class LibroMayorApp:
         except Exception as e:
             messagebox.showerror("Error de Base de Datos", f"No se pudo compilar el mayor:\n{str(e)}")
         finally:
-            conn.close()
+            liberar_conexion(conn)
             
         lista_ordenada = sorted(agrupado.items(), key=lambda x: x[0])
         
