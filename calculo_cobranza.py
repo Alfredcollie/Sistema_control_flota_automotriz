@@ -174,12 +174,15 @@ def _carpeta_pdf():
                     pass
     except Exception:
         pass
-    if not os.path.exists(CARPETA_PDF):
-        try:
-            os.makedirs(CARPETA_PDF)
-        except Exception:
-            pass
-    return CARPETA_PDF
+    # Respaldo local: ruta ABSOLUTA junto al programa (no depende del directorio de trabajo).
+    # En macOS (apps .app) el directorio de trabajo puede ser "/" o no escribible, por eso
+    # una ruta relativa como "cobranzas_generadas" causaría Errno 2 al guardar el PDF.
+    carpeta_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cobranzas_generadas")
+    try:
+        os.makedirs(carpeta_local, exist_ok=True)
+    except Exception:
+        pass
+    return carpeta_local
 
 
 def formatear_moneda(valor):
@@ -1901,6 +1904,12 @@ class CalculoCobranzaApp:
             nombre_archivo = nombre_base
             copia_generada = False
 
+        # Red de seguridad: asegurar que la carpeta del PDF existe antes de guardar
+        try:
+            os.makedirs(os.path.dirname(nombre_archivo), exist_ok=True)
+        except Exception:
+            pass
+
         c = canvas.Canvas(nombre_archivo, pagesize=letter)
         ancho_pag = 612
         y = 760.0
@@ -2233,8 +2242,10 @@ class CalculoCobranzaApp:
         except PermissionError:
             messagebox.showerror(
                 "No se pudo guardar el PDF",
-                f"El archivo PDF está abierto por el visor y no se puede sobrescribir.\n\n"
-                f"Ciérralo en el visor e inténtalo de nuevo.\n\nArchivo: {nombre_archivo}")
+                f"No se pudo escribir el archivo PDF.\n\n"
+                f"Puede estar abierto en el visor o la carpeta no permite escritura.\n"
+                f"Ciérralo en el visor y verifica la carpeta, e inténtalo de nuevo.\n\n"
+                f"Archivo: {nombre_archivo}")
             return None
         except Exception as e:
             messagebox.showerror("Error al generar el PDF", f"Ocurrió un error inesperado:\n{e}")
