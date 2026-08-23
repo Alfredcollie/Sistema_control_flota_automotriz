@@ -74,10 +74,6 @@
         "bitacora"
     ],
     "ruta_logo_cotizacion": "",
-    "color_primario": "#eb337a",
-    "color_secundario": "#000000",
-    "color_franja": "#eb337a",
-    "nombre_cliente_cotizacion": "Raz\u00f3n Social",
     "orden_modulos": [
         "clientes",
         "proveedores",

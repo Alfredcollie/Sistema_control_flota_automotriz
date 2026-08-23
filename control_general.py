@@ -1262,61 +1262,21 @@ class ControlGeneralEventos:
         cmb_2fa.configure(command=actualizar_ui_2fa)
         actualizar_ui_2fa(cmb_2fa.get())
         
-        f_diseno = ctk.CTkFrame(f_scroll, corner_radius=10)
-        f_diseno.pack(fill="x", padx=10, pady=10, ipady=10)
-        ctk.CTkLabel(f_diseno, text="🎨 Personalización Visual de Cotizaciones (PDF y Pantalla)", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 10))
-        
-        f_nombre_cot = ctk.CTkFrame(f_diseno, fg_color="transparent")
-        f_nombre_cot.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_nombre_cot, text="Mostrar en Cotizaciones (Cliente):", font=("Arial", 11, "bold"), width=220, anchor="w").pack(side="left")
-        cmb_nombre_cot = ctk.CTkOptionMenu(f_nombre_cot, values=["Razón Social", "Razón Comercial"], width=180)
-        cmb_nombre_cot.pack(side="left", padx=5)
-        cmb_nombre_cot.set(config_actual.get("nombre_cliente_cotizacion", "Razón Social"))
-
-        def crear_color_picker(padre, texto, key, default):
-            f_col = ctk.CTkFrame(padre, fg_color="transparent")
-            f_col.pack(fill="x", padx=15, pady=5)
-            ctk.CTkLabel(f_col, text=texto, font=("Arial", 11, "bold"), width=220, anchor="w").pack(side="left")
-            ent = ctk.CTkEntry(f_col, width=120)
-            ent.pack(side="left", padx=5)
-            valor_guardado = str(config_actual.get(key, default)).strip()
-            ent.insert(0, valor_guardado)
-            color_prev = valor_guardado if valor_guardado.startswith("#") else default
-            f_prev = ctk.CTkFrame(f_col, width=30, height=30, fg_color=color_prev, corner_radius=5)
-            f_prev.pack(side="left", padx=10)
-
-            def elegir():
-                curr = ent.get().strip()
-                if not curr.startswith("#"):
-                    curr = default
-                try:
-                    color = colorchooser.askcolor(title="Elegir Color", color=curr)[1]
-                except Exception:
-                    color = colorchooser.askcolor(title="Elegir Color")[1]
-                if color:
-                    ent.delete(0, tk.END)
-                    ent.insert(0, color)
-                    f_prev.configure(fg_color=color)
-            ctk.CTkButton(f_col, text="🎨 Elegir Color", width=120, command=elegir).pack(side="left")
-            return ent
-            
-        ent_color_1 = crear_color_picker(f_diseno, "Color Principal (Letras M):", "color_primario", "#eb337a")
-        ent_color_2 = crear_color_picker(f_diseno, "Color Secundario (Letras N):", "color_secundario", "#000000")
-        ent_color_3 = crear_color_picker(f_diseno, "Color de Franja (Tabla PDF):", "color_franja", "#eb337a")
-        
-        ctk.CTkLabel(f_diseno, text="🖼️ Logo del Encabezado de Cotización (PDF):", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 2))
-        f_ruta_logo = ctk.CTkFrame(f_diseno, fg_color="transparent")
-        f_ruta_logo.pack(fill="x", padx=15)
+        f_logo_docs = ctk.CTkFrame(f_scroll, corner_radius=10)
+        f_logo_docs.pack(fill="x", padx=10, pady=10, ipady=10)
+        ctk.CTkLabel(f_logo_docs, text="🖼️ Logo del Encabezado (Cálculo de Cobranza y Órdenes de Compra)", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 10))
+        f_ruta_logo = ctk.CTkFrame(f_logo_docs, fg_color="transparent")
+        f_ruta_logo.pack(fill="x", padx=15, pady=(0, 10))
         ent_logo = ctk.CTkEntry(f_ruta_logo, placeholder_text="Ruta de la imagen (JPG/PNG)")
         ent_logo.pack(side="left", fill="x", expand=True, padx=(0, 10))
         ent_logo.insert(0, config_actual.get("ruta_logo_cotizacion", ""))
 
-        def buscar_logo_cotizacion():
+        def buscar_logo_docs():
             ruta = filedialog.askopenfilename(title="Seleccionar Logo", filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg")])
             if ruta:
                 ent_logo.delete(0, tk.END)
                 ent_logo.insert(0, ruta)
-        ctk.CTkButton(f_ruta_logo, text="📂 Buscar Imagen", width=140, command=buscar_logo_cotizacion).pack(side="right")
+        ctk.CTkButton(f_ruta_logo, text="📂 Buscar Imagen", width=140, command=buscar_logo_docs).pack(side="right")
 
         f_region = ctk.CTkFrame(f_scroll, corner_radius=10)
         f_region.pack(fill="x", padx=10, pady=10, ipady=10)
@@ -1628,7 +1588,8 @@ class ControlGeneralEventos:
                 "color_menu_texto": ent_m_txt.get().strip(),
                 "orden_operativos": ext_ord(lb_ops),
                 "orden_finanzas": ext_ord(lb_fin),
-                "orden_ajustes": ext_ord(lb_aju)
+                "orden_ajustes": ext_ord(lb_aju),
+                "ruta_logo_cotizacion": ent_logo.get().strip()
             })
             try:
                 with open(archivo_config, "w", encoding="utf-8") as f:
