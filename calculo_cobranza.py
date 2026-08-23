@@ -134,6 +134,54 @@ def _obtener_logo_pdf():
     return ""
 
 
+def _carpeta_pdf():
+    """Carpeta donde se guardan los PDFs de cobranza.
+
+    Usa la ruta configurada en 'Configuración del Sistema' (ruta_drive) y crea
+    dentro la subcarpeta 'cobranzas_generadas'. Compatible con Windows y macOS:
+    en sistemas que no sean Windows se ignoran rutas con prefijo de unidad (C:)
+    y se normalizan los separadores (igual que normalizar_ruta_local de
+    control_general.py). Si la ruta configurada no existe o no es válida, usa
+    la carpeta local 'cobranzas_generadas' como respaldo.
+    """
+    try:
+        config = _cargar_config_local()
+        ruta_drive = str(config.get("ruta_drive", "") or "").strip()
+        if ruta_drive:
+            ruta = ruta_drive
+            if sys.platform != "win32":
+                if len(ruta) >= 2 and ruta[1] == ":" and ruta[0].isalpha():
+                    ruta = ""  # ruta de Windows en Mac/Linux: se ignora
+                else:
+                    ruta = ruta.replace("\\", "/")
+            ruta = os.path.expanduser(ruta)
+            if ruta and os.path.isdir(ruta):
+                # 1) Subcarpeta organizada
+                destino = os.path.join(ruta, "cobranzas_generadas")
+                try:
+                    os.makedirs(destino, exist_ok=True)
+                    return destino
+                except Exception:
+                    pass
+                # 2) Directamente en la carpeta configurada (si no se pudo crear la subcarpeta)
+                try:
+                    prueba = os.path.join(ruta, ".cobranza_prueba_escritura")
+                    with open(prueba, "w", encoding="utf-8") as f:
+                        f.write("x")
+                    os.remove(prueba)
+                    return ruta
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if not os.path.exists(CARPETA_PDF):
+        try:
+            os.makedirs(CARPETA_PDF)
+        except Exception:
+            pass
+    return CARPETA_PDF
+
+
 def formatear_moneda(valor):
     config = _cargar_config_local()
     simbolo = config.get("simbolo_moneda", "S/.")
@@ -1836,19 +1884,17 @@ class CalculoCobranzaApp:
         razon_empresa = config.get("razon_social_empresa", "")
         simbolo = config.get("simbolo_moneda", "S/.")
 
-        if not os.path.exists(CARPETA_PDF):
-            try:
-                os.makedirs(CARPETA_PDF)
-            except Exception:
-                pass
+        # Carpeta de destino: la configurada en 'Configuración del Sistema'
+        # (ruta_drive + cobranzas_generadas), con respaldo local si no existe.
+        carpeta_pdf = _carpeta_pdf()
         # Si el PDF del mismo periodo ya está abierto en el visor (bloqueado),
         # se guarda una copia nueva con marca de tiempo para poder abrirla.
         nombre_base = os.path.join(
-            CARPETA_PDF,
+            carpeta_pdf,
             f"Cobranza_{ruc_cli}_{anio:04d}-{mes:02d}_Q{quincena}.pdf")
         if _archivo_bloqueado(nombre_base):
             nombre_archivo = os.path.join(
-                CARPETA_PDF,
+                carpeta_pdf,
                 f"Cobranza_{ruc_cli}_{anio:04d}-{mes:02d}_Q{quincena}_{datetime.now().strftime('%H%M%S')}.pdf")
             copia_generada = True
         else:
