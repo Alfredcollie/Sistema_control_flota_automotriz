@@ -60,6 +60,7 @@
         "choferes"
     ],
     "orden_finanzas": [
+        "cobranza",
         "ventas",
         "compras",
         "libro_diario",

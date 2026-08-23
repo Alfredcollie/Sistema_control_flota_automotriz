@@ -187,7 +187,8 @@ class SistemaClientes:
                 correo VARCHAR(255),
                 pagina_web VARCHAR(255),
                 limite_credito NUMERIC DEFAULT 0.0,
-                notas TEXT
+                notas TEXT,
+                plan_cobro VARCHAR(30) DEFAULT 'Por Hora'
             )
             ''')
             conn.commit()
@@ -203,7 +204,13 @@ class SistemaClientes:
                     conn.commit()
                 except Exception:
                     conn.rollback()
-                    
+
+            try:
+                cursor.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS plan_cobro VARCHAR(30) DEFAULT 'Por Hora'")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
             cursor.close()
             _SCHEMA_CLIENTES_OK = True
         except Exception as e:
@@ -678,6 +685,12 @@ class SistemaClientes:
         self.ent_limite.grid(row=5, column=1, sticky="ew", pady=8)
         self.crear_boton_cp(f1, 5, 2, self.ent_limite, "el Límite de Crédito")
         
+        ctk.CTkLabel(f1, text="Plan de Cobro:", font=(familia_fuente, 12, "bold")).grid(row=5, column=3, sticky="w", padx=(30, 5), pady=8)
+        self.opt_plan_cobro = ctk.CTkOptionMenu(f1, values=["Por Hora", "Por Punto o Viaje"], width=190)
+        self.opt_plan_cobro.set("Por Hora")
+        self.opt_plan_cobro.grid(row=5, column=4, sticky="ew", pady=8)
+        ToolTip(self.opt_plan_cobro, "Plan de cobro del cliente: Por Hora o Por Punto/Viaje.")
+        
         ctk.CTkLabel(f1, text="Notas del Cliente:\n(Max 500 carac.)", font=(familia_fuente, 12, "bold")).grid(row=6, column=0, sticky="nw", padx=(20, 5), pady=12)
         self.txt_notas = ctk.CTkTextbox(f1, height=110, font=(familia_fuente, 12), border_width=1)
         self.txt_notas.grid(row=6, column=1, columnspan=4, sticky="ew", pady=12)
@@ -738,9 +751,9 @@ class SistemaClientes:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO clientes (ruc, nombre_empresa, razon_comercial, direccion_fiscal, persona_contacto, telefono, correo, pagina_web, limite_credito, notas)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ''', (ruc, empresa, comercial, direccion, contacto, telefono, correo, web, limite_credito, notas))
+                INSERT INTO clientes (ruc, nombre_empresa, razon_comercial, direccion_fiscal, persona_contacto, telefono, correo, pagina_web, limite_credito, notas, plan_cobro)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (ruc, empresa, comercial, direccion, contacto, telefono, correo, web, limite_credito, notas, self.opt_plan_cobro.get()))
             conn.commit()
             cache_sistema.invalidar()
             registrar_auditoria(self.usuario_activo, "Clientes", f"Registró al nuevo cliente '{empresa}' (RUC: {ruc})")
@@ -775,6 +788,7 @@ class SistemaClientes:
         self.ent_web.delete(0, tk.END)
         self.ent_limite.delete(0, tk.END)
         self.txt_notas.delete("1.0", tk.END)
+        self.opt_plan_cobro.set("Por Hora")
         self.lbl_contador.configure(text="Caracteres restantes: 500")
 
     def abrir_ventana_editar(self):
@@ -791,7 +805,7 @@ class SistemaClientes:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, ruc, nombre_empresa, COALESCE(razon_comercial, ''), direccion_fiscal, persona_contacto, telefono, correo, pagina_web, limite_credito, notas
+                SELECT id, ruc, nombre_empresa, COALESCE(razon_comercial, ''), direccion_fiscal, persona_contacto, telefono, correo, pagina_web, limite_credito, notas, COALESCE(plan_cobro, 'Por Hora')
                 FROM clientes WHERE id = %s
             ''', (id_cli,))
             p = cursor.fetchone()
@@ -904,6 +918,12 @@ class SistemaClientes:
             ent_e_limite.insert(0, str(val_limite))
         self.crear_boton_cp(f1, 5, 2, ent_e_limite, "el Límite de Crédito")
         
+        ctk.CTkLabel(f1, text="Plan de Cobro:", font=(familia_fuente, 12, "bold")).grid(row=5, column=3, sticky="w", padx=(30, 5), pady=8)
+        opt_e_plan = ctk.CTkOptionMenu(f1, values=["Por Hora", "Por Punto o Viaje"], width=190)
+        plan_ini = str(p[11]) if len(p) > 11 and p[11] else "Por Hora"
+        opt_e_plan.set(plan_ini if plan_ini in ("Por Hora", "Por Punto o Viaje") else "Por Hora")
+        opt_e_plan.grid(row=5, column=4, sticky="ew", pady=8)
+        
         ctk.CTkLabel(f1, text="Notas del Cliente:\n(Max 500 carac.)", font=(familia_fuente, 12, "bold")).grid(row=6, column=0, sticky="nw", padx=(20, 5), pady=12)
         txt_e_notes = ctk.CTkTextbox(f1, height=110, font=(familia_fuente, 12), border_width=1)
         txt_e_notes.grid(row=6, column=1, columnspan=4, sticky="ew", pady=12)
@@ -952,11 +972,11 @@ class SistemaClientes:
                 cursor_u = conn_u.cursor()
                 cursor_u.execute('''
                     UPDATE clientes 
-                    SET ruc=%s, nombre_empresa=%s, razon_comercial=%s, direccion_fiscal=%s, persona_contacto=%s, telefono=%s, correo=%s, pagina_web=%s, limite_credito=%s, notas=%s
+                    SET ruc=%s, nombre_empresa=%s, razon_comercial=%s, direccion_fiscal=%s, persona_contacto=%s, telefono=%s, correo=%s, pagina_web=%s, limite_credito=%s, notas=%s, plan_cobro=%s
                     WHERE id=%s
                 ''', (ent_e_ruc.get().strip(), ent_e_empresa.get().strip(), ent_e_comercial.get().strip(), ent_e_direccion.get().strip(),
                       ent_e_contacto.get().strip(), ent_e_telefono.get().strip(), ent_e_correo.get().strip(),
-                      ent_e_web.get().strip(), limite_credito, txt_e_notes.get("1.0", "end-1c").strip(), id_cli))
+                      ent_e_web.get().strip(), limite_credito, txt_e_notes.get("1.0", "end-1c").strip(), opt_e_plan.get(), id_cli))
                 conn_u.commit()
                 cache_sistema.invalidar()
                 registrar_auditoria(self.usuario_activo, "Clientes", f"Modificó los datos del cliente ID {id_cli} ({ent_e_empresa.get().strip()})")

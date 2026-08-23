@@ -38,10 +38,9 @@ except ImportError:
     RESAMPLE_FILTER = None
 
 try:
-    from seguridad_licencia import verificar_licencia_equipo, VentanaActivacionLicencia
+    from validacion_licencia import comprobar_acceso
 except ImportError:
-    verificar_licencia_equipo = None
-    VentanaActivacionLicencia = None
+    comprobar_acceso = None
 
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
@@ -194,7 +193,7 @@ def cargar_configuracion_general():
         "color_menu_hover": "#163b65",
         "color_menu_texto": "white",
         "orden_operativos": ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"],
-        "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard"],
+        "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard"],
         "orden_ajustes": ["configuracion", "usuarios", "bitacora"]
     }
     try:
@@ -336,6 +335,20 @@ class ControlGeneralEventos:
         self.root = root
         self.root.title("SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ")
         self.root.protocol("WM_DELETE_WINDOW", self.confirmar_salida)
+
+        # 🔒 Verificación de licencia al entrar al sistema
+        if comprobar_acceso is not None:
+            try:
+                if not comprobar_acceso():
+                    # La pantalla de bloqueo ya se mostró; se cierra la aplicación
+                    try:
+                        self.root.destroy()
+                    except Exception:
+                        pass
+                    sys.exit(0)
+            except Exception as e:
+                print(f"[Licencia Error] {e}")
+
         inicializar_seguridad_db()
         self.usuario_activo = "No autenticado"
         self.rol_activo = "Ninguno"
@@ -353,6 +366,7 @@ class ControlGeneralEventos:
             "libro_diario": "📖 Libro Diario General",
             "libro_mayor": "📊 Libro Mayor Analítico",
             "impuestos": "🧮 Cálculo de Impuestos",
+            "cobranza": "💰 Cálculo de Cobranza",
             "dashboard": "📈 Dashboard Gerencial",
             "configuracion": "⚙️ Configuración General",
             "usuarios": "🛠️ Configurar Usuarios",
@@ -371,6 +385,7 @@ class ControlGeneralEventos:
             "libro_diario": self.abrir_modulo_libro_diario,
             "libro_mayor": self.abrir_modulo_libro_mayor,
             "impuestos": self.abrir_calculo_impuestos,
+            "cobranza": self.abrir_modulo_cobranza,
             "dashboard": self.abrir_estadisticas_financiera,
             "configuracion": self.abrir_configuracion_general,
             "usuarios": self.abrir_gestion_usuarios,
@@ -466,13 +481,6 @@ class ControlGeneralEventos:
             user = ent_user.get().strip().lower()
             clave = ent_pass.get().strip()
             
-            if verificar_licencia_equipo:
-                es_valido, msg_lic, datos_lic = verificar_licencia_equipo()
-                if not es_valido:
-                    self.v_login.withdraw()
-                    VentanaActivacionLicencia(self.root, datos_lic.get("hwid", "DESCONOCIDO"), msg_lic)
-                    return
-                    
             conn = conectar_db(silencioso=True)
             if not conn:
                 messagebox.showinfo(
@@ -555,7 +563,7 @@ class ControlGeneralEventos:
         fondo_seguro = c_fondo if str(c_fondo).startswith("#") else "#1a252c"
         
         orden_ops = config.get("orden_operativos", ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"])
-        orden_fin = config.get("orden_finanzas", ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard"])
+        orden_fin = config.get("orden_finanzas", ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard"])
         orden_aju = config.get("orden_ajustes", ["configuracion", "usuarios", "bitacora"])
         todas = orden_ops + orden_fin + orden_aju
         for k in self.modulos_sistema:
@@ -945,6 +953,16 @@ class ControlGeneralEventos:
             import calculo_impuestos
             importlib.reload(calculo_impuestos)
             calculo_impuestos.CalculoImpuestosApp(self.contenedor_central)
+        except Exception as e: messagebox.showerror("Error", str(e))
+
+    def abrir_modulo_cobranza(self):
+        if not self.tiene_permiso("cobranza"): return messagebox.showerror("Denegado", "No tiene permisos.")
+        self.limpiar_contenedor()
+        try:
+            import calculo_cobranza
+            importlib.reload(calculo_cobranza)
+            app = calculo_cobranza.CalculoCobranzaApp(self.contenedor_central)
+            app.usuario_activo = self.usuario_activo
         except Exception as e: messagebox.showerror("Error", str(e))
 
     def abrir_modulo_proveedores(self):
