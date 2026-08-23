@@ -23,6 +23,7 @@ def instalar_dependencias():
         "uvicorn",              # Servidor de la API móvil
         "python-multipart",     # Necesario para subir archivos/formularios en FastAPI
         "google-genai",         # IA de Google para la lectura de tickets (api_movil)
+        "PyMuPDF",              # Creador de PDF para Mac
     ]
 
     print("=====================================================")
