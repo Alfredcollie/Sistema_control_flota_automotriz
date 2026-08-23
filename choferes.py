@@ -262,15 +262,30 @@ class ChoferesApp:
         self.ent_nombres.insert(0, "Consultando...")
         
         def tarea_api():
+            import ssl
+            import urllib.error
             try:
+                # BYPASS SSL para macOS (igual que clientes.py / proveedores.py)
+                try:
+                    ctx = ssl._create_unverified_context()
+                except AttributeError:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+
                 url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=5) as response:
+                with urllib.request.urlopen(req, context=ctx, timeout=8) as response:
                     if response.status == 200:
                         data = json.loads(response.read().decode())
                         self.parent_frame.after(0, lambda: self._aplicar_datos_api(data))
                     else:
                         self.parent_frame.after(0, lambda: self._error_api("No se encontró información para este RUC."))
+            except urllib.error.HTTPError as e:
+                if e.code in (404, 422):
+                    self.parent_frame.after(0, lambda: self._error_api("El RUC ingresado no existe en SUNAT o no es válido."))
+                else:
+                    self.parent_frame.after(0, lambda: self._error_api(f"La API de SUNAT respondió con error {e.code}."))
             except Exception as e:
                 self.parent_frame.after(0, lambda: self._error_api(f"No se pudo conectar con la API de SUNAT:\n{e}"))
 
