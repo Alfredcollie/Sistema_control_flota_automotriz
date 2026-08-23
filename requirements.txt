@@ -8,4 +8,4 @@ openpyxl
 bcrypt
 keyring
 pypdf
-PyMuPDF requests
+PyMuPDF
