@@ -19,6 +19,8 @@ import shutil
 import json
 import importlib
 import urllib.request
+import urllib.error
+import ssl
 import bcrypt
 import threading
 from datetime import datetime, timedelta
@@ -1145,9 +1147,20 @@ class ControlGeneralEventos:
                 messagebox.showwarning("RUC Inválido", "Por favor, ingrese un RUC válido de 11 dígitos.", parent=v_conf)
                 return
             try:
+                # BYPASS SSL para macOS: en Mac el store de certificados por defecto
+                # suele faltar (CERTIFICATE_VERIFY_FAILED) y la consulta falla,
+                # mientras que en Windows usa el almacén del sistema y funciona.
+                # Misma solución que clientes.py / proveedores.py / choferes.py.
+                try:
+                    ctx = ssl._create_unverified_context()
+                except AttributeError:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+
                 url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=5) as response:
+                with urllib.request.urlopen(req, context=ctx, timeout=8) as response:
                     if response.status == 200:
                         data = json.loads(response.read().decode())
                         ent_razon_social.delete(0, tk.END)
@@ -1155,6 +1168,13 @@ class ControlGeneralEventos:
                         messagebox.showinfo("Éxito", "Datos recuperados correctamente.", parent=v_conf)
                     else:
                         messagebox.showwarning("Sin Resultados", "No se encontró información para este RUC.", parent=v_conf)
+            except urllib.error.HTTPError as e:
+                if e.code in (404, 422):
+                    messagebox.showwarning("RUC Inválido", "El RUC ingresado no existe en SUNAT o no es válido.", parent=v_conf)
+                elif e.code in (401, 403):
+                    messagebox.showwarning("API Restringida", "Se requiere un Token de API válido o el servicio está bloqueado.", parent=v_conf)
+                else:
+                    messagebox.showwarning("Error de Servidor", f"El servidor de SUNAT devolvió un error (Código {e.code}).", parent=v_conf)
             except Exception as e:
                 messagebox.showwarning("Error", f"Problema al consultar RUC:\n{e}", parent=v_conf)
         ent_ruc_empresa.bind("<Return>", buscar_ruc_empresa)
@@ -1271,8 +1291,26 @@ class ControlGeneralEventos:
         ent_logo.pack(side="left", fill="x", expand=True, padx=(0, 10))
         ent_logo.insert(0, config_actual.get("ruta_logo_cotizacion", ""))
 
+        def abrir_dialogo_nativo(crear_dialogo):
+            # 🚀 FIX macOS: libera el grab modal antes del diálogo nativo y lo restaura después.
+            try:
+                v_conf.grab_release()
+            except Exception:
+                pass
+            try:
+                return crear_dialogo(v_conf)
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo abrir el selector de archivos:\n{e}", parent=v_conf)
+                return None
+            finally:
+                try:
+                    v_conf.grab_set()
+                except Exception:
+                    pass
+
         def buscar_logo_docs():
-            ruta = filedialog.askopenfilename(title="Seleccionar Logo", filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg")])
+            ruta = abrir_dialogo_nativo(lambda parent: filedialog.askopenfilename(
+                parent=parent, title="Seleccionar Logo", filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg")]))
             if ruta:
                 ent_logo.delete(0, tk.END)
                 ent_logo.insert(0, ruta)
@@ -1313,7 +1351,7 @@ class ControlGeneralEventos:
         ent_drive.insert(0, config_actual.get("ruta_drive", ""))
 
         def buscar_carpeta_drive():
-            carpeta = filedialog.askdirectory(title="Seleccionar Carpeta Local")
+            carpeta = abrir_dialogo_nativo(lambda parent: filedialog.askdirectory(parent=parent, title="Seleccionar Carpeta Local"))
             if carpeta:
                 ent_drive.delete(0, tk.END)
                 ent_drive.insert(0, carpeta)

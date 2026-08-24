@@ -5,6 +5,8 @@ import customtkinter as ctk
 import calendar
 import re
 import urllib.request
+import urllib.error
+import ssl
 import json
 import os
 import sys
@@ -368,10 +370,18 @@ class FlotaAutomotrizApp:
 
         def tarea_api():
             try:
+                # BYPASS SSL para macOS (misma solución que clientes.py / proveedores.py)
+                try:
+                    ctx = ssl._create_unverified_context()
+                except AttributeError:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+
                 url = f"https://api.apis.net.pe/v1/vehiculos?placa={placa}"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 
-                with urllib.request.urlopen(req, timeout=5) as response:
+                with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                     if response.status == 200:
                         data = json.loads(response.read().decode())
                         self.parent_frame.after(0, lambda: self._aplicar_datos_api(data))
