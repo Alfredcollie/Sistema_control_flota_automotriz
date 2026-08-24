@@ -45,6 +45,7 @@ from datetime import datetime, date, timedelta
 
 # 🚀 HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
+from app_paths import CONFIG_FILE
 
 try:
     from reportlab.pdfgen import canvas
@@ -107,8 +108,8 @@ def _archivo_bloqueado(ruta):
 
 def _cargar_config_local():
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
         pass

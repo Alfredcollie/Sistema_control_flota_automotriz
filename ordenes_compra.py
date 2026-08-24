@@ -16,6 +16,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from app_paths import CONFIG_FILE
 
 try:
     from reportlab.pdfgen import canvas
@@ -79,13 +80,70 @@ def maximizar_ventana(ventana):
             ventana.geometry(f"{w}x{h}+0+0")
         except: pass
 
-def obtener_ruta_logo():
+def _cargar_config_local():
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
-                return json.load(f).get("ruta_logo_cotizacion", "")
-    except Exception: pass
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def obtener_ruta_logo():
+    """Devuelve la ruta del logo para el PDF:
+    primero el configurado (ruta_logo_cotizacion), luego Logo.png/logo.png
+    de la carpeta del programa. Usa la ruta absoluta de app_paths para que
+    funcione aunque el programa se lance desde otro directorio (macOS)."""
+    ruta = str(_cargar_config_local().get("ruta_logo_cotizacion", "") or "")
+    if ruta and os.path.exists(ruta):
+        return ruta
+    base = os.path.dirname(os.path.abspath(__file__))
+    for nombre in ("Logo.png", "logo.png", "Logo_Collie_Software.png"):
+        for carpeta in (base, os.getcwd()):
+            r = os.path.join(carpeta, nombre)
+            if os.path.exists(r):
+                return r
     return ""
+
+def _carpeta_base_ordenes():
+    """Carpeta base ABSOLUTA y escribible para los PDFs de órdenes.
+
+    Usa la ruta_drive configurada si es válida y escribible; si no, la carpeta
+    del programa. En macOS el directorio de trabajo puede ser '/' o una carpeta
+    de solo lectura (app empaquetada), y una ruta relativa como 'ordenes_generadas'
+    provocaría 'Read-only file system' al crear/anular una orden."""
+    try:
+        config = _cargar_config_local()
+        ruta_drive = str(config.get("ruta_drive", "") or "").strip()
+        if ruta_drive:
+            ruta = ruta_drive
+            if sys.platform != "win32":
+                if len(ruta) >= 2 and ruta[1] == ":" and ruta[0].isalpha():
+                    ruta = ""
+                else:
+                    ruta = ruta.replace("\\", "/")
+            ruta = os.path.expanduser(ruta)
+            if ruta and os.path.isdir(ruta):
+                try:
+                    prueba = os.path.join(ruta, ".ordenes_escritura")
+                    with open(prueba, "w", encoding="utf-8") as f:
+                        f.write("x")
+                    os.remove(prueba)
+                    return ruta
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _resolver_ruta_pdf(ruta):
+    """Resuelve rutas de PDF guardadas en BD: si son relativas (registros
+    antiguos) las ancla a la carpeta del programa."""
+    if not ruta:
+        return ""
+    if os.path.isabs(ruta):
+        return ruta
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ruta)
 
 def obtener_telefono_proveedor(prov):
     conn = conectar_db(silencioso=True)
@@ -168,7 +226,7 @@ class OrdenesCompraApp:
         threading.Thread(target=tarea_curacion, daemon=True).start()
 
     def abrir_carpeta_anuladas(self):
-        carpeta = "ordenes_anuladas"
+        carpeta = os.path.join(_carpeta_base_ordenes(), "ordenes_anuladas")
         if not os.path.exists(carpeta):
             os.makedirs(carpeta)
         abrir_documento(carpeta)
@@ -467,7 +525,8 @@ class OrdenesCompraApp:
                 cursor = conn.cursor()
                 cursor.execute("SELECT pdf_ruta FROM ordenes_servicio_flota WHERE id = %s", (id_orden,))
                 ruta = cursor.fetchone()
-                if ruta and ruta[0] and os.path.exists(ruta[0]): abrir_documento(ruta[0])
+                ruta_pdf = _resolver_ruta_pdf(ruta[0]) if ruta else ""
+                if ruta_pdf and os.path.exists(ruta_pdf): abrir_documento(ruta_pdf)
                 else: messagebox.showerror("Error", "El archivo PDF no se encuentra en la ruta especificada.")
             except Exception: pass
             finally: liberar_conexion(conn)
@@ -493,12 +552,14 @@ class OrdenesCompraApp:
                 cursor.execute("SELECT pdf_ruta FROM ordenes_servicio_flota WHERE id = %s", (id_orden,))
                 ruta_pdf = cursor.fetchone()[0]
                 
-                carpeta_anuladas = "ordenes_anuladas"
+                carpeta_anuladas = os.path.join(_carpeta_base_ordenes(), "ordenes_anuladas")
                 if not os.path.exists(carpeta_anuladas): os.makedirs(carpeta_anuladas)
                 
-                if ruta_pdf and os.path.exists(ruta_pdf):
-                    try: shutil.move(ruta_pdf, os.path.join(carpeta_anuladas, os.path.basename(ruta_pdf)))
-                    except Exception as e: print(f"No se pudo archivar {ruta_pdf}: {e}")
+                ruta_pdf_abs = _resolver_ruta_pdf(ruta_pdf)
+                if ruta_pdf_abs and os.path.exists(ruta_pdf_abs):
+                    try: shutil.move(ruta_pdf_abs, os.path.join(carpeta_anuladas, os.path.basename(ruta_pdf_abs)))
+                    except Exception as e:
+                        messagebox.showwarning("Aviso", f"La orden quedó anulada, pero no se pudo mover el PDF a 'Anuladas':\n{e}")
                 
                 registrar_auditoria(self.usuario_activo, "Órdenes Servicio", f"Anuló la O/S {n_orden} de {prov}")
                 messagebox.showinfo("Éxito", "Orden anulada y archivada correctamente.")
@@ -511,7 +572,7 @@ class OrdenesCompraApp:
         try: total_orden = float(total_orden)
         except ValueError: total_orden = 0.0
         
-        carpeta_destino = "ordenes_generadas"
+        carpeta_destino = os.path.join(_carpeta_base_ordenes(), "ordenes_generadas")
         if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
         marca_tiempo = datetime.now().strftime("%H%M%S")
         nombre_archivo = os.path.join(carpeta_destino, f"Orden_Servicio_{placa}_{marca_tiempo}.pdf")
@@ -816,11 +877,13 @@ class OrdenesCompraApp:
             n_version = (version_db or 0) + 1
             num_orden_imprimir = f"{num_orden_db}-{n_version}" if version_db == 0 else num_orden_db.rsplit('-', 1)[0] + f"-{n_version}"
             
-            if ruta_pdf_antigua and os.path.exists(ruta_pdf_antigua):
-                carpeta_anuladas = "ordenes_anuladas"
+            ruta_pdf_antigua_abs = _resolver_ruta_pdf(ruta_pdf_antigua)
+            if ruta_pdf_antigua_abs and os.path.exists(ruta_pdf_antigua_abs):
+                carpeta_anuladas = os.path.join(_carpeta_base_ordenes(), "ordenes_anuladas")
                 if not os.path.exists(carpeta_anuladas): os.makedirs(carpeta_anuladas)
-                try: shutil.move(ruta_pdf_antigua, os.path.join(carpeta_anuladas, os.path.basename(ruta_pdf_antigua)))
-                except: pass
+                try: shutil.move(ruta_pdf_antigua_abs, os.path.join(carpeta_anuladas, os.path.basename(ruta_pdf_antigua_abs)))
+                except Exception as e:
+                    print(f"No se pudo archivar {ruta_pdf_antigua_abs}: {e}")
             
             try:
                 n_ruta_pdf = self.fabricar_pdf(placa_db, vehiculo_db, prov_db, n_serv, n_det, n_fecha_emision, n_costo, num_orden_imprimir)

@@ -169,6 +169,45 @@ def normalizar_ruta_local(ruta):
     return ruta
 
 
+def _carpeta_archivos_programa(ruta_drive=""):
+    """Carpeta donde se guardan los archivos generados por el programa.
+    Usa la ruta_drive configurada si es válida y escribible; si no, la carpeta
+    del programa. Es el mismo lugar donde se guardan cobranzas, órdenes, etc."""
+    ruta = normalizar_ruta_local(ruta_drive or "")
+    if ruta:
+        ruta = os.path.expanduser(ruta)
+        if os.path.isdir(ruta):
+            try:
+                prueba = os.path.join(ruta, ".escritura_programa")
+                with open(prueba, "w", encoding="utf-8") as f:
+                    f.write("x")
+                os.remove(prueba)
+                return ruta
+            except Exception:
+                pass
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def guardar_logo_en_programa(ruta_origen, ruta_drive=""):
+    """Copia el logo a la carpeta de archivos del programa y devuelve la ruta
+    canónica. Así el logo vive junto a los demás archivos (se sincroniza con la
+    nube) y no depende de una ruta externa temporal."""
+    try:
+        if not ruta_origen or not os.path.isfile(ruta_origen):
+            return ruta_origen or ""
+        carpeta = _carpeta_archivos_programa(ruta_drive)
+        ext = os.path.splitext(ruta_origen)[1].lower()
+        if ext not in (".png", ".jpg", ".jpeg"):
+            ext = ".png"
+        destino = os.path.join(carpeta, f"logo_encabezado{ext}")
+        if os.path.abspath(ruta_origen) == os.path.abspath(destino):
+            return destino
+        shutil.copy2(ruta_origen, destino)
+        return destino
+    except Exception:
+        return ruta_origen or ""
+
+
 def cargar_configuracion_general():
     config = {
         "ruta_drive": "",
@@ -1306,33 +1345,79 @@ class ControlGeneralEventos:
         ent_logo.pack(side="left", fill="x", expand=True, padx=(0, 10))
         ent_logo.insert(0, config_actual.get("ruta_logo_cotizacion", ""))
 
-        def abrir_dialogo_nativo(crear_dialogo):
-            # 🚀 FIX macOS: libera el grab modal antes del diálogo nativo y lo
-            # restaura después. Además NO se pasa 'parent' al selector: en macOS
-            # pasar un Toplevel (con grab) como parent puede hacer que el diálogo
-            # nativo cierre abruptamente la app (segfault de Tk).
+        f_logo_preview = ctk.CTkFrame(f_logo_docs, fg_color="transparent")
+        f_logo_preview.pack(fill="x", padx=15, pady=(0, 10))
+        lbl_logo_preview = ctk.CTkLabel(f_logo_preview, text="Sin vista previa", width=150, height=40, fg_color="#eef2f7", corner_radius=8, anchor="center")
+        lbl_logo_preview.pack(side="left", padx=(0, 10))
+
+        def _actualizar_vista_previa(ruta):
+            try:
+                if PIL_DISPONIBLE and ruta and os.path.exists(ruta):
+                    img = Image.open(ruta).convert("RGBA")
+                    ancho, alto = img.width, img.height
+                    # Muestra el logo a su tamaño real; solo se limita si es muy
+                    # grande para no romper la ventana de configuración.
+                    max_ancho = 900
+                    if ancho > max_ancho:
+                        alto = int(alto * (max_ancho / ancho))
+                        ancho = max_ancho
+                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(ancho, alto))
+                    lbl_logo_preview.configure(image=ctk_img, text="", width=ancho, height=alto)
+                    lbl_logo_preview._img = ctk_img
+                else:
+                    lbl_logo_preview.configure(image=None, text="Sin vista previa", width=150, height=40)
+            except Exception:
+                lbl_logo_preview.configure(image=None, text="No se pudo cargar", width=150, height=40)
+
+        _actualizar_vista_previa(config_actual.get("ruta_logo_cotizacion", ""))
+
+        def abrir_dialogo_nativo(crear_dialogo, al_seleccionar):
+            # 🚀 FIX macOS: libera el grab modal y DIFIERE la apertura del diálogo
+            # nativo con after(). Abrir el panel en el mismo callback con un grab
+            # activo (Toplevel con grab_set) puede cerrar abruptamente la app
+            # (segfault de Tk/Aqua). El after() deja que Tk procese la liberación
+            # del grab antes de que el panel nativo tome el foco. Tampoco se pasa
+            # 'parent' al selector por el mismo motivo.
             try:
                 v_conf.grab_release()
             except Exception:
                 pass
-            try:
-                return crear_dialogo()
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo abrir el selector de archivos:\n{e}", parent=v_conf)
-                return None
-            finally:
+
+            def _abrir():
                 try:
-                    v_conf.grab_set()
-                except Exception:
-                    pass
+                    ruta = crear_dialogo()
+                except Exception as e:
+                    messagebox.showerror("Error", f"No se pudo abrir el selector de archivos:\n{e}", parent=v_conf)
+                    ruta = None
+                finally:
+                    try:
+                        v_conf.grab_set()
+                    except Exception:
+                        pass
+                if ruta and al_seleccionar:
+                    al_seleccionar(ruta)
+
+            v_conf.after(150, _abrir)
 
         def buscar_logo_docs():
-            ruta = abrir_dialogo_nativo(lambda: filedialog.askopenfilename(
-                title="Seleccionar Logo", filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg")]))
-            if ruta:
+            def _poner_ruta(ruta):
+                if not ruta:
+                    return
+                ruta_final = guardar_logo_en_programa(ruta, ent_drive.get().strip())
                 ent_logo.delete(0, tk.END)
-                ent_logo.insert(0, ruta)
+                ent_logo.insert(0, ruta_final)
+                _actualizar_vista_previa(ruta_final)
+            abrir_dialogo_nativo(
+                lambda: filedialog.askopenfilename(
+                    title="Seleccionar Logo",
+                    filetypes=[("Imágenes", "*.png *.jpg *.jpeg")]),
+                _poner_ruta)
+
+        def quitar_logo():
+            ent_logo.delete(0, tk.END)
+            _actualizar_vista_previa("")
         ctk.CTkButton(f_ruta_logo, text="📂 Buscar Imagen", width=140, command=buscar_logo_docs).pack(side="right")
+        ctk.CTkButton(f_ruta_logo, text="🗑️ Quitar", width=90, fg_color="#e74c3c", hover_color="#c0392b", command=quitar_logo).pack(side="right", padx=(0, 5))
 
         f_region = ctk.CTkFrame(f_scroll, corner_radius=10)
         f_region.pack(fill="x", padx=10, pady=10, ipady=10)
@@ -1369,10 +1454,12 @@ class ControlGeneralEventos:
         ent_drive.insert(0, config_actual.get("ruta_drive", ""))
 
         def buscar_carpeta_drive():
-            carpeta = abrir_dialogo_nativo(lambda: filedialog.askdirectory(title="Seleccionar Carpeta Local"))
-            if carpeta:
+            def _poner_carpeta(carpeta):
                 ent_drive.delete(0, tk.END)
                 ent_drive.insert(0, carpeta)
+            abrir_dialogo_nativo(
+                lambda: filedialog.askdirectory(title="Seleccionar Carpeta Local"),
+                _poner_carpeta)
 
         ctk.CTkButton(f_rclone_1, text="📁 Buscar", width=100, command=buscar_carpeta_drive).pack(side="right")
 
@@ -1645,7 +1732,7 @@ class ControlGeneralEventos:
                 "orden_operativos": ext_ord(lb_ops),
                 "orden_finanzas": ext_ord(lb_fin),
                 "orden_ajustes": ext_ord(lb_aju),
-                "ruta_logo_cotizacion": ent_logo.get().strip()
+                "ruta_logo_cotizacion": guardar_logo_en_programa(ent_logo.get().strip(), ent_drive.get().strip())
             })
             try:
                 with open(archivo_config, "w", encoding="utf-8") as f:
