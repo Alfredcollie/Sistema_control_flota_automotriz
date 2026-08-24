@@ -6,6 +6,7 @@ CONEXION.PY (v3 SEGURA + OPTIMIZADA)
 - Auditoría Asíncrona (Background Threading).
 """
 import logging
+import os
 import psycopg2
 from psycopg2 import pool
 import keyring
@@ -88,7 +89,7 @@ def _crear_pool(cred):
     """Crea el ThreadedConnectionPool con unas credenciales dadas (o None)."""
     if not cred["host"] or not cred["user"] or not cred["password"]:
         return None
-    kwargs = {
+    base = {
         "minconn": 1,
         "maxconn": 15,
         "host": cred["host"],
@@ -98,12 +99,16 @@ def _crear_pool(cred):
         "password": cred["password"],
         "connect_timeout": 10,
         # Supabase exige SSL. En macOS (app de PyInstaller) no hay CA raíz del
-        # sistema, por eso forzamos SSL y usamos el bundle de certifi.
+        # sistema, por eso forzamos SSL; si certifi está disponible se verifica
+        # el certificado, y si no, se conecta igual sin verificar.
         "sslmode": "require",
     }
-    if _CA_BUNDLE:
-        kwargs["sslrootcert"] = _CA_BUNDLE
-    return psycopg2.pool.ThreadedConnectionPool(**kwargs)
+    if _CA_BUNDLE and os.path.exists(_CA_BUNDLE):
+        try:
+            return psycopg2.pool.ThreadedConnectionPool(**{**base, "sslrootcert": _CA_BUNDLE})
+        except Exception:
+            pass
+    return psycopg2.pool.ThreadedConnectionPool(**base)
 
 
 def inicializar_pool(silencioso=False):

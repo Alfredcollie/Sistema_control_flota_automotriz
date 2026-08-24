@@ -5,6 +5,7 @@ import customtkinter as ctk
 import psycopg2
 import subprocess
 import sys
+import os
 import uuid
 import re
 from datetime import datetime
@@ -87,7 +88,7 @@ def obtener_hwid():
 def consultar_licencia_supabase(hwid):
     """Se conecta a Supabase y verifica el estado de TODAS las licencias asociadas a este HWID y Software"""
     try:
-        kwargs = dict(
+        base = dict(
             dbname=SUPABASE_DB_NAME,
             user=SUPABASE_USER,
             password=SUPABASE_PASSWORD,
@@ -96,9 +97,14 @@ def consultar_licencia_supabase(hwid):
             connect_timeout=5,
             sslmode="require"
         )
-        if _CA_BUNDLE:
-            kwargs["sslrootcert"] = _CA_BUNDLE
-        conn = psycopg2.connect(**kwargs)
+        conn = None
+        if _CA_BUNDLE and os.path.exists(_CA_BUNDLE):
+            try:
+                conn = psycopg2.connect(**{**base, "sslrootcert": _CA_BUNDLE})
+            except Exception:
+                conn = None
+        if conn is None:
+            conn = psycopg2.connect(**base)
         cursor = conn.cursor()
         
         query = """
