@@ -51,7 +51,7 @@ jobs:
       run: |
         echo "Fabricando el disco de instalación..."
         mkdir -p Instalador_Temp
-        cp -R "dist/ControlFlotas.app" Instalador_Temp/
+        cp -R "dist/BlackRiders.app" Instalador_Temp/
         ln -s /Applications Instalador_Temp/Applications
         hdiutil create -volname "BlackRiders" -srcfolder Instalador_Temp -ov -format UDZO "Instalador.Control.Flotas.dmg"
 
