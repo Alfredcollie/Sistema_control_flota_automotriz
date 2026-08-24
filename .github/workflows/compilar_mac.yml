@@ -44,8 +44,8 @@ jobs:
         pyinstaller --noconfirm --windowed --name "BlackRiders" --icon "Ico_Collie_Software.icns" --hidden-import keyring.backends.macOS --add-binary "rclone:." --add-data ".:." control_general.py
         
         echo "Forzando Modo Claro en Info.plist..."
-        defaults write "$PWD/dist/BlackCube.app/Contents/Info.plist" NSRequiresAquaSystemAppearance -bool YES
-        plutil -convert xml1 "$PWD/dist/BlackCube.app/Contents/Info.plist"
+        defaults write "$PWD/dist/BlackRiders.app/Contents/Info.plist" NSRequiresAquaSystemAppearance -bool YES
+        plutil -convert xml1 "$PWD/dist/BlackRiders.app/Contents/Info.plist"
 
     - name: 📦 Empaquetar en archivo .dmg
       run: |
