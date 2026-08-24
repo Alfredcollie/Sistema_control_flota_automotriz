@@ -2051,7 +2051,7 @@ class CuentasPorPagarTab:
             sub_sel = sub_tabla.selection()
             if not sub_sel: return
             id_pago = sub_tabla.item(sub_sel[0], "values")[0]
-            ruta_origen = filedialog.askopenfilename(title="Seleccionar Soporte", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")], parent=v_edit)
+            ruta_origen = filedialog.askopenfilename(title="Seleccionar Soporte", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             if ruta_origen:
                 try:
                     carpeta_comprobantes = os.path.normpath(os.path.join(ruta_base, "comprobantes_egresos"))

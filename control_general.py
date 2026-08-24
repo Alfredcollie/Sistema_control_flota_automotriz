@@ -1307,13 +1307,16 @@ class ControlGeneralEventos:
         ent_logo.insert(0, config_actual.get("ruta_logo_cotizacion", ""))
 
         def abrir_dialogo_nativo(crear_dialogo):
-            # 🚀 FIX macOS: libera el grab modal antes del diálogo nativo y lo restaura después.
+            # 🚀 FIX macOS: libera el grab modal antes del diálogo nativo y lo
+            # restaura después. Además NO se pasa 'parent' al selector: en macOS
+            # pasar un Toplevel (con grab) como parent puede hacer que el diálogo
+            # nativo cierre abruptamente la app (segfault de Tk).
             try:
                 v_conf.grab_release()
             except Exception:
                 pass
             try:
-                return crear_dialogo(v_conf)
+                return crear_dialogo()
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo abrir el selector de archivos:\n{e}", parent=v_conf)
                 return None
@@ -1324,8 +1327,8 @@ class ControlGeneralEventos:
                     pass
 
         def buscar_logo_docs():
-            ruta = abrir_dialogo_nativo(lambda parent: filedialog.askopenfilename(
-                parent=parent, title="Seleccionar Logo", filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg")]))
+            ruta = abrir_dialogo_nativo(lambda: filedialog.askopenfilename(
+                title="Seleccionar Logo", filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg")]))
             if ruta:
                 ent_logo.delete(0, tk.END)
                 ent_logo.insert(0, ruta)
@@ -1366,7 +1369,7 @@ class ControlGeneralEventos:
         ent_drive.insert(0, config_actual.get("ruta_drive", ""))
 
         def buscar_carpeta_drive():
-            carpeta = abrir_dialogo_nativo(lambda parent: filedialog.askdirectory(parent=parent, title="Seleccionar Carpeta Local"))
+            carpeta = abrir_dialogo_nativo(lambda: filedialog.askdirectory(title="Seleccionar Carpeta Local"))
             if carpeta:
                 ent_drive.delete(0, tk.END)
                 ent_drive.insert(0, carpeta)

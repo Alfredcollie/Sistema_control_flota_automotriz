@@ -623,8 +623,7 @@ class SistemaProveedores:
 
         archivo_pdf = filedialog.askopenfilename(
             title="Seleccionar Ficha PDF de Proveedor",
-            filetypes=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")],
-            parent=self.root
+            filetypes=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")]
         )
         if not archivo_pdf: return
 
