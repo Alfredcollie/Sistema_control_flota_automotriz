@@ -51,9 +51,9 @@ jobs:
       run: |
         echo "Fabricando el disco de instalación..."
         mkdir -p Instalador_Temp
-        cp -R "dist/BlackRiders.app" Instalador_Temp/
+        cp -R "dist/ControlFlotas.app" Instalador_Temp/
         ln -s /Applications Instalador_Temp/Applications
-        hdiutil create -volname "BlackRiders" -srcfolder Instalador_Temp -ov -format UDZO "Instalador.Black.Riders.dmg"
+        hdiutil create -volname "BlackRiders" -srcfolder Instalador_Temp -ov -format UDZO "Instalador.Control.Flotas.dmg"
 
     - name: 🚀 Publicar Automáticamente en Releases
       uses: softprops/action-gh-release@v2
@@ -66,7 +66,7 @@ jobs:
           - 🔌 FIX: Conexión segura a Supabase reparada.
           - ☁️ FIX: Motor de sincronización Rclone integrado nativamente.
           - 🔄 FIX: Sistema de Auto-Actualizaciones incorporado.
-        files: Instalador.Black.Riders.dmg
+        files: Instalador.Control.Flotas.dmg
         draft: false
         prerelease: false
         make_latest: true
