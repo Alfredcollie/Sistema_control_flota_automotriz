@@ -9,6 +9,13 @@ import uuid
 import re
 from datetime import datetime
 
+# Bundle de certificados raíz para SSL a Supabase en macOS/PyInstaller
+try:
+    import certifi
+    _CA_BUNDLE = certifi.where()
+except Exception:
+    _CA_BUNDLE = None
+
 # =========================================================
 # ⚙️ CREDENCIALES DE LA BASE DE DATOS DE LICENCIAS
 # =========================================================
@@ -80,14 +87,18 @@ def obtener_hwid():
 def consultar_licencia_supabase(hwid):
     """Se conecta a Supabase y verifica el estado de TODAS las licencias asociadas a este HWID y Software"""
     try:
-        conn = psycopg2.connect(
+        kwargs = dict(
             dbname=SUPABASE_DB_NAME,
             user=SUPABASE_USER,
             password=SUPABASE_PASSWORD,
             host=SUPABASE_HOST,
             port=SUPABASE_PORT,
-            connect_timeout=5
+            connect_timeout=5,
+            sslmode="require"
         )
+        if _CA_BUNDLE:
+            kwargs["sslrootcert"] = _CA_BUNDLE
+        conn = psycopg2.connect(**kwargs)
         cursor = conn.cursor()
         
         query = """
