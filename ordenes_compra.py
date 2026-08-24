@@ -586,9 +586,10 @@ class OrdenesCompraApp:
             try:
                 img = ImageReader(ruta_logo)
                 w_orig, h_orig = img.getSize()
-                alto_calculado = ancho_util * (float(h_orig) / float(w_orig))
-                y_logo = 780.0 - alto_calculado
-                c.drawImage(img, 40, y_logo, width=ancho_util, height=alto_calculado)
+                # Tamaño ORIGINAL del archivo cargado en configuración general
+                # (no se expande al ancho de la página).
+                y_logo = 780.0 - h_orig
+                c.drawImage(img, 40, y_logo, width=w_orig, height=h_orig)
                 
                 c.setFont("Helvetica", 10)
                 c.setFillColorRGB(0, 0, 0)
