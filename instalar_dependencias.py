@@ -16,6 +16,7 @@ def instalar_dependencias():
         "pypdf",                # Lectura de fichas PDF interactivas
         "PyMuPDF",              # Lectura de tarjetas de propiedad con IA
         "requests",             # Llamadas a APIs (RUC SUNAT, IA, etc.)
+        "certifi",              # Certificados TLS para que las APIs funcionen en macOS
         "pandas",               # Exportación de reportes a Excel
         "openpyxl",             # Motor para que pandas cree .xlsx
         "Pillow",               # Imágenes y logos en la interfaz
@@ -23,7 +24,6 @@ def instalar_dependencias():
         "uvicorn",              # Servidor de la API móvil
         "python-multipart",     # Necesario para subir archivos/formularios en FastAPI
         "google-genai",         # IA de Google para la lectura de tickets (api_movil)
-        "PyMuPDF",              # Creador de PDF para Mac
     ]
 
     print("=====================================================")

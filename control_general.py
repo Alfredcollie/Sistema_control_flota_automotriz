@@ -92,6 +92,29 @@ def ruta_recurso(ruta_relativa):
     return os.path.normpath(os.path.join(ruta_base, ruta_relativa))
 
 
+def _contexto_ssl_seguro():
+    """Contexto SSL que funciona en Windows y macOS.
+
+    En macOS, Python (instalado desde python.org o dentro de un .app de
+    PyInstaller) no tiene el bundle de certificados raíz y urllib lanza:
+        CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
+    Por eso usamos certifi (incluido con 'requests'), que trae su propio
+    bundle de CAs. Si certifi no está disponible, se desactiva la
+    verificación como último recurso.
+    """
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            return ssl._create_unverified_context()
+        except AttributeError:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+
+
 # =========================================================
 # FUNCIONES GLOBALES DE RCLONE (Sincronización Silenciosa)
 # =========================================================
@@ -1147,16 +1170,8 @@ class ControlGeneralEventos:
                 messagebox.showwarning("RUC Inválido", "Por favor, ingrese un RUC válido de 11 dígitos.", parent=v_conf)
                 return
             try:
-                # BYPASS SSL para macOS: en Mac el store de certificados por defecto
-                # suele faltar (CERTIFICATE_VERIFY_FAILED) y la consulta falla,
-                # mientras que en Windows usa el almacén del sistema y funciona.
-                # Misma solución que clientes.py / proveedores.py / choferes.py.
-                try:
-                    ctx = ssl._create_unverified_context()
-                except AttributeError:
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
+                # Contexto SSL seguro y compatible con macOS (ver _contexto_ssl_seguro)
+                ctx = _contexto_ssl_seguro()
 
                 url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})

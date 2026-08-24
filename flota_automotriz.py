@@ -26,6 +26,30 @@ try:
 except ImportError:
     pass
 
+
+def _contexto_ssl_seguro():
+    """Contexto SSL que funciona en Windows y macOS.
+
+    En macOS, Python (instalado desde python.org o dentro de un .app de
+    PyInstaller) no tiene el bundle de certificados raíz y urllib lanza:
+        CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
+    Por eso usamos certifi (incluido con 'requests'), que trae su propio
+    bundle de CAs. Si certifi no está disponible, se desactiva la
+    verificación como último recurso.
+    """
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            return ssl._create_unverified_context()
+        except AttributeError:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+
+
 # =========================================================
 # CLASE: MINI CALENDARIO (ACTUALIZADO CON COMBOBOX)
 # =========================================================
@@ -370,13 +394,8 @@ class FlotaAutomotrizApp:
 
         def tarea_api():
             try:
-                # BYPASS SSL para macOS (misma solución que clientes.py / proveedores.py)
-                try:
-                    ctx = ssl._create_unverified_context()
-                except AttributeError:
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
+                # Contexto SSL seguro y compatible con macOS (ver _contexto_ssl_seguro)
+                ctx = _contexto_ssl_seguro()
 
                 url = f"https://api.apis.net.pe/v1/vehiculos?placa={placa}"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
