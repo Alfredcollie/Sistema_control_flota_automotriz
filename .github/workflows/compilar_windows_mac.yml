@@ -1,0 +1,149 @@
+name: Compilar y publicar (Windows + macOS)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag del release (ej. v1.5.5). Déjalo vacío si el push ya es un tag.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+
+  # ===================== WINDOWS =====================
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Clonar el repositorio
+      uses: actions/checkout@v4
+
+    - name: Configurar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Instalar dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai
+
+    - name: Descargar rclone (Windows)
+      run: |
+        curl.exe -L "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -o rclone.zip
+        tar -xf rclone.zip
+        $RCLONE_BIN = (Get-ChildItem -Recurse -Filter rclone.exe | Select-Object -First 1).FullName
+        Add-Content -Path $env:GITHUB_ENV -Value "RCLONE_BIN=$RCLONE_BIN"
+
+    - name: Compilar con PyInstaller (Windows)
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.Windows control_general.py
+
+    - name: Comprimir en ZIP (Windows)
+      run: Compress-Archive -Path "dist/ControlFlota" -DestinationPath "dist/ControlFlota-Windows.zip" -Force
+
+    - name: Subir artifact (Windows)
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows
+        path: dist/ControlFlota-Windows.zip
+
+  # ===================== macOS =====================
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+    - name: Clonar el repositorio
+      uses: actions/checkout@v4
+
+    - name: Configurar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Instalar dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai
+
+    - name: Descargar rclone (macOS)
+      run: |
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "arm64" ]; then
+          URL="https://downloads.rclone.org/rclone-current-osx-arm64.zip"
+        else
+          URL="https://downloads.rclone.org/rclone-current-osx-amd64.zip"
+        fi
+        curl -L "$URL" -o rclone.zip
+        unzip -o rclone.zip
+        RCLONE_BIN=$(find . -maxdepth 2 -name rclone -type f | head -1)
+        chmod +x "$RCLONE_BIN"
+        echo "RCLONE_BIN=$RCLONE_BIN" >> "$GITHUB_ENV"
+
+    - name: Compilar con PyInstaller (macOS)
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.macOS control_general.py
+
+    - name: Forzar Modo Claro en la app (macOS)
+      run: |
+        plutil -replace NSRequiresAquaSystemAppearance -bool YES "$PWD/dist/ControlFlota.app/Contents/Info.plist" 2>/dev/null || plutil -insert NSRequiresAquaSystemAppearance -bool YES "$PWD/dist/ControlFlota.app/Contents/Info.plist" || true
+
+    - name: Comprimir en ZIP (macOS)
+      run: |
+        cd dist
+        zip -r ControlFlota-Mac.zip "ControlFlota.app"
+
+    - name: Crear instalador DMG (macOS)
+      run: |
+        cd dist
+        mkdir -p dmg
+        cp -R "ControlFlota.app" dmg/
+        ln -s /Applications dmg/Applications
+        hdiutil create -volname "Control Flota" -srcfolder dmg -ov -format UDZO "Instalador.ControlFlota.dmg"
+
+    - name: Subir artifact (macOS)
+      uses: actions/upload-artifact@v4
+      with:
+        name: mac
+        path: |
+          dist/ControlFlota-Mac.zip
+          dist/Instalador.ControlFlota.dmg
+
+  # ===================== RELEASE =====================
+  release:
+    needs: [build-windows, build-mac]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name != '')
+
+    steps:
+    - name: Descargar artifact Windows
+      uses: actions/download-artifact@v4
+      with:
+        name: windows
+        path: release-assets
+
+    - name: Descargar artifact macOS
+      uses: actions/download-artifact@v4
+      with:
+        name: mac
+        path: release-assets
+
+    - name: Ver archivos a publicar
+      run: ls -la release-assets
+
+    - name: Publicar en GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+        name: ControlFlota ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+        files: |
+          release-assets/*.zip
+          release-assets/*.dmg
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
