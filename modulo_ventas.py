@@ -36,6 +36,9 @@ except ImportError:
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
+NOMBRES_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA
 # =========================================================
@@ -312,6 +315,8 @@ class FacturasEmitidasTab:
         self.orden_columnas = {}
         self.bloquear_autocompletado_ruc = False
         self.ruta_archivo_temp = ""
+        self.id_cobranza_seleccionada = None   # id de cobranza_quincenas vinculada a la factura en curso
+        self.cobranzas_pendientes = {}          # etiqueta -> datos de la cobranza pendiente de facturar
         
         # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
@@ -552,6 +557,11 @@ class FacturasEmitidasTab:
         ctk.CTkLabel(self.f_form, text="Días de Crédito:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.ent_dias = ctk.CTkEntry(self.f_form); self.ent_dias.pack(fill="x", padx=10, pady=(0, 8)); self.ent_dias.insert(0, "0")
 
+        ctk.CTkLabel(self.f_form, text="🧾 Cobranza a Facturar (No Facturadas):", font=("Arial", 11, "bold"), text_color="#166534").pack(anchor="w", padx=10)
+        self.combo_cobranza = ctk.CTkComboBox(self.f_form, state="readonly", command=self.al_seleccionar_cobranza)
+        self.combo_cobranza.pack(fill="x", padx=10, pady=(0, 8))
+        self.combo_cobranza.set("--- Seleccione Cobranza ---")
+
         ctk.CTkLabel(self.f_form, text="Nombre del Cliente:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.combo_cliente = ctk.CTkComboBox(self.f_form, command=self.al_seleccionar_cliente)
         self.combo_cliente.pack(fill="x", padx=10, pady=(0, 8))
@@ -594,6 +604,7 @@ class FacturasEmitidasTab:
 
         self.cargar_clientes_bd()
         self.cargar_ordenes_compra()
+        self.cargar_cobranzas_pendientes()
         self.sugerir_correlativo()
 
         self.f_wrapper_derecha = ctk.CTkFrame(frame_split, fg_color="transparent")
@@ -792,6 +803,103 @@ class FacturasEmitidasTab:
             self.combo_cliente.configure(values=["--- Seleccione Cliente ---"])
             self.combo_cliente.set("--- Seleccione Cliente ---")
 
+    # =========================================================
+    # 🚀 COBRANZAS PENDIENTES DE FACTURAR (vínculo Cálculo de Cobranza → Ventas)
+    # =========================================================
+    def cargar_cobranzas_pendientes(self):
+        """Carga en el desplegable los cálculos de cobranza aún NO facturados."""
+        def tarea_cobranzas():
+            pend = {}
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    # Asegura las columnas de estado (por si el módulo de cobranza aún no se ha abierto)
+                    try:
+                        cursor.execute("ALTER TABLE cobranza_quincenas ADD COLUMN IF NOT EXISTS facturado BOOLEAN DEFAULT FALSE")
+                        cursor.execute("ALTER TABLE cobranza_quincenas ADD COLUMN IF NOT EXISTS factura_referencia VARCHAR(100) DEFAULT ''")
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                    cursor.execute("""
+                        SELECT id, cliente_nombre, cliente_ruc, anio, mes, quincena, plan_cobro, total
+                        FROM cobranza_quincenas
+                        WHERE COALESCE(facturado, FALSE) = FALSE
+                        ORDER BY anio DESC, mes DESC, quincena DESC, id DESC
+                    """)
+                    for (cid, nom, ruc, anio, mes, q, plan, total) in cursor.fetchall():
+                        nom = (nom or "").strip()
+                        ruc = (ruc or "").strip()
+                        try: anio = int(anio)
+                        except Exception: anio = 0
+                        try: mes = int(mes)
+                        except Exception: mes = 0
+                        try: q = int(q)
+                        except Exception: q = 0
+                        try: total = float(total or 0)
+                        except Exception: total = 0.0
+                        mes_nom = NOMBRES_MESES[mes - 1] if 1 <= mes <= 12 else f"Mes {mes}"
+                        if q == 1: q_txt = "1ª Quincena (1-15)"
+                        elif q == 2: q_txt = "2ª Quincena (16-fin)"
+                        else: q_txt = f"Quincena {q}"
+                        etiqueta = f"{nom} · {q_txt} {mes_nom} {anio} · {formatear_moneda(total)}"
+                        pend[etiqueta] = {
+                            "id": cid, "cliente_nombre": nom, "cliente_ruc": ruc,
+                            "anio": anio, "mes": mes, "quincena": q,
+                            "quincena_txt": q_txt, "mes_nombre": mes_nom,
+                            "plan_cobro": (plan or "").strip(), "total": total,
+                        }
+                except Exception:
+                    pass
+                finally:
+                    liberar_conexion(conn)
+            self.main_root.after(0, lambda: self._aplicar_cobranzas_combo(pend))
+        threading.Thread(target=tarea_cobranzas, daemon=True).start()
+
+    def _aplicar_cobranzas_combo(self, pend):
+        self.cobranzas_pendientes = pend
+        if pend:
+            valores = ["--- Seleccione Cobranza ---"] + list(pend.keys())
+        else:
+            valores = ["--- Sin cobranzas pendientes ---"]
+        self.combo_cobranza.configure(values=valores)
+        actual = self.combo_cobranza.get()
+        if actual not in valores:
+            self.combo_cobranza.set(valores[0])
+
+    def al_seleccionar_cobranza(self, choice=None):
+        """Al elegir una cobranza pendiente, autocompleta cliente, RUC, descripción y monto base."""
+        self.id_cobranza_seleccionada = None
+        data = self.cobranzas_pendientes.get(choice)
+        if not data:
+            return
+        self.id_cobranza_seleccionada = data["id"]
+
+        # Cliente + RUC (evita que el autocompletado asíncrono pise el RUC)
+        self.bloquear_autocompletado_ruc = True
+        try:
+            if data["cliente_nombre"]:
+                self.combo_cliente.set(data["cliente_nombre"])
+            self.ent_ruc.configure(state="normal")
+            self.ent_ruc.delete(0, tk.END)
+            if data["cliente_ruc"]:
+                self.ent_ruc.insert(0, data["cliente_ruc"])
+        finally:
+            self.bloquear_autocompletado_ruc = False
+
+        # Descripción de la quincena a cobrar
+        desc = f"Cobranza {data['quincena_txt']} {data['mes_nombre']} {data['anio']}"
+        if data["plan_cobro"]:
+            desc += f" — {data['plan_cobro']}"
+        self.ent_desc.delete(0, tk.END)
+        self.ent_desc.insert(0, desc)
+
+        # Monto base (sin IGV): se coloca tal cual en "Monto Base"
+        self.ent_subtotal.delete(0, tk.END)
+        self.ent_subtotal.insert(0, f"{data['total']:.2f}")
+
+        self.actualizar_totales()
+
     def actualizar_totales(self, *args):
         if not hasattr(self, 'combo_tipo') or not hasattr(self, 'ent_subtotal') or not hasattr(self, 'ent_detraccion'):
             return
@@ -925,7 +1033,18 @@ class FacturasEmitidasTab:
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (tipo, nro_doc, fecha, cliente, desc, evento, subtotal, imp, tot_bruto, ruta_final, dias, det_pct, det_monto, oc_sel))
             conn.commit()
-            
+
+            # 🚀 Marca la cobranza vinculada como FACTURADA (deja de aparecer en el desplegable,
+            # pero se conserva intacta en el histórico de "Cálculo de Cobranza").
+            if self.id_cobranza_seleccionada:
+                try:
+                    cursor.execute(
+                        "UPDATE cobranza_quincenas SET facturado = TRUE, factura_referencia = %s WHERE id = %s",
+                        (nro_doc, self.id_cobranza_seleccionada))
+                    conn.commit()
+                except Exception:
+                    pass
+
             cache_sistema.invalidar()
             registrar_auditoria(self.app_padre.usuario_activo, "Facturas Emitidas", f"Registró factura {nro_doc} del cliente '{cliente}'")
             messagebox.showinfo("Éxito", "Documento emitido registrado correctamente.")
@@ -934,6 +1053,9 @@ class FacturasEmitidasTab:
             self.ent_subtotal.delete(0, tk.END)
             self.ruta_archivo_temp = ""
             self.combo_oc.set("--- Sin Orden de Compra ---")
+            self.id_cobranza_seleccionada = None
+            self.combo_cobranza.set("--- Seleccione Cobranza ---")
+            self.cargar_cobranzas_pendientes()
             self.cargar_datos_tabla(reset_pagina=True)
             self.sugerir_correlativo()
             

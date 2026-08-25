@@ -453,9 +453,13 @@ class CalculoCobranzaApp:
                     total NUMERIC(12,2) DEFAULT 0,
                     notas TEXT,
                     pdf_ruta TEXT,
-                    fecha_registro VARCHAR(30)
+                    fecha_registro VARCHAR(30),
+                    facturado BOOLEAN DEFAULT FALSE,
+                    factura_referencia VARCHAR(100) DEFAULT ''
                 )
             ''')
+            cursor.execute("ALTER TABLE cobranza_quincenas ADD COLUMN IF NOT EXISTS facturado BOOLEAN DEFAULT FALSE")
+            cursor.execute("ALTER TABLE cobranza_quincenas ADD COLUMN IF NOT EXISTS factura_referencia VARCHAR(100) DEFAULT ''")
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cobranza_detalle_dias (
                     id SERIAL PRIMARY KEY,
@@ -1964,7 +1968,44 @@ class CalculoCobranzaApp:
             c.drawString(300, y - 14, f"Teléfono: {cliente_info['telefono']}")
         if cliente_info["direccion"]:
             dire = cliente_info["direccion"]
-            c.drawString(300, y - 27, f"Dirección: {dire[:60]}")
+            # Dirección alineada a la DERECHA junto al RUC, repartida en 2
+            # líneas equilibradas: se corta en el espacio más cercano a la
+            # mitad del texto, así la cola "baja" a la línea siguiente y el
+            # bloque nunca se ve cortado ni roza el borde del margen.
+            c.setFont("Helvetica", 10)
+            texto = f"Dirección: {dire}"
+            borde_der = 566                       # 6 pt de aire al margen derecho
+            max_ancho = borde_der - 300           # ancho útil de la columna
+            # Si cabe en una sola línea, se dibuja así; si no, se parte en 2.
+            if c.stringWidth(texto, "Helvetica", 10) <= max_ancho:
+                lineas = [texto]
+            else:
+                t = texto
+                mitad = len(t) // 2
+                mejor = -1
+                for i, ch in enumerate(t):
+                    if ch == " " and abs(i - mitad) <= abs(mejor - mitad):
+                        mejor = i
+                if mejor <= 0:
+                    lineas = [texto]
+                else:
+                    l1 = t[:mejor].strip()
+                    l2 = t[mejor:].strip()
+                    while c.stringWidth(l2, "Helvetica", 10) > max_ancho and mejor > 0:
+                        mejor = t.rfind(" ", 0, mejor)
+                        l1 = t[:mejor].strip()
+                        l2 = t[mejor:].strip()
+                    if l1 and l2:
+                        lineas = [l1, l2]
+                    else:
+                        lineas = [texto]
+            # Recorte de seguridad: nunca más de 2 líneas y nunca del margen
+            if len(lineas) > 2:
+                lineas = lineas[:2]
+            c.drawRightString(borde_der, y, lineas[0])
+            if len(lineas) > 1:
+                c.drawRightString(borde_der, y - 24, lineas[1])
+            c.setFont("Helvetica", 10)
         c.drawString(40, y - 53, f"RUC: {ruc_cli}")
 
         c.setFont("Helvetica-Bold", 11)
@@ -2061,11 +2102,9 @@ class CalculoCobranzaApp:
             c.setStrokeColorRGB(0, 0, 0)
             c.setLineWidth(1)
             c.line(40, y + 1, 40 + ancho_a, y + 1)
-            y -= 6.0
-            # Tabla B: viajes no realizados (deducción)
-            if y < 90:
-                c.showPage()
-                y = 750.0
+            # Tabla B: viajes no realizados (deducción) en la página siguiente
+            c.showPage()
+            y = 750.0
             cols_b = [120, 60, 60, 60, 100]
             xs_b = [40]
             for w in cols_b:
@@ -2155,7 +2194,9 @@ class CalculoCobranzaApp:
             c.drawRightString(40 + ancho_tabla, y - 10, f"{simbolo} {float(m_base or 0):,.2f}")
             y -= 18.0
 
-            # ---- Deducciones por unidad ----
+            # ---- Deducciones por unidad (en la página siguiente) ----
+            c.showPage()
+            y = 750.0
             c.setFont("Helvetica-Bold", 11)
             c.drawString(40, y, "DEDUCCIONES POR UNIDAD")
             y -= 16.0
