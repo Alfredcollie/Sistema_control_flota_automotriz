@@ -23,18 +23,15 @@ except Exception:
 SERVICE_NAME = "ControlFlota"
 
 # =========================================================
-# ⚙️ CREDENCIALES DE RESPALDO (Supabase)
-# Se usan solo si el llavero del sistema está vacío o no es
-# accesible (p. ej. en un .app empaquetado de macOS, donde el
-# Keychain no tiene las credenciales configuradas). Así la app
-# conecta igual en Windows y macOS sin configuración extra.
-# (Mismos valores que usa validacion_licencia.py)
+# ⚙️ CREDENCIALES (Supabase)
+# YA NO hay secretos en el código. Se leen, en este orden:
+#   1) Llavero del sistema (keyring)  -> recomendado
+#   2) Variables de entorno (alternativa):
+#        SUPABASE_DB_HOST      SUPABASE_DB_PORT
+#        SUPABASE_DB_NAME      SUPABASE_DB_USER
+#        SUPABASE_DB_PASSWORD
+# Para guardarlas en el llavero:  python configurar_credenciales.py
 # =========================================================
-SUPABASE_HOST = "aws-1-us-west-2.pooler.supabase.com"
-SUPABASE_DB_NAME = "postgres"
-SUPABASE_USER = "postgres.nqjfptmupnrkmgvnbyly"
-SUPABASE_PASSWORD = "Ve-10339092"
-SUPABASE_PORT = "6543"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,27 +58,27 @@ def _credenciales_llavero():
     }
 
 
-def _credenciales_respaldo():
-    """Credenciales fijas de Supabase (respaldo multiplataforma)."""
+def _credenciales_entorno():
+    """Credenciales desde variables de entorno (alternativa al llavero)."""
     return {
-        "host": SUPABASE_HOST,
-        "port": SUPABASE_PORT,
-        "dbname": SUPABASE_DB_NAME,
-        "user": SUPABASE_USER,
-        "password": SUPABASE_PASSWORD,
+        "host": os.environ.get("SUPABASE_DB_HOST", ""),
+        "port": os.environ.get("SUPABASE_DB_PORT", ""),
+        "dbname": os.environ.get("SUPABASE_DB_NAME", ""),
+        "user": os.environ.get("SUPABASE_DB_USER", ""),
+        "password": os.environ.get("SUPABASE_DB_PASSWORD", ""),
     }
 
 
 def leer_credenciales():
-    """Credenciales del llavero; si falta algún campo, completa con el respaldo."""
+    """Credenciales del llavero; si falta algún campo, completa con el entorno."""
     ll = _credenciales_llavero()
-    r = _credenciales_respaldo()
+    env = _credenciales_entorno()
     return {
-        "host": ll["host"] or r["host"],
-        "port": ll["port"] or r["port"],
-        "dbname": ll["dbname"] or r["dbname"],
-        "user": ll["user"] or r["user"],
-        "password": ll["password"] or r["password"],
+        "host": ll["host"] or env["host"],
+        "port": ll["port"] or env["port"],
+        "dbname": ll["dbname"] or env["dbname"],
+        "user": ll["user"] or env["user"],
+        "password": ll["password"] or env["password"],
     }
 
 
@@ -116,12 +113,21 @@ def inicializar_pool(silencioso=False):
 
     Intenta primero con las credenciales del llavero y, si la conexión falla
     (p. ej. credenciales viejas/incorrectas en el Keychain de macOS), reintenta
-    automáticamente con las credenciales de respaldo de Supabase."""
+    automáticamente con las credenciales de las variables de entorno."""
     global _connection_pool
     if _connection_pool is not None:
         return
 
     cred = leer_credenciales()
+    if not cred["password"]:
+        if not silencioso:
+            logging.error(
+                "No se encontró la contraseña de Supabase. "
+                "Ejecuta 'python configurar_credenciales.py' o define la "
+                "variable de entorno SUPABASE_DB_PASSWORD."
+            )
+        return
+
     try:
         _connection_pool = _crear_pool(cred)
         if _connection_pool is not None:
@@ -131,17 +137,17 @@ def inicializar_pool(silencioso=False):
             logging.error(f"Error al conectar con credenciales del llavero: {e}")
         _connection_pool = None
 
-    # Reintento con el respaldo puro de Supabase (solo si no es idéntico al intento anterior)
-    respaldo = _credenciales_respaldo()
-    if cred == respaldo:
+    # Reintento con las credenciales del entorno (solo si no son idénticas al intento anterior)
+    entorno = _credenciales_entorno()
+    if cred == entorno:
         return
     try:
-        _connection_pool = _crear_pool(respaldo)
+        _connection_pool = _crear_pool(entorno)
         if _connection_pool is not None and not silencioso:
-            logging.info("Conectado con credenciales de respaldo de Supabase.")
+            logging.info("Conectado con credenciales de variables de entorno.")
     except Exception as e:
         if not silencioso:
-            logging.error(f"Error al conectar con credenciales de respaldo: {e}")
+            logging.error(f"Error al conectar con credenciales de entorno: {e}")
         _connection_pool = None
 
 

@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import messagebox
 import customtkinter as ctk
 import psycopg2
+import keyring
 import subprocess
 import sys
 import os
@@ -19,12 +20,27 @@ except Exception:
 
 # =========================================================
 # ⚙️ CREDENCIALES DE LA BASE DE DATOS DE LICENCIAS
+# El host / puerto / base / usuario NO son secretos.
+# La CONTRASEÑA es el secreto: se lee del llavero del sistema
+# (servicio "ControlFlotaLicencias") o de la variable de entorno
+# SUPABASE_LIC_DB_PASSWORD. Ya NO va en el código.
 # =========================================================
 SUPABASE_HOST = "aws-1-us-west-2.pooler.supabase.com"
 SUPABASE_DB_NAME = "postgres"
 SUPABASE_USER = "postgres.nqjfptmupnrkmgvnbyly"
-SUPABASE_PASSWORD = "Ve-10339092"
 SUPABASE_PORT = "6543"
+SERVICE_NAME = "ControlFlotaLicencias"
+
+
+def _password_licencia():
+    """Contraseña de la base de licencias (llavero o variable de entorno)."""
+    try:
+        pw = keyring.get_password(SERVICE_NAME, "SUPABASE_DB_PASSWORD")
+        if pw:
+            return pw
+    except Exception:
+        pass
+    return os.environ.get("SUPABASE_LIC_DB_PASSWORD", "")
 
 # =========================================================
 # 🚀 IDENTIFICADOR DEL SOFTWARE
@@ -88,10 +104,13 @@ def obtener_hwid():
 def consultar_licencia_supabase(hwid):
     """Se conecta a Supabase y verifica el estado de TODAS las licencias asociadas a este HWID y Software"""
     try:
+        password = _password_licencia()
+        if not password:
+            return False, "Error: contraseña de licencias no configurada. Defina SUPABASE_LIC_DB_PASSWORD o guarde la credencial en el llavero."
         base = dict(
             dbname=SUPABASE_DB_NAME,
             user=SUPABASE_USER,
-            password=SUPABASE_PASSWORD,
+            password=password,
             host=SUPABASE_HOST,
             port=SUPABASE_PORT,
             connect_timeout=5,
