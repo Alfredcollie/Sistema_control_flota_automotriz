@@ -77,19 +77,21 @@ def obtener_hwid():
                     hwid = linea
                     break
         elif sys.platform == "darwin":
-            # ioreg sin shell: extraemos el UUID con expresiones regulares.
-            salida = _ejecutar_comando(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"])
+            # ioreg con RUTA COMPLETA: dentro del .app compilado (PyInstaller)
+            # el PATH es limitado y "ioreg" a secas no se encuentra, lo que hacía
+            # caer a un identificador de red distinto. Normalizamos a mayúsculas.
+            salida = _ejecutar_comando(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"])
             for linea in salida.splitlines():
                 if "IOPlatformUUID" in linea:
                     m = re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', linea)
                     if m:
-                        hwid = m.group(1)
+                        hwid = m.group(1).strip().upper()
                         break
             if not hwid:
-                salida = _ejecutar_comando(["system_profiler", "SPHardwareDataType"])
+                salida = _ejecutar_comando(["/usr/sbin/system_profiler", "SPHardwareDataType"])
                 m = re.search(r"Hardware\s+UUID:\s*([A-Fa-f0-9-]+)", salida, re.IGNORECASE)
                 if m:
-                    hwid = m.group(1)
+                    hwid = m.group(1).strip().upper()
         else:
             hwid = _ejecutar_comando(["cat", "/etc/machine-id"])
             if not hwid:
@@ -137,7 +139,12 @@ def consultar_licencia_supabase(hwid):
         conn.close()
 
         if not resultados:
-            return False, f"Este equipo no cuenta con una licencia para el software '{SOFTWARE_ASIGNADO}'.\nCopie el HWID a continuación y envíelo a soporte."
+            return False, (
+                f"Este equipo no cuenta con una licencia para el software '{SOFTWARE_ASIGNADO}'.\n\n"
+                f"HWID consultado: {hwid}\n"
+                f"Software: {SOFTWARE_ASIGNADO}\n"
+                f"Base de datos: {SUPABASE_HOST}"
+            )
 
         hoy = datetime.now()
         fmt = "%d/%m/%Y"
