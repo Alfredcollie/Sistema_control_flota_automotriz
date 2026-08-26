@@ -1,5 +1,5 @@
 {
-    "ruta_drive": "C:\\Users\\Alberto\\BlackRider_Archivos",
+    "ruta_drive": "C:/Users/Alberto/Desktop/Programa de control de flotilla automotriz para Win-Mac 210826",
     "rclone_remote": "gdrive:",
     "rclone_ruta_nube": "BlackRider",
     "impresora": "",
@@ -18,7 +18,7 @@
     "retencion_porcentaje": "8",
     "detraccion_porcentaje": "12",
     "renta_mensual_porcentaje": "1.5",
-    "renta_anual_porcentaje": "29.5",
+    "renta_anual_porcentaje": "0",
     "regimen_empresa": "R\u00e9gimen General",
     "proveedor_fe": "Nubefact",
     "url_api_fe": "",
@@ -73,7 +73,7 @@
         "usuarios",
         "bitacora"
     ],
-    "ruta_logo_cotizacion": "C:/Users/Alberto/Desktop/Programa de control de flotilla automotriz para Win-Mac 210826/logo.png",
+    "ruta_logo_cotizacion": "C:/Users/Alberto/Desktop/Programa de control de flotilla automotriz para Win-Mac 210826\\logo_encabezado.png",
     "orden_modulos": [
         "clientes",
         "proveedores",

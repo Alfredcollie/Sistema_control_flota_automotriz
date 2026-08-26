@@ -1116,6 +1116,10 @@ class ControlGeneralEventos:
         v_conf.title("Configuración General del Sistema")
         v_conf.geometry("1000x750")
         v_conf.after(50, lambda: maximizar_ventana(v_conf))
+        try:
+            v_conf.attributes("-topmost", True)
+        except Exception:
+            pass
         v_conf.grab_set()
         
         archivo_config = str(CONFIG_FILE)
@@ -1382,6 +1386,13 @@ class ControlGeneralEventos:
                 v_conf.grab_release()
             except Exception:
                 pass
+            # Desactiva temporalmente el "siempre al frente" para que el
+            # selector nativo de archivos/carpetas pueda abrirse POR DELANTE
+            # de la ventana de configuración (si no, -topmost lo tapa).
+            try:
+                v_conf.attributes("-topmost", False)
+            except Exception:
+                pass
 
             def _abrir():
                 try:
@@ -1390,6 +1401,17 @@ class ControlGeneralEventos:
                     messagebox.showerror("Error", f"No se pudo abrir el selector de archivos:\n{e}", parent=v_conf)
                     ruta = None
                 finally:
+                    try:
+                        # Restaura el "siempre al frente" y trae la ventana de
+                        # configuración de vuelta al frente tras cerrar el selector.
+                        v_conf.attributes("-topmost", True)
+                    except Exception:
+                        pass
+                    try:
+                        v_conf.lift()
+                        v_conf.focus_force()
+                    except Exception:
+                        pass
                     try:
                         v_conf.grab_set()
                     except Exception:
