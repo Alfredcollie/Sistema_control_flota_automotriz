@@ -57,6 +57,16 @@ def obtener_porcentaje_renta_anual():
     except Exception: pass
     return 0.0
 
+# 🚀 FUNCIÓN PARA LEER EL PORCENTAJE ISR MENSUAL DESDE LA CONFIGURACIÓN GENERAL (control_general.py -> Configuración General)
+def obtener_porcentaje_renta_mensual():
+    try:
+        if os.path.exists("config_local.json"):
+            with open("config_local.json", "r", encoding="utf-8") as f:
+                config = json.load(f)
+                return float(config.get("renta_mensual_porcentaje", "0.0"))
+    except Exception: pass
+    return 0.0
+
 CONFIG_REGIONAL = cargar_configuracion_regional()
 
 def formatear_moneda(valor):
@@ -170,6 +180,7 @@ class EstadisticasFinancieraApp:
         self.parent_frame = parent_frame
         self.usuario_activo = "Desconocido"
         self.tasa_renta_anual = obtener_porcentaje_renta_anual()
+        self.tasa_renta_mensual = obtener_porcentaje_renta_mensual()
         self.crear_interfaz()
         self.cargar_bancos_y_listas()
         
@@ -288,6 +299,7 @@ class EstadisticasFinancieraApp:
         self.card_caja = self.crear_tarjeta_larga(f_rentabilidad, "FLUJO DE CAJA DE LA CUENTA (Dinero Efectivo Real: Cobrado - Pagado)", formatear_moneda(0), "#27ae60")
         
         self.card_provision_renta = self.crear_tarjeta_larga(f_rentabilidad, f"PROVISIÓN IMPUESTO A LA RENTA ANUAL ({self.tasa_renta_anual}%)", formatear_moneda(0), "#e67e22")
+        self.card_provision_renta_mensual = self.crear_tarjeta_larga(f_rentabilidad, f"PROVISIÓN ISR MENSUAL ({self.tasa_renta_mensual}%)", formatear_moneda(0), "#d35400")
 
     def toggle_fecha_modo(self):
         modo = self.tipo_fecha_var.get()
@@ -417,7 +429,8 @@ class EstadisticasFinancieraApp:
                 "Deuda Total a Proveedores",
                 "Rentabilidad Global (Ventas - Compras)",
                 "Flujo de Caja Real (Cobrado - Pagado)",
-                f"Provisión Impuesto Renta Anual ({self.tasa_renta_anual}%)"
+                f"Provisión Impuesto Renta Anual ({self.tasa_renta_anual}%)",
+                f"Provisión ISR Mensual ({self.tasa_renta_mensual}%)"
             ],
             "Valor Registrado": [
                 self.card_ventas.cget("text"),
@@ -428,7 +441,8 @@ class EstadisticasFinancieraApp:
                 self.card_por_pagar.cget("text"),
                 self.card_rentabilidad.cget("text"),
                 self.card_caja.cget("text"),
-                self.card_provision_renta.cget("text")
+                self.card_provision_renta.cget("text"),
+                self.card_provision_renta_mensual.cget("text")
             ]
         }
 
@@ -599,6 +613,10 @@ class EstadisticasFinancieraApp:
                 if rentabilidad > 0:
                     provision_renta = rentabilidad * (self.tasa_renta_anual / 100.0)
 
+                provision_renta_mensual = 0.0
+                if rentabilidad > 0:
+                    provision_renta_mensual = rentabilidad * (self.tasa_renta_mensual / 100.0)
+
                 # Actualizar interfaz en el main thread
                 def update_ui():
                     self.card_ventas.configure(text=formatear_moneda(ventas_periodo))
@@ -612,6 +630,7 @@ class EstadisticasFinancieraApp:
                     self.card_rentabilidad.configure(text=formatear_moneda(rentabilidad))
                     self.card_caja.configure(text=formatear_moneda(caja))
                     self.card_provision_renta.configure(text=formatear_moneda(provision_renta))
+                    self.card_provision_renta_mensual.configure(text=formatear_moneda(provision_renta_mensual))
 
                     if rentabilidad < 0:
                         self.card_rentabilidad.configure(text_color="#e74c3c")
