@@ -72,18 +72,31 @@ def cargar_configuracion_regional():
     return config
 
 def cargar_configuracion_impuestos():
-    tasas = {"igv": 18.0, "renta_m": 1.5, "renta_a": 29.5, "retencion": 8.0, "regimen": "MYPE Tributario"}
+    # El "Régimen Tributario" elegido en Configuración General es la fuente de
+    # verdad: de él se derivan automáticamente el IGV y las tasas de Renta que
+    # utiliza el Cálculo de Impuestos (ya no existe un campo de retención manual).
+    # La detracción también se enlaza desde Configuración General.
+    tasas = {"igv": 18.0, "renta_m": 1.5, "renta_a": 29.5, "detraccion": 12.0, "regimen": "MYPE Tributario"}
+    regimen = "MYPE Tributario"
     try:
         if os.path.exists(str(CONFIG_FILE)):
             with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-            tasas["igv"] = float(cfg.get("igv_porcentaje", 18.0))
-            tasas["renta_m"] = float(cfg.get("renta_mensual_porcentaje", 1.5))
-            tasas["renta_a"] = float(cfg.get("renta_anual_porcentaje", 29.5))
-            tasas["retencion"] = float(cfg.get("retencion_porcentaje", 8.0))
-            tasas["regimen"] = str(cfg.get("regimen_empresa", "MYPE Tributario"))
+            regimen = str(cfg.get("regimen_empresa", "MYPE Tributario"))
+            tasas["detraccion"] = float(cfg.get("detraccion_porcentaje", 12.0))
     except Exception:
         pass
+
+    # Enlace régimen tributario -> tasas del cálculo de impuestos.
+    if "NRUS" in regimen:
+        tasas.update({"igv": 0.0, "renta_m": 0.0, "renta_a": 0.0})
+    elif "RER" in regimen:
+        tasas.update({"igv": 18.0, "renta_m": 1.5, "renta_a": 0.0})
+    elif "MYPE" in regimen:
+        tasas.update({"igv": 18.0, "renta_m": 1.0, "renta_a": 29.5})
+    else:  # Régimen General
+        tasas.update({"igv": 18.0, "renta_m": 1.5, "renta_a": 29.5})
+    tasas["regimen"] = regimen
     return tasas
 
 CONFIG_REGIONAL = cargar_configuracion_regional()
@@ -276,7 +289,7 @@ class CalculoImpuestosApp:
         
         f_banco = ctk.CTkFrame(self.f_form, fg_color="#e8f8f5", border_width=1, border_color="#1abc9c")
         f_banco.pack(fill="x", padx=10, pady=10)
-        ctk.CTkLabel(f_banco, text="Cuentas Banco de la Nación (Detracciones)", font=("Arial", 10, "bold"), text_color="#16a085").pack(pady=(5, 0))
+        ctk.CTkLabel(f_banco, text=f"Cuentas Banco de la Nación (Detracciones — tasa {tasas['detraccion']:g}%)", font=("Arial", 10, "bold"), text_color="#16a085").pack(pady=(5, 0))
         self.lbl_bn_ant = ctk.CTkLabel(f_banco, text=f"Saldo B.N. Anterior: {formatear_moneda(0)}", text_color="#333333")
         self.lbl_bn_ant.pack(anchor="w", padx=10)
         self.lbl_bn_nuevo = ctk.CTkLabel(f_banco, text=f"Nuevas Detracciones Ventas: {formatear_moneda(0)}", text_color="#333333")

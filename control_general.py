@@ -221,7 +221,6 @@ def cargar_configuracion_general():
         "ruc_empresa": "",
         "razon_social_empresa": "",
         "igv_porcentaje": "0",
-        "retencion_porcentaje": "0",
         "detraccion_porcentaje": "12",
         "renta_mensual_porcentaje": "0",
         "renta_anual_porcentaje": "0",
@@ -1177,8 +1176,6 @@ class ControlGeneralEventos:
         f_row2.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(f_row2, text="IGV (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
         ent_igv = ctk.CTkEntry(f_row2, width=60); ent_igv.pack(side="left", padx=5); ent_igv.insert(0, config_actual.get("igv_porcentaje", "0"))
-        ctk.CTkLabel(f_row2, text="Retención (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_retencion = ctk.CTkEntry(f_row2, width=60); ent_retencion.pack(side="left", padx=5); ent_retencion.insert(0, config_actual.get("retencion_porcentaje", "0"))
         ctk.CTkLabel(f_row2, text="Renta Mensual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
         ent_renta_m = ctk.CTkEntry(f_row2, width=60); ent_renta_m.pack(side="left", padx=5); ent_renta_m.insert(0, config_actual.get("renta_mensual_porcentaje", "0"))
         ctk.CTkLabel(f_row2, text="Renta Anual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
@@ -1196,15 +1193,15 @@ class ControlGeneralEventos:
         ent_ult_rec = ctk.CTkEntry(f_row3, width=90, placeholder_text="E001-0"); ent_ult_rec.pack(side="left", padx=5); ent_ult_rec.insert(0, config_actual.get("ultimo_recibo", "E001-0"))
 
         def actualizar_tasas_regimen(choice):
-            ent_igv.delete(0, tk.END); ent_retencion.delete(0, tk.END); ent_renta_m.delete(0, tk.END); ent_renta_a.delete(0, tk.END)
+            ent_igv.delete(0, tk.END); ent_renta_m.delete(0, tk.END); ent_renta_a.delete(0, tk.END)
             if "NRUS" in choice:
-                ent_igv.insert(0, "0"); ent_retencion.insert(0, "0"); ent_renta_m.insert(0, "0"); ent_renta_a.insert(0, "0")
+                ent_igv.insert(0, "0"); ent_renta_m.insert(0, "0"); ent_renta_a.insert(0, "0")
             elif "RER" in choice:
-                ent_igv.insert(0, "18"); ent_retencion.insert(0, "8"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "0")
+                ent_igv.insert(0, "18"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "0")
             elif "MYPE" in choice:
-                ent_igv.insert(0, "18"); ent_retencion.insert(0, "8"); ent_renta_m.insert(0, "1.0"); ent_renta_a.insert(0, "29.5")
+                ent_igv.insert(0, "18"); ent_renta_m.insert(0, "1.0"); ent_renta_a.insert(0, "29.5")
             elif "General" in choice:
-                ent_igv.insert(0, "18"); ent_retencion.insert(0, "8"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "29.5")
+                ent_igv.insert(0, "18"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "29.5")
         cmb_regimen.configure(command=actualizar_tasas_regimen)
 
         def buscar_ruc_empresa(event=None):
@@ -1717,7 +1714,6 @@ class ControlGeneralEventos:
                 "ruc_empresa": ent_ruc_empresa.get().strip(),
                 "razon_social_empresa": ent_razon_social.get().strip(),
                 "igv_porcentaje": ent_igv.get().strip(),
-                "retencion_porcentaje": ent_retencion.get().strip(),
                 "renta_mensual_porcentaje": ent_renta_m.get().strip(),
                 "renta_anual_porcentaje": ent_renta_a.get().strip(),
                 "regimen_empresa": cmb_regimen.get().strip(),
