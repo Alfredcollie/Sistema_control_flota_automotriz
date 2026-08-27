@@ -58,6 +58,12 @@ jobs:
         }
         "@ | Out-File -FilePath "dist/ControlFlota/config_db.json" -Encoding utf8
 
+    - name: Instalar Inno Setup
+      run: choco install innosetup -y --no-progress
+
+    - name: Generar instalador (Inno Setup)
+      run: iscc "Instalador.ControlFlota.iss"
+
     - name: Comprimir en ZIP (Windows)
       run: Compress-Archive -Path "dist/ControlFlota" -DestinationPath "dist/ControlFlota-Windows.zip" -Force
 
@@ -65,7 +71,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: windows
-        path: dist/ControlFlota-Windows.zip
+        path: |
+          dist/Instalador.ControlFlota.exe
+          dist/ControlFlota-Windows.zip
 
   # ===================== macOS =====================
   build-mac:
@@ -170,5 +178,6 @@ jobs:
         files: |
           release-assets/*.zip
           release-assets/*.dmg
+          release-assets/*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
