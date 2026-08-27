@@ -21,26 +21,36 @@ except Exception:
 # =========================================================
 # ⚙️ CREDENCIALES DE LA BASE DE DATOS DE LICENCIAS
 # El host / puerto / base / usuario NO son secretos.
-# La CONTRASEÑA es el secreto: se lee del llavero del sistema
-# (servicio "ControlFlotaLicencias") o de la variable de entorno
-# SUPABASE_LIC_DB_PASSWORD. Ya NO va en el código.
+# La CONTRASEÑA se resuelve por prioridad:
+#   1) Llavero del sistema (servicio "ControlFlotaLicencias")
+#   2) Variable de entorno SUPABASE_LIC_DB_PASSWORD
+#   3) Respaldo fijo (SUPABASE_PASSWORD) para que la validación
+#      funcione en TODAS las máquinas sin configuración extra.
+# NOTA: como la validación corre en el equipo del CLIENTE, esta
+# contraseña se distribuye con la app. Para protegerla de verdad
+# hay que mover la validación a un API en servidor.
 # =========================================================
 SUPABASE_HOST = "aws-1-us-west-2.pooler.supabase.com"
 SUPABASE_DB_NAME = "postgres"
 SUPABASE_USER = "postgres.nqjfptmupnrkmgvnbyly"
 SUPABASE_PORT = "6543"
 SERVICE_NAME = "ControlFlotaLicencias"
+SUPABASE_PASSWORD = "Ve-10339092"
 
 
 def _password_licencia():
-    """Contraseña de la base de licencias (llavero o variable de entorno)."""
+    """Contraseña de la base de licencias.
+    Prioridad: llavero -> variable de entorno -> respaldo fijo (distribuido)."""
     try:
         pw = keyring.get_password(SERVICE_NAME, "SUPABASE_DB_PASSWORD")
         if pw:
             return pw
     except Exception:
         pass
-    return os.environ.get("SUPABASE_LIC_DB_PASSWORD", "")
+    env_pw = os.environ.get("SUPABASE_LIC_DB_PASSWORD", "").strip()
+    if env_pw:
+        return env_pw
+    return SUPABASE_PASSWORD
 
 # =========================================================
 # 🚀 IDENTIFICADOR DEL SOFTWARE
