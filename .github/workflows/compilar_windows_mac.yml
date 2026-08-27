@@ -58,6 +58,9 @@ jobs:
         }
         "@ | Out-File -FilePath "dist/ControlFlota/config_db.json" -Encoding utf8
 
+    - name: Copiar config_local.json al build (Windows)
+      run: Copy-Item -Path "config_local.json" -Destination "dist/ControlFlota/config_local.json" -Force
+
     - name: Instalar Inno Setup
       run: choco install innosetup -y --no-progress
 
@@ -122,6 +125,9 @@ jobs:
           "password": "${{ secrets.SUPABASE_DB_PASSWORD }}"
         }
         EOF
+
+    - name: Copiar config_local.json al build (macOS)
+      run: cp "config_local.json" "dist/ControlFlota.app/Contents/MacOS/config_local.json"
 
     - name: Forzar Modo Claro en la app (macOS)
       run: |
