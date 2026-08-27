@@ -32,6 +32,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from app_paths import CONFIG_FILE
 
 try:
     import pdfplumber
@@ -109,8 +110,8 @@ def cargar_configuracion_regional():
         "client_secret_sire": ""
     }
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config.update(json.load(f))
     except Exception: pass
     return config
@@ -566,15 +567,15 @@ class FacturasRecibidasTab:
             if nueva:
                 try:
                     config = {}
-                    if os.path.exists("config_local.json"):
-                        with open("config_local.json", "r", encoding="utf-8") as f:
+                    if os.path.exists(str(CONFIG_FILE)):
+                        with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                             config = json.load(f)
                     
                     extras = config.get("categorias_gasto_extra", [])
                     if nueva not in extras:
                         extras.append(nueva)
                         config["categorias_gasto_extra"] = extras
-                        with open("config_local.json", "w", encoding="utf-8") as f:
+                        with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
                             json.dump(config, f, indent=4)
                             
                     self.cargar_categorias()
@@ -857,8 +858,8 @@ class FacturasRecibidasTab:
         ]
         
         try:
-            if os.path.exists("config_local.json"):
-                with open("config_local.json", "r", encoding="utf-8") as f:
+            if os.path.exists(str(CONFIG_FILE)):
+                with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                     config = json.load(f)
                     extras = config.get("categorias_gasto_extra", [])
                     for ext in extras:

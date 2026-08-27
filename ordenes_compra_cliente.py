@@ -14,6 +14,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from app_paths import CONFIG_FILE
 
 try:
     import pdfplumber
@@ -41,8 +42,8 @@ def cargar_configuracion_regional():
         "ruta_drive": ""
     }
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config.update(json.load(f))
     except Exception: pass
     return config

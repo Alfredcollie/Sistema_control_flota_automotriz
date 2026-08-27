@@ -7,6 +7,7 @@ import json
 import subprocess
 import customtkinter as ctk
 from conexion import conectar_db, liberar_conexion
+from app_paths import CONFIG_FILE
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA
@@ -31,8 +32,8 @@ def cargar_configuracion_regional():
         "formato_numero": "1,000.00"
     }
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config.update(json.load(f))
     except Exception: pass
     return config

@@ -9,6 +9,7 @@ import subprocess
 import webbrowser
 import customtkinter as ctk
 from conexion import conectar_db, liberar_conexion
+from app_paths import CONFIG_FILE
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos
@@ -34,8 +35,8 @@ def cargar_configuracion_regional():
         "cuentas_bancarias": []
     }
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config.update(json.load(f))
     except Exception: pass
     return config

@@ -13,6 +13,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from app_paths import CONFIG_FILE
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos (Excel)
@@ -41,8 +42,8 @@ def cargar_configuracion_regional():
         "cuentas_bancarias": []
     }
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config.update(json.load(f))
     except Exception: pass
     return config
@@ -50,8 +51,8 @@ def cargar_configuracion_regional():
 # 🚀 FUNCIÓN PARA LEER EL PORCENTAJE DE RENTA ANUAL DESDE CONFIG
 def obtener_porcentaje_renta_anual():
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config = json.load(f)
                 return float(config.get("renta_anual_porcentaje", "0.0"))
     except Exception: pass
@@ -60,8 +61,8 @@ def obtener_porcentaje_renta_anual():
 # 🚀 FUNCIÓN PARA LEER EL PORCENTAJE ISR MENSUAL DESDE LA CONFIGURACIÓN GENERAL (control_general.py -> Configuración General)
 def obtener_porcentaje_renta_mensual():
     try:
-        if os.path.exists("config_local.json"):
-            with open("config_local.json", "r", encoding="utf-8") as f:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config = json.load(f)
                 return float(config.get("renta_mensual_porcentaje", "0.0"))
     except Exception: pass

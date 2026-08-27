@@ -13,6 +13,7 @@ import webbrowser
 import shutil
 
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
+from app_paths import CONFIG_FILE
 
 def obtener_configuracion_fe():
     config = {
@@ -23,9 +24,9 @@ def obtener_configuracion_fe():
         "razon_social_empresa": "",
         "ruta_drive": ""
     }
-    if os.path.exists("config_local.json"):
+    if os.path.exists(str(CONFIG_FILE)):
         try:
-            with open("config_local.json", "r", encoding="utf-8") as f:
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config.update(json.load(f))
         except Exception:
             pass
