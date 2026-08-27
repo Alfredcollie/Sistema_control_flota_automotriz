@@ -45,6 +45,19 @@ jobs:
     - name: Compilar con PyInstaller (Windows)
       run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.Windows control_general.py
 
+    - name: Inyectar credenciales de Supabase (config_db.json)
+      shell: pwsh
+      run: |
+        @"
+        {
+          "host": "${{ secrets.SUPABASE_DB_HOST }}",
+          "port": "${{ secrets.SUPABASE_DB_PORT }}",
+          "dbname": "${{ secrets.SUPABASE_DB_NAME }}",
+          "user": "${{ secrets.SUPABASE_DB_USER }}",
+          "password": "${{ secrets.SUPABASE_DB_PASSWORD }}"
+        }
+        "@ | Out-File -FilePath "dist/ControlFlota/config_db.json" -Encoding utf8
+
     - name: Comprimir en ZIP (Windows)
       run: Compress-Archive -Path "dist/ControlFlota" -DestinationPath "dist/ControlFlota-Windows.zip" -Force
 
@@ -89,6 +102,18 @@ jobs:
 
     - name: Compilar con PyInstaller (macOS)
       run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.macOS control_general.py
+
+    - name: Inyectar credenciales de Supabase (config_db.json)
+      run: |
+        cat > "dist/ControlFlota.app/Contents/MacOS/config_db.json" << 'EOF'
+        {
+          "host": "${{ secrets.SUPABASE_DB_HOST }}",
+          "port": "${{ secrets.SUPABASE_DB_PORT }}",
+          "dbname": "${{ secrets.SUPABASE_DB_NAME }}",
+          "user": "${{ secrets.SUPABASE_DB_USER }}",
+          "password": "${{ secrets.SUPABASE_DB_PASSWORD }}"
+        }
+        EOF
 
     - name: Forzar Modo Claro en la app (macOS)
       run: |
