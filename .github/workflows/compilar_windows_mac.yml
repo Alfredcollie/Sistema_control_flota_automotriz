@@ -68,6 +68,18 @@ jobs:
         path: dist/ControlFlota-Windows.zip
 
   # ===================== macOS =====================
+
+      - name: Inyectar credenciales de Supabase (config_db.json)
+      run: |
+        cat > "dist/ControlFlota.app/Contents/MacOS/config_db.json" << 'EOF'
+        {
+          "host": "${{ secrets.SUPABASE_DB_HOST }}",
+          "port": "${{ secrets.SUPABASE_DB_PORT }}",
+          "dbname": "${{ secrets.SUPABASE_DB_NAME }}",
+          "user": "${{ secrets.SUPABASE_DB_USER }}",
+          "password": "${{ secrets.SUPABASE_DB_PASSWORD }}"
+        }
+        EOF
   build-mac:
     runs-on: macos-latest
 
