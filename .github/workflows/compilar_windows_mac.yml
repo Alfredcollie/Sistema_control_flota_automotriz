@@ -13,8 +13,51 @@ on:
 
 permissions:
   contents: write
+  
 
 jobs:
+; ============================================================
+;  Instalador de Control Flota Automotriz (Inno Setup 6)
+;  Genera dist/Instalador.ControlFlota.exe a partir de dist/ControlFlota
+; ============================================================
+
+#define MyAppName "Control Flota Automotriz"
+#define MyAppVersion "1.0.0"
+#define MyAppExeName "ControlFlota.exe"
+
+[Setup]
+AppId={{C0D1E2F3-4A5B-6C7D-8E9F-0A1B2C3D4E5F}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher=Collie Software
+DefaultDirName={autopf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
+DisableProgramGroupPage=yes
+OutputDir=dist
+OutputBaseFilename=Instalador.ControlFlota
+SetupIconFile=Ico_Collie_Software.ico
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesInstallIn64BitMode=x64compatible
+PrivilegesRequired=admin
+
+[Languages]
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
+
+[Files]
+Source: "dist\ControlFlota\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Ejecutar {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
   # ===================== WINDOWS =====================
   build-windows:
@@ -58,12 +101,6 @@ jobs:
         }
         "@ | Out-File -FilePath "dist/ControlFlota/config_db.json" -Encoding utf8
 
-    - name: Instalar Inno Setup
-      run: choco install innosetup -y --no-progress
-
-    - name: Generar instalador (Inno Setup)
-      run: iscc "Instalador.ControlFlota.iss"
-
     - name: Comprimir en ZIP (Windows)
       run: Compress-Archive -Path "dist/ControlFlota" -DestinationPath "dist/ControlFlota-Windows.zip" -Force
 
@@ -71,9 +108,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: windows
-        path: |
-          dist/Instalador.ControlFlota.exe
-          dist/ControlFlota-Windows.zip
+        path: dist/ControlFlota-Windows.zip
 
   # ===================== macOS =====================
   build-mac:
@@ -178,6 +213,5 @@ jobs:
         files: |
           release-assets/*.zip
           release-assets/*.dmg
-          release-assets/*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
