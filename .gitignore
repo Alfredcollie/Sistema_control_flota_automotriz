@@ -1,5 +1,6 @@
 # Credenciales locales de Supabase (NO subir a git)
 config_db.json
+config_licencia.json
 
 # Caché de Python
 __pycache__/

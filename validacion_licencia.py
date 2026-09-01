@@ -24,23 +24,22 @@ except Exception:
 # La CONTRASEÑA se resuelve por prioridad:
 #   1) Llavero del sistema (servicio "ControlFlotaLicencias")
 #   2) Variable de entorno SUPABASE_LIC_DB_PASSWORD
-#   3) Respaldo fijo (SUPABASE_PASSWORD) para que la validación
-#      funcione en TODAS las máquinas sin configuración extra.
-# NOTA: como la validación corre en el equipo del CLIENTE, esta
-# contraseña se distribuye con la app. Para protegerla de verdad
-# hay que mover la validación a un API en servidor.
+#   3) Archivo config_licencia.json (inyectado al compilar)
+# Ya NO va en el código.
+# NOTA: como la validación corre en el equipo del CLIENTE, la
+# contraseña viaja dentro de la app compilada. Para protegerla de
+# verdad hay que mover la validación a un API en servidor.
 # =========================================================
 SUPABASE_HOST = "aws-1-us-west-2.pooler.supabase.com"
 SUPABASE_DB_NAME = "postgres"
 SUPABASE_USER = "postgres.nqjfptmupnrkmgvnbyly"
 SUPABASE_PORT = "6543"
 SERVICE_NAME = "ControlFlotaLicencias"
-SUPABASE_PASSWORD = "Ve-10339092"
 
 
 def _password_licencia():
     """Contraseña de la base de licencias.
-    Prioridad: llavero -> variable de entorno -> respaldo fijo (distribuido)."""
+    Prioridad: llavero -> variable de entorno -> config_licencia.json."""
     try:
         pw = keyring.get_password(SERVICE_NAME, "SUPABASE_DB_PASSWORD")
         if pw:
@@ -50,7 +49,21 @@ def _password_licencia():
     env_pw = os.environ.get("SUPABASE_LIC_DB_PASSWORD", "").strip()
     if env_pw:
         return env_pw
-    return SUPABASE_PASSWORD
+    # 3) Archivo inyectado en la compilación (config_licencia.json)
+    try:
+        base = (
+            os.path.dirname(sys.executable)
+            if getattr(sys, "frozen", False)
+            else os.path.dirname(os.path.abspath(__file__))
+        )
+        ruta = os.path.join(base, "config_licencia.json")
+        if os.path.exists(ruta):
+            import json
+            with open(ruta, "r", encoding="utf-8") as f:
+                return json.load(f).get("password", "")
+    except Exception:
+        pass
+    return ""
 
 # =========================================================
 # 🚀 IDENTIFICADOR DEL SOFTWARE
@@ -118,7 +131,7 @@ def consultar_licencia_supabase(hwid):
     try:
         password = _password_licencia()
         if not password:
-            return False, "Error: contraseña de licencias no configurada. Defina SUPABASE_LIC_DB_PASSWORD o guarde la credencial en el llavero."
+            return False, "Error: contraseña de licencias no configurada. Defina SUPABASE_LIC_DB_PASSWORD, guarde la credencial en el llavero o incluya config_licencia.json."
         base = dict(
             dbname=SUPABASE_DB_NAME,
             user=SUPABASE_USER,
