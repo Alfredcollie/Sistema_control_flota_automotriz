@@ -131,7 +131,14 @@ def consultar_licencia_supabase(hwid):
     try:
         password = _password_licencia()
         if not password:
-            return False, "Error: contraseña de licencias no configurada. Defina SUPABASE_LIC_DB_PASSWORD, guarde la credencial en el llavero o incluya config_licencia.json."
+            base_ruta = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+            ruta_lic = os.path.join(base_ruta, "config_licencia.json")
+            return False, (
+                "Error: contraseña de licencias no configurada.\n\n"
+                f"Carpeta de búsqueda: {base_ruta}\n"
+                f"config_licencia.json existe: {os.path.exists(ruta_lic)}\n"
+                f"config_db.json existe: {os.path.exists(os.path.join(base_ruta, 'config_db.json'))}"
+            )
         base = dict(
             dbname=SUPABASE_DB_NAME,
             user=SUPABASE_USER,
