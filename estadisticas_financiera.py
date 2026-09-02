@@ -403,6 +403,68 @@ class EstadisticasFinancieraApp:
                 pass
         return None
 
+    def _normalizar_txt(self, valor):
+        """Normaliza texto para comparaciones: sin espacios y en mayúsculas."""
+        if valor is None:
+            return ""
+        return str(valor).strip().upper()
+
+    def _extraer_placa(self, seleccion):
+        """Si el valor viene del tipo 'PLACA | MARCA', devuelve la PLACA."""
+        if not seleccion:
+            return None
+        if "|" in seleccion:
+            return seleccion.split("|", 1)[0].strip()
+        return None
+
+    def _clientes_de_vehiculo(self, cursor, placa):
+        """Devuelve el conjunto de nombres de clientes asociados a la placa."""
+        nombres = set()
+        if not placa:
+            return nombres
+        try:
+            cursor.execute("SELECT id FROM flota_vehiculos WHERE placa = %s", (placa,))
+            fila = cursor.fetchone()
+            if not fila:
+                return nombres
+            vid = fila[0]
+            cursor.execute("SELECT id_cliente FROM clientes_unidades WHERE id_vehiculo = %s", (vid,))
+            ids = [r[0] for r in cursor.fetchall() if r[0]]
+            if not ids:
+                return nombres
+            cursor.execute("SELECT nombre_empresa FROM clientes WHERE id = ANY(%s)", (ids,))
+            for r in cursor.fetchall():
+                if r[0]:
+                    nombres.add(self._normalizar_txt(r[0]))
+        except Exception:
+            pass
+        return nombres
+
+    def _coincide_vehiculo(self, cliente_factura, descripcion, evento, seleccion, placa_filtro=None, placa_norm="", clientes_de_placa=None):
+        """Filtra la factura por vehículo (PLACA) o por cliente (nombre)."""
+        if seleccion == "Todos los Vehículos / Clientes":
+            return True
+        cliente_norm = self._normalizar_txt(cliente_factura)
+
+        if placa_filtro:
+            # Filtro por vehículo: coincidir si la PLACA aparece en el cliente,
+            # descripción o evento asociado, o si el cliente está asignado al vehículo.
+            campos = [cliente_norm, self._normalizar_txt(descripcion), self._normalizar_txt(evento)]
+            if placa_norm and any(placa_norm in c for c in campos):
+                return True
+            if clientes_de_placa and cliente_norm in clientes_de_placa:
+                return True
+            return cliente_norm == self._normalizar_txt(seleccion)
+
+        # Filtro por cliente (nombre libre de la lista)
+        return cliente_norm == self._normalizar_txt(seleccion)
+
+    def _mismo_banco(self, valor_db, filtro):
+        """Compara la cuenta/banco guardado con el filtro seleccionado (insensible a espacios/mayúsculas)."""
+        if filtro == "Todas las Cuentas":
+            return True
+        return self._normalizar_txt(valor_db) == self._normalizar_txt(filtro)
+
     def exportar_excel(self):
         try:
             import pandas as pd
@@ -508,7 +570,7 @@ class EstadisticasFinancieraApp:
                 try:
                     cursor.execute("SELECT id_factura, monto_pagado, fecha_pago, cuenta_destino FROM pagos_clientes")
                     for fk, m, f, cuenta_dest in cursor.fetchall():
-                        if banco_seleccionado != "Todas las Cuentas" and str(cuenta_dest) != banco_seleccionado:
+                        if not self._mismo_banco(cuenta_dest, banco_seleccionado):
                             continue
                         pagos_clientes_dict.setdefault(fk, []).append((m, f))
                 except Exception: conn.rollback()
@@ -517,7 +579,7 @@ class EstadisticasFinancieraApp:
                 try:
                     cursor.execute("SELECT id_factura, monto_pagado, fecha_pago, cuenta_origen FROM pagos_comprobantes")
                     for fk, m, f, cuenta_ori in cursor.fetchall():
-                        if banco_seleccionado != "Todas las Cuentas" and str(cuenta_ori) != banco_seleccionado:
+                        if not self._mismo_banco(cuenta_ori, banco_seleccionado):
                             continue
                         pagos_proveedores_dict.setdefault(fk, []).append((m, f))
                 except Exception: conn.rollback()
@@ -535,18 +597,24 @@ class EstadisticasFinancieraApp:
                         return False
 
                 # --- ANÁLISIS DE VENTAS ---
-                cursor.execute("SELECT id, tipo_documento, total, det_monto, fecha, cliente, estado_sunat FROM facturas_emitidas")
+                # 🚀 FIX FILTRO POR VEHÍCULO: si se eligió un vehículo, preparamos la placa
+                # y los clientes asignados a esa placa para filtrar por PLACA.
+                placa_filtro = self._extraer_placa(cliente_seleccionado)
+                placa_norm = self._normalizar_txt(placa_filtro) if placa_filtro else ""
+                clientes_de_placa = self._clientes_de_vehiculo(cursor, placa_filtro) if placa_filtro else set()
+
+                cursor.execute("SELECT id, tipo_documento, total, det_monto, fecha, cliente, estado_sunat, descripcion, evento_asociado FROM facturas_emitidas")
                 facturas_ventas = cursor.fetchall()
                 
                 ventas_periodo = 0.0
                 cobrado_periodo = 0.0
                 por_cobrar_global = 0.0
                 
-                for v_id, v_tipo, v_tot, v_det, v_f, v_cliente, v_estado in facturas_ventas:
+                for v_id, v_tipo, v_tot, v_det, v_f, v_cliente, v_estado, v_desc, v_evento in facturas_ventas:
                     if v_estado and "Anulada" in str(v_estado):
                         continue
                         
-                    if cliente_seleccionado != "Todos los Vehículos / Clientes" and str(v_cliente) != cliente_seleccionado:
+                    if not self._coincide_vehiculo(v_cliente, v_desc, v_evento, cliente_seleccionado, placa_filtro, placa_norm, clientes_de_placa):
                         continue
 
                     t = float(v_tot) if v_tot else 0.0
