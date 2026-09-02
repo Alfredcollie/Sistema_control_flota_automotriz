@@ -58,6 +58,27 @@ jobs:
         }
         "@ | Out-File -FilePath "dist/ControlFlota/config_db.json" -Encoding utf8
 
+    - name: Validar secretos de licencia
+      shell: pwsh
+      run: |
+        if ([string]::IsNullOrEmpty("${{ secrets.SUPABASE_LIC_DB_PASSWORD }}")) {
+          Write-Error "FALTA el secreto SUPABASE_LIC_DB_PASSWORD. Crea los 5 secretos SUPABASE_LIC_DB_* en Settings -> Secrets -> Actions."
+          exit 1
+        }
+
+    - name: Inyectar credenciales de licencia (config_licencia.json)
+      shell: pwsh
+      run: |
+        @"
+        {
+          "host": "${{ secrets.SUPABASE_LIC_DB_HOST }}",
+          "port": "${{ secrets.SUPABASE_LIC_DB_PORT }}",
+          "dbname": "${{ secrets.SUPABASE_LIC_DB_NAME }}",
+          "user": "${{ secrets.SUPABASE_LIC_DB_USER }}",
+          "password": "${{ secrets.SUPABASE_LIC_DB_PASSWORD }}"
+        }
+        "@ | Out-File -FilePath "dist/ControlFlota/config_licencia.json" -Encoding utf8
+
     - name: Copiar config_local.json al build (Windows)
       run: Copy-Item -Path "config_local.json" -Destination "dist/ControlFlota/config_local.json" -Force
 
@@ -123,6 +144,25 @@ jobs:
           "dbname": "${{ secrets.SUPABASE_DB_NAME }}",
           "user": "${{ secrets.SUPABASE_DB_USER }}",
           "password": "${{ secrets.SUPABASE_DB_PASSWORD }}"
+        }
+        EOF
+
+    - name: Validar secretos de licencia
+      run: |
+        if [ -z "${{ secrets.SUPABASE_LIC_DB_PASSWORD }}" ]; then
+          echo "ERROR: FALTA el secreto SUPABASE_LIC_DB_PASSWORD. Crea los 5 secretos SUPABASE_LIC_DB_* en Settings -> Secrets -> Actions." >&2
+          exit 1
+        fi
+
+    - name: Inyectar credenciales de licencia (config_licencia.json)
+      run: |
+        cat > "dist/ControlFlota.app/Contents/MacOS/config_licencia.json" << 'EOF'
+        {
+          "host": "${{ secrets.SUPABASE_LIC_DB_HOST }}",
+          "port": "${{ secrets.SUPABASE_LIC_DB_PORT }}",
+          "dbname": "${{ secrets.SUPABASE_LIC_DB_NAME }}",
+          "user": "${{ secrets.SUPABASE_LIC_DB_USER }}",
+          "password": "${{ secrets.SUPABASE_LIC_DB_PASSWORD }}"
         }
         EOF
 
