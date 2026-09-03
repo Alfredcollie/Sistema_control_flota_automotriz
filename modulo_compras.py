@@ -118,6 +118,42 @@ def cargar_configuracion_regional():
 
 CONFIG_REGIONAL = cargar_configuracion_regional()
 
+# =========================================================
+# 🗓️ DESPLEGABLE DE MES PARA FILTRAR COMPRAS Y VENTAS
+# =========================================================
+NOMBRES_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+def construir_valores_mes():
+    """Opciones del desplegable: 'Todos los meses' + meses de años cercanos."""
+    hoy = datetime.now()
+    valores = ["Todos los meses"]
+    for anio in (hoy.year - 1, hoy.year, hoy.year + 1):
+        for nombre in NOMBRES_MESES:
+            valores.append(f"{nombre} {anio}")
+    return valores
+
+def mes_en_curso():
+    """Etiqueta del mes actual, usada como valor por defecto del desplegable."""
+    hoy = datetime.now()
+    return f"{NOMBRES_MESES[hoy.month - 1]} {hoy.year}"
+
+def patron_fecha_mes(etiqueta):
+    """Devuelve un patrón SQL LIKE para filtrar la columna 'fecha' por el mes indicado.
+    Retorna None para 'Todos los meses' o etiquetas inválidas."""
+    if not etiqueta or etiqueta == "Todos los meses":
+        return None
+    partes = etiqueta.strip().split()
+    if len(partes) < 2 or partes[0] not in NOMBRES_MESES:
+        return None
+    mes = NOMBRES_MESES.index(partes[0]) + 1
+    anio = partes[-1]
+    mes_str = f"{mes:02d}"
+    fmt = CONFIG_REGIONAL.get("formato_fecha", "DD/MM/AAAA")
+    if fmt == "MM/DD/AAAA":
+        return f"{mes_str}/%/{anio}"
+    return f"%/{mes_str}/{anio}"
+
 def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
@@ -267,6 +303,9 @@ class FacturasRecibidasTab:
         # VARIABLES DE PAGINACIÓN (LAZY LOADING)
         self.pagina_actual = 1
         self.registros_por_pagina = 50
+        
+        # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
+        self.mes_filtro = mes_en_curso()
         
         self.inicializar_bd()
         self.crear_interfaz()
@@ -698,6 +737,11 @@ class FacturasRecibidasTab:
         self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por N° Doc, proveedor, vehículo, concepto...")
         self.ent_buscar_facturas.pack(side="left", fill="x", expand=True)
         
+        ctk.CTkLabel(f_busqueda, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        self.combo_mes = ctk.CTkComboBox(f_busqueda, values=construir_valores_mes(), width=150, state="readonly", command=self.on_cambiar_mes)
+        self.combo_mes.pack(side="left", padx=(0, 5))
+        self.combo_mes.set(self.mes_filtro)
+        
         self.ent_buscar_facturas.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_facturas.bind("<Return>", lambda e: self.cargar_datos_tabla(reset_pagina=True))
 
@@ -778,6 +822,10 @@ class FacturasRecibidasTab:
 
         threading.Thread(target=self.sincronizar_tickets_pendientes_automatico, daemon=True).start()
         self.main_root.after(100, lambda: self.cargar_datos_tabla(reset_pagina=True))
+
+    def on_cambiar_mes(self, choice):
+        self.mes_filtro = choice
+        self.cargar_datos_tabla(reset_pagina=True)
 
     def pagina_anterior(self):
         if self.pagina_actual > 1:
@@ -1120,7 +1168,7 @@ class FacturasRecibidasTab:
             filtro = self.ent_buscar_facturas.get().strip().lower()
             
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-        clave_cache = f"compras_recibidas_{filtro}_pag_{self.pagina_actual}"
+        clave_cache = f"compras_recibidas_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1135,15 +1183,19 @@ class FacturasRecibidasTab:
                     cursor = conn.cursor()
                     query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc FROM facturas_recibidas"
                     
-                    if filtro == "":
-                        cursor.execute(f"{query_base} ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
-                    else:
+                    condiciones = []
+                    params = []
+                    if filtro:
                         val = f"%{filtro}%"
-                        cursor.execute(f"""
-                            {query_base} 
-                            WHERE numero_documento ILIKE %s OR proveedor ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s
-                            ORDER BY id DESC LIMIT %s OFFSET %s
-                        """, (val, val, val, val, self.registros_por_pagina, offset))
+                        condiciones.append("(numero_documento ILIKE %s OR proveedor ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s)")
+                        params.extend([val, val, val, val])
+                    patron_mes = patron_fecha_mes(self.mes_filtro)
+                    if patron_mes:
+                        condiciones.append("fecha LIKE %s")
+                        params.append(patron_mes)
+                    where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
+                    params.extend([self.registros_por_pagina, offset])
+                    cursor.execute(f"{query_base}{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params))
                         
                     datos_db = cursor.fetchall()
                     
@@ -1447,6 +1499,9 @@ class CuentasPorPagarTab:
         self.pagina_actual = 1
         self.registros_por_pagina = 50
         
+        # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
+        self.mes_filtro = mes_en_curso()
+        
         self.inicializar_entorno()
         self.crear_interfaz()
 
@@ -1494,6 +1549,11 @@ class CuentasPorPagarTab:
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
         self.ent_buscar_pagos = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por documento, proveedor, vehículo, concepto...")
         self.ent_buscar_pagos.pack(side="left", fill="x", expand=True)
+        
+        ctk.CTkLabel(f_busqueda, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        self.combo_mes = ctk.CTkComboBox(f_busqueda, values=construir_valores_mes(), width=150, state="readonly", command=self.on_cambiar_mes)
+        self.combo_mes.pack(side="left", padx=(0, 5))
+        self.combo_mes.set(self.mes_filtro)
         
         self.ent_buscar_pagos.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_pagos.bind("<Return>", lambda e: self.cargar_datos_pagar(reset_pagina=True))
@@ -1584,6 +1644,10 @@ class CuentasPorPagarTab:
 
         self.main_root.after(150, lambda: self.cargar_datos_pagar(reset_pagina=True))
 
+    def on_cambiar_mes(self, choice):
+        self.mes_filtro = choice
+        self.cargar_datos_pagar(reset_pagina=True)
+
     def pagina_anterior(self):
         if self.pagina_actual > 1:
             self.pagina_actual -= 1
@@ -1627,7 +1691,7 @@ class CuentasPorPagarTab:
             filtro = self.ent_buscar_pagos.get().strip().lower()
 
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-        clave_cache = f"pagos_compras_{filtro}_pag_{self.pagina_actual}"
+        clave_cache = f"pagos_compras_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1647,15 +1711,18 @@ class CuentasPorPagarTab:
                     cursor.execute("SELECT id_factura, COALESCE(SUM(monto_pagado), 0) FROM pagos_comprobantes GROUP BY id_factura")
                     mapa_pagos_totales = {r[0]: float(r[1]) for r in cursor.fetchall()}
                     
-                    if filtro == "":
-                        cursor.execute("SELECT id, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento FROM facturas_recibidas")
-                    else:
+                    condiciones = []
+                    params = []
+                    if filtro:
                         val = f"%{filtro}%"
-                        cursor.execute("""
-                            SELECT id, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento 
-                            FROM facturas_recibidas 
-                            WHERE numero_documento ILIKE %s OR proveedor ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s
-                        """, (val, val, val, val))
+                        condiciones.append("(numero_documento ILIKE %s OR proveedor ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s)")
+                        params.extend([val, val, val, val])
+                    patron_mes = patron_fecha_mes(self.mes_filtro)
+                    if patron_mes:
+                        condiciones.append("fecha LIKE %s")
+                        params.append(patron_mes)
+                    where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
+                    cursor.execute(f"SELECT id, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento FROM facturas_recibidas{where_sql}", tuple(params))
                         
                     for r_tot in cursor.fetchall():
                         id_f_tot, s_tot, i_tot, t_bruto_tot, d_tot, tipo_doc_tot = r_tot
@@ -1671,19 +1738,9 @@ class CuentasPorPagarTab:
                         m_cobrado = mapa_pagos_totales.get(id_f_tot, 0.0)
                         total_pendiente_global += max(0.0, neto_fac - m_cobrado)
 
-                    if filtro == "":
-                        cursor.execute("""
-                            SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc 
-                            FROM facturas_recibidas 
-                            ORDER BY id DESC LIMIT %s OFFSET %s
-                        """, (self.registros_por_pagina, offset))
-                    else:
-                        cursor.execute("""
-                            SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc 
-                            FROM facturas_recibidas 
-                            WHERE numero_documento ILIKE %s OR proveedor ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s
-                            ORDER BY id DESC LIMIT %s OFFSET %s
-                        """, (val, val, val, val, self.registros_por_pagina, offset))
+                    params_reg = list(params)
+                    params_reg.extend([self.registros_por_pagina, offset])
+                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc FROM facturas_recibidas{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params_reg))
                     registros = cursor.fetchall()
                     
                     ids_actuales = [r[0] for r in registros]

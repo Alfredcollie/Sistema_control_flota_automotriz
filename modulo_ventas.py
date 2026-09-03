@@ -97,6 +97,39 @@ def cargar_configuracion_regional():
 
 CONFIG_REGIONAL = cargar_configuracion_regional()
 
+# =========================================================
+# 🗓️ DESPLEGABLE DE MES PARA FILTRAR COMPRAS Y VENTAS
+# =========================================================
+def construir_valores_mes():
+    """Opciones del desplegable: 'Todos los meses' + meses de años cercanos."""
+    hoy = datetime.now()
+    valores = ["Todos los meses"]
+    for anio in (hoy.year - 1, hoy.year, hoy.year + 1):
+        for nombre in NOMBRES_MESES:
+            valores.append(f"{nombre} {anio}")
+    return valores
+
+def mes_en_curso():
+    """Etiqueta del mes actual, usada como valor por defecto del desplegable."""
+    hoy = datetime.now()
+    return f"{NOMBRES_MESES[hoy.month - 1]} {hoy.year}"
+
+def patron_fecha_mes(etiqueta):
+    """Devuelve un patrón SQL LIKE para filtrar la columna 'fecha' por el mes indicado.
+    Retorna None para 'Todos los meses' o etiquetas inválidas."""
+    if not etiqueta or etiqueta == "Todos los meses":
+        return None
+    partes = etiqueta.strip().split()
+    if len(partes) < 2 or partes[0] not in NOMBRES_MESES:
+        return None
+    mes = NOMBRES_MESES.index(partes[0]) + 1
+    anio = partes[-1]
+    mes_str = f"{mes:02d}"
+    fmt = CONFIG_REGIONAL.get("formato_fecha", "DD/MM/AAAA")
+    if fmt == "MM/DD/AAAA":
+        return f"{mes_str}/%/{anio}"
+    return f"%/{mes_str}/{anio}"
+
 def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
@@ -322,6 +355,9 @@ class FacturasEmitidasTab:
         # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
         self.registros_por_pagina = 50
+        
+        # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
+        self.mes_filtro = mes_en_curso()
         
         self.inicializar_bd()
         self.crear_interfaz()
@@ -617,6 +653,11 @@ class FacturasEmitidasTab:
         self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por N° Doc, cliente, concepto, fecha...")
         self.ent_buscar_facturas.pack(side="left", fill="x", expand=True)
         
+        ctk.CTkLabel(f_busqueda, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        self.combo_mes = ctk.CTkComboBox(f_busqueda, values=construir_valores_mes(), width=150, state="readonly", command=self.on_cambiar_mes)
+        self.combo_mes.pack(side="left", padx=(0, 5))
+        self.combo_mes.set(self.mes_filtro)
+        
         # 🚀 BÚSQUEDA ASÍNCRONA
         self.ent_buscar_facturas.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_facturas.bind("<Return>", lambda e: self.cargar_datos_tabla(reset_pagina=True))
@@ -670,6 +711,10 @@ class FacturasEmitidasTab:
         btn_gestionar.pack(side="right")
 
         self.main_root.after(100, lambda: self.cargar_datos_tabla(reset_pagina=True))
+
+    def on_cambiar_mes(self, choice):
+        self.mes_filtro = choice
+        self.cargar_datos_tabla(reset_pagina=True)
 
     def pagina_anterior(self):
         if self.pagina_actual > 1:
@@ -1082,7 +1127,7 @@ class FacturasEmitidasTab:
             filtro = self.ent_buscar_facturas.get().strip().lower()
             
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-        clave_cache = f"facturas_{filtro}_pag_{self.pagina_actual}"
+        clave_cache = f"facturas_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1097,15 +1142,19 @@ class FacturasEmitidasTab:
                     cursor = conn.cursor()
                     query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, cliente, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, enlace_pdf_sunat, estado_sunat FROM facturas_emitidas"
                     
-                    if filtro == "":
-                        cursor.execute(f"{query_base} ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
-                    else:
+                    condiciones = []
+                    params = []
+                    if filtro:
                         val = f"%{filtro}%"
-                        cursor.execute(f"""
-                            {query_base} 
-                            WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s 
-                            ORDER BY id DESC LIMIT %s OFFSET %s
-                        """, (val, val, val, self.registros_por_pagina, offset))
+                        condiciones.append("(numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s)")
+                        params.extend([val, val, val])
+                    patron_mes = patron_fecha_mes(self.mes_filtro)
+                    if patron_mes:
+                        condiciones.append("fecha LIKE %s")
+                        params.append(patron_mes)
+                    where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
+                    params.extend([self.registros_por_pagina, offset])
+                    cursor.execute(f"{query_base}{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params))
                     
                     datos_db = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_db)
@@ -1559,6 +1608,9 @@ class CuentasPorCobrarTab:
         self.pagina_actual = 1
         self.registros_por_pagina = 50
         
+        # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
+        self.mes_filtro = mes_en_curso()
+        
         self.inicializar_entorno()
         self.crear_interfaz()
 
@@ -1612,6 +1664,11 @@ class CuentasPorCobrarTab:
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
         self.ent_buscar_cobros = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por documento, cliente, concepto...")
         self.ent_buscar_cobros.pack(side="left", fill="x", expand=True)
+        
+        ctk.CTkLabel(f_busqueda, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        self.combo_mes = ctk.CTkComboBox(f_busqueda, values=construir_valores_mes(), width=150, state="readonly", command=self.on_cambiar_mes)
+        self.combo_mes.pack(side="left", padx=(0, 5))
+        self.combo_mes.set(self.mes_filtro)
         
         self.ent_buscar_cobros.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_cobros.bind("<Return>", lambda e: self.cargar_datos_cobrar(reset_pagina=True))
@@ -1691,6 +1748,10 @@ class CuentasPorCobrarTab:
 
         self.main_root.after(150, lambda: self.cargar_datos_cobrar(reset_pagina=True))
 
+    def on_cambiar_mes(self, choice):
+        self.mes_filtro = choice
+        self.cargar_datos_cobrar(reset_pagina=True)
+
     def pagina_anterior(self):
         if self.pagina_actual > 1:
             self.pagina_actual -= 1
@@ -1764,7 +1825,7 @@ class CuentasPorCobrarTab:
             filtro = self.ent_buscar_cobros.get().strip().lower()
 
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-        clave_cache = f"cobros_{filtro}_pag_{self.pagina_actual}"
+        clave_cache = f"cobros_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1785,24 +1846,25 @@ class CuentasPorCobrarTab:
                     cursor.execute("SELECT DISTINCT id_factura FROM pagos_clientes WHERE cuenta_destino IS NOT NULL AND cuenta_destino != ''")
                     facturas_con_cuenta = {row[0] for row in cursor.fetchall()}
 
-                    if filtro == "":
-                        cursor.execute("SELECT id, fecha, numero_documento, cliente, evento_asociado, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, descripcion, enlace_pdf_sunat, archivo_ruta, estado_sunat FROM facturas_emitidas ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
-                    else:
+                    condiciones = []
+                    params = []
+                    if filtro:
                         val = f"%{filtro}%"
-                        cursor.execute(f"""
-                            SELECT id, fecha, numero_documento, cliente, evento_asociado, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, descripcion, enlace_pdf_sunat, archivo_ruta, estado_sunat 
-                            FROM facturas_emitidas 
-                            WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s
-                            ORDER BY id DESC LIMIT %s OFFSET %s
-                        """, (val, val, val, self.registros_por_pagina, offset))
+                        condiciones.append("(numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s)")
+                        params.extend([val, val, val])
+                    patron_mes = patron_fecha_mes(self.mes_filtro)
+                    if patron_mes:
+                        condiciones.append("fecha LIKE %s")
+                        params.append(patron_mes)
+                    where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
+                    params_reg = list(params)
+                    params_reg.extend([self.registros_por_pagina, offset])
+                    cursor.execute(f"SELECT id, fecha, numero_documento, cliente, evento_asociado, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, descripcion, enlace_pdf_sunat, archivo_ruta, estado_sunat FROM facturas_emitidas{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params_reg))
                         
                     registros = cursor.fetchall()
                     
                     # Calcular el total global pendiente sin importar paginación (Solo para el Label inferior)
-                    if filtro == "":
-                        cursor.execute("SELECT id, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, estado_sunat FROM facturas_emitidas")
-                    else:
-                        cursor.execute("SELECT id, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, estado_sunat FROM facturas_emitidas WHERE numero_documento ILIKE %s OR cliente ILIKE %s OR descripcion ILIKE %s", (val, val, val))
+                    cursor.execute(f"SELECT id, subtotal, impuesto, COALESCE(det_monto, 0), total, tipo_documento, estado_sunat FROM facturas_emitidas{where_sql}", tuple(params))
                         
                     todos_los_regs = cursor.fetchall()
                     for r_tot in todos_los_regs:
@@ -2381,6 +2443,9 @@ class NotasCreditoTab:
         self.pagina_actual = 1
         self.registros_por_pagina = 50
         
+        # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
+        self.mes_filtro = mes_en_curso()
+        
         self.crear_interfaz()
 
     def importar_nc_sire(self):
@@ -2498,6 +2563,11 @@ class NotasCreditoTab:
         self.ent_buscar_nc = ctk.CTkEntry(f_top, placeholder_text="Filtrar por documento, cliente...")
         self.ent_buscar_nc.pack(side="left", fill="x", expand=True, padx=5)
         
+        ctk.CTkLabel(f_top, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        self.combo_mes = ctk.CTkComboBox(f_top, values=construir_valores_mes(), width=150, state="readonly", command=self.on_cambiar_mes)
+        self.combo_mes.pack(side="left", padx=(0, 5))
+        self.combo_mes.set(self.mes_filtro)
+        
         self.ent_buscar_nc.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_nc.bind("<Return>", lambda e: self.cargar_datos_nc(reset_pagina=True))
 
@@ -2555,6 +2625,10 @@ class NotasCreditoTab:
 
         self.main_root.after(250, lambda: self.cargar_datos_nc(reset_pagina=True))
 
+    def on_cambiar_mes(self, choice):
+        self.mes_filtro = choice
+        self.cargar_datos_nc(reset_pagina=True)
+
     def pagina_anterior(self):
         if self.pagina_actual > 1:
             self.pagina_actual -= 1
@@ -2585,7 +2659,7 @@ class NotasCreditoTab:
             filtro = self.ent_buscar_nc.get().strip().lower()
 
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
-        clave_cache = f"notas_credito_{filtro}_pag_{self.pagina_actual}"
+        clave_cache = f"notas_credito_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -2598,16 +2672,19 @@ class NotasCreditoTab:
                 if not conn: return
                 try:
                     cursor = conn.cursor()
-                    if filtro == "":
-                        cursor.execute("SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), estado_sunat, enlace_pdf_nc, tipo_documento FROM facturas_emitidas WHERE estado_sunat LIKE '%Anulada%' ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
-                    else:
+                    condiciones = ["estado_sunat LIKE %s"]
+                    params = ["%Anulada%"]
+                    if filtro:
                         val = f"%{filtro}%"
-                        cursor.execute(f"""
-                            SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), estado_sunat, enlace_pdf_nc, tipo_documento 
-                            FROM facturas_emitidas 
-                            WHERE estado_sunat LIKE '%%Anulada%%' AND (numero_documento ILIKE %s OR cliente ILIKE %s)
-                            ORDER BY id DESC LIMIT %s OFFSET %s
-                        """, (val, val, self.registros_por_pagina, offset))
+                        condiciones.append("(numero_documento ILIKE %s OR cliente ILIKE %s)")
+                        params.extend([val, val])
+                    patron_mes = patron_fecha_mes(self.mes_filtro)
+                    if patron_mes:
+                        condiciones.append("fecha LIKE %s")
+                        params.append(patron_mes)
+                    where_sql = " WHERE " + " AND ".join(condiciones)
+                    params.extend([self.registros_por_pagina, offset])
+                    cursor.execute(f"SELECT id, fecha, numero_documento, cliente, total, COALESCE(det_monto, 0), estado_sunat, enlace_pdf_nc, tipo_documento FROM facturas_emitidas{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params))
                         
                     datos_db = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_db)
