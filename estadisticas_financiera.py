@@ -371,7 +371,21 @@ class EstadisticasFinancieraApp:
                             nom = str(r[0]).strip()
                             if nom not in clis:
                                 clis.append(nom)
-                                
+
+                        # 🚀 FIX FILTRO POR VEHÍCULO: las compras (p. ej. combustible por vehículo)
+                        # guardan la placa en 'evento_asociado'. Añadimos esas placas al desplegable
+                        # para poder filtrar por ellas aunque no estén en flota_vehiculos.
+                        try:
+                            cursor.execute("SELECT DISTINCT evento_asociado FROM facturas_recibidas WHERE evento_asociado IS NOT NULL AND evento_asociado != '' ORDER BY evento_asociado")
+                            placas_compra = [str(r[0]).strip() for r in cursor.fetchall() if str(r[0]).strip()]
+                            placas_existentes = {c.split("|", 1)[0].strip().upper() for c in clis if "|" in c}
+                            for placa in placas_compra:
+                                if placa.upper() not in placas_existentes:
+                                    clis.append(f"{placa} | Vehículo")
+                                    placas_existentes.add(placa.upper())
+                        except Exception:
+                            conn.rollback()
+
                         cache_sistema.guardar('lista_clientes_flota_combobox', clis)
                         
                         # Extraer proveedores
@@ -638,15 +652,25 @@ class EstadisticasFinancieraApp:
                         por_cobrar_global += saldo_pendiente
 
                 # --- ANÁLISIS DE COMPRAS ---
-                cursor.execute("SELECT id, tipo_documento, total, impuesto, det_monto, fecha, proveedor FROM facturas_recibidas")
+                cursor.execute("SELECT id, tipo_documento, total, impuesto, det_monto, fecha, proveedor, evento_asociado, descripcion FROM facturas_recibidas")
                 facturas_compras = cursor.fetchall()
                 
                 compras_periodo = 0.0
                 pagado_periodo = 0.0
                 por_pagar_global = 0.0
                 
-                for c_id, c_tipo, c_tot, c_imp, c_det, c_f, c_proveedor in facturas_compras:
+                for c_id, c_tipo, c_tot, c_imp, c_det, c_f, c_proveedor, c_evento, c_desc in facturas_compras:
                     if proveedor_seleccionado != "Todos los Proveedores" and str(c_proveedor) != proveedor_seleccionado:
+                        continue
+
+                    # 🚀 FIX FILTRO POR VEHÍCULO: las compras (p. ej. combustible) guardan
+                    # la placa en 'evento_asociado'; filtramos por PLACA cuando se eligió un vehículo.
+                    if placa_filtro and not self._coincide_vehiculo(c_evento, c_desc, c_evento, cliente_seleccionado, placa_filtro, placa_norm, clientes_de_placa):
+                        continue
+
+                    # 🚀 FIX FILTRO POR BANCO/CUENTA: al elegir una cuenta, restringimos las
+                    # compras a las que tienen al menos un pago desde esa cuenta.
+                    if banco_seleccionado != "Todas las Cuentas" and c_id not in pagos_proveedores_dict:
                         continue
 
                     tipo = str(c_tipo) if c_tipo else ""
