@@ -390,6 +390,7 @@ class ChoferesApp:
                 
                 frame_fila.destroy()
                 self.actualizar_botones_docs()
+                self._mostrar_foto_carnet()
                 if not {**self.rutas_documentos_db, **self.rutas_documentos_temp}:
                     v_gestor.destroy()
 
@@ -404,6 +405,130 @@ class ChoferesApp:
             
             btn_ver = ctk.CTkButton(f_row, text="👁️ Ver", width=60, fg_color="#34495e", hover_color="#2c3e50", command=lambda p=path: abrir_documento_local(p))
             btn_ver.pack(side="right", padx=5)
+
+    # =========================================================
+    # 🚀 FOTO CARNET DEL CHOFER (carga en la parte superior)
+    # =========================================================
+    def _ruta_foto_carnet(self):
+        """Devuelve la ruta vigente de la foto carnet (temp -> base de datos)."""
+        temp = self.rutas_documentos_temp.get("Foto Carnet")
+        if temp:
+            return temp
+        return self.rutas_documentos_db.get("Foto Carnet", "")
+
+    def cargar_foto_carnet(self):
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar Foto Carnet del Chofer",
+            filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp"), ("Todos los Archivos", "*.*")]
+        )
+        if not ruta:
+            return
+        self.rutas_documentos_temp["Foto Carnet"] = ruta
+        self._mostrar_foto_carnet()
+        self.actualizar_botones_docs()
+
+    def quitar_foto_carnet(self):
+        self.rutas_documentos_temp.pop("Foto Carnet", None)
+        self.rutas_documentos_db.pop("Foto Carnet", None)
+        self._mostrar_foto_carnet()
+        self.actualizar_botones_docs()
+
+    def _mostrar_foto_carnet(self):
+        """Muestra la foto carnet en el recuadro superior (o el estado SIN FOTO)."""
+        lbl = getattr(self, "lbl_foto", None)
+        if lbl is None:
+            return
+        ruta = self._ruta_foto_carnet()
+        if not ruta or not os.path.exists(os.path.normpath(ruta)):
+            self._img_foto_ctk = None
+            lbl.configure(image=None, text="SIN FOTO\nCarga la foto carnet del chofer")
+            return
+        try:
+            from PIL import Image as PILImage
+            img = PILImage.open(ruta)
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            ancho_max, alto_max = 195, 120
+            iw, ih = img.size
+            escala = min(ancho_max / float(iw), alto_max / float(ih))
+            nw, nh = max(1, int(iw * escala)), max(1, int(ih * escala))
+            self._img_foto_ctk = ctk.CTkImage(light_image=img, dark_image=img, size=(nw, nh))
+            lbl.configure(image=self._img_foto_ctk, text="")
+        except Exception as e:
+            print("Error mostrando foto carnet:", e)
+            lbl.configure(image=None, text="FOTO NO VÁLIDA")
+
+    # =========================================================
+    # 🚀 FICHA PDF DE CHOFERES (LLENADO MASIVO) - sin logística ni seguros
+    # =========================================================
+    def generar_ficha_pdf_chofer(self):
+        try:
+            from crear_ficha_chofer_pdf import generar_ficha_chofer_pdf
+            ruta = generar_ficha_chofer_pdf()
+        except ImportError:
+            messagebox.showerror("Librería Faltante", "Para generar la Ficha PDF ejecute en su consola:\npip install reportlab")
+            return
+        except Exception as e:
+            messagebox.showerror("Error de Generación", f"No se pudo generar la Ficha PDF:\n\n{e}")
+            return
+        if messagebox.askyesno("Ficha Generada", f"Ficha PDF del chofer creada correctamente:\n{ruta}\n\n¿Deseas abrirla ahora?"):
+            abrir_documento_local(ruta)
+
+    def ejecutar_importacion_ficha_pdf(self):
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            messagebox.showerror("Librería Faltante", "Para activar el lector de Fichas PDF, ejecute en su consola:\npip install pypdf")
+            return
+
+        archivo_pdf = filedialog.askopenfilename(
+            title="Seleccionar Ficha PDF de Chofer",
+            filetypes=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")]
+        )
+        if not archivo_pdf:
+            return
+
+        try:
+            reader = PdfReader(archivo_pdf)
+            fields = reader.get_fields()
+            if not fields:
+                messagebox.showwarning("PDF Inválido", "El archivo PDF no contiene un formulario interactivo."); return
+
+            dni = fields.get("dni", {}).get("/V", "").strip()
+            nombres = fields.get("nombres", {}).get("/V", "").strip()
+            ruc = fields.get("ruc", {}).get("/V", "").strip()
+            direccion = fields.get("direccion", {}).get("/V", "").strip()
+            fec_nac = fields.get("fecha_nacimiento", {}).get("/V", "").strip()
+            sexo = fields.get("sexo", {}).get("/V", "").strip()
+            hijos = fields.get("numero_hijos", {}).get("/V", "").strip()
+            telefono = fields.get("telefono", {}).get("/V", "").strip()
+            correo = fields.get("correo", {}).get("/V", "").strip()
+            estado = fields.get("estado_laboral", {}).get("/V", "").strip()
+            licencia = fields.get("licencia", {}).get("/V", "").strip()
+            categoria = fields.get("categoria_licencia", {}).get("/V", "").strip()
+            venc_licencia = fields.get("venc_licencia", {}).get("/V", "").strip()
+
+            # NOTA: la ficha NO trae logística ni seguros (móvil / seguros salud-vida)
+            self.limpiar_formulario()
+            self.ent_dni.insert(0, dni)
+            self.ent_nombres.insert(0, nombres)
+            self.ent_ruc.insert(0, ruc)
+            self.ent_direccion.insert(0, direccion)
+            self.ent_fec_nac.insert(0, fec_nac)
+            if sexo in ("Masculino", "Femenino", "Otro"):
+                self.cmb_sexo.set(sexo)
+            self.ent_hijos.insert(0, hijos)
+            self.ent_telefono.insert(0, telefono)
+            self.ent_correo.insert(0, correo)
+            if estado in ("Activo", "Inactivo", "Suspendido"):
+                self.cmb_estado.set(estado)
+            self.ent_licencia.insert(0, licencia)
+            self.ent_cat_licencia.insert(0, categoria)
+            self.ent_venc_licencia.insert(0, venc_licencia)
+
+            messagebox.showinfo("Ficha Importada", "¡Datos extraídos del PDF!\nRevisa el formulario y dale a guardar.")
+        except Exception as e:
+            messagebox.showerror("Error de Lectura", f"No se pudo procesar el PDF:\n\n{e}")
 
     def crear_interfaz(self):
         for widget in self.parent_frame.winfo_children(): widget.destroy()
@@ -433,8 +558,22 @@ class ChoferesApp:
             ctk.CTkButton(f_fec, text="📅", width=35, fg_color="#1f538d", command=lambda: CalendarioNativo(self.parent_frame.winfo_toplevel(), ent)).pack(side="right", padx=(5, 0))
             return ent
 
+        # --- FOTO CARNET DEL CHOFER (PARTE SUPERIOR DEL FORMULARIO) ---
+        ctk.CTkLabel(self.f_form, text="📷 Foto Carnet del Chofer", font=("Arial", 14, "bold")).pack(pady=(15, 8))
+        f_foto = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_foto.pack(fill="x", padx=10, pady=(0, 5))
+        self.lbl_foto = ctk.CTkLabel(f_foto, text="SIN FOTO\nCarga la foto carnet del chofer", width=200, height=125,
+                                     corner_radius=8, fg_color="#e9ecef", text_color="#6c757d",
+                                     font=("Arial", 10, "bold"), justify="center")
+        self.lbl_foto.pack(fill="x")
+        self._img_foto_ctk = None
+        f_foto_btns = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_foto_btns.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(f_foto_btns, text="📷 Cargar Foto", font=("Arial", 11, "bold"), fg_color="#1f538d", hover_color="#163b65", command=self.cargar_foto_carnet).pack(side="left", expand=True, fill="x", padx=(0, 5))
+        ctk.CTkButton(f_foto_btns, text="✖ Quitar Foto", font=("Arial", 11, "bold"), fg_color="#e74c3c", hover_color="#c0392b", command=self.quitar_foto_carnet).pack(side="right", expand=True, fill="x", padx=(5, 0))
+
         # --- Datos Personales ---
-        ctk.CTkLabel(self.f_form, text="Datos Personales", font=("Arial", 14, "bold")).pack(pady=(15, 10))
+        ctk.CTkLabel(self.f_form, text="Datos Personales", font=("Arial", 14, "bold")).pack(pady=(5, 10))
         self.ent_dni = crear_campo("DNI: *", "Ej: 12345678")
         
         self.ent_ruc = crear_campo("RUC (Enter para auto-completar):", "Ej: 10123456789")
@@ -490,13 +629,22 @@ class ChoferesApp:
         self.btn_ver_docs = ctk.CTkButton(f_docs, text="👁️ Gestionar Docs.", font=("Arial", 11, "bold"), fg_color="#7f8c8d", command=self.gestionar_documentos, state="disabled")
         self.btn_ver_docs.pack(side="right", expand=True, fill="x", padx=(5, 0))
 
+        # --- FICHA PDF DEL CHOFER (LLENADO MASIVO) ---
+        ctk.CTkLabel(self.f_form, text="--- Ficha PDF del Chofer (llenado masivo) ---", font=("Arial", 11, "bold"), text_color="#1e8449").pack(anchor="w", padx=10, pady=(5,5))
+        f_pdf = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_pdf.pack(fill="x", padx=10, pady=(0, 15))
+        self.btn_crear_ficha = ctk.CTkButton(f_pdf, text="📄 Crear Ficha PDF", font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50", command=self.generar_ficha_pdf_chofer)
+        self.btn_crear_ficha.pack(side="left", expand=True, fill="x", padx=(0, 5))
+        self.btn_importar_ficha = ctk.CTkButton(f_pdf, text="📥 Cargar Ficha PDF", font=("Arial", 11, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=self.ejecutar_importacion_ficha_pdf)
+        self.btn_importar_ficha.pack(side="right", expand=True, fill="x", padx=(5, 0))
+
         f_btns = ctk.CTkFrame(self.f_form, fg_color="transparent")
         f_btns.pack(fill="x", padx=10, pady=(10, 20))
         
         self.btn_guardar = ctk.CTkButton(f_btns, text="💾 Guardar Nuevo", fg_color="#27ae60", hover_color="#1e8449", font=("Arial", 12, "bold"), command=self.guardar_chofer)
         self.btn_guardar.pack(side="left", expand=True, fill="x", padx=(0, 5))
         
-        btn_limpiar = ctk.CTkButton(f_btns, text="🔄 Limpiar", fg_color="#7f8c8d", hover_color="#606b6b", font=("Arial", 12, "bold"), command=self.limpiar_formulario)
+        btn_limpiar = ctk.CTkButton(f_btns, text="🔄 Limpiar", fg_color="#7f8c8d", hover_color="#606b6b", font=("Arial", 12, "bold"), command=self.limpiar_y_recargar_vista)
         btn_limpiar.pack(side="right", expand=True, fill="x", padx=(5, 0))
 
         # PANEL DERECHO: TABLA
@@ -603,7 +751,24 @@ class ChoferesApp:
         
         self.rutas_documentos_temp = {}
         self.rutas_documentos_db = {}
+        self._mostrar_foto_carnet()
         self.actualizar_botones_docs()
+
+    # 🚀 RECARGA COMPLETA DE LA VENTANA DEL MÓDULO (como al volver a entrar)
+    def recargar_interfaz(self):
+        """Reconstruye toda la vista del módulo para poder seguir registrando/editando."""
+        try:
+            self.id_edicion = None
+            self.rutas_documentos_temp = {}
+            self.rutas_documentos_db = {}
+            self._img_foto_ctk = None
+            self.crear_interfaz()
+        except Exception as e:
+            print("Error recargando interfaz:", e)
+
+    def limpiar_y_recargar_vista(self):
+        """Botón Limpiar: reinicia el estado y recarga la ventana de inmediato."""
+        self.recargar_interfaz()
 
     # 🚀 FIX: CARGA LAZY LOADING + CACHÉ
     def cargar_datos(self, reset_pagina=False):
@@ -774,8 +939,8 @@ class ChoferesApp:
 
             conn.commit()
             cache_sistema.invalidar() # 🚀 FIX: Borrar caché
-            self.limpiar_formulario()
-            self.cargar_datos(reset_pagina=True)
+            # 🚀 RECARGA COMPLETA: la vista se reconstruye para poder seguir registrando/editando
+            self.parent_frame.after(150, self.recargar_interfaz)
         except Exception as e:
             conn.rollback()
             messagebox.showerror("Error", str(e))
@@ -834,6 +999,7 @@ class ChoferesApp:
                         self.rutas_documentos_db = {}
 
                 self.actualizar_botones_docs()
+                self._mostrar_foto_carnet()
                     
         except Exception as e:
             print("Error cargando edición:", e)
