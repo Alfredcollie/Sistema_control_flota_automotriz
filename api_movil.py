@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 import base64
 import os
 import json
@@ -165,6 +165,50 @@ async def subir_ticket_grifo(
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         liberar_conexion(conn)
+
+
+@app.post("/registrar-inspeccion/")
+async def registrar_inspeccion(request: Request):
+    """Recibe una inspección vehicular (JSON con fotos/firmas en base64) y la guarda en Supabase."""
+    datos = await request.json()
+    conn = conectar_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
+
+    try:
+        cursor = conn.cursor()
+        # Asegura la existencia de la tabla (también puedes ejecutar inspeccion_vehicular.sql).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inspecciones (
+                id SERIAL PRIMARY KEY,
+                placa TEXT,
+                chofer TEXT,
+                inspector TEXT,
+                fecha_hora TEXT,
+                payload TEXT,
+                creado_en TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        conn.commit()
+
+        cursor.execute("""
+            INSERT INTO inspecciones (placa, chofer, inspector, fecha_hora, payload)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (
+            datos.get("placa"),
+            datos.get("chofer"),
+            datos.get("inspector"),
+            datos.get("fecha_hora"),
+            json.dumps(datos, ensure_ascii=False),
+        ))
+        conn.commit()
+        return {"status": "success", "mensaje": "Inspección registrada correctamente."}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        liberar_conexion(conn)
+
 
 if __name__ == "__main__":
     import uvicorn

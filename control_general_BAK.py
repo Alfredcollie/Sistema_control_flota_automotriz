@@ -433,8 +433,7 @@ class ControlGeneralEventos:
             "dashboard": "📈 Dashboard Gerencial",
             "configuracion": "⚙️ Configuración General",
             "usuarios": "🛠️ Configurar Usuarios",
-            "bitacora": "📜 Bitácora de Auditoría",
-            "inspeccion_vehicular": "🔍 Inspección Vehicular"
+            "bitacora": "📜 Bitácora de Auditoría"
         }
         self.funciones_modulos = {
             "clientes": self.abrir_modulo_clientes,
@@ -453,8 +452,7 @@ class ControlGeneralEventos:
             "dashboard": self.abrir_estadisticas_financiera,
             "configuracion": self.abrir_configuracion_general,
             "usuarios": self.abrir_gestion_usuarios,
-            "bitacora": self.abrir_modulo_bitacora,
-            "inspeccion_vehicular": self.abrir_modulo_inspeccion_vehicular
+            "bitacora": self.abrir_modulo_bitacora
         }
         self.root.withdraw()
         self.abrir_ventana_login()
@@ -1105,17 +1103,6 @@ class ControlGeneralEventos:
             importlib.reload(choferes)
             app = choferes.ChoferesApp(self.contenedor_central, self.usuario_activo)
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Padrón de Choferes:\n{e}")
-
-    def abrir_modulo_inspeccion_vehicular(self):
-        if not self.tiene_permiso("inspeccion_vehicular"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
-            import inspeccion_vehicular
-            importlib.reload(inspeccion_vehicular)
-            inspeccion_vehicular.InspeccionVehicularApp(self.contenedor_central, self.usuario_activo)
-            registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
-                                "Accedió al módulo de Inspección Vehicular")
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Inspección Vehicular:\n{e}")
 
     # =======================================================
     # CONFIGURACIÓN GENERAL (CROSS-PLATFORM)
