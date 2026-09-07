@@ -9,6 +9,7 @@ INSPECCION_VEHICULAR.PY - Módulo de recepción de Inspecciones Vehiculares.
 import os
 import sys
 import subprocess
+import shutil
 import json
 import base64
 import io
@@ -189,30 +190,84 @@ class InspeccionVehicularApp:
         n_danos = len(datos.get("danos") or [])
         return placa, chofer, fecha, n_danos
 
-    def cargar_inspecciones(self):
-        self.registros = []
-        self.registros_principal = []
+    def _consultar_inspecciones(self):
+        """Consulta TODAS las inspecciones directamente en Supabase (sin caché)."""
         conn = conectar_db()
         if not conn:
             messagebox.showerror("Sin conexión", "No se pudo conectar a la base de datos.")
-            return
+            return []
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM inspecciones ORDER BY fecha_hora DESC, id DESC")
             cols = [d[0] for d in cursor.description]
-            vistos = set()
-            for row in cursor.fetchall():
-                reg = dict(zip(cols, row))
-                self.registros.append(reg)
-                placa, _, _, _ = self._resumen_reg(reg)
-                if placa in vistos:
-                    continue
-                vistos.add(placa)
-                self.registros_principal.append(reg)
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
         except Exception as e:
             messagebox.showerror("Error", "No se pudieron cargar las inspecciones:\n" + str(e))
+            return []
         finally:
             liberar_conexion(conn)
+
+    def _cargar_inspecciones_locales(self):
+        """Lee las inspecciones YA descargadas en la carpeta local 'Inspecciones'.
+        Estas copias NO se borran nunca: son las que quedan en el escritorio."""
+        registros = []
+        carpeta = os.path.join(_carpeta_archivos(), "Inspecciones")
+        if not os.path.isdir(carpeta):
+            return registros
+        try:
+            for nombre in sorted(os.listdir(carpeta), reverse=True):
+                sub = os.path.join(carpeta, nombre)
+                if not os.path.isdir(sub):
+                    continue
+                partes = str(nombre).rsplit("_", 1)
+                id_reg = partes[1] if len(partes) > 1 else ""
+                datos = None
+                for archivo in os.listdir(sub):
+                    if archivo.lower().endswith(".json"):
+                        try:
+                            with open(os.path.join(sub, archivo), "r", encoding="utf-8") as f:
+                                datos = json.load(f)
+                        except Exception:
+                            datos = None
+                        break
+                if not datos:
+                    continue
+                registros.append({
+                    "id": id_reg if id_reg not in ("", None) else datos.get("id", ""),
+                    "placa": datos.get("placa", ""),
+                    "chofer": datos.get("chofer", ""),
+                    "fecha_hora": datos.get("fecha_hora", ""),
+                    "payload": datos,
+                    "_local": True,
+                    "_carpeta": sub,
+                })
+        except Exception:
+            return registros
+        return registros
+
+    def cargar_inspecciones(self):
+        self.registros = []
+        self.registros_principal = []
+        vistos = set()
+
+        # 1) Inspecciones que están en Supabase
+        for reg in self._consultar_inspecciones():
+            self.registros.append(reg)
+            placa, _, _, _ = self._resumen_reg(reg)
+            if placa in vistos:
+                continue
+            vistos.add(placa)
+            self.registros_principal.append(reg)
+
+        # 2) Inspecciones ya descargadas al escritorio (no se tocan)
+        for reg in self._cargar_inspecciones_locales():
+            self.registros.append(reg)
+            placa, _, _, _ = self._resumen_reg(reg)
+            if placa in vistos:
+                continue
+            vistos.add(placa)
+            self.registros_principal.append(reg)
+
         self._aplicar_filtro()
 
     def _tabla_activa(self):
@@ -282,18 +337,35 @@ class InspeccionVehicularApp:
         return any(texto in (c or "").lower() for c in campos)
 
     def _btn_descargar(self):
-        # Si hay una inspección seleccionada se descarga sólo esa;
-        # si no hay ninguna, se descargan y borran todas las de Supabase.
-        reg = self._seleccionado(silencioso=True)
-        if reg:
-            self._descargar(reg)
-        else:
-            self._descargar_todo()
+        # Descarga de Supabase todas las inspecciones y, tras descargarlas,
+        # las elimina de Supabase para liberar espacio en esa base de datos.
+        # No requiere ninguna inspección seleccionada.
+        self._descargar_todo()
 
     def _btn_eliminar(self):
         reg = self._seleccionado()
         if not reg:
             return
+        # Inspección ya descargada: solo existe en el escritorio -> se borra su copia local
+        if reg.get("_local"):
+            if not messagebox.askyesno(
+                    "Confirmar",
+                    "¿Eliminar esta inspección del escritorio?\n"
+                    "Se borrará su carpeta de copia local (no está en Supabase)."):
+                return
+            carpeta = reg.get("_carpeta") or ""
+            try:
+                if carpeta and os.path.isdir(carpeta):
+                    shutil.rmtree(carpeta)
+                registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
+                                    "Eliminó del escritorio la inspección " + str(reg.get("id")))
+                messagebox.showinfo("Listo", "Inspección eliminada del escritorio.")
+                self.cargar_inspecciones()
+            except Exception as e:
+                messagebox.showerror("Error", "No se pudo eliminar:\n" + str(e))
+            return
+
+        # Inspección que todavía está en Supabase
         if not messagebox.askyesno("Confirmar",
                                    "¿Eliminar esta inspección de Supabase SIN descargarla?"):
             return
@@ -581,6 +653,10 @@ class InspeccionVehicularApp:
             liberar_conexion(conn)
 
     def _descargar(self, reg, ventana=None):
+        if reg.get("_local"):
+            messagebox.showinfo("Ya descargada",
+                                "Esta inspección ya está descargada en el escritorio y no está en Supabase.")
+            return
         if not messagebox.askyesno("Confirmar",
                                    "¿Descargar esta inspección y borrarla de Supabase?"):
             return
@@ -600,9 +676,10 @@ class InspeccionVehicularApp:
             messagebox.showerror("Error", "No se pudo descargar:\n" + str(e))
 
     def _descargar_todo(self):
-        """Cuando no hay ninguna inspección seleccionada: descarga y borra
-        TODAS las inspecciones de la base de datos (Supabase)."""
-        registros = list(self.registros)
+        """Descarga de Supabase TODAS las inspecciones y, tras guardarlas en el
+        escritorio, las borra de Supabase para liberar espacio en esa base de datos.
+        Las copias ya existentes en el sistema de escritorio NO se tocan."""
+        registros = self._consultar_inspecciones()
         if not registros:
             messagebox.showinfo("Listo", "No hay inspecciones para descargar.")
             return

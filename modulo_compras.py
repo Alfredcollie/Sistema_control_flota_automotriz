@@ -847,6 +847,7 @@ class FacturasRecibidasTab:
         btn_sincronizar = ctk.CTkButton(f_btn_tabla, text="🔄 Actualizar y Descargar App", font=("Arial", 12, "bold"), command=self.ejecutar_sincronizacion_manual, fg_color="#27ae60", hover_color="#1e8449")
         btn_sincronizar.pack(side="left")
         
+        # Leyenda de colores: se mantiene en su fila original (junto a paginación y Actualizar)
         f_leyenda = ctk.CTkFrame(f_btn_tabla, fg_color="transparent")
         f_leyenda.pack(side="left", padx=20)
         
@@ -855,9 +856,13 @@ class FacturasRecibidasTab:
         
         ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#27ae60").pack(side="left", padx=(5,2))
         ctk.CTkLabel(f_leyenda, text="Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,5))
-        
-        btn_gestionar = ctk.CTkButton(f_btn_tabla, text="⚙️ Modificar o Eliminar Registro Seleccionado", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50")
-        btn_gestionar.pack(side="right")
+
+        # ✅ Solo los botones: el de Modificar/Eliminar pasa a una fila propia
+        # (ancho completo) para que siempre sea visible sin importar el ancho.
+        f_gestion = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
+        f_gestion.pack(fill="x", pady=(8, 0))
+        btn_gestionar = ctk.CTkButton(f_gestion, text="⚙️ Modificar o Eliminar Registro Seleccionado", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50", height=36)
+        btn_gestionar.pack(fill="x")
 
         threading.Thread(target=self.sincronizar_tickets_pendientes_automatico, daemon=True).start()
         self.main_root.after(100, lambda: self.cargar_datos_tabla(reset_pagina=True))
