@@ -194,6 +194,45 @@ def aplicar_estilo_treeview():
     style.configure("Treeview.Heading", background="#f0f0f0", foreground="#000000", relief="flat", font=("Arial", 10, "bold"), bordercolor="#e0e0e0", borderwidth=1)
 
 # =========================================================
+# 🔍 BÚSQUEDA POR CUALQUIER COLUMNA (MÓDULO DE COMPRAS)
+# =========================================================
+def construir_condicion_busqueda_compras(filtro):
+    """Genera cláusula SQL + parámetros para que la búsqueda del módulo de
+    Compras funcione contra CUALQUIER columna de la fila (no solo N° doc,
+    proveedor, vehículo y concepto).
+
+    Cubre: fecha, N° documento, proveedor, RUC, vehículo/placa, kilometraje,
+    cantidad, concepto/descripción (incluye la hora), tipo de documento,
+    categoría, días de crédito, montos (subtotal, IGV, total, detracción),
+    y también la forma de pago / montos pagados en pagos_comprobantes.
+    Retorna (clausula_sql, lista_de_parametros); si el filtro está vacío,
+    retorna ("", []).
+    """
+    if not filtro or not str(filtro).strip():
+        return "", []
+    val = f"%{str(filtro).strip()}%"
+
+    # Todas las columnas se convierten a texto para que la búsqueda funcione
+    # sin importar el tipo real de la columna (texto, fecha, número, etc.)
+    columnas = ("numero_documento", "proveedor", "evento_asociado", "descripcion",
+                "tipo_documento", "categoria", "ruc", "fecha", "dias_credito",
+                "kilometraje", "cantidad_combustible", "subtotal", "impuesto",
+                "total", "det_monto")
+
+    partes = [f"CAST({c} AS TEXT) ILIKE %s" for c in columnas]
+    cantidad = len(columnas)
+
+    # Forma de pago / montos pagados asociados al comprobante (columnas derivadas)
+    partes.append(
+        "EXISTS (SELECT 1 FROM pagos_comprobantes pc "
+        "WHERE pc.id_factura = facturas_recibidas.id "
+        "AND (pc.cuenta_origen ILIKE %s OR CAST(pc.monto_pagado AS TEXT) ILIKE %s))"
+    )
+    cantidad += 2
+
+    return "(" + " OR ".join(partes) + ")", [val] * cantidad
+
+# =========================================================
 # CLASE: CALENDARIO NATIVO
 # =========================================================
 class CalendarioNativo(ctk.CTkToplevel):
@@ -734,7 +773,7 @@ class FacturasRecibidasTab:
         f_busqueda = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_busqueda.pack(fill="x", pady=(0, 5))
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por N° Doc, proveedor, vehículo, concepto...")
+        self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por cualquier columna: N° doc, proveedor, RUC, placa, concepto, fecha, monto...")
         self.ent_buscar_facturas.pack(side="left", fill="x", expand=True)
         
         ctk.CTkLabel(f_busqueda, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
@@ -1186,9 +1225,9 @@ class FacturasRecibidasTab:
                     condiciones = []
                     params = []
                     if filtro:
-                        val = f"%{filtro}%"
-                        condiciones.append("(numero_documento ILIKE %s OR proveedor ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s)")
-                        params.extend([val, val, val, val])
+                        cond_busqueda, params_busqueda = construir_condicion_busqueda_compras(filtro)
+                        condiciones.append(cond_busqueda)
+                        params.extend(params_busqueda)
                     patron_mes = patron_fecha_mes(self.mes_filtro)
                     if patron_mes:
                         condiciones.append("fecha LIKE %s")
@@ -1547,7 +1586,7 @@ class CuentasPorPagarTab:
         f_busqueda = ctk.CTkFrame(self.tab_frame, fg_color="transparent")
         f_busqueda.pack(fill="x", padx=15, pady=(0, 5))
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        self.ent_buscar_pagos = ctk.CTkEntry(f_busqueda, placeholder_text="Filtrar por documento, proveedor, vehículo, concepto...")
+        self.ent_buscar_pagos = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por cualquier columna: N° doc, proveedor, RUC, placa, concepto, fecha, monto...")
         self.ent_buscar_pagos.pack(side="left", fill="x", expand=True)
         
         ctk.CTkLabel(f_busqueda, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
@@ -1714,8 +1753,9 @@ class CuentasPorPagarTab:
                     condiciones = []
                     params = []
                     if filtro:
-                        val = f"%{filtro}%"
-                        condiciones.append("(numero_documento ILIKE %s OR proveedor ILIKE %s OR evento_asociado ILIKE %s OR descripcion ILIKE %s)")
+                        cond_busqueda, params_busqueda = construir_condicion_busqueda_compras(filtro)
+                        condiciones.append(cond_busqueda)
+                        params.extend(params_busqueda)
                         params.extend([val, val, val, val])
                     patron_mes = patron_fecha_mes(self.mes_filtro)
                     if patron_mes:
