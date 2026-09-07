@@ -221,11 +221,14 @@ class InspeccionVehicularApp:
             return self.tabla_historico, self._display_historico
         return self.tabla_principal, self._display_principal
 
-    def _seleccionado(self):
+    def _seleccionado(self, silencioso=False):
+        """Devuelve la fila seleccionada o None. Si no hay selección y
+        'silencioso' es False, muestra un aviso."""
         tabla, data = self._tabla_activa()
         sel = tabla.selection()
         if not sel:
-            messagebox.showwarning("Aviso", "Selecciona una inspección.")
+            if not silencioso:
+                messagebox.showwarning("Aviso", "Selecciona una inspección.")
             return None
         idx = tabla.index(sel[0])
         if 0 <= idx < len(data):
@@ -279,9 +282,13 @@ class InspeccionVehicularApp:
         return any(texto in (c or "").lower() for c in campos)
 
     def _btn_descargar(self):
-        reg = self._seleccionado()
+        # Si hay una inspección seleccionada se descarga sólo esa;
+        # si no hay ninguna, se descargan y borran todas las de Supabase.
+        reg = self._seleccionado(silencioso=True)
         if reg:
             self._descargar(reg)
+        else:
+            self._descargar_todo()
 
     def _btn_eliminar(self):
         reg = self._seleccionado()
@@ -546,11 +553,8 @@ class InspeccionVehicularApp:
         lbl.bind("<Button-1>", lambda e, im=img: self._mostrar_imagen(im))
 
     # ---------------- Descargar y borrar ----------------
-    def _descargar(self, reg, ventana=None):
-        if not messagebox.askyesno("Confirmar",
-                                   "¿Descargar esta inspección y borrarla de Supabase?"):
-            return
-
+    def _guardar_inspeccion(self, reg):
+        """Guarda el JSON y las imágenes de una inspección en disco."""
         carpeta = os.path.join(_carpeta_archivos(), "Inspecciones")
         os.makedirs(carpeta, exist_ok=True)
         datos = _datos_payload(reg.get("payload"))
@@ -560,24 +564,29 @@ class InspeccionVehicularApp:
         os.makedirs(subcarpeta, exist_ok=True)
         fecha = _fecha_archivo(reg, datos)
         nombre_archivo = f"{placa}_{fecha}.json"
+        with open(os.path.join(subcarpeta, nombre_archivo), "w", encoding="utf-8") as f:
+            json.dump(datos, f, ensure_ascii=False, indent=2)
+        self._guardar_imagenes(datos, subcarpeta)
 
+    def _eliminar_registro(self, reg_id):
+        """Elimina un registro de la tabla inspecciones. Lanza excepción si falla."""
+        conn = conectar_db()
+        if not conn:
+            raise RuntimeError("No se pudo conectar para borrar el registro.")
         try:
-            with open(os.path.join(subcarpeta, nombre_archivo), "w", encoding="utf-8") as f:
-                json.dump(datos, f, ensure_ascii=False, indent=2)
-            self._guardar_imagenes(datos, subcarpeta)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM inspecciones WHERE id = %s", (reg_id,))
+            conn.commit()
+        finally:
+            liberar_conexion(conn)
 
-            conn = conectar_db()
-            if not conn:
-                messagebox.showerror("Sin conexión",
-                                     "No se pudo conectar para borrar el registro.")
-                return
-            try:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM inspecciones WHERE id = %s", (reg.get("id"),))
-                conn.commit()
-            finally:
-                liberar_conexion(conn)
-
+    def _descargar(self, reg, ventana=None):
+        if not messagebox.askyesno("Confirmar",
+                                   "¿Descargar esta inspección y borrarla de Supabase?"):
+            return
+        try:
+            self._guardar_inspeccion(reg)
+            self._eliminar_registro(reg.get("id"))
             registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
                                 "Descargó y borró la inspección " + str(reg.get("id")))
             messagebox.showinfo("Listo", "Inspección descargada y borrada de Supabase.")
@@ -589,6 +598,42 @@ class InspeccionVehicularApp:
             self.cargar_inspecciones()
         except Exception as e:
             messagebox.showerror("Error", "No se pudo descargar:\n" + str(e))
+
+    def _descargar_todo(self):
+        """Cuando no hay ninguna inspección seleccionada: descarga y borra
+        TODAS las inspecciones de la base de datos (Supabase)."""
+        registros = list(self.registros)
+        if not registros:
+            messagebox.showinfo("Listo", "No hay inspecciones para descargar.")
+            return
+        total = len(registros)
+        if not messagebox.askyesno(
+                "Confirmar",
+                f"¿Descargar y borrar TODAS las {total} inspecciones de Supabase?"):
+            return
+        procesadas = 0
+        errores = []
+        for reg in registros:
+            try:
+                self._guardar_inspeccion(reg)
+                self._eliminar_registro(reg.get("id"))
+                procesadas += 1
+            except Exception as e:
+                errores.append(f"{reg.get('id')}: {e}")
+        if procesadas:
+            registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
+                                f"Descargó y borró {procesadas} inspecciones de Supabase")
+        if errores:
+            detalle = "\n".join(errores[:10])
+            if len(errores) > 10:
+                detalle += f"\n… y {len(errores) - 10} más"
+            messagebox.showerror("Errores",
+                                f"Se descargaron {procesadas} de {total} inspecciones.\n"
+                                f"No se pudieron procesar:\n{detalle}")
+        else:
+            messagebox.showinfo("Listo",
+                                f"Se descargaron y borraron {procesadas} inspecciones de Supabase.")
+        self.cargar_inspecciones()
 
     def _generar_pdf(self, reg, ventana=None):
         try:
