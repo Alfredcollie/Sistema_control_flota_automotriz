@@ -294,6 +294,35 @@ def detectar_saldo_final(texto):
     return normalizar_monto(montos[-1][0])
 
 
+NOMBRES_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+
+def construir_valores_mes():
+    hoy = datetime.now()
+    valores = ["Todos los meses"]
+    for anio in (hoy.year - 1, hoy.year, hoy.year + 1):
+        for nombre in NOMBRES_MESES:
+            valores.append(f"{nombre} {anio}")
+    return valores
+
+
+def mes_actual_etiqueta():
+    hoy = datetime.now()
+    return f"{NOMBRES_MESES[hoy.month - 1]} {hoy.year}"
+
+
+def mes_etiqueta_a_key(etiqueta):
+    if not etiqueta or etiqueta == "Todos los meses":
+        return None
+    partes = (etiqueta or "").strip().split()
+    if len(partes) < 2 or partes[0] not in NOMBRES_MESES:
+        return None
+    mes = NOMBRES_MESES.index(partes[0]) + 1
+    anio = partes[-1]
+    return f"{anio}-{mes:02d}"
+
+
 # =========================================================
 # CLASE PRINCIPAL
 # =========================================================
@@ -462,8 +491,9 @@ class ModuloBancoApp:
             "movimientos": movs,
         }
 
-    def cargar_movimientos_sistema(self, banco):
-        """Cobros (ingresos) y pagos (egresos) registrados para este banco."""
+    def cargar_movimientos_sistema(self, banco, mes=None):
+        """Cobros (ingresos), pagos (egresos) y transferencias registrados para
+        este banco. Si se pasa 'mes' (formato 'YYYY-MM'), filtra solo ese mes."""
         conn = conectar_db(silencioso=True)
         if not conn:
             return []
@@ -542,6 +572,8 @@ class ModuloBancoApp:
             pass
         finally:
             liberar_conexion(conn)
+        if mes:
+            movs = [m for m in movs if normalizar_fecha(m["fecha"]).startswith(mes)]
         movs.sort(key=lambda m: normalizar_fecha(m["fecha"]))
         return movs
 
@@ -629,16 +661,22 @@ class ModuloBancoApp:
         self.ent_tx_desc.pack(side="left", fill="x", expand=True, padx=6)
 
         r5 = ctk.CTkFrame(f_form, fg_color="transparent"); r5.pack(fill="x", padx=12, pady=(4, 12))
-        ctk.CTkButton(r5, text="💸 Realizar Transferencia", width=240, height=38,
+        ctk.CTkButton(r5, text="💸 Realizar Transferencia", width=220, height=38,
                       font=("Arial", 13, "bold"), fg_color="#27ae60", hover_color="#1e8449",
-                      command=self.realizar_transferencia).pack(side="left")
+                      command=self.realizar_transferencia).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(r5, text="✏️ Editar", width=120, height=38,
+                      font=("Arial", 12, "bold"), fg_color="#2980b9", hover_color="#1f618d",
+                      command=self.editar_transferencia).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(r5, text="🗑️ Eliminar", width=120, height=38,
+                      font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
+                      command=self.eliminar_transferencia).pack(side="left")
 
         ctk.CTkLabel(self.tab_transferencias, text="Historial de transferencias:",
                      font=("Arial", 13, "bold"), text_color="#1f538d").pack(anchor="w", padx=5, pady=(0, 4))
         f_tabla = ctk.CTkFrame(self.tab_transferencias, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         columnas = ("fecha", "origen", "destino", "descripcion", "monto")
-        self.tabla_tx = ttk.Treeview(f_tabla, columns=columnas, show="headings")
+        self.tabla_tx = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="extended")
         for col, txt, w, anc in (("fecha", "Fecha", 100, "center"),
                                  ("origen", "Banco Origen", 200, "center"),
                                  ("destino", "Banco Destino", 200, "center"),
@@ -729,8 +767,134 @@ class ModuloBancoApp:
     def refrescar_transferencias(self):
         self.tabla_tx.delete(*self.tabla_tx.get_children())
         for t in self.cargar_transferencias():
-            self.tabla_tx.insert("", tk.END, values=(t["fecha"], t["origen"], t["destino"],
-                                                     t["descripcion"], formatear_monto(t["monto"])))
+            self.tabla_tx.insert("", tk.END, iid=str(t["id"]),
+                                 values=(t["fecha"], t["origen"], t["destino"],
+                                         t["descripcion"], formatear_monto(t["monto"])))
+
+    def editar_transferencia(self):
+        sel = self.tabla_tx.selection()
+        if len(sel) != 1:
+            messagebox.showinfo("Editar", "Seleccione exactamente una transferencia para editar.", parent=self.parent_frame)
+            return
+        id_tx = int(sel[0])
+        tx = None
+        for t in self.cargar_transferencias():
+            if t["id"] == id_tx:
+                tx = t
+                break
+        if not tx:
+            messagebox.showerror("Error", "No se encontró la transferencia.", parent=self.parent_frame)
+            return
+
+        etiquetas = [construir_etiqueta_banco(b) for b in self.bancos]
+        if not etiquetas:
+            etiquetas = ["(Sin bancos configurados)"]
+
+        v = ctk.CTkToplevel(self.parent_frame)
+        v.title("Editar Transferencia")
+        v.geometry("460x430")
+        v.transient(self.parent_frame)
+        v.grab_set()
+
+        ctk.CTkLabel(v, text="✏️ Editar transferencia", font=("Arial", 15, "bold"),
+                     text_color="#1f538d").pack(pady=(15, 5))
+        f = ctk.CTkFrame(v, fg_color="transparent")
+        f.pack(fill="x", padx=20)
+
+        ctk.CTkLabel(f, text="Banco Origen:", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_origen = ctk.CTkComboBox(f, values=etiquetas, width=300, state="readonly")
+        cmb_origen.pack(fill="x", pady=(0, 8))
+        cmb_origen.set(tx["origen"] if tx["origen"] in etiquetas else (etiquetas[0] if etiquetas else ""))
+
+        ctk.CTkLabel(f, text="Banco Destino:", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_destino = ctk.CTkComboBox(f, values=etiquetas, width=300, state="readonly")
+        cmb_destino.pack(fill="x", pady=(0, 8))
+        cmb_destino.set(tx["destino"] if tx["destino"] in etiquetas else (etiquetas[1] if len(etiquetas) > 1 else (etiquetas[0] if etiquetas else "")))
+
+        ctk.CTkLabel(f, text="Fecha:", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_fecha = ctk.CTkEntry(f)
+        ent_fecha.pack(fill="x", pady=(0, 8)); ent_fecha.insert(0, tx["fecha"])
+
+        ctk.CTkLabel(f, text="Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_desc = ctk.CTkEntry(f)
+        ent_desc.pack(fill="x", pady=(0, 8)); ent_desc.insert(0, tx["descripcion"])
+
+        ctk.CTkLabel(f, text="Monto:", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_monto = ctk.CTkEntry(f)
+        ent_monto.pack(fill="x", pady=(0, 8)); ent_monto.insert(0, f"{tx['monto']:.2f}")
+
+        def guardar():
+            etiquetas_all = [construir_etiqueta_banco(b) for b in self.bancos]
+            origen = cmb_origen.get()
+            destino = cmb_destino.get()
+            if origen not in etiquetas_all or destino not in etiquetas_all:
+                messagebox.showwarning("Transferencia", "Seleccione bancos válidos.", parent=v)
+                return
+            if origen == destino:
+                messagebox.showwarning("Transferencia", "El banco origen y destino deben ser diferentes.", parent=v)
+                return
+            monto = normalizar_monto(ent_monto.get())
+            if monto <= 0:
+                messagebox.showerror("Error", "Ingrese un monto mayor a 0.", parent=v)
+                return
+            fecha = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
+            desc = ent_desc.get().strip() or "Transferencia entre cuentas"
+            bo = self.bancos[etiquetas_all.index(origen)]
+            bd = self.bancos[etiquetas_all.index(destino)]
+
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=v)
+                return
+            try:
+                with conn.cursor() as c:
+                    c.execute("""
+                        UPDATE transferencias_bancarias
+                        SET banco_origen=%s, cuenta_origen=%s, banco_destino=%s, cuenta_destino=%s,
+                            fecha=%s, descripcion=%s, monto=%s
+                        WHERE id=%s
+                    """, (bo.get("banco", ""), bo.get("cuenta", ""), bd.get("banco", ""), bd.get("cuenta", ""),
+                          fecha, desc, monto, id_tx))
+                    conn.commit()
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo actualizar:\n{e}", parent=v)
+                return
+            finally:
+                liberar_conexion(conn)
+
+            registrar_auditoria(self.usuario_activo, "Banco", f"Editó transferencia #{id_tx}")
+            v.destroy()
+            self.refrescar_transferencias()
+            self.refrescar_saldos()
+            messagebox.showinfo("Éxito", "Transferencia actualizada correctamente.", parent=self.parent_frame)
+
+        ctk.CTkButton(v, text="✅ Guardar Cambios", width=160, fg_color="#27ae60", command=guardar).pack(pady=10)
+
+    def eliminar_transferencia(self):
+        sel = self.tabla_tx.selection()
+        if not sel:
+            messagebox.showinfo("Eliminar", "Seleccione una o más transferencias para eliminar.", parent=self.parent_frame)
+            return
+        if not messagebox.askyesno("Confirmar", f"¿Eliminar {len(sel)} transferencia(s) seleccionada(s)?", parent=self.parent_frame):
+            return
+        ids = [int(i) for i in sel]
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=self.parent_frame)
+            return
+        try:
+            with conn.cursor() as c:
+                c.execute("DELETE FROM transferencias_bancarias WHERE id = ANY(%s)", (ids,))
+                conn.commit()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo eliminar:\n{e}", parent=self.parent_frame)
+            return
+        finally:
+            liberar_conexion(conn)
+        registrar_auditoria(self.usuario_activo, "Banco", f"Eliminó {len(ids)} transferencia(s)")
+        self.refrescar_transferencias()
+        self.refrescar_saldos()
+        messagebox.showinfo("Éxito", "Transferencia(s) eliminada(s) correctamente.", parent=self.parent_frame)
 
     # -----------------------------------------------------
     # TAB: CONCILIACION BANCARIA
@@ -748,6 +912,12 @@ class ModuloBancoApp:
         self.cmb_banco.pack(side="left", padx=6, pady=10)
         if etiquetas:
             self.cmb_banco.set(etiquetas[0])
+
+        ctk.CTkLabel(f_sel, text="Mes a conciliar:", font=("Arial", 12, "bold")).pack(side="left", padx=(20, 6), pady=10)
+        valores_mes = construir_valores_mes()
+        self.cmb_mes = ctk.CTkComboBox(f_sel, values=valores_mes, width=160, state="readonly")
+        self.cmb_mes.pack(side="left", padx=6, pady=10)
+        self.cmb_mes.set(mes_actual_etiqueta())
 
         f_btns = ctk.CTkFrame(self.tab_conciliacion, fg_color="transparent")
         f_btns.pack(fill="x", padx=5, pady=(0, 8))
@@ -855,9 +1025,11 @@ class ModuloBancoApp:
             self.lbl_resumen.configure(text="⚠️ No hay banco seleccionado.")
             return
 
-        sys_movs = self.cargar_movimientos_sistema(banco)
+        mes_key = mes_etiqueta_a_key(self.cmb_mes.get())
+        sys_movs = self.cargar_movimientos_sistema(banco, mes=mes_key)
         manuales = self.cargar_manuales(banco)
-        bank_movs = list(self.movimientos_pdf)
+        bank_movs = [b for b in self.movimientos_pdf
+                     if not mes_key or normalizar_fecha(b["fecha"]).startswith(mes_key)]
 
         filas = []
         usados = set()
@@ -900,20 +1072,29 @@ class ModuloBancoApp:
         saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
         ingresos = sum(m["monto"] for m in sys_movs if m["monto"] > 0)
         egresos = sum(-m["monto"] for m in sys_movs if m["monto"] < 0)
-        saldo_sistema = saldo_inicial + ingresos - egresos
+        neto_sistema = ingresos - egresos
+        neto_pdf = sum(b["monto"] for b in bank_movs)
+        diferencia_mes = neto_sistema - neto_pdf
 
-        if self.saldo_final_estado is not None:
-            diferencia = saldo_sistema - self.saldo_final_estado
-            txt = (f"Banco: {construir_etiqueta_banco(banco)}   |   "
-                   f"Saldo Sistema: {formatear_monto(saldo_sistema)}   |   "
-                   f"Saldo Estado de Cuenta: {formatear_monto(self.saldo_final_estado)}   |   "
-                   f"Diferencia: {formatear_monto(diferencia)}")
+        if mes_key:
+            etiqueta_mes = self.cmb_mes.get()
+            txt = (f"Banco: {construir_etiqueta_banco(banco)}   |   Mes: {etiqueta_mes}   |   "
+                   f"Sistema (neto): {formatear_monto(neto_sistema)}   |   "
+                   f"Estado de cuenta (neto): {formatear_monto(neto_pdf)}   |   "
+                   f"Diferencia: {formatear_monto(diferencia_mes)}")
         else:
-            neto_pdf = sum(b["monto"] for b in bank_movs)
-            txt = (f"Banco: {construir_etiqueta_banco(banco)}   |   "
-                   f"Saldo Sistema: {formatear_monto(saldo_sistema)}   |   "
-                   f"Movimientos PDF (neto): {formatear_monto(neto_pdf)}   |   "
-                   f"(No se detectó saldo final en el PDF)")
+            saldo_sistema = saldo_inicial + neto_sistema
+            if self.saldo_final_estado is not None:
+                diferencia = saldo_sistema - self.saldo_final_estado
+                txt = (f"Banco: {construir_etiqueta_banco(banco)}   |   "
+                       f"Saldo Sistema: {formatear_monto(saldo_sistema)}   |   "
+                       f"Saldo Estado de Cuenta: {formatear_monto(self.saldo_final_estado)}   |   "
+                       f"Diferencia: {formatear_monto(diferencia)}")
+            else:
+                txt = (f"Banco: {construir_etiqueta_banco(banco)}   |   "
+                       f"Saldo Sistema: {formatear_monto(saldo_sistema)}   |   "
+                       f"Movimientos PDF (neto): {formatear_monto(neto_pdf)}   |   "
+                       f"(No se detectó saldo final en el PDF)")
         self.lbl_resumen.configure(text=txt)
 
     def cargar_manuales(self, banco):
