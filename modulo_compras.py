@@ -337,6 +337,7 @@ class FacturasRecibidasTab:
         
         self.orden_columnas = {}
         self.bloquear_autocompletado_ruc = False
+        self._ruc_autocompletado = False
         self.ruta_archivo_temp = ""
         
         # VARIABLES DE PAGINACIÓN (LAZY LOADING)
@@ -715,6 +716,7 @@ class FacturasRecibidasTab:
 
         ctk.CTkLabel(self.f_form, text="Nombre del Proveedor:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.combo_proveedor = ctk.CTkComboBox(self.f_form, command=self.al_seleccionar_proveedor)
+        self.combo_proveedor.bind("<KeyRelease>", self._al_teclear_proveedor)
         self.combo_proveedor.pack(fill="x", padx=10, pady=(0, 8))
         self.cargar_proveedores_bd()
 
@@ -888,30 +890,32 @@ class FacturasRecibidasTab:
 
     def ejecutar_sincronizacion_manual(self):
         def tarea():
-            self.sincronizar_tickets_pendientes_automatico()
+            n = self.sincronizar_tickets_pendientes_automatico()
             self.main_root.after(0, lambda: self.cargar_datos_tabla(reset_pagina=True))
-            self.main_root.after(0, lambda: messagebox.showinfo("Actualización Exitosa", "Se verificaron y descargaron los tickets de la aplicación móvil."))
+            if n:
+                self.main_root.after(0, lambda: messagebox.showinfo("Actualización Exitosa", f"Se descargaron {n} ticket(s) de la aplicación móvil."))
+            else:
+                self.main_root.after(0, lambda: messagebox.showinfo("Sin tickets nuevos", "No hay tickets de la aplicación móvil pendientes de descargar.\n\nSi acabas de enviar uno, revisa en el celular si fue rechazado (RUC de la empresa no encontrado)."))
         threading.Thread(target=tarea, daemon=True).start()
 
     def sincronizar_tickets_pendientes_automatico(self):
         ruta_base = obtener_ruta_base_drive()
-        if not ruta_base: return
+        if not ruta_base: return 0
         
         conn = conectar_db(silencioso=True)
-        if not conn: return
+        if not conn: return 0
+        descargados = 0
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT id, imagen_base64, proveedor FROM facturas_recibidas WHERE archivo_ruta = 'PENDIENTE_DESCARGA' AND imagen_base64 IS NOT NULL")
             pendientes = cursor.fetchall()
             
             if not pendientes:
-                liberar_conexion(conn)
-                return
+                return 0
             
             carpeta_destino = os.path.normpath(os.path.join(ruta_base, "facturas_recibidas"))
             if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
             
-            descargados = 0
             for reg in pendientes:
                 id_doc, img_b64, proveedor = reg
                 prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor) if proveedor else "GRIFO_APP"
@@ -936,6 +940,7 @@ class FacturasRecibidasTab:
         except Exception as e_sync: 
             print(f"Error sincronizando: {e_sync}")
         finally: liberar_conexion(conn)
+        return descargados
 
     def cargar_categorias(self):
         base_cats = [
@@ -992,30 +997,74 @@ class FacturasRecibidasTab:
 
     def al_seleccionar_proveedor(self, choice=None):
         prov = self.combo_proveedor.get().strip()
-        if not prov: return
-        
+        if not prov:
+            return
+
         conn = conectar_db()
         if not conn: return
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT ruc, detraccion FROM proveedores WHERE nombre = %s", (prov,))
+            # Búsqueda tolerante a mayúsculas/minúsculas y espacios
+            cursor.execute(
+                "SELECT ruc, porcentaje_detraccion FROM proveedores "
+                "WHERE TRIM(nombre) ILIKE %s ORDER BY id ASC LIMIT 1",
+                (prov,)
+            )
             res = cursor.fetchone()
-            
+
             if res:
                 ruc_db, det_db = res
                 self.ent_detraccion.configure(state="normal")
-                if det_db is not None and "Factura" in self.combo_tipo.get():
-                    self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, str(float(det_db)))
-                elif "Factura" in self.combo_tipo.get():
-                    self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, "0") 
-                
-                if not self.bloquear_autocompletado_ruc and ruc_db:
+                if "Factura" in self.combo_tipo.get():
+                    self.ent_detraccion.delete(0, tk.END)
+                    try:
+                        valor_det = str(float(det_db)) if det_db not in (None, "") else "0"
+                    except Exception:
+                        valor_det = "0"
+                    self.ent_detraccion.insert(0, valor_det)
+
+                # RUC del proveedor (salvo que esté bloqueado por importación PDF/XML)
+                if not self.bloquear_autocompletado_ruc:
                     self.ent_desc.delete(0, tk.END)
-                    self.ent_desc.insert(0, str(ruc_db))
-                    
+                    if ruc_db:
+                        self.ent_desc.insert(0, str(ruc_db))
+                self._ruc_autocompletado = bool(ruc_db) and not self.bloquear_autocompletado_ruc
+            else:
+                # Proveedor no encontrado -> nunca dejar el RUC del proveedor anterior
+                if not self.bloquear_autocompletado_ruc:
+                    self.ent_desc.delete(0, tk.END)
+                self._ruc_autocompletado = False
+                if "Factura" in self.combo_tipo.get():
+                    self.ent_detraccion.configure(state="normal")
+                    self.ent_detraccion.delete(0, tk.END)
+                    self.ent_detraccion.insert(0, "0")
+
             self.actualizar_totales()
-        except Exception: pass
-        finally: liberar_conexion(conn)
+        except Exception:
+            pass
+        finally:
+            liberar_conexion(conn)
+
+    def _al_teclear_proveedor(self, event=None):
+        """Al escribir el proveedor: si coincide con uno registrado rellena su
+        RUC/detracción; si se vacía el combo, limpia el RUC autocompletado."""
+        texto = self.combo_proveedor.get().strip()
+        try:
+            opciones = list(self.combo_proveedor.cget("values") or [])
+        except Exception:
+            opciones = []
+
+        if texto == "":
+            if getattr(self, "_ruc_autocompletado", False):
+                try:
+                    self.ent_desc.delete(0, tk.END)
+                except Exception:
+                    pass
+                self._ruc_autocompletado = False
+            return
+
+        if any(str(o).strip().casefold() == texto.casefold() for o in opciones):
+            self.al_seleccionar_proveedor()
 
     def cargar_proveedores_bd(self):
         provs = cache_sistema.obtener("lista_proveedores_combobox")
@@ -1040,12 +1089,10 @@ class FacturasRecibidasTab:
     def _aplicar_provs(self, provs):
         if provs:
             self.combo_proveedor.configure(values=provs)
-            if self.combo_proveedor.get() not in provs:
-                self.combo_proveedor.set(provs[0])
-            self.al_seleccionar_proveedor()
         else:
             self.combo_proveedor.configure(values=["Sin proveedores registrados"])
-            self.combo_proveedor.set("")
+        # Entra SIN proveedor preseleccionado: el usuario elige uno del desplegable
+        self.combo_proveedor.set("")
 
     def cargar_vehiculos_bd(self):
         vehiculos = cache_sistema.obtener("lista_placas_combobox")

@@ -218,6 +218,7 @@ def cargar_configuracion_general():
         "formato_numero": "1,000.00",
         "formato_fecha": "DD/MM/AAAA",
         "cuentas_bancarias": [],
+        "cuenta_grifo_pagos": "",
         "ruc_empresa": "",
         "razon_social_empresa": "",
         "igv_porcentaje": "0",
@@ -256,7 +257,7 @@ def cargar_configuracion_general():
         "color_menu_hover": "#163b65",
         "color_menu_texto": "white",
         "orden_operativos": ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"],
-        "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard"],
+        "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard", "banco"],
         "orden_ajustes": ["configuracion", "usuarios", "bitacora"]
     }
     try:
@@ -431,6 +432,7 @@ class ControlGeneralEventos:
             "impuestos": "🧮 Cálculo de Impuestos",
             "cobranza": "💰 Cálculo de Cobranza",
             "dashboard": "📈 Dashboard Gerencial",
+            "banco": "🏦 Banco (Saldos y Conciliación)",
             "configuracion": "⚙️ Configuración General",
             "usuarios": "🛠️ Configurar Usuarios",
             "bitacora": "📜 Bitácora de Auditoría",
@@ -451,6 +453,7 @@ class ControlGeneralEventos:
             "impuestos": self.abrir_calculo_impuestos,
             "cobranza": self.abrir_modulo_cobranza,
             "dashboard": self.abrir_estadisticas_financiera,
+            "banco": self.abrir_modulo_banco,
             "configuracion": self.abrir_configuracion_general,
             "usuarios": self.abrir_gestion_usuarios,
             "bitacora": self.abrir_modulo_bitacora,
@@ -628,8 +631,12 @@ class ControlGeneralEventos:
         fondo_seguro = c_fondo if str(c_fondo).startswith("#") else "#1a252c"
         
         orden_ops = config.get("orden_operativos", ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"])
-        orden_fin = config.get("orden_finanzas", ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard"])
+        orden_fin = config.get("orden_finanzas", ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard", "banco"])
         orden_aju = config.get("orden_ajustes", ["configuracion", "usuarios", "bitacora"])
+        # El módulo Banco siempre se ubica en Finanzas y Reportes
+        orden_ops = [m for m in orden_ops if m != "banco"]
+        if "banco" not in orden_fin:
+            orden_fin.append("banco")
         todas = orden_ops + orden_fin + orden_aju
         for k in self.modulos_sistema:
             if k not in todas:
@@ -1011,6 +1018,15 @@ class ControlGeneralEventos:
             estadisticas_financiera.EstadisticasFinancieraApp(self.contenedor_central)
         except Exception as e: messagebox.showerror("Error", str(e))
 
+    def abrir_modulo_banco(self):
+        if not self.tiene_permiso("banco"): return messagebox.showerror("Denegado", "No tiene permisos.")
+        self.limpiar_contenedor()
+        try:
+            import modulo_banco
+            importlib.reload(modulo_banco)
+            app = modulo_banco.ModuloBancoApp(self.contenedor_central, self.usuario_activo)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Banco:\n{e}")
+
     def abrir_calculo_impuestos(self):
         if not self.tiene_permiso("impuestos"): return messagebox.showerror("Denegado", "No tiene permisos.")
         self.limpiar_contenedor()
@@ -1253,7 +1269,64 @@ class ControlGeneralEventos:
         bancos_peru = ["BCP", "BBVA", "Interbank", "Scotiabank", "Banco de la Nación", "BanBif", "Banco Pichincha", "Banco Falabella", "Banco Ripley", "Mibanco", "Caja Arequipa", "Caja Huancayo", "Caja Piura", "Caja Cusco", "Yape / Plin", "Otro"]
         filas_bancos = []
 
-        def agregar_fila_banco(banco="", cuenta=""):
+        f_header_bancos = ctk.CTkFrame(f_bancos_container, fg_color="transparent")
+        f_header_bancos.pack(fill="x", pady=(0, 2))
+        ctk.CTkLabel(f_header_bancos, text="Banco", width=180, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=(0, 5))
+        ctk.CTkLabel(f_header_bancos, text="N° de Cuenta / CCI", width=280, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
+        ctk.CTkLabel(f_header_bancos, text="Fecha", width=100, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
+        ctk.CTkLabel(f_header_bancos, text="Saldo Inicial", width=110, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
+
+        def _formatear_monto(valor_str):
+            """Formatea un monto con separador de miles y 2 decimales según el
+            formato_numero configurado (puntos para miles y coma decimal)."""
+            formato = config_actual.get("formato_numero", "1,000.00")
+            es_latino = (formato == "1.000,00")
+            miles, dec = (".", ",") if es_latino else (",", ".")
+            s = (valor_str or "").strip()
+            if not s:
+                return ""
+            limpio = s.replace(miles, "").replace(" ", "").replace(dec, ".")
+            try:
+                num = float(limpio)
+            except ValueError:
+                digitos = "".join(ch for ch in s if ch.isdigit())
+                if not digitos:
+                    return s
+                num = float(digitos)
+            texto = f"{num:,.2f}"
+            if es_latino:
+                texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
+            return texto
+
+        # --- Cuenta asignada para pagos de facturas del App Grifo ---
+        f_grifo = ctk.CTkFrame(f_empresa, fg_color="transparent")
+        f_grifo.pack(fill="x", padx=15, pady=(12, 0))
+        ctk.CTkLabel(f_grifo, text="💳 Cuenta para pagos del App Grifo:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
+        cmb_cuenta_grifo = ctk.CTkOptionMenu(f_grifo, values=["Ninguna"], width=320)
+        cmb_cuenta_grifo.pack(side="left", padx=5)
+        cmb_cuenta_grifo.set("Ninguna")
+        ctk.CTkLabel(f_grifo, text="(se asigna automáticamente al llegar facturas del App Grifo)", font=("Arial", 9, "italic"), text_color="gray").pack(side="left", padx=5)
+
+        def _opciones_cuentas_grifo():
+            opciones = ["Ninguna"]
+            for _f, _cb, _ec, _ef, _es in filas_bancos:
+                b = _cb.get().strip()
+                c = _ec.get().strip()
+                etiqueta = f"{b} - {c}".strip(" -")
+                if etiqueta and etiqueta not in opciones:
+                    opciones.append(etiqueta)
+            return opciones
+
+        def actualizar_cmb_grifo(preservar=True):
+            actual = cmb_cuenta_grifo.get()
+            opciones = _opciones_cuentas_grifo()
+            cmb_cuenta_grifo.configure(values=opciones)
+            if preservar and actual in opciones:
+                cmb_cuenta_grifo.set(actual)
+            else:
+                cmb_cuenta_grifo.set("Ninguna")
+
+        def agregar_fila_banco(banco="", cuenta="", fecha="", saldo_inicial=""):
             fila = ctk.CTkFrame(f_bancos_container, fg_color="transparent")
             fila.pack(fill="x", pady=2)
             cmb_banco = ctk.CTkComboBox(fila, values=bancos_peru, width=180)
@@ -1262,6 +1335,21 @@ class ControlGeneralEventos:
             ent_cuenta = ctk.CTkEntry(fila, width=280, placeholder_text="N° de Cuenta / CCI")
             ent_cuenta.pack(side="left", padx=5)
             ent_cuenta.insert(0, cuenta)
+            ent_fecha = ctk.CTkEntry(fila, width=100, placeholder_text="DD/MM/AAAA")
+            ent_fecha.pack(side="left", padx=5)
+            ent_fecha.insert(0, fecha if fecha else datetime.now().strftime("%d/%m/%Y"))
+            ent_saldo_inicial = ctk.CTkEntry(fila, width=110, placeholder_text="Saldo Inicial")
+            ent_saldo_inicial.pack(side="left", padx=5)
+            ent_saldo_inicial.insert(0, _formatear_monto(saldo_inicial) if saldo_inicial else "")
+
+            def _formatear_saldo(event=None, entrada=ent_saldo_inicial):
+                txt = entrada.get()
+                formateado = _formatear_monto(txt)
+                if formateado != txt:
+                    entrada.delete(0, tk.END)
+                    entrada.insert(0, formateado)
+            ent_saldo_inicial.bind("<FocusOut>", _formatear_saldo)
+            ent_saldo_inicial.bind("<Return>", _formatear_saldo)
 
             def remover_fila(f_eliminar=fila):
                 f_eliminar.destroy()
@@ -1269,16 +1357,23 @@ class ControlGeneralEventos:
                     if item[0] == f_eliminar:
                         filas_bancos.remove(item)
                         break
+                actualizar_cmb_grifo()
             ctk.CTkButton(fila, text="❌", width=30, fg_color="#e74c3c", hover_color="#c0392b", command=remover_fila).pack(side="left", padx=5)
-            filas_bancos.append((fila, cmb_banco, ent_cuenta))
+            filas_bancos.append((fila, cmb_banco, ent_cuenta, ent_fecha, ent_saldo_inicial))
+            actualizar_cmb_grifo()
             
         ctk.CTkButton(f_empresa, text="➕ Agregar Banco", font=("Arial", 11, "bold"), width=120, fg_color="#27ae60", hover_color="#1e8449", command=agregar_fila_banco).pack(anchor="w", padx=15, pady=(5, 10))
         bancos_guardados = config_actual.get("cuentas_bancarias", [])
         if bancos_guardados:
             for b in bancos_guardados:
-                agregar_fila_banco(b.get("banco", ""), b.get("cuenta", ""))
+                agregar_fila_banco(b.get("banco", ""), b.get("cuenta", ""), b.get("fecha", ""), b.get("saldo_inicial", ""))
         else:
             agregar_fila_banco()
+
+        cuenta_grifo_guardada = config_actual.get("cuenta_grifo_pagos", "")
+        actualizar_cmb_grifo(preservar=False)
+        if cuenta_grifo_guardada and cuenta_grifo_guardada in _opciones_cuentas_grifo():
+            cmb_cuenta_grifo.set(cuenta_grifo_guardada)
             
         f_sire = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#f0fdf4", border_width=1, border_color="#bbf7d0")
         f_sire.pack(fill="x", padx=10, pady=10, ipady=10)
@@ -1678,11 +1773,15 @@ class ControlGeneralEventos:
             return lb
             
         default_ops = ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"]
-        default_fin = ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard"]
+        default_fin = ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard", "banco"]
         default_aju = ["configuracion", "usuarios", "bitacora"]
         ops = config_actual.get("orden_operativos", default_ops)
         fin = config_actual.get("orden_finanzas", default_fin)
         aju = config_actual.get("orden_ajustes", default_aju)
+        # El módulo Banco siempre se ubica en Finanzas y Reportes
+        ops = [m for m in ops if m != "banco"]
+        if "banco" not in fin:
+            fin.append("banco")
         todas = ops + fin + aju
         for k in self.modulos_sistema:
             if k not in todas:
@@ -1696,10 +1795,15 @@ class ControlGeneralEventos:
                 return [nombres_a_keys[lb.get(i)] for i in range(lb.size())]
                 
             lista_bancos = []
-            for f_widget, cmb_b, ent_c in filas_bancos:
+            for f_widget, cmb_b, ent_c, ent_f, ent_s in filas_bancos:
                 b_val = cmb_b.get().strip(); c_val = ent_c.get().strip()
-                if b_val or c_val:
-                    lista_bancos.append({"banco": b_val, "cuenta": c_val})
+                f_val = ent_f.get().strip(); s_val = _formatear_monto(ent_s.get())
+                if b_val or c_val or f_val or s_val:
+                    lista_bancos.append({"banco": b_val, "cuenta": c_val, "fecha": f_val, "saldo_inicial": s_val})
+
+            cuenta_grifo_sel = cmb_cuenta_grifo.get().strip()
+            if cuenta_grifo_sel in ("", "Ninguna"):
+                cuenta_grifo_sel = ""
                     
             conn_geo_upd = conectar_db(silencioso=True)
             if conn_geo_upd:
@@ -1716,6 +1820,7 @@ class ControlGeneralEventos:
             nueva_config = config_actual.copy()
             nueva_config.update({
                 "cuentas_bancarias": lista_bancos,
+                "cuenta_grifo_pagos": cuenta_grifo_sel,
                 "ruta_drive": ent_drive.get().strip(),
                 "rclone_remote": ent_rclone_remote.get().strip(),
                 "rclone_ruta_nube": ent_rclone_nube.get().strip(),
@@ -1765,6 +1870,18 @@ class ControlGeneralEventos:
                 "orden_ajustes": ext_ord(lb_aju),
                 "ruta_logo_cotizacion": guardar_logo_en_programa(ent_logo.get().strip(), ent_drive.get().strip())
             })
+            conn_cfg = conectar_db(silencioso=True)
+            if conn_cfg:
+                try:
+                    with conn_cfg.cursor() as c_cfg:
+                        c_cfg.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
+                        c_cfg.execute("INSERT INTO config_general (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", ("cuenta_grifo_pagos", cuenta_grifo_sel))
+                        c_cfg.execute("INSERT INTO config_general (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", ("ruc_empresa", ent_ruc_empresa.get().strip()))
+                        conn_cfg.commit()
+                except Exception as e:
+                    print("Error guardando config en nube:", e)
+                finally:
+                    liberar_conexion(conn_cfg)
             try:
                 with open(archivo_config, "w", encoding="utf-8") as f:
                     json.dump(nueva_config, f, indent=4)

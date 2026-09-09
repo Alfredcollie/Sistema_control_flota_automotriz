@@ -30,6 +30,13 @@ except ImportError:
     pdfplumber = None
 
 try:
+    from google import genai
+    from google.genai import types as genai_types
+except Exception:
+    genai = None
+    genai_types = None
+
+try:
     from facturacion_sunat import abrir_ventana_emision_sunat
 except ImportError:
     abrir_ventana_emision_sunat = None
@@ -413,6 +420,17 @@ class FacturasEmitidasTab:
     def abrir_calendario(self, entry_objetivo):
         CalendarioNativo(self.main_root.winfo_toplevel(), entry_objetivo)
 
+    def adjuntar_pdf_factura(self):
+        """Adjunta manualmente el PDF de una factura local y autocompleta los campos (con OCR si es necesario)."""
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar PDF de la Factura",
+            filetypes=[("Archivos PDF", "*.pdf"),
+                       ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
+                       ("Todos los archivos", "*.*")])
+        if not ruta:
+            return
+        self._autocompletar_desde_archivo(ruta)
+
     def sugerir_correlativo(self):
         if not hasattr(self, 'combo_tipo') or not hasattr(self, 'ent_nro_doc'):
             return
@@ -493,72 +511,286 @@ class FacturasEmitidasTab:
         for index, (_, item) in enumerate(elementos): self.tabla.move(item, "", index)
 
     def autocompletar_desde_pdf(self):
-        if pdfplumber is None:
-            messagebox.showerror("Librería faltante", "No se encontró 'pdfplumber'. Ejecuta: pip install pdfplumber")
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar Factura PDF",
+            filetypes=[("Archivos PDF", "*.pdf"), ("Imágenes", "*.png;*.jpg;*.jpeg")])
+        if not ruta:
             return
-        ruta = filedialog.askopenfilename(title="Seleccionar Factura PDF de SUNAT", filetypes=[("Archivos PDF", "*.pdf")])
-        if not ruta: return
+        self._autocompletar_desde_archivo(ruta)
+
+    def _autocompletar_desde_archivo(self, ruta):
+        """Carga el PDF/imagen, extrae el texto o aplica OCR y rellena todos los campos."""
         try:
             self.bloquear_autocompletado_ruc = True
-            texto = ""
-            with pdfplumber.open(ruta) as pdf:
-                for page in pdf.pages: texto += page.extract_text() + "\n"
-            if not texto.strip(): 
-                self.bloquear_autocompletado_ruc = False
-                return messagebox.showwarning("Aviso", "El PDF no contiene texto seleccionable.")
-            
-            if re.search(r"FACTURA\s+ELECTR[OÓ]NICA", texto, re.IGNORECASE): self.combo_tipo.set("Factura (18% IGV)")
-            elif re.search(r"BOLETA\s+DE\s+VENTA", texto, re.IGNORECASE): self.combo_tipo.set("Boleta (Sin IGV)")
-            elif re.search(r"RECIBO\s+POR\s+HONORARIOS", texto, re.IGNORECASE):
-                if re.search(r"Retenci[oó]n.*?IR[\s:\|]*\(?([\d\,\.]+)\)?", texto, re.IGNORECASE): self.combo_tipo.set("Recibo por Honorarios (8% Retención)")
-                else: self.combo_tipo.set("Recibo por Honorarios (Sin Retención)")
-            self.on_tipo_change(self.combo_tipo.get())
-
-            nro_match = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
-            if nro_match: self.ent_nro_doc.delete(0, tk.END); self.ent_nro_doc.insert(0, nro_match.group(1).replace(" ", ""))
-            
-            fecha_match = re.search(r"Fecha de Emisi[oó]n\s*[:\-]?\s*(\d{2})[/\-.](\d{2})[/\-.](\d{4})", texto, re.IGNORECASE)
-            if not fecha_match: fecha_match = re.search(r"(\d{2})[/\-.](\d{2})[/\-.](\d{4})", texto)
-            if fecha_match:
-                d, m, y = fecha_match.groups()
-                fmt = CONFIG_REGIONAL.get("formato_fecha", "DD/MM/AAAA")
-                if fmt == "MM/DD/AAAA": self.ent_fecha.delete(0, tk.END); self.ent_fecha.insert(0, f"{m}/{d}/{y}")
-                else: self.ent_fecha.delete(0, tk.END); self.ent_fecha.insert(0, f"{d}/{m}/{y}")
-
-            cliente_match = re.search(r"(?:Señor\(es\)|Señores|Razón Social|Cliente|Recibí\s*de)\s*[:\-]\s*(.+)", texto, re.IGNORECASE)
-            rucs = re.findall(r"(?:RUC|R\.U\.C\.|Documento)\s*[:\-]?\s*(\d{11})", texto, re.IGNORECASE)
-            
-            if cliente_match: self.combo_cliente.set(cliente_match.group(1).strip())
-            if rucs: 
-                self.ent_ruc.configure(state="normal")
-                self.ent_ruc.delete(0, tk.END)
-                self.ent_ruc.insert(0, rucs[-1])
-
-            sub_m = re.search(r"(?:OP\.\s*GRAVADAS|SUB\s*TOTAL|Subtotal|Total por honorarios)[\s:S/\|]+([\d\,\.]+)", texto, re.IGNORECASE)
-            tot_m = re.search(r"(?:IMPORTE\s*TOTAL|TOTAL\s*A\s*PAGAR|Total Neto Recibido)[\s:S/\|]+([\d\,\.]+)", texto, re.IGNORECASE)
-            monto_base = 0.0
-            if sub_m: monto_base = float(sub_m.group(1).replace(",", ""))
-            elif tot_m:
-                t = float(tot_m.group(1).replace(",", ""))
-                monto_base = t / 1.18 if "Factura" in self.combo_tipo.get() else t
-            if monto_base > 0: self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{monto_base:.2f}")
-
-            if not "Recibo" in self.combo_tipo.get():
-                det_match = re.search(r"(?:Detracci[oó]n|Porcentaje|Tasa).*?(\d{1,2}(?:\.\d{1,2})?)\s*%", texto, re.IGNORECASE)
-                if not det_match:
-                    if re.search(r"Sujeta\s*a\s*detracci[oó]n", texto, re.IGNORECASE):
-                        self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, CONFIG_REGIONAL.get("detraccion_porcentaje", "12")) 
-                else: self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, det_match.group(1))
+            rellenado = False
+            texto = self._extraer_texto_pdf(ruta)
+            if texto.strip():
+                rellenado = self._rellenar_desde_texto(texto)
+            if not rellenado:
+                datos = self._ocr_factura_gemini(ruta)
+                if datos:
+                    rellenado = self._rellenar_desde_ocr(datos)
 
             self.ruta_archivo_temp = ruta
+            if hasattr(self, "lbl_archivo"):
+                self.lbl_archivo.configure(text=f"📎 {os.path.basename(ruta)}", text_color="#166534")
             self.actualizar_totales()
-            self.al_seleccionar_cliente() 
-            messagebox.showinfo("Extracción Inteligente", "Datos extraídos de SUNAT.\n\nRecuerde que no es necesario adjuntar el PDF manualmente, ya que el sistema guardará el archivo procesado al registrar.")
-            
-            self.bloquear_autocompletado_ruc = False
-        except Exception as e: 
-            self.bloquear_autocompletado_ruc = False
+            self.al_seleccionar_cliente()
+
+            if rellenado:
+                messagebox.showinfo("Lectura de Factura", "Datos de la factura rellenados automáticamente (texto/OCR).")
+            else:
+                messagebox.showwarning("Lectura Incompleta", "No se pudieron leer automáticamente los datos del documento.\nRevise los campos manualmente.")
+        except Exception as e:
             messagebox.showerror("Error", f"Ocurrió un error:\n{e}")
+        finally:
+            self.bloquear_autocompletado_ruc = False
+
+    def _extraer_texto_pdf(self, ruta):
+        """Extrae la capa de texto del PDF (pdfplumber y luego PyMuPDF). Devuelve '' si no hay texto."""
+        texto = ""
+        if pdfplumber is not None:
+            try:
+                with pdfplumber.open(ruta) as pdf:
+                    for page in pdf.pages:
+                        t = page.extract_text()
+                        if t:
+                            texto += t + "\n"
+            except Exception:
+                pass
+        if not texto.strip():
+            try:
+                import fitz
+                doc = fitz.open(ruta)
+                for page in doc:
+                    texto += (page.get_text() or "") + "\n"
+                doc.close()
+            except Exception:
+                pass
+        return texto
+
+    def _rellenar_desde_texto(self, texto):
+        """Rellena los campos del formulario a partir del texto extraído. Devuelve True si rellenó algo."""
+        relleno = False
+
+        if re.search(r"FACTURA\s+ELECTR[OÓ]NICA", texto, re.IGNORECASE):
+            self.combo_tipo.set("Factura (18% IGV)")
+        elif re.search(r"BOLETA\s+DE\s+VENTA", texto, re.IGNORECASE):
+            self.combo_tipo.set("Boleta (Sin IGV)")
+        elif re.search(r"RECIBO\s+POR\s+HONORARIOS", texto, re.IGNORECASE):
+            if re.search(r"Retenci[oó]n.*?IR[\s:\|]*\(?([\d\,\.]+)\)?", texto, re.IGNORECASE):
+                self.combo_tipo.set("Recibo por Honorarios (8% Retención)")
+            else:
+                self.combo_tipo.set("Recibo por Honorarios (Sin Retención)")
+        self.on_tipo_change(self.combo_tipo.get())
+
+        nro_match = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
+        if nro_match:
+            self.ent_nro_doc.delete(0, tk.END); self.ent_nro_doc.insert(0, nro_match.group(1).replace(" ", ""))
+            relleno = True
+
+        fecha_match = re.search(r"Fecha de Emisi[oó]n\s*[:\-]?\s*(\d{2})[/\-.](\d{2})[/\-.](\d{4})", texto, re.IGNORECASE)
+        if not fecha_match:
+            fecha_match = re.search(r"(\d{2})[/\-.](\d{2})[/\-.](\d{4})", texto)
+        if fecha_match:
+            d, m, y = fecha_match.groups()
+            fmt = CONFIG_REGIONAL.get("formato_fecha", "DD/MM/AAAA")
+            self.ent_fecha.delete(0, tk.END)
+            if fmt == "MM/DD/AAAA":
+                self.ent_fecha.insert(0, f"{m}/{d}/{y}")
+            else:
+                self.ent_fecha.insert(0, f"{d}/{m}/{y}")
+            relleno = True
+
+        cliente_match = re.search(r"(?:Señor\(es\)|Señores|Razón Social|Cliente|Recibí\s*de)\s*[:\-]\s*(.+)", texto, re.IGNORECASE)
+        rucs = re.findall(r"(?:RUC|R\.U\.C\.|Documento)\s*[:\-]?\s*(\d{11})", texto, re.IGNORECASE)
+
+        if cliente_match:
+            self.combo_cliente.set(cliente_match.group(1).strip())
+            relleno = True
+        if rucs:
+            self.ent_ruc.configure(state="normal")
+            self.ent_ruc.delete(0, tk.END)
+            self.ent_ruc.insert(0, rucs[-1])
+            relleno = True
+
+        sub_m = re.search(r"(?:OP\.\s*GRAVADAS|SUB\s*TOTAL|Subtotal|Total por honorarios)[\s:S/\|]+([\d\,\.]+)", texto, re.IGNORECASE)
+        tot_m = re.search(r"(?:IMPORTE\s*TOTAL|TOTAL\s*A\s*PAGAR|Total Neto Recibido)[\s:S/\|]+([\d\,\.]+)", texto, re.IGNORECASE)
+        monto_base = 0.0
+        if sub_m:
+            try:
+                monto_base = float(sub_m.group(1).replace(",", ""))
+            except ValueError:
+                monto_base = 0.0
+        elif tot_m:
+            try:
+                t = float(tot_m.group(1).replace(",", ""))
+                monto_base = t / 1.18 if "Factura" in self.combo_tipo.get() else t
+            except ValueError:
+                monto_base = 0.0
+        if monto_base > 0:
+            self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{monto_base:.2f}")
+            relleno = True
+
+        if "Recibo" not in self.combo_tipo.get():
+            det_match = re.search(r"(?:Detracci[oó]n|Porcentaje|Tasa).*?(\d{1,2}(?:\.\d{1,2})?)\s*%", texto, re.IGNORECASE)
+            if not det_match:
+                if re.search(r"Sujeta\s*a\s*detracci[oó]n", texto, re.IGNORECASE):
+                    self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, CONFIG_REGIONAL.get("detraccion_porcentaje", "12"))
+                    relleno = True
+            else:
+                self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, det_match.group(1))
+                relleno = True
+
+        return relleno
+
+    def _ocr_factura_gemini(self, ruta):
+        """Aplica OCR con IA (Google Gemini) a un PDF/imagen escaneado. Devuelve un dict con los campos o None."""
+        if genai is None:
+            return None
+        imagenes = []
+        try:
+            import fitz
+            doc = fitz.open(ruta)
+            for page in doc:
+                try:
+                    pix = page.get_pixmap(dpi=200)
+                    imagenes.append(pix.tobytes("png"))
+                except Exception:
+                    continue
+            doc.close()
+        except Exception:
+            imagenes = []
+        if not imagenes:
+            try:
+                with open(ruta, "rb") as f:
+                    imagenes.append(f.read())
+            except Exception:
+                return None
+
+        try:
+            clave = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
+            cliente = genai.Client(api_key=clave)
+        except Exception:
+            return None
+
+        prompt = (
+            "Eres un lector OCR de facturas, boletas y recibos peruanos. "
+            "Lee la imagen del comprobante y devuelve SOLO un JSON válido, sin texto adicional, con estas claves exactas:\n"
+            '- "tipo": "factura", "boleta" o "recibo".\n'
+            '- "numero_documento": serie y correlativo (ej. "F001-123"). Si no se ve, "".\n'
+            '- "fecha": fecha en DD/MM/YYYY. Si no se ve, "".\n'
+            '- "cliente": razón social o nombre del cliente. Si no se ve, "".\n'
+            '- "ruc": exactamente 11 dígitos. Si no se ve o no son 11 dígitos, "".\n'
+            '- "descripcion": concepto o descripción del servicio/venta. Si no se ve, "".\n'
+            '- "subtotal": monto base sin IGV, número decimal (ej. 22212.00). Si no se ve, 0.\n'
+            '- "igv": importe del IGV, número decimal. Si no se ve, 0.\n'
+            '- "total": importe total, número decimal. Si no se ve, 0.\n'
+            '- "detraccion": porcentaje de detracción o retención (ej. 12). Si no aplica, 0.\n'
+            "Reglas: NO inventes datos. Montos como números con punto decimal, sin símbolo de moneda ni comas. "
+            "Si un campo no se ve, devuélvelo vacío o 0."
+        )
+
+        try:
+            partes = []
+            if genai_types is not None:
+                for img in imagenes[:3]:
+                    partes.append(genai_types.Part.from_bytes(data=img, mime_type="image/png"))
+            if not partes:
+                return None
+            respuesta = cliente.models.generate_content(model="gemini-3.5-flash-lite", contents=[prompt] + partes)
+            texto_ia = (respuesta.text or "").strip()
+        except Exception as e:
+            print("⚠️ Error OCR Gemini:", e)
+            return None
+
+        m = re.search(r"\{.*\}", texto_ia, re.DOTALL)
+        if not m:
+            return None
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+
+    def _rellenar_desde_ocr(self, datos):
+        """Rellena los campos del formulario a partir del dict del OCR. Devuelve True si rellenó algo."""
+        relleno = False
+        try:
+            tipo = str(datos.get("tipo") or "").lower()
+            if "boleta" in tipo:
+                self.combo_tipo.set("Boleta (Sin IGV)")
+            elif "recibo" in tipo:
+                self.combo_tipo.set("Recibo por Honorarios (8% Retención)")
+            else:
+                self.combo_tipo.set("Factura (18% IGV)")
+            self.on_tipo_change(self.combo_tipo.get())
+
+            nro = str(datos.get("numero_documento") or "").strip()
+            if nro:
+                self.ent_nro_doc.delete(0, tk.END); self.ent_nro_doc.insert(0, nro)
+                relleno = True
+
+            fecha = str(datos.get("fecha") or "").strip()
+            mf = re.search(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})", fecha)
+            if mf:
+                d, mes, anio = mf.groups()
+                if len(anio) == 2:
+                    anio = "20" + anio
+                fmt = CONFIG_REGIONAL.get("formato_fecha", "DD/MM/AAAA")
+                self.ent_fecha.delete(0, tk.END)
+                if fmt == "MM/DD/AAAA":
+                    self.ent_fecha.insert(0, f"{mes}/{d}/{anio}")
+                else:
+                    self.ent_fecha.insert(0, f"{d}/{mes}/{anio}")
+                relleno = True
+
+            cliente = str(datos.get("cliente") or "").strip()
+            if cliente:
+                self.combo_cliente.set(cliente)
+                relleno = True
+
+            ruc = re.sub(r"\D", "", str(datos.get("ruc") or ""))
+            if len(ruc) == 11:
+                self.ent_ruc.configure(state="normal")
+                self.ent_ruc.delete(0, tk.END)
+                self.ent_ruc.insert(0, ruc)
+                relleno = True
+
+            desc = str(datos.get("descripcion") or "").strip()
+            if desc:
+                self.ent_desc.delete(0, tk.END); self.ent_desc.insert(0, desc)
+                relleno = True
+
+            def _num(v):
+                s = str(v).strip().replace("S/", "").replace("s/", "").replace("$", "").replace(" ", "")
+                if "," in s and "." in s:
+                    if s.rfind(",") > s.rfind("."):
+                        s = s.replace(".", "").replace(",", ".")
+                    else:
+                        s = s.replace(",", "")
+                elif "," in s:
+                    s = s.replace(",", ".")
+                try:
+                    return float(s)
+                except Exception:
+                    return 0.0
+
+            subtotal = _num(datos.get("subtotal"))
+            total = _num(datos.get("total"))
+            monto_base = subtotal
+            if monto_base <= 0 and total > 0:
+                monto_base = total / 1.18 if "Factura" in self.combo_tipo.get() else total
+            if monto_base > 0:
+                self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{monto_base:.2f}")
+                relleno = True
+
+            det = _num(datos.get("detraccion"))
+            if det > 0:
+                self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, f"{det:g}")
+                relleno = True
+        except Exception as e:
+            print("⚠️ Error rellenando desde OCR:", e)
+        return relleno
 
     def crear_interfaz(self):
         frame_split = ctk.CTkFrame(self.tab_frame, fg_color="transparent")
@@ -567,8 +799,14 @@ class FacturasEmitidasTab:
         self.f_form = ctk.CTkScrollableFrame(frame_split, corner_radius=10, width=330, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
         self.f_form.pack(side="left", fill="y", padx=(0, 15))
 
-        btn_auto = ctk.CTkButton(self.f_form, text="📄 Autocompletar desde PDF SUNAT", fg_color="#1f538d", hover_color="#163b65", command=self.autocompletar_desde_pdf)
-        btn_auto.pack(fill="x", padx=10, pady=(10, 15))
+        btn_auto = ctk.CTkButton(self.f_form, text="📄 Cargar PDF y Autocompletar (OCR)", fg_color="#1f538d", hover_color="#163b65", command=self.autocompletar_desde_pdf)
+        btn_auto.pack(fill="x", padx=10, pady=(10, 5))
+
+        btn_adjuntar = ctk.CTkButton(self.f_form, text="📎 Adjuntar PDF de la Factura (Local)", fg_color="#34495e", hover_color="#2c3e50", command=self.adjuntar_pdf_factura)
+        btn_adjuntar.pack(fill="x", padx=10, pady=(0, 2))
+
+        self.lbl_archivo = ctk.CTkLabel(self.f_form, text="Sin PDF adjunto", font=("Arial", 10), text_color="#999999")
+        self.lbl_archivo.pack(anchor="w", padx=10, pady=(0, 15))
 
         ctk.CTkLabel(self.f_form, text="Tipo de Documento:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.combo_tipo = ctk.CTkComboBox(self.f_form, values=["Factura (18% IGV)", "Boleta (Sin IGV)", "Recibo por Honorarios (8% Retención)", "Recibo por Honorarios (Sin Retención)"], state="readonly", command=self.on_tipo_change)
@@ -1006,6 +1244,24 @@ class FacturasEmitidasTab:
             imp = 0.0; tot_bruto = subtotal; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
             neto_nuevo = tot_bruto - det_monto
 
+        # 🚀 FACTURA LOCAL: solicitar el PDF; si no lo tiene, permitir cargarlo después.
+        if not self.ruta_archivo_temp:
+            adjuntar_ahora = messagebox.askyesno(
+                "PDF de la Factura",
+                "¿Desea adjuntar el PDF de la factura ahora?\n\n"
+                "• Sí  → seleccionar el PDF ahora.\n"
+                "• No  → registrarla sin PDF y adjuntarlo más tarde.")
+            if adjuntar_ahora:
+                ruta_pdf = filedialog.askopenfilename(
+                    title="Adjuntar PDF de la Factura",
+                    filetypes=[("Archivos PDF", "*.pdf"),
+                               ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
+                               ("Todos los archivos", "*.*")])
+                if ruta_pdf:
+                    self.ruta_archivo_temp = ruta_pdf
+                    if hasattr(self, "lbl_archivo"):
+                        self.lbl_archivo.configure(text=f"📎 {os.path.basename(ruta_pdf)}", text_color="#166534")
+
         conn = conectar_db()
         if not conn: return
         try:
@@ -1098,6 +1354,8 @@ class FacturasEmitidasTab:
             self.ent_desc.delete(0, tk.END)
             self.ent_subtotal.delete(0, tk.END)
             self.ruta_archivo_temp = ""
+            if hasattr(self, "lbl_archivo"):
+                self.lbl_archivo.configure(text="Sin PDF adjunto", text_color="#999999")
             self.combo_oc.set("--- Sin Orden de Compra ---")
             self.id_cobranza_seleccionada = None
             self.combo_cobranza.set("--- Seleccione Cobranza ---")
@@ -1320,7 +1578,50 @@ class FacturasEmitidasTab:
             except Exception as e: messagebox.showerror("Error", str(e), parent=v_edit)
             finally: liberar_conexion(conn)
 
+        def adjuntar_pdf_a_registro():
+            """Adjunta (o reemplaza) el PDF de una factura ya registrada."""
+            ruta_base = obtener_ruta_base_drive()
+            if not ruta_base:
+                messagebox.showwarning("Configuración Requerida", "No ha configurado la ruta de Google Drive.\nEs obligatorio para guardar archivos.", parent=v_edit)
+                return
+            ruta_pdf = filedialog.askopenfilename(
+                title="Seleccionar PDF de la Factura",
+                filetypes=[("Archivos PDF", "*.pdf"),
+                           ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
+                           ("Todos los archivos", "*.*")])
+            if not ruta_pdf:
+                return
+            try:
+                carpeta_destino = os.path.join(ruta_base, "facturas_emitidas")
+                if not os.path.exists(carpeta_destino):
+                    os.makedirs(carpeta_destino)
+                nombre_ext = os.path.splitext(ruta_pdf)[1]
+                ruta_final = os.path.join(carpeta_destino, f"Emitida_{datetime.now().strftime('%Y%m%d%H%M%S')}_{id_doc}{nombre_ext}")
+                shutil.copy2(ruta_pdf, ruta_final)
+            except Exception as e:
+                return messagebox.showerror("Error", f"No se pudo guardar el archivo:\n{e}", parent=v_edit)
+
+            conn = conectar_db()
+            if not conn:
+                return
+            try:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE facturas_emitidas SET archivo_ruta = %s WHERE id = %s", (ruta_final, id_doc))
+                conn.commit()
+                cache_sistema.invalidar()
+                registrar_auditoria(self.app_padre.usuario_activo, "Facturas Emitidas", f"Adjuntó PDF a la factura ID {id_doc}")
+            except Exception as e:
+                messagebox.showerror("Error SQL", str(e), parent=v_edit)
+            finally:
+                liberar_conexion(conn)
+
+            messagebox.showinfo("Éxito", "PDF adjuntado correctamente a la factura.", parent=v_edit)
+            self.cargar_datos_tabla(reset_pagina=True)
+            if hasattr(self.app_padre, 'app_cobros'):
+                self.app_padre.app_cobros.cargar_datos_cobrar()
+
         ctk.CTkButton(f_docs, text="Ver Factura (Local/SUNAT)", fg_color="#27ae60", hover_color="#1e8449", height=28, command=descargar_pdf_sunat).pack(fill="x", padx=10, pady=2)
+        ctk.CTkButton(f_docs, text="📎 Adjuntar / Reemplazar PDF", fg_color="#1f538d", hover_color="#163b65", height=28, command=adjuntar_pdf_a_registro).pack(fill="x", padx=10, pady=2)
         
         if reg[13]: 
             ctk.CTkButton(f_docs, text=f"Ver Orden de Compra: {reg[13]}", fg_color="#d35400", hover_color="#a84300", height=28, command=lambda: abrir_oc_asociada(reg[13])).pack(fill="x", padx=10, pady=2)
@@ -1887,7 +2188,6 @@ class CuentasPorCobrarTab:
                     for reg in registros:
                         id_factura, fecha, nro_doc, cliente, evento, sub, imp, det_monto, tot_bruto, tipo_doc, concepto, enlace_sunat, arch_ruta, est_sunat = reg
                         
-                        if not enlace_sunat and not arch_ruta: continue
                         if est_sunat and "Anulada" in str(est_sunat): continue
 
                         sub_val = float(sub) if sub else 0.0
@@ -2375,7 +2675,6 @@ class CuentasPorCobrarTab:
                 for r in c.fetchall():
                     id_fac, fecha, cli, sub, imp, tot, det, tipo_doc, enlace_sunat, arch_ruta, est_sunat = r
                     
-                    if not enlace_sunat and not arch_ruta: continue
                     if est_sunat and "Anulada" in str(est_sunat): continue
                     
                     if cli_filtro != "Todos" and cli != cli_filtro: continue
