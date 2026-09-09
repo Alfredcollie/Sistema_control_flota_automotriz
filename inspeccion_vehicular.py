@@ -343,50 +343,54 @@ class InspeccionVehicularApp:
         self._descargar_todo()
 
     def _btn_eliminar(self):
+        """Elimina la inspección seleccionada del Histórico: su copia local
+        (si existe) y también su registro en Supabase (si todavía está ahí)."""
         reg = self._seleccionado()
         if not reg:
             return
-        # Inspección ya descargada: solo existe en el escritorio -> se borra su copia local
+
         if reg.get("_local"):
-            if not messagebox.askyesno(
-                    "Confirmar",
-                    "¿Eliminar esta inspección del escritorio?\n"
-                    "Se borrará su carpeta de copia local (no está en Supabase)."):
-                return
-            carpeta = reg.get("_carpeta") or ""
-            try:
-                if carpeta and os.path.isdir(carpeta):
-                    shutil.rmtree(carpeta)
-                registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
-                                    "Eliminó del escritorio la inspección " + str(reg.get("id")))
-                messagebox.showinfo("Listo", "Inspección eliminada del escritorio.")
-                self.cargar_inspecciones()
-            except Exception as e:
-                messagebox.showerror("Error", "No se pudo eliminar:\n" + str(e))
+            pregunta = ("¿Eliminar esta inspección del escritorio?\n"
+                        "También se borrará de Supabase si todavía estuviera ahí.")
+        else:
+            pregunta = "¿Eliminar esta inspección de Supabase SIN descargarla?"
+        if not messagebox.askyesno("Confirmar", pregunta):
             return
 
-        # Inspección que todavía está en Supabase
-        if not messagebox.askyesno("Confirmar",
-                                   "¿Eliminar esta inspección de Supabase SIN descargarla?"):
-            return
-        try:
+        errores = []
+
+        # 1) Borrar la copia local del escritorio (si la inspección está descargada)
+        carpeta = reg.get("_carpeta") or ""
+        if carpeta and os.path.isdir(carpeta):
+            try:
+                shutil.rmtree(carpeta)
+            except Exception as e:
+                errores.append("copia local: " + str(e))
+
+        # 2) Borrar también de la base de datos de Supabase (si el registro existe)
+        id_reg = reg.get("id")
+        if id_reg not in (None, ""):
             conn = conectar_db()
             if not conn:
-                messagebox.showerror("Sin conexión",
-                                     "No se pudo conectar para eliminar el registro.")
-                return
-            try:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM inspecciones WHERE id = %s", (reg.get("id"),))
-                conn.commit()
-            finally:
-                liberar_conexion(conn)
+                errores.append("Supabase: no se pudo conectar para eliminar el registro.")
+            else:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM inspecciones WHERE id = %s", (id_reg,))
+                    conn.commit()
+                except Exception as e:
+                    errores.append("Supabase: " + str(e))
+                finally:
+                    liberar_conexion(conn)
+
+        if errores:
+            messagebox.showerror("Error",
+                                 "No se pudo eliminar por completo:\n" + "\n".join(errores))
+        else:
             registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
-                                "Eliminó la inspección " + str(reg.get("id")))
+                                "Eliminó la inspección " + str(id_reg))
             messagebox.showinfo("Listo", "Inspección eliminada.")
-            self.cargar_inspecciones()
-        except Exception as e:
-            messagebox.showerror("Error", "No se pudo eliminar:\n" + str(e))
+        self.cargar_inspecciones()
 
     def _btn_pdf(self):
         reg = self._seleccionado()
