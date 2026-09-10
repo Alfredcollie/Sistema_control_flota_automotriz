@@ -1998,8 +1998,32 @@ class CuentasPorPagarTab:
             fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
             cuenta_val = cmb_cuenta.get().strip()
 
+            # Cerrar la ventana modal y abrir el diálogo de archivo en el SIGUIENTE
+            # ciclo del bucle de eventos. En macOS, invocar el diálogo nativo de
+            # archivos inmediatamente después de destruir una ventana con grab_set()
+            # (mismo callback) cierra la aplicación.
             v_pago.destroy()
+            self.main_root.after(150, lambda: self._guardar_pago_con_soporte(
+                id_factura, nro_doc, proveedor, monto_val, fecha_val, cuenta_val, ruta_base))
 
+        ent_monto.bind("<Return>", procesar_pago)
+        ent_fecha.bind("<Return>", procesar_pago)
+
+        f_btns = ctk.CTkFrame(v_pago, fg_color="transparent")
+        f_btns.pack(fill="x", padx=20, pady=15)
+
+        btn_ok = ctk.CTkButton(f_btns, text="✅ Confirmar", font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=procesar_pago)
+        btn_ok.pack(side="left", expand=True, padx=5)
+
+        btn_cancel = ctk.CTkButton(f_btns, text="❌ Cancelar", font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#922b21", command=v_pago.destroy)
+        btn_cancel.pack(side="right", expand=True, padx=5)
+        ent_monto.focus()
+
+    def _guardar_pago_con_soporte(self, id_factura, nro_doc, proveedor, monto_val, fecha_val, cuenta_val, ruta_base):
+        """Abre el diálogo para elegir el soporte y guarda el pago.
+        Se invoca con after() para evitar el cierre de la app en macOS al abrir
+        el diálogo nativo justo después de destruir la ventana modal."""
+        try:
             ruta_origen = filedialog.askopenfilename(title="Seleccionar Soporte de Egreso", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             ruta_destino = ""
             if ruta_origen:
@@ -2020,7 +2044,7 @@ class CuentasPorPagarTab:
                 cursor.execute("SELECT categoria FROM facturas_recibidas WHERE id = %s", (id_factura,))
                 cat_res = cursor.fetchone()
                 categoria_db = cat_res[0] if cat_res and cat_res[0] else "GENERAL"
-                
+
                 cursor.execute("""
                     INSERT INTO pagos_comprobantes (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen) 
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -2031,21 +2055,12 @@ class CuentasPorPagarTab:
                 messagebox.showinfo("Éxito", f"Pago de {formatear_moneda(monto_val)} registrado exitosamente.")
                 self.cargar_datos_pagar(reset_pagina=True)
                 self.app_padre.app_facturas.cargar_datos_tabla(reset_pagina=True)
-            except Exception as e: messagebox.showerror("Error", str(e))
-            finally: liberar_conexion(conn)
-
-        ent_monto.bind("<Return>", procesar_pago)
-        ent_fecha.bind("<Return>", procesar_pago)
-
-        f_btns = ctk.CTkFrame(v_pago, fg_color="transparent")
-        f_btns.pack(fill="x", padx=20, pady=15)
-
-        btn_ok = ctk.CTkButton(f_btns, text="✅ Confirmar", font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=procesar_pago)
-        btn_ok.pack(side="left", expand=True, padx=5)
-
-        btn_cancel = ctk.CTkButton(f_btns, text="❌ Cancelar", font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#922b21", command=v_pago.destroy)
-        btn_cancel.pack(side="right", expand=True, padx=5)
-        ent_monto.focus()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+            finally:
+                liberar_conexion(conn)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     def abrir_todos_los_archivos(self, event):
         seleccion = self.tabla.selection()
