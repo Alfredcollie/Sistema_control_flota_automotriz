@@ -6,21 +6,6 @@
     "simbolo_moneda": "S/.",
     "formato_numero": "1.000,00",
     "formato_fecha": "DD/MM/AAAA",
-    "cuentas_bancarias": [
-        {
-            "banco": "BCP",
-            "cuenta": "12345678987654",
-            "fecha": "01/09/2026",
-            "saldo_inicial": "10.000,00"
-        },
-        {
-            "banco": "Interbank",
-            "cuenta": "5255555552555",
-            "fecha": "01/09/2026",
-            "saldo_inicial": "5.000,00"
-        }
-    ],
-    "cuenta_grifo_pagos": "Interbank - 5255555552555",
     "ruc_empresa": "20613993682",
     "razon_social_empresa": "BLACK RIDERS E.I.R.L.",
     "igv_porcentaje": "18",

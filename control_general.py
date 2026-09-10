@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE
+from config_nube import cargar_bancos, guardar_bancos, cargar_cuenta_grifo, guardar_cuenta_grifo, clave_existe_en_nube
 
 if sys.platform == "win32":
     import ctypes
@@ -264,6 +265,16 @@ def cargar_configuracion_general():
         if os.path.exists(str(CONFIG_FILE)):
             with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
                 config.update(json.load(f))
+    except Exception:
+        pass
+    # Los datos bancarios y la cuenta del App Grifo viven en Supabase (nube),
+    # no en el archivo local. Solo se toma la nube como fuente de verdad cuando
+    # la clave ya existe allí (así no se pisa el dato local durante la migración).
+    try:
+        if clave_existe_en_nube("cuentas_bancarias"):
+            config["cuentas_bancarias"] = cargar_bancos()
+        if clave_existe_en_nube("cuenta_grifo_pagos"):
+            config["cuenta_grifo_pagos"] = cargar_cuenta_grifo()
     except Exception:
         pass
     return config
@@ -1819,8 +1830,6 @@ class ControlGeneralEventos:
                     
             nueva_config = config_actual.copy()
             nueva_config.update({
-                "cuentas_bancarias": lista_bancos,
-                "cuenta_grifo_pagos": cuenta_grifo_sel,
                 "ruta_drive": ent_drive.get().strip(),
                 "rclone_remote": ent_rclone_remote.get().strip(),
                 "rclone_ruta_nube": ent_rclone_nube.get().strip(),
@@ -1870,18 +1879,30 @@ class ControlGeneralEventos:
                 "orden_ajustes": ext_ord(lb_aju),
                 "ruta_logo_cotizacion": guardar_logo_en_programa(ent_logo.get().strip(), ent_drive.get().strip())
             })
+            # Los datos bancarios y la cuenta del App Grifo se guardan en
+            # Supabase (nube), NO en el archivo local.
+            try:
+                guardar_bancos(lista_bancos)
+                guardar_cuenta_grifo(cuenta_grifo_sel)
+            except Exception as e:
+                print("Error guardando bancos/grifo en nube:", e)
+
             conn_cfg = conectar_db(silencioso=True)
             if conn_cfg:
                 try:
                     with conn_cfg.cursor() as c_cfg:
                         c_cfg.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
-                        c_cfg.execute("INSERT INTO config_general (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", ("cuenta_grifo_pagos", cuenta_grifo_sel))
                         c_cfg.execute("INSERT INTO config_general (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", ("ruc_empresa", ent_ruc_empresa.get().strip()))
                         conn_cfg.commit()
                 except Exception as e:
                     print("Error guardando config en nube:", e)
                 finally:
                     liberar_conexion(conn_cfg)
+
+            # No se escriben en el JSON local (viven en Supabase).
+            nueva_config.pop("cuentas_bancarias", None)
+            nueva_config.pop("cuenta_grifo_pagos", None)
+
             try:
                 with open(archivo_config, "w", encoding="utf-8") as f:
                     json.dump(nueva_config, f, indent=4)

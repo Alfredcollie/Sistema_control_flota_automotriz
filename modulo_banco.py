@@ -23,6 +23,7 @@ from datetime import datetime
 
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from app_paths import CONFIG_FILE
+from config_nube import cargar_bancos
 
 try:
     import pdfplumber
@@ -403,7 +404,7 @@ class ModuloBancoApp:
         self.parent_frame = parent_frame
         self.usuario_activo = usuario_activo or "Desconocido"
         self.config = cargar_config()
-        self.bancos = self.config.get("cuentas_bancarias", []) or []
+        self.bancos = cargar_bancos()
         self.movimientos_pdf = []
         self.texto_pdf = ""
         self.filas_conciliacion = []

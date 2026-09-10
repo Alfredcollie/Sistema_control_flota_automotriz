@@ -10,6 +10,7 @@ import webbrowser
 import customtkinter as ctk
 from conexion import conectar_db, liberar_conexion
 from app_paths import CONFIG_FILE
+from config_nube import cargar_bancos
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos
@@ -94,7 +95,7 @@ class LibroDiarioApp:
         self.btn_pantalla.pack(side="right", padx=(10, 0))
 
         # --- FILTRO 1: CUENTA O FORMA DE PAGO ---
-        bancos_guardados = CONFIG_REGIONAL.get("cuentas_bancarias", [])
+        bancos_guardados = cargar_bancos()
         lista_cuentas = ["Cualquier Cuenta"]
         for b in bancos_guardados:
             banco_nom = b.get("banco", "").strip()

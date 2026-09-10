@@ -23,6 +23,7 @@ import threading
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE
+from config_nube import cargar_bancos
 
 try:
     import pdfplumber
@@ -2281,7 +2282,7 @@ class CuentasPorCobrarTab:
         f_form.pack(fill="x", padx=20)
 
         config = cargar_configuracion_regional()
-        bancos_guardados = config.get("cuentas_bancarias", [])
+        bancos_guardados = cargar_bancos()
         lista_cuentas = []
         for b in bancos_guardados:
             banco_nom = b.get("banco", "").strip()
@@ -2440,7 +2441,7 @@ class CuentasPorCobrarTab:
             f_form.pack(fill="x", padx=20)
             
             config = cargar_configuracion_regional()
-            bancos_guardados = config.get("cuentas_bancarias", [])
+            bancos_guardados = cargar_bancos()
             lista_cuentas = []
             for b in bancos_guardados:
                 banco_nom = b.get("banco", "").strip()

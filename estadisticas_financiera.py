@@ -14,6 +14,7 @@ import threading
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE
+from config_nube import cargar_bancos
 
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos (Excel)
@@ -331,7 +332,7 @@ class EstadisticasFinancieraApp:
         return lbl_valor
 
     def cargar_bancos_y_listas(self):
-        bancos_guardados = CONFIG_REGIONAL.get("cuentas_bancarias", [])
+        bancos_guardados = cargar_bancos()
         lista_cuentas = ["Todas las Cuentas"]
         for b in bancos_guardados:
             banco_nom = b.get("banco", "").strip()
