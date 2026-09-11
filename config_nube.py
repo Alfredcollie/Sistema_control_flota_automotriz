@@ -11,6 +11,7 @@ from conexion import conectar_db, liberar_conexion
 
 CLAVE_BANCOS = "cuentas_bancarias"
 CLAVE_GRIFO = "cuenta_grifo_pagos"
+CLAVE_RCLONE = "rclone_sync"
 
 
 def _asegurar_tabla(cursor):
@@ -107,3 +108,75 @@ def cargar_cuenta_grifo():
 def guardar_cuenta_grifo(cuenta):
     """Guarda la cuenta del App Grifo en Supabase."""
     return _guardar_clave(CLAVE_GRIFO, cuenta or "")
+
+
+def cargar_rclone_sync():
+    """Devuelve el dict de sincronización en la nube registrado en Supabase,
+    o None si todavía ningún equipo lo registró.
+
+    Estructura esperada:
+        {"rclone_remote": "gdrive:", "rclone_ruta_nube": "BlackCube",
+         "linked_by_device": "<uuid>", "linked_at": "..."}
+    """
+    raw = _cargar_clave(CLAVE_RCLONE, "")
+    if not raw:
+        return None
+    try:
+        datos = json.loads(raw)
+        if isinstance(datos, dict):
+            return datos
+    except Exception:
+        pass
+    return None
+
+
+def registrar_rclone_sync(datos):
+    """Registra la configuración de sincronización SOLO si aún no existe
+    (regla "first-write-wins"): el primer equipo que la registra queda como
+    fuente de verdad para todos los demás y nadie la pisa.
+
+    Devuelve el dict que finalmente quedó guardado en la nube (el nuevo si
+    estaba vacío, o el existente si otro equipo ya lo había registrado).
+    """
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cursor:
+            _asegurar_tabla(cursor)
+            cursor.execute(
+                "INSERT INTO config_general (clave, valor) VALUES (%s, %s) "
+                "ON CONFLICT (clave) DO NOTHING",
+                (CLAVE_RCLONE, json.dumps(datos or {}, ensure_ascii=False)),
+            )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        liberar_conexion(conn)
+    return cargar_rclone_sync()
+
+
+def borrar_rclone_sync():
+    """Borra el registro de sincronización en la nube (solo lo hace el equipo
+    propietario desde la interfaz; aquí no se valida quién lo pide)."""
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cursor:
+            _asegurar_tabla(cursor)
+            cursor.execute("DELETE FROM config_general WHERE clave = %s", (CLAVE_RCLONE,))
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        liberar_conexion(conn)

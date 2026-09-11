@@ -11,6 +11,7 @@ En desarrollo (python) la config sigue en la carpeta del proyecto.
 import os
 import sys
 import shutil
+import uuid
 from pathlib import Path
 
 APP_NAME = "ControlFlota"
@@ -48,6 +49,27 @@ CONFIG_FILE = (DATA_DIR if getattr(sys, "frozen", False) else BASE_DIR) / "confi
 
 # Carpeta para recursos (logos, etc.) — junto al ejecutable
 RESOURCES_DIR = BASE_DIR
+
+# Identificador único y persistente de este equipo (para saber qué máquina
+# realizó el enlace con Rclone). Vive en DATA_DIR, fuera de config_local.json.
+DEVICE_ID_FILE = DATA_DIR / "device_id.txt"
+
+
+def obtener_device_id():
+    """Devuelve (y crea si hace falta) un UUID único y persistente por equipo."""
+    try:
+        if DEVICE_ID_FILE.exists():
+            valor = DEVICE_ID_FILE.read_text(encoding="utf-8").strip()
+            if valor:
+                return valor
+    except Exception:
+        pass
+    nuevo = str(uuid.uuid4())
+    try:
+        DEVICE_ID_FILE.write_text(nuevo, encoding="utf-8")
+    except Exception:
+        pass
+    return nuevo
 
 
 def _migrar_config():

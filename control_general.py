@@ -26,8 +26,10 @@ import threading
 from datetime import datetime, timedelta
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
-from app_paths import CONFIG_FILE
-from config_nube import cargar_bancos, guardar_bancos, cargar_cuenta_grifo, guardar_cuenta_grifo, clave_existe_en_nube
+from app_paths import CONFIG_FILE, obtener_device_id
+from config_nube import (cargar_bancos, guardar_bancos, cargar_cuenta_grifo,
+                         guardar_cuenta_grifo, clave_existe_en_nube,
+                         cargar_rclone_sync, registrar_rclone_sync, borrar_rclone_sync)
 
 if sys.platform == "win32":
     import ctypes
@@ -275,6 +277,18 @@ def cargar_configuracion_general():
             config["cuentas_bancarias"] = cargar_bancos()
         if clave_existe_en_nube("cuenta_grifo_pagos"):
             config["cuenta_grifo_pagos"] = cargar_cuenta_grifo()
+    except Exception:
+        pass
+    # La sincronización en la nube (remote y carpeta de la nube) también vive en
+    # Supabase: el PRIMER equipo que la registra queda como fuente de verdad
+    # ("el de siempre") para todos. La carpeta LOCAL sigue siendo por equipo.
+    try:
+        sync = cargar_rclone_sync()
+        if sync:
+            if sync.get("rclone_remote"):
+                config["rclone_remote"] = sync["rclone_remote"]
+            if sync.get("rclone_ruta_nube"):
+                config["rclone_ruta_nube"] = sync["rclone_ruta_nube"]
     except Exception:
         pass
     return config
@@ -1163,6 +1177,7 @@ class ControlGeneralEventos:
         
         archivo_config = str(CONFIG_FILE)
         config_actual = cargar_configuracion_general()
+        device_id = obtener_device_id()
         
         lat_val, lon_val, rad_val = "-12.046374", "-77.042793", "100"
         conn_geo = conectar_db(silencioso=True)
@@ -1614,10 +1629,72 @@ class ControlGeneralEventos:
         ent_rclone_nube.pack(side="left", fill="x", expand=True, padx=(0, 5))
         ent_rclone_nube.insert(0, config_actual.get("rclone_ruta_nube", "FlotaCube"))
 
+        # Registro en Supabase (first-write-wins) de la sincronización en la nube.
+        rclone_reg = cargar_rclone_sync() or {}
+        es_propietario = (rclone_reg.get("linked_by_device") or "") == device_id
+
+        def _datos_sync_actual():
+            return {
+                "rclone_remote": ent_rclone_remote.get().strip(),
+                "rclone_ruta_nube": ent_rclone_nube.get().strip(),
+            }
+
+        def _refrescar_estado_sync():
+            reg = cargar_rclone_sync() or {}
+            es_prop = (reg.get("linked_by_device") or "") == device_id
+            btn_borrar.configure(state="normal" if es_prop else "disabled")
+            if es_prop:
+                lbl_propietario.configure(text="☁️ Registro Nube: este equipo (propietario)", text_color="#27ae60")
+            elif reg:
+                lbl_propietario.configure(text="☁️ Registro Nube: registrado por OTRO equipo (solo lectura)", text_color="#d35400")
+            else:
+                lbl_propietario.configure(text="☁️ Registro Nube: aún sin registrar", text_color="gray")
+
+        def registrar_sync_nube():
+            """Registra en Supabase SOLO si aún no existe (el primero gana) y
+            refresca el botón de borrado según quién sea el propietario."""
+            datos = _datos_sync_actual()
+            datos["linked_by_device"] = device_id
+            datos["linked_at"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            registrar_rclone_sync(datos)
+            _refrescar_estado_sync()
+
+        def borrar_registro_rclone():
+            reg = cargar_rclone_sync() or {}
+            if (reg.get("linked_by_device") or "") != device_id:
+                messagebox.showwarning(
+                    "Acción no permitida",
+                    "Solo el equipo que realizó el enlace con Rclone puede borrar este registro.",
+                    parent=v_conf)
+                return
+            if not messagebox.askyesno(
+                "Borrar Registro de Nube",
+                "Se eliminará la configuración de sincronización en la nube registrada por este equipo.\n\n"
+                "Después, cualquier equipo podrá registrar una nueva configuración.\n\n"
+                "¿Deseas continuar?",
+                parent=v_conf):
+                return
+            if borrar_rclone_sync():
+                messagebox.showinfo(
+                    "Registro Borrado",
+                    "El registro de sincronización en la nube fue eliminado.\n\n"
+                    "Guarda los cambios si deseas registrar una nueva configuración desde este equipo.",
+                    parent=v_conf)
+                _refrescar_estado_sync()
+            else:
+                messagebox.showerror(
+                    "Error",
+                    "No se pudo borrar el registro de la nube. Revisa la conexión a Internet.",
+                    parent=v_conf)
+
         def vincular_drive_automatico():
             remote = ent_rclone_remote.get().strip().replace(":", "")
             if not remote:
                 remote = "gdrive"
+            # Mantener el campo consistente con el remote que se va a vincular.
+            if not ent_rclone_remote.get().strip():
+                ent_rclone_remote.delete(0, tk.END)
+                ent_rclone_remote.insert(0, remote + ":")
             cmd_rclone = obtener_comando_rclone()
 
             msg = ("Se abrirá el navegador web automáticamente.\n\n"
@@ -1632,7 +1709,10 @@ class ControlGeneralEventos:
                     kwargs["creationflags"] = 0x08000000
                 result = subprocess.run([cmd_rclone, "config", "create", remote, "drive", "scope", "drive"], capture_output=True, text=True, timeout=60, **kwargs)
                 if result.returncode == 0:
-                    messagebox.showinfo("Éxito", "¡Google Drive vinculado correctamente!\nYa puedes realizar la prueba de conexión.", parent=v_conf)
+                    # Este equipo queda registrado como propietario de la
+                    # sincronización (el primero que lo registra es "el de siempre").
+                    registrar_sync_nube()
+                    messagebox.showinfo("Éxito", "¡Google Drive vinculado correctamente!\n\nEste equipo quedó registrado como propietario de la sincronización.\nYa puedes realizar la prueba de conexión.", parent=v_conf)
                 else:
                     messagebox.showerror("Error", f"Falló la vinculación:\n{result.stderr}", parent=v_conf)
             except Exception as e:
@@ -1689,8 +1769,21 @@ class ControlGeneralEventos:
 
         f_rclone_3 = ctk.CTkFrame(f_region, fg_color="transparent")
         f_rclone_3.pack(fill="x", padx=15, pady=(5, 0))
+
+        lbl_propietario = ctk.CTkLabel(f_rclone_3, text="", font=("Arial", 10, "bold"))
+        lbl_propietario.pack(side="left")
+        btn_borrar = ctk.CTkButton(
+            f_rclone_3, text="🗑️ Borrar Registro Nube", font=("Arial", 11, "bold"),
+            fg_color="#c0392b", hover_color="#922b21",
+            command=borrar_registro_rclone,
+            state="normal" if es_propietario else "disabled")
+        btn_borrar.pack(side="left", padx=(10, 0))
+
         ctk.CTkButton(f_rclone_3, text="🚀 Probar Rclone", font=("Arial", 11, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=probar_rclone).pack(side="right")
         ctk.CTkButton(f_rclone_3, text="🔗 Vincular Cuenta Auto", font=("Arial", 11, "bold"), fg_color="#8e44ad", hover_color="#732d91", command=vincular_drive_automatico).pack(side="right", padx=(0, 10))
+
+        # Estado inicial del registro en la nube.
+        _refrescar_estado_sync()
         
         ctk.CTkLabel(f_region, text="🖨️ Impresora por Defecto", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 5))
         ent_impresora = ctk.CTkEntry(f_region, placeholder_text="Ej: Epson L3150 Series")
@@ -1827,12 +1920,31 @@ class ControlGeneralEventos:
                     print("Error guardando geocerca:", e)
                 finally:
                     liberar_conexion(conn_geo_upd)
-                    
+
+            # La sincronización en la nube (remote y carpeta de la nube) se
+            # guarda en Supabase con regla "first-write-wins": el primer equipo
+            # que la registra es la fuente de verdad para todos los demás.
+            remote_val = ent_rclone_remote.get().strip()
+            nube_val = ent_rclone_nube.get().strip()
+            if remote_val or nube_val:
+                try:
+                    registrar_rclone_sync({
+                        "rclone_remote": remote_val,
+                        "rclone_ruta_nube": nube_val,
+                        "linked_by_device": device_id,
+                        "linked_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                    })
+                except Exception as e:
+                    print("Error registrando sync nube:", e)
+            sync_final = cargar_rclone_sync() or {}
+            remote_final = (sync_final.get("rclone_remote") or remote_val).strip()
+            nube_final = (sync_final.get("rclone_ruta_nube") or nube_val).strip()
+
             nueva_config = config_actual.copy()
             nueva_config.update({
                 "ruta_drive": ent_drive.get().strip(),
-                "rclone_remote": ent_rclone_remote.get().strip(),
-                "rclone_ruta_nube": ent_rclone_nube.get().strip(),
+                "rclone_remote": remote_final,
+                "rclone_ruta_nube": nube_final,
                 "impresora": ent_impresora.get().strip(),
                 "simbolo_moneda": cmb_moneda.get().strip() or "S/.",
                 "formato_numero": cmb_num.get(),
