@@ -8,6 +8,39 @@ Optimizado para máximo rendimiento y compatibilidad nativa en Windows y macOS.
 - Integración Rclone Inteligente con Sincronización Automática en Segundo Plano.
 - Soporte nativo para pantallas Retina (Mac) y High-DPI (Windows).
 """
+
+# =========================================================
+# REGISTRO DE ERRORES DE INICIO
+# Captura fallas silenciosas en apps empaquetadas (p. ej. el
+# .app de macOS) y las escribe en un archivo de log para
+# poder diagnosticarlas desde la Terminal o compartirlas.
+# =========================================================
+import sys
+import os
+import traceback
+
+_RUTA_LOG_ERROR = None
+
+
+def _excepthook(tipo, valor, tb):
+    global _RUTA_LOG_ERROR
+    detalle = "".join(traceback.format_exception(tipo, valor, tb))
+    try:
+        if _RUTA_LOG_ERROR is None:
+            try:
+                from app_paths import DATA_DIR
+                _RUTA_LOG_ERROR = str(DATA_DIR / "error_inicio.log")
+            except Exception:
+                _RUTA_LOG_ERROR = os.path.join(os.path.expanduser("~"), "ControlFlota_error_inicio.log")
+        with open(_RUTA_LOG_ERROR, "w", encoding="utf-8") as f:
+            f.write(detalle)
+    except Exception:
+        pass
+    sys.__excepthook__(tipo, valor, tb)
+
+
+sys.excepthook = _excepthook
+
 import psycopg2
 import tkinter as tk
 import customtkinter as ctk
@@ -2324,6 +2357,25 @@ class ControlGeneralEventos:
 
 
 if __name__ == "__main__":
-    root = ctk.CTk()
-    app = ControlGeneralEventos(root)
-    root.mainloop()
+    try:
+        root = ctk.CTk()
+        app = ControlGeneralEventos(root)
+        root.mainloop()
+    except Exception as e:
+        detalle = traceback.format_exc()
+        ruta_log = None
+        try:
+            ruta_log = str(DATA_DIR / "error_inicio.log")
+            with open(ruta_log, "w", encoding="utf-8") as f:
+                f.write(detalle)
+        except Exception:
+            ruta_log = None
+        try:
+            messagebox.showerror(
+                "Error de inicio",
+                f"Ocurrió un error al iniciar el sistema:\n{e}\n\n"
+                + (f"Detalle guardado en:\n{ruta_log}" if ruta_log else "")
+            )
+        except Exception:
+            pass
+        raise
