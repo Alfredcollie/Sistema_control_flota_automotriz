@@ -22,6 +22,7 @@ import threading
 from datetime import datetime
 
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
 from config_nube import cargar_bancos
 
@@ -1152,8 +1153,8 @@ class ModuloBancoApp:
         self.refrescar_compras_cruzadas()
 
     def cargar_factura_cc(self):
-        ruta = filedialog.askopenfilename(title="Seleccionar Factura de Compra (PDF)",
-                                          filetypes=[("Archivos PDF", "*.pdf")])
+        ruta = seleccionar_archivo_dialogo(titulo="Seleccionar Factura de Compra (PDF)",
+                                           tipos=[("Archivos PDF", "*.pdf")])
         if not ruta:
             return
         self.ruta_factura_cc = ruta
@@ -1170,8 +1171,8 @@ class ModuloBancoApp:
         messagebox.showinfo("Factura", "Datos extraídos del PDF. Revise y complete los campos antes de guardar.", parent=self.parent_frame)
 
     def adjuntar_soporte_cc(self):
-        ruta = filedialog.askopenfilename(title="Seleccionar Soporte del Pago (PDF o imagen)",
-                                          filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+        ruta = seleccionar_archivo_dialogo(titulo="Seleccionar Soporte del Pago (PDF o imagen)",
+                                           tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
         if not ruta:
             return
         self.ruta_soporte_cc = ruta
@@ -1388,12 +1389,12 @@ class ModuloBancoApp:
         nuevo_soporte = {"ruta": ""}
 
         def adj_factura():
-            r = filedialog.askopenfilename(title="Seleccionar nueva Factura PDF", filetypes=[("Archivos PDF", "*.pdf")])
+            r = seleccionar_archivo_dialogo(titulo="Seleccionar nueva Factura PDF", tipos=[("Archivos PDF", "*.pdf")])
             if r:
                 nueva_factura["ruta"] = r
 
         def adj_soporte():
-            r = filedialog.askopenfilename(title="Seleccionar nuevo Soporte", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+            r = seleccionar_archivo_dialogo(titulo="Seleccionar nuevo Soporte", tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             if r:
                 nuevo_soporte["ruta"] = r
 
@@ -1598,9 +1599,9 @@ class ModuloBancoApp:
         self.tabview.set(" 🧾 Conciliación Bancaria ")
 
     def subir_pdf(self):
-        ruta = filedialog.askopenfilename(
-            title="Seleccionar Estado de Cuenta (PDF)",
-            filetypes=[("Archivos PDF", "*.pdf")])
+        ruta = seleccionar_archivo_dialogo(
+            titulo="Seleccionar Estado de Cuenta (PDF)",
+            tipos=[("Archivos PDF", "*.pdf")])
         if not ruta:
             return
         self.lbl_resumen.configure(text="⏳ Extrayendo texto del PDF...")
@@ -2269,10 +2270,10 @@ class ModuloBancoApp:
         if not self.filas_conciliacion:
             messagebox.showinfo("Exportar", "No hay movimientos para exportar.", parent=self.parent_frame)
             return
-        ruta = filedialog.asksaveasfilename(
-            title="Guardar Reporte de Conciliación",
+        ruta = guardar_archivo_dialogo(
+            titulo="Guardar Reporte de Conciliación",
             defaultextension=".txt",
-            filetypes=[("Archivo de texto", "*.txt"), ("CSV", "*.csv")])
+            tipos=[("Archivo de texto", "*.txt"), ("CSV", "*.csv")])
         if not ruta:
             return
         try:

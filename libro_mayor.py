@@ -7,6 +7,7 @@ import json
 import subprocess
 import customtkinter as ctk
 from conexion import conectar_db, liberar_conexion
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
 
 # =========================================================
@@ -180,7 +181,7 @@ class LibroMayorApp:
         
         cols = ["Cuenta / Categoría", "Ingresos Acumulados (Debe)", "Egresos Acumulados (Haber)", "Saldo Neto Final"]
         
-        ruta = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Libro_Mayor_Acumulado.xlsx", filetypes=[("Excel", "*.xlsx")])
+        ruta = guardar_archivo_dialogo(titulo="Exportar Libro Mayor a Excel", defaultextension=".xlsx", initialfile="Libro_Mayor_Acumulado.xlsx", tipos=[("Excel", "*.xlsx")])
         if ruta:
             try:
                 pd.DataFrame(filas, columns=cols).to_excel(ruta, index=False)

@@ -9,6 +9,7 @@ import subprocess
 import webbrowser
 import customtkinter as ctk
 from conexion import conectar_db, liberar_conexion
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
 from config_nube import cargar_bancos
 
@@ -240,7 +241,7 @@ class LibroDiarioApp:
         
         cols = ["Fecha", "Doc. / Factura", "Beneficiario / Concepto", "Categoría Suministro", "Cuenta / Pago", "Debe (Ingresos)", "Haber (Egresos)"]
         
-        ruta = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Libro_Diario_BlackCube.xlsx", filetypes=[("Excel", "*.xlsx")])
+        ruta = guardar_archivo_dialogo(titulo="Exportar Libro Diario a Excel", defaultextension=".xlsx", initialfile="Libro_Diario_BlackCube.xlsx", tipos=[("Excel", "*.xlsx")])
         if ruta:
             try:
                 pd.DataFrame(filas, columns=cols).to_excel(ruta, index=False)

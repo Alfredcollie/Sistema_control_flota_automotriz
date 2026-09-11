@@ -25,6 +25,7 @@ import queue
 # Herramientas de Conexión y Buffer
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
@@ -621,9 +622,9 @@ class SistemaProveedores:
             messagebox.showerror("Librería Faltante", "Para activar el lector de Fichas PDF, ejecute en su consola:\npip install pypdf")
             return
 
-        archivo_pdf = filedialog.askopenfilename(
-            title="Seleccionar Ficha PDF de Proveedor",
-            filetypes=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")]
+        archivo_pdf = seleccionar_archivo_dialogo(
+            titulo="Seleccionar Ficha PDF de Proveedor",
+            tipos=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")]
         )
         if not archivo_pdf: return
 

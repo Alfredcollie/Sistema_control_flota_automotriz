@@ -18,6 +18,7 @@ from datetime import datetime
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 
 try:
     import fitz  
@@ -243,7 +244,7 @@ class FlotaAutomotrizApp:
         except ImportError:
             return messagebox.showerror("Librería Faltante", "Para leer este documento con IA, abre tu consola y ejecuta:\n\npip install PyMuPDF requests")
 
-        ruta_archivo = filedialog.askopenfilename(title="Seleccionar Tarjeta SUNARP", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+        ruta_archivo = seleccionar_archivo_dialogo(titulo="Seleccionar Tarjeta SUNARP", tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
         if not ruta_archivo: return
 
         self.ruta_tarjeta_temp = ruta_archivo

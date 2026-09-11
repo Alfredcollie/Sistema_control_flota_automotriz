@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# NOTA: script de migración YA APLICADO (queda como respaldo histórico).
+# Sus plantillas ya usan el selector seguro compartido (dialogos_seguros.py),
+# para no reintroducir el diálogo crudo de Tkinter que cierra la app en macOS.
 path = r"C:\Users\Alberto\Desktop\Programa de control de flotilla automotriz para Win-Mac 210826\modulo_ventas.py"
 
 with open(path, "r", encoding="utf-8") as f:
@@ -16,9 +19,9 @@ content = content.replace(old_imp, new_imp, 1)
 content = content.replace('text="📄 Autocompletar desde PDF SUNAT"', 'text="📄 Cargar PDF y Autocompletar (OCR)"')
 
 new_block = r'''    def autocompletar_desde_pdf(self):
-        ruta = filedialog.askopenfilename(
-            title="Seleccionar Factura PDF",
-            filetypes=[("Archivos PDF", "*.pdf"), ("Imágenes", "*.png;*.jpg;*.jpeg")])
+        ruta = seleccionar_archivo_dialogo(
+            titulo="Seleccionar Factura PDF",
+            tipos=[("Archivos PDF", "*.pdf"), ("Imágenes", "*.png;*.jpg;*.jpeg")])
         if not ruta:
             return
         self._autocompletar_desde_archivo(ruta)
@@ -299,11 +302,11 @@ new_block = r'''    def autocompletar_desde_pdf(self):
 
 new_adjuntar = r'''    def adjuntar_pdf_factura(self):
         """Adjunta manualmente el PDF de una factura local y autocompleta los campos (con OCR si es necesario)."""
-        ruta = filedialog.askopenfilename(
-            title="Seleccionar PDF de la Factura",
-            filetypes=[("Archivos PDF", "*.pdf"),
-                       ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
-                       ("Todos los archivos", "*.*")])
+        ruta = seleccionar_archivo_dialogo(
+            titulo="Seleccionar PDF de la Factura",
+            tipos=[("Archivos PDF", "*.pdf"),
+                   ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
+                   ("Todos los archivos", "*.*")])
         if not ruta:
             return
         self._autocompletar_desde_archivo(ruta)'''

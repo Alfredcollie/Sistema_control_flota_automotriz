@@ -34,6 +34,7 @@ from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE
 from config_nube import cargar_bancos
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 
 try:
     import pdfplumber
@@ -96,48 +97,8 @@ def abrir_documento(ruta):
     except Exception as e:
         messagebox.showerror("Error", f"No se pudo abrir el archivo:\n{e}")
 
-def _applescript_elegir_archivo(titulo, extensiones):
-    """Construye el AppleScript del selector de archivos nativo de macOS."""
-    titulo_limpio = str(titulo).replace('"', "'")
-    cmd = f'POSIX path of (choose file with prompt "{titulo_limpio}"'
-    if extensiones:
-        lista = "{" + ", ".join(f'"{e}"' for e in extensiones) + "}"
-        cmd += f" of type {lista}"
-    return cmd + ")"
-
-def seleccionar_archivo_dialogo(titulo="Seleccionar Documento", tipos=None):
-    """Abre el diálogo para elegir un archivo de forma SEGURA en todas las plataformas.
-
-    ⚠️ macOS: el diálogo de Tkinter (tk_getOpenFile) puede CERRAR la aplicación al
-    abrirse (fallo conocido de Tk en macOS, sobre todo en apps empaquetadas). Por eso
-    en Mac se usa el selector nativo del sistema mediante 'osascript', que corre en un
-    proceso independiente y no puede tumbar la aplicación.
-    En Windows/Linux se mantiene el diálogo normal de Tkinter.
-    """
-    tipos = tipos or [("Todos los archivos", "*.*")]
-
-    if sys.platform == "darwin":
-        extensiones = []
-        for _desc, patrones in tipos:
-            if isinstance(patrones, str):
-                patrones = patrones.replace(";", " ").split()
-            for patron in patrones:
-                ext = str(patron).replace("*", "").strip().lstrip(".")
-                if ext and ext not in extensiones:
-                    extensiones.append(ext)
-        try:
-            res = subprocess.run(["osascript", "-e", _applescript_elegir_archivo(titulo, extensiones)],
-                                 capture_output=True, text=True)
-            if res.returncode == 0:
-                return res.stdout.strip()
-            return ""   # El usuario canceló (-128) o el selector no devolvió archivo
-        except FileNotFoundError:
-            # Sin osascript disponible: se usa el diálogo de Tkinter
-            return filedialog.askopenfilename(title=titulo, filetypes=tipos)
-        except Exception:
-            return ""
-
-    return filedialog.askopenfilename(title=titulo, filetypes=tipos)
+# 🚀 FIX macOS: el selector de archivos seguro ahora es COMPARTIDO (dialogos_seguros.py),
+# para que todos los módulos usen el mismo arreglo y ninguno se quede sin él.
 
 def cargar_configuracion_regional():
     config = {
@@ -1782,7 +1743,7 @@ class CuentasPorPagarTab:
         
         columnas = ["Fecha Fac.", "Hora", "N° Documento", "Proveedor", "RUC", "Vehículo (Placa)", "Kilometraje", "Galones/Cant.", "Concepto", "Forma de Pago", "Subtotal", "IGV", "Detracción", "Neto Facturado", "Total Pagado", "Saldo Pendiente", "Archivos"]
         
-        ruta = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Cuentas_por_Pagar.xlsx", filetypes=[("Excel", "*.xlsx")])
+        ruta = guardar_archivo_dialogo(titulo="Exportar Cuentas por Pagar", defaultextension=".xlsx", initialfile="Cuentas_por_Pagar.xlsx", tipos=[("Excel", "*.xlsx")])
         if ruta:
             pd.DataFrame(filas, columns=columnas).to_excel(ruta, index=False)
             messagebox.showinfo("Éxito", f"Reporte exportado a:\n{ruta}")

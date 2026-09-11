@@ -59,6 +59,7 @@ import threading
 from datetime import datetime, timedelta
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo, seleccionar_carpeta_dialogo
 from app_paths import CONFIG_FILE, DATA_DIR, obtener_device_id
 from config_nube import (cargar_bancos, guardar_bancos, cargar_cuenta_grifo,
                          guardar_cuenta_grifo, clave_existe_en_nube,
@@ -1786,9 +1787,9 @@ class ControlGeneralEventos:
                 ent_logo.insert(0, ruta_final)
                 _actualizar_vista_previa(ruta_final)
             abrir_dialogo_nativo(
-                lambda: filedialog.askopenfilename(
-                    title="Seleccionar Logo",
-                    filetypes=[("Imágenes", "*.png *.jpg *.jpeg")]),
+                lambda: seleccionar_archivo_dialogo(
+                    titulo="Seleccionar Logo",
+                    tipos=[("Imágenes", "*.png *.jpg *.jpeg")]),
                 _poner_ruta)
 
         def quitar_logo():
@@ -1836,7 +1837,7 @@ class ControlGeneralEventos:
                 ent_drive.delete(0, tk.END)
                 ent_drive.insert(0, carpeta)
             abrir_dialogo_nativo(
-                lambda: filedialog.askdirectory(title="Seleccionar Carpeta Local"),
+                lambda: seleccionar_carpeta_dialogo(titulo="Seleccionar Carpeta Local"),
                 _poner_carpeta)
 
         ctk.CTkButton(f_rclone_1, text="📁 Buscar", width=100, command=buscar_carpeta_drive).pack(side="right")

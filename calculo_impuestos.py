@@ -23,6 +23,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
 
 def abrir_documento(ruta):
@@ -408,11 +409,11 @@ class CalculoImpuestosApp:
             messagebox.showwarning("Aviso", "No hay declaraciones guardadas para exportar.")
             return
         columnas = ["Periodo", "Ventas Netas", "IGV Ventas", "Compras Netas", "IGV Compras", "IGV SUNAT", "Renta Mensual", "Provisión Renta Anual", "Pago Efectivo"]
-        ruta = filedialog.asksaveasfilename(
+        ruta = guardar_archivo_dialogo(
+            titulo="Exportar Declaraciones a Excel",
             defaultextension=".xlsx",
             initialfile=f"Declaraciones_Impuestos_{datetime.now().year}.xlsx",
-            title="Exportar Declaraciones a Excel",
-            filetypes=[("Archivos Excel", "*.xlsx")]
+            tipos=[("Archivos Excel", "*.xlsx")]
         )
         if ruta:
             try:
@@ -655,9 +656,9 @@ class CalculoImpuestosApp:
         self.carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_impuestos")
         d = self.datos_actuales
         messagebox.showinfo("Comprobante de Pago", "A continuación, seleccione el comprobante de pago de SUNAT (PDF o Imagen).\n\nPuede cancelar si no desea adjuntar uno ahora.")
-        ruta_origen = filedialog.askopenfilename(
-            title="Seleccionar Comprobante de Pago SUNAT",
-            filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")]
+        ruta_origen = seleccionar_archivo_dialogo(
+            titulo="Seleccionar Comprobante de Pago SUNAT",
+            tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")]
         )
         
         ruta_destino_final = ""

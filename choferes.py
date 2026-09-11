@@ -16,6 +16,7 @@ from datetime import datetime
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 
 def abrir_documento_local(ruta):
     if not ruta: return False
@@ -30,6 +31,27 @@ def abrir_documento_local(ruta):
     except Exception as e:
         print(f"Error al abrir documento: {e}")
         return False
+
+# 🚀 FIX macOS: el selector de archivos seguro es COMPARTIDO (dialogos_seguros.py).
+#    Abrir el panel nativo de Tk puede cerrar la app en macOS; en Mac se usa 'osascript'.
+
+def _carpeta_expedientes():
+    """Carpeta ESCRIBIBLE para guardar los expedientes (copia de seguridad de documentos)."""
+    candidatas = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "archivos_flota", "expedientes_choferes")]
+    try:
+        from app_paths import DATA_DIR
+        candidatas.append(os.path.join(str(DATA_DIR), "archivos_flota", "expedientes_choferes"))
+    except Exception:
+        pass
+    for carpeta in candidatas:
+        try:
+            carpeta = os.path.normpath(carpeta)
+            os.makedirs(carpeta, exist_ok=True)
+            return carpeta
+        except Exception:
+            continue
+    return os.path.normpath(candidatas[0])
+
 
 # =========================================================
 # CLASE: ASISTENTE DE CARGA DE DOCUMENTOS
@@ -78,7 +100,7 @@ class AsistenteCargaDocs(ctk.CTkToplevel):
         self.lbl_doc.configure(text=f"Cargar: {doc_actual}")
 
     def cargar_actual(self):
-        ruta = filedialog.askopenfilename(title=f"Seleccionar {self.documentos[self.indice]}", filetypes=[("Documentos", "*.pdf;*.png;*.jpg;*.jpeg")])
+        ruta = seleccionar_archivo_dialogo(titulo=f"Seleccionar {self.documentos[self.indice]}", tipos=[("Documentos", "*.pdf;*.png;*.jpg;*.jpeg")])
         if ruta:
             self.target_dict[self.documentos[self.indice]] = ruta
             self.siguiente()
@@ -417,9 +439,9 @@ class ChoferesApp:
         return self.rutas_documentos_db.get("Foto Carnet", "")
 
     def cargar_foto_carnet(self):
-        ruta = filedialog.askopenfilename(
-            title="Seleccionar Foto Carnet del Chofer",
-            filetypes=[("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp"), ("Todos los Archivos", "*.*")]
+        ruta = seleccionar_archivo_dialogo(
+            titulo="Seleccionar Foto Carnet del Chofer",
+            tipos=[("Imágenes", "*.png *.jpg *.jpeg *.webp *.bmp"), ("Todos los Archivos", "*.*")]
         )
         if not ruta:
             return
@@ -481,9 +503,9 @@ class ChoferesApp:
             messagebox.showerror("Librería Faltante", "Para activar el lector de Fichas PDF, ejecute en su consola:\npip install pypdf")
             return
 
-        archivo_pdf = filedialog.askopenfilename(
-            title="Seleccionar Ficha PDF de Chofer",
-            filetypes=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")]
+        archivo_pdf = seleccionar_archivo_dialogo(
+            titulo="Seleccionar Ficha PDF de Chofer",
+            tipos=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")]
         )
         if not archivo_pdf:
             return
@@ -863,9 +885,9 @@ class ChoferesApp:
         
         if self.rutas_documentos_temp:
             try:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                carpeta_destino = os.path.normpath(os.path.join(base_dir, "archivos_flota", "expedientes_choferes"))
-                os.makedirs(carpeta_destino, exist_ok=True)
+                # En Mac (app empaquetada) la carpeta del programa puede ser de solo lectura:
+                # _carpeta_expedientes() cae automáticamente a la carpeta de datos del usuario.
+                carpeta_destino = _carpeta_expedientes()
                 
                 for doc_name, temp_path in self.rutas_documentos_temp.items():
                     if temp_path and os.path.exists(os.path.normpath(temp_path)):

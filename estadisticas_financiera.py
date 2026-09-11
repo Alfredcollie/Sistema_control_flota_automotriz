@@ -13,6 +13,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
 from config_nube import cargar_bancos
 
@@ -524,11 +525,11 @@ class EstadisticasFinancieraApp:
             ]
         }
 
-        ruta = filedialog.asksaveasfilename(
+        ruta = guardar_archivo_dialogo(
+            titulo="Exportar Dashboard a Excel",
             defaultextension=".xlsx",
             initialfile=f"Reporte_Rentabilidad_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            title="Exportar Dashboard a Excel",
-            filetypes=[("Archivos Excel", "*.xlsx")]
+            tipos=[("Archivos Excel", "*.xlsx")]
         )
 
         if ruta:

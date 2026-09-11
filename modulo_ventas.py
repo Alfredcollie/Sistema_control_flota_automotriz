@@ -22,6 +22,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
 from config_nube import cargar_bancos
 
@@ -423,11 +424,11 @@ class FacturasEmitidasTab:
 
     def adjuntar_pdf_factura(self):
         """Adjunta manualmente el PDF de una factura local y autocompleta los campos (con OCR si es necesario)."""
-        ruta = filedialog.askopenfilename(
-            title="Seleccionar PDF de la Factura",
-            filetypes=[("Archivos PDF", "*.pdf"),
-                       ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
-                       ("Todos los archivos", "*.*")])
+        ruta = seleccionar_archivo_dialogo(
+            titulo="Seleccionar PDF de la Factura",
+            tipos=[("Archivos PDF", "*.pdf"),
+                   ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
+                   ("Todos los archivos", "*.*")])
         if not ruta:
             return
         self._autocompletar_desde_archivo(ruta)
@@ -512,9 +513,9 @@ class FacturasEmitidasTab:
         for index, (_, item) in enumerate(elementos): self.tabla.move(item, "", index)
 
     def autocompletar_desde_pdf(self):
-        ruta = filedialog.askopenfilename(
-            title="Seleccionar Factura PDF",
-            filetypes=[("Archivos PDF", "*.pdf"), ("Imágenes", "*.png;*.jpg;*.jpeg")])
+        ruta = seleccionar_archivo_dialogo(
+            titulo="Seleccionar Factura PDF",
+            tipos=[("Archivos PDF", "*.pdf"), ("Imágenes", "*.png;*.jpg;*.jpeg")])
         if not ruta:
             return
         self._autocompletar_desde_archivo(ruta)
@@ -1253,11 +1254,11 @@ class FacturasEmitidasTab:
                 "• Sí  → seleccionar el PDF ahora.\n"
                 "• No  → registrarla sin PDF y adjuntarlo más tarde.")
             if adjuntar_ahora:
-                ruta_pdf = filedialog.askopenfilename(
-                    title="Adjuntar PDF de la Factura",
-                    filetypes=[("Archivos PDF", "*.pdf"),
-                               ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
-                               ("Todos los archivos", "*.*")])
+                ruta_pdf = seleccionar_archivo_dialogo(
+                    titulo="Adjuntar PDF de la Factura",
+                    tipos=[("Archivos PDF", "*.pdf"),
+                           ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
+                           ("Todos los archivos", "*.*")])
                 if ruta_pdf:
                     self.ruta_archivo_temp = ruta_pdf
                     if hasattr(self, "lbl_archivo"):
@@ -1585,11 +1586,11 @@ class FacturasEmitidasTab:
             if not ruta_base:
                 messagebox.showwarning("Configuración Requerida", "No ha configurado la ruta de Google Drive.\nEs obligatorio para guardar archivos.", parent=v_edit)
                 return
-            ruta_pdf = filedialog.askopenfilename(
-                title="Seleccionar PDF de la Factura",
-                filetypes=[("Archivos PDF", "*.pdf"),
-                           ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
-                           ("Todos los archivos", "*.*")])
+            ruta_pdf = seleccionar_archivo_dialogo(
+                titulo="Seleccionar PDF de la Factura",
+                tipos=[("Archivos PDF", "*.pdf"),
+                       ("Imágenes (JPG/PNG)", "*.png;*.jpg;*.jpeg"),
+                       ("Todos los archivos", "*.*")])
             if not ruta_pdf:
                 return
             try:
@@ -2075,7 +2076,7 @@ class CuentasPorCobrarTab:
         filas = [self.tabla.item(item)["values"][2:] for item in self.tabla.get_children()]
         if not filas: return messagebox.showwarning("Aviso", "No hay registros.")
         columnas = ["Fecha Fac.", "N° Documento", "Cliente", "Concepto", "Subtotal", "IGV", "Detracción", "Neto Facturado", "Cobrado", "Saldo Pendiente", "Archivos"]
-        ruta = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Cuentas_por_Cobrar.xlsx", filetypes=[("Excel", "*.xlsx")])
+        ruta = guardar_archivo_dialogo(titulo="Exportar Cuentas por Cobrar", defaultextension=".xlsx", initialfile="Cuentas_por_Cobrar.xlsx", tipos=[("Excel", "*.xlsx")])
         if ruta:
             pd.DataFrame(filas, columns=columnas).to_excel(ruta, index=False)
             messagebox.showinfo("Éxito", f"Reporte exportado a:\n{ruta}")
@@ -2326,7 +2327,7 @@ class CuentasPorCobrarTab:
 
             v_cobro.destroy()
 
-            ruta_origen = filedialog.askopenfilename(title="Seleccionar Soporte de Ingreso", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+            ruta_origen = seleccionar_archivo_dialogo(titulo="Seleccionar Soporte de Ingreso", tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             ruta_destino = ""
             if ruta_origen:
                 try:
@@ -2517,7 +2518,7 @@ class CuentasPorCobrarTab:
             sub_sel = sub_tabla.selection()
             if not sub_sel: return
             id_pago = sub_tabla.item(sub_sel[0], "values")[0]
-            ruta_origen = filedialog.askopenfilename(title="Seleccionar Soporte", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+            ruta_origen = seleccionar_archivo_dialogo(titulo="Seleccionar Soporte", tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             if ruta_origen:
                 try:
                     carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_ingresos")

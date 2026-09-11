@@ -14,6 +14,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
+from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
 
 try:
@@ -263,7 +264,7 @@ class OrdenesCompraClienteApp:
         if pdfplumber is None:
             return messagebox.showerror("Librería Faltante", "El escáner requiere 'pdfplumber'. Instálalo ejecutando: pip install pdfplumber")
             
-        ruta = filedialog.askopenfilename(title="Seleccionar PDF de la Orden de Compra", filetypes=[("PDF", "*.pdf")])
+        ruta = seleccionar_archivo_dialogo(titulo="Seleccionar PDF de la Orden de Compra", tipos=[("PDF", "*.pdf")])
         if not ruta: return
         
         self.ruta_archivo_temp = ruta
