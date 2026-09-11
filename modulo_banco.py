@@ -10,7 +10,7 @@ MODULO_BANCO.PY - MODULO DE BANCO (SALDOS Y CONCILIACION BANCARIA)
   (tanto ajustes manuales como cobros/pagos reales en el sistema).
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import customtkinter as ctk
 import os
 import re
@@ -90,6 +90,64 @@ def abrir_documento(ruta):
             subprocess.call(["xdg-open", ruta_abs])
     except Exception as e:
         messagebox.showerror("Error", f"No se pudo abrir el archivo:\n{e}")
+
+
+CATEGORIAS_GASTOS_DEFAULT = {
+    "Gastos Fijos": ["Alquiler", "Planilla / Sueldos", "Servicios (Luz, Agua, Internet)", "Seguros", "Préstamos / Cuotas"],
+    "Gastos Operativos": ["Combustible", "Mantenimiento", "Repuestos", "Peajes", "Otros operativos"],
+    "Ingresos": ["Cobro de cliente", "Otro ingreso"],
+    "Otros": ["Varios"],
+}
+
+COMISION_INTERBANCARIA_DEFAULT = "4.80"
+
+
+def leer_config_disco():
+    cfg = {}
+    try:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+    except Exception:
+        pass
+    return cfg
+
+
+def guardar_config_disco(cfg):
+    try:
+        with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception:
+        return False
+
+
+def cargar_categorias_gastos():
+    cfg = leer_config_disco()
+    if "categorias_gastos" in cfg and isinstance(cfg["categorias_gastos"], dict):
+        cats = cfg["categorias_gastos"]
+        return {k: (v if isinstance(v, list) else []) for k, v in cats.items()}
+    return dict(CATEGORIAS_GASTOS_DEFAULT)
+
+
+def guardar_categorias_gastos(cats):
+    cfg = leer_config_disco()
+    cfg["categorias_gastos"] = cats
+    return guardar_config_disco(cfg)
+
+
+def cargar_comision_interbancaria():
+    v = leer_config_disco().get("comision_interbancaria", COMISION_INTERBANCARIA_DEFAULT)
+    try:
+        return float(str(v).replace(",", "."))
+    except Exception:
+        return 4.8
+
+
+def guardar_comision_interbancaria(valor):
+    cfg = leer_config_disco()
+    cfg["comision_interbancaria"] = valor
+    return guardar_config_disco(cfg)
 
 
 def normalizar_monto(v):
@@ -1731,9 +1789,14 @@ class ModuloBancoApp:
         if not banco:
             messagebox.showwarning("Banco", "Seleccione un banco.", parent=self.parent_frame)
             return
+
+        cats = cargar_categorias_gastos()
+        principales = list(cats.keys()) or ["Gastos Operativos"]
+        comision = cargar_comision_interbancaria()
+
         v = ctk.CTkToplevel(self.parent_frame)
         v.title("Agregar Movimiento (Conciliación)")
-        v.geometry("460x420")
+        v.geometry("520x600")
         v.transient(self.parent_frame)
         v.grab_set()
 
@@ -1742,9 +1805,33 @@ class ModuloBancoApp:
         f = ctk.CTkFrame(v, fg_color="transparent")
         f.pack(fill="x", padx=20)
 
-        ctk.CTkLabel(f, text="Tipo:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_tipo = ctk.CTkComboBox(f, values=["Ingreso (Abono)", "Egreso (Cargo)"], width=300, state="readonly")
-        cmb_tipo.pack(fill="x", pady=(0, 8)); cmb_tipo.set("Ingreso (Abono)")
+        ctk.CTkLabel(f, text="Categoría Principal:", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_principal = ctk.CTkComboBox(f, values=principales, width=300, state="readonly")
+        cmb_principal.pack(fill="x", pady=(0, 8))
+        cmb_principal.set(principales[0])
+
+        ctk.CTkLabel(f, text="Categoría:", font=("Arial", 11, "bold")).pack(anchor="w")
+        subs_inicial = cats.get(principales[0], []) or ["(Sin categoría)"]
+        cmb_sub = ctk.CTkComboBox(f, values=subs_inicial, width=300, state="readonly")
+        cmb_sub.pack(fill="x", pady=(0, 8))
+        cmb_sub.set(subs_inicial[0])
+
+        def on_principal(_=None):
+            subs = cats.get(cmb_principal.get(), []) or ["(Sin categoría)"]
+            cmb_sub.configure(values=subs)
+            cmb_sub.set(subs[0])
+        cmb_principal.configure(command=on_principal)
+
+        def abrir_gestion():
+            self.gestionar_categorias()
+            nonlocal cats, principales
+            cats = cargar_categorias_gastos()
+            principales = list(cats.keys()) or ["Gastos Operativos"]
+            cmb_principal.configure(values=principales)
+            cmb_principal.set(principales[0])
+            on_principal()
+        ctk.CTkButton(f, text="⚙️ Gestionar Categorías", height=26, font=("Arial", 11),
+                      fg_color="#8e44ad", hover_color="#703688", command=abrir_gestion).pack(fill="x", pady=(0, 8))
 
         ctk.CTkLabel(f, text="Fecha (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_fecha = ctk.CTkEntry(f)
@@ -1759,19 +1846,59 @@ class ModuloBancoApp:
         ent_monto = ctk.CTkEntry(f)
         ent_monto.pack(fill="x", pady=(0, 8))
 
+        var_inter = tk.BooleanVar(value=False)
+        chk_inter = ctk.CTkCheckBox(f, text="Pago Interbancario", variable=var_inter)
+        chk_inter.pack(anchor="w", pady=(0, 4))
+        f_com = ctk.CTkFrame(f, fg_color="transparent")
+        f_com.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(f_com, text="Comisión (S/.):", font=("Arial", 11, "bold")).pack(side="left")
+        ent_comision = ctk.CTkEntry(f_com, width=90)
+        ent_comision.pack(side="left", padx=6)
+        ent_comision.insert(0, f"{comision:.2f}")
+        lbl_total = ctk.CTkLabel(f_com, text=f"Total: {formatear_monto(0)}", font=("Arial", 12, "bold"),
+                                 text_color="#1f538d")
+        lbl_total.pack(side="right")
+
+        def actualizar_total(*_):
+            base = normalizar_monto(ent_monto.get())
+            com = normalizar_monto(ent_comision.get())
+            total = base + (com if var_inter.get() else 0)
+            lbl_total.configure(text=f"Total: {formatear_monto(total)}")
+        chk_inter.configure(command=actualizar_total)
+        ent_monto.bind("<KeyRelease>", actualizar_total)
+        ent_comision.bind("<KeyRelease>", actualizar_total)
+
         def guardar():
-            try:
-                monto = float(ent_monto.get().strip())
-            except ValueError:
-                messagebox.showerror("Error", "Monto inválido.", parent=v)
-                return
-            if monto <= 0:
+            base = normalizar_monto(ent_monto.get())
+            if base <= 0:
                 messagebox.showerror("Error", "El monto debe ser mayor a 0.", parent=v)
                 return
-            tipo = "ingreso" if cmb_tipo.get().startswith("Ingreso") else "egreso"
-            monto = abs(monto) if tipo == "ingreso" else -abs(monto)
+            com = normalizar_monto(ent_comision.get())
+            inter = var_inter.get()
+            total = base + (com if inter else 0)
+
+            guardar_comision_interbancaria(f"{com:.2f}")
+
+            principal = cmb_principal.get()
+            sub = cmb_sub.get()
+            if sub == "(Sin categoría)":
+                sub = ""
             fecha = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
-            desc = ent_desc.get().strip() or "Ajuste manual de conciliación"
+            desc_manual = ent_desc.get().strip()
+
+            tipo = "ingreso" if principal == "Ingresos" else "egreso"
+            monto_final = total if tipo == "ingreso" else -total
+
+            partes = []
+            if principal:
+                partes.append(principal)
+            if sub:
+                partes.append(sub)
+            if desc_manual:
+                partes.append(desc_manual)
+            if inter:
+                partes.append(f"Comisión interbancaria {formatear_monto(com)}")
+            desc = " - ".join(p for p in partes if p) or "Ajuste manual de conciliación"
 
             conn = conectar_db(silencioso=True)
             if conn:
@@ -1781,7 +1908,7 @@ class ModuloBancoApp:
                             INSERT INTO conciliacion_bancaria
                             (banco, cuenta, fecha, descripcion, monto, tipo, origen, id_movimiento, estado)
                             VALUES (%s, %s, %s, %s, %s, %s, 'manual', 0, 'pendiente')
-                        """, (banco.get("banco", ""), banco.get("cuenta", ""), fecha, desc, monto, tipo))
+                        """, (banco.get("banco", ""), banco.get("cuenta", ""), fecha, desc, monto_final, tipo))
                         conn.commit()
                 except Exception as e:
                     messagebox.showerror("Error", f"No se pudo guardar:\n{e}", parent=v)
@@ -1790,11 +1917,125 @@ class ModuloBancoApp:
                 finally:
                     liberar_conexion(conn)
             registrar_auditoria(self.usuario_activo, "Banco",
-                                f"Agregó movimiento manual {formatear_monto(monto)} en {construir_etiqueta_banco(banco)}")
+                                f"Agregó movimiento manual {formatear_monto(monto_final)} en {construir_etiqueta_banco(banco)}")
             v.destroy()
             self.generar_reporte()
 
         ctk.CTkButton(v, text="✅ Guardar", width=140, fg_color="#27ae60", command=guardar).pack(pady=10)
+
+    def gestionar_categorias(self):
+        cats = cargar_categorias_gastos()
+        v = ctk.CTkToplevel(self.parent_frame)
+        v.title("Gestionar Categorías de Gastos")
+        v.geometry("640x500")
+        v.transient(self.parent_frame)
+        v.grab_set()
+
+        ctk.CTkLabel(v, text="⚙️ Categorías (principales y subcategorías)", font=("Arial", 14, "bold"),
+                     text_color="#1f538d").pack(pady=(15, 5))
+
+        f_tabla = ctk.CTkFrame(v, fg_color="transparent")
+        f_tabla.pack(fill="both", expand=True, padx=15, pady=10)
+        columnas = ("principal", "categoria")
+        tree = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="browse")
+        tree.heading("principal", text="Principal")
+        tree.heading("categoria", text="Categoría")
+        tree.column("principal", width=220, anchor="w")
+        tree.column("categoria", width=320, anchor="w")
+        vsb = ttk.Scrollbar(f_tabla, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        def cargar_tree():
+            tree.delete(*tree.get_children())
+            for p, subs in cats.items():
+                for s in subs:
+                    tree.insert("", tk.END, values=(p, s))
+
+        cargar_tree()
+
+        def seleccion():
+            sel = tree.selection()
+            if not sel:
+                return None, None
+            vals = tree.item(sel[0], "values")
+            return vals[0], vals[1]
+
+        def add_principal():
+            nombre = simpledialog.askstring("Nueva principal", "Nombre de la categoría principal:", parent=v)
+            if nombre:
+                nombre = nombre.strip()
+                if nombre and nombre not in cats:
+                    cats[nombre] = ["Varios"]
+                    cargar_tree()
+
+        def add_sub():
+            p, s = seleccion()
+            if not p:
+                messagebox.showinfo("Aviso", "Seleccione una fila para saber a qué principal agregar.", parent=v)
+                return
+            nombre = simpledialog.askstring("Nueva categoría", f"Categoría para '{p}':", parent=v)
+            if nombre:
+                nombre = nombre.strip()
+                if nombre and nombre not in cats.get(p, []):
+                    cats.setdefault(p, []).append(nombre)
+                    cargar_tree()
+
+        def edit():
+            p, s = seleccion()
+            if not p:
+                messagebox.showinfo("Aviso", "Seleccione una fila para editar.", parent=v)
+                return
+            if s:
+                nuevo = simpledialog.askstring("Editar categoría", f"Editar '{s}' en '{p}':", parent=v, initialvalue=s)
+                if nuevo:
+                    nuevo = nuevo.strip()
+                    if nuevo and nuevo != s:
+                        lista = cats.get(p, [])
+                        if s in lista:
+                            lista[lista.index(s)] = nuevo
+                        cargar_tree()
+            else:
+                nuevo = simpledialog.askstring("Editar principal", f"Editar '{p}':", parent=v, initialvalue=p)
+                if nuevo:
+                    nuevo = nuevo.strip()
+                    if nuevo and nuevo != p:
+                        cats[nuevo] = cats.pop(p, [])
+                        cargar_tree()
+
+        def delete():
+            p, s = seleccion()
+            if not p:
+                messagebox.showinfo("Aviso", "Seleccione una fila para eliminar.", parent=v)
+                return
+            if s:
+                if messagebox.askyesno("Eliminar", f"¿Eliminar la categoría '{s}' de '{p}'?", parent=v):
+                    lista = cats.get(p, [])
+                    if s in lista:
+                        lista.remove(s)
+                    cargar_tree()
+            else:
+                if messagebox.askyesno("Eliminar", f"¿Eliminar la principal '{p}' y todas sus categorías?", parent=v):
+                    cats.pop(p, None)
+                    cargar_tree()
+
+        def guardar():
+            for p in list(cats.keys()):
+                if not cats.get(p):
+                    cats[p] = ["Varios"]
+            if guardar_categorias_gastos(cats):
+                v.destroy()
+                messagebox.showinfo("Éxito", "Categorías guardadas.", parent=self.parent_frame)
+            else:
+                messagebox.showerror("Error", "No se pudieron guardar las categorías.", parent=v)
+
+        f_btns = ctk.CTkFrame(v, fg_color="transparent"); f_btns.pack(fill="x", padx=15, pady=(0, 15))
+        ctk.CTkButton(f_btns, text="➕ Principal", width=120, command=add_principal).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns, text="➕ Categoría", width=120, command=add_sub).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns, text="✏️ Editar", width=100, command=edit).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns, text="🗑️ Eliminar", width=100, command=delete).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns, text="💾 Guardar y Cerrar", width=150, fg_color="#27ae60", command=guardar).pack(side="right", padx=4)
 
     def registrar_pago_sistema(self):
         """Registra un cobro/pago real (factura faltante) vinculado al banco."""

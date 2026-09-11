@@ -12,7 +12,7 @@
     "detraccion_porcentaje": "12",
     "renta_mensual_porcentaje": "1.5",
     "renta_anual_porcentaje": "0",
-    "regimen_empresa": "R\u00e9gimen General",
+    "regimen_empresa": "Régimen General",
     "proveedor_fe": "Nubefact",
     "url_api_fe": "",
     "token_api_fe": "",
@@ -88,5 +88,6 @@
         "configuracion",
         "usuarios",
         "bitacora"
-    ]
+    ],
+    "comision_interbancaria": "4.80"
 }
