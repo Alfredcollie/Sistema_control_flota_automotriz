@@ -96,6 +96,49 @@ def abrir_documento(ruta):
     except Exception as e:
         messagebox.showerror("Error", f"No se pudo abrir el archivo:\n{e}")
 
+def _applescript_elegir_archivo(titulo, extensiones):
+    """Construye el AppleScript del selector de archivos nativo de macOS."""
+    titulo_limpio = str(titulo).replace('"', "'")
+    cmd = f'POSIX path of (choose file with prompt "{titulo_limpio}"'
+    if extensiones:
+        lista = "{" + ", ".join(f'"{e}"' for e in extensiones) + "}"
+        cmd += f" of type {lista}"
+    return cmd + ")"
+
+def seleccionar_archivo_dialogo(titulo="Seleccionar Documento", tipos=None):
+    """Abre el diálogo para elegir un archivo de forma SEGURA en todas las plataformas.
+
+    ⚠️ macOS: el diálogo de Tkinter (tk_getOpenFile) puede CERRAR la aplicación al
+    abrirse (fallo conocido de Tk en macOS, sobre todo en apps empaquetadas). Por eso
+    en Mac se usa el selector nativo del sistema mediante 'osascript', que corre en un
+    proceso independiente y no puede tumbar la aplicación.
+    En Windows/Linux se mantiene el diálogo normal de Tkinter.
+    """
+    tipos = tipos or [("Todos los archivos", "*.*")]
+
+    if sys.platform == "darwin":
+        extensiones = []
+        for _desc, patrones in tipos:
+            if isinstance(patrones, str):
+                patrones = patrones.replace(";", " ").split()
+            for patron in patrones:
+                ext = str(patron).replace("*", "").strip().lstrip(".")
+                if ext and ext not in extensiones:
+                    extensiones.append(ext)
+        try:
+            res = subprocess.run(["osascript", "-e", _applescript_elegir_archivo(titulo, extensiones)],
+                                 capture_output=True, text=True)
+            if res.returncode == 0:
+                return res.stdout.strip()
+            return ""   # El usuario canceló (-128) o el selector no devolvió archivo
+        except FileNotFoundError:
+            # Sin osascript disponible: se usa el diálogo de Tkinter
+            return filedialog.askopenfilename(title=titulo, filetypes=tipos)
+        except Exception:
+            return ""
+
+    return filedialog.askopenfilename(title=titulo, filetypes=tipos)
+
 def cargar_configuracion_regional():
     config = {
         "simbolo_moneda": "S/.",
@@ -400,7 +443,7 @@ class FacturasRecibidasTab:
         if pdfplumber is None:
             messagebox.showerror("Librería faltante", "No se encontró 'pdfplumber'. Ejecuta: pip install pdfplumber")
             return
-        ruta = filedialog.askopenfilename(title="Seleccionar Factura PDF de SUNAT", filetypes=[("Archivos PDF", "*.pdf")])
+        ruta = seleccionar_archivo_dialogo("Seleccionar Factura PDF de SUNAT", [("Archivos PDF", "*.pdf")])
         if not ruta: return
         try:
             self.bloquear_autocompletado_ruc = True
@@ -463,7 +506,7 @@ class FacturasRecibidasTab:
             messagebox.showerror("Error", f"Ocurrió un error:\n{e}")
 
     def autocompletar_desde_xml(self):
-        ruta = filedialog.askopenfilename(title="Seleccionar Factura XML de SUNAT", filetypes=[("Archivos XML", "*.xml")])
+        ruta = seleccionar_archivo_dialogo("Seleccionar Factura XML de SUNAT", [("Archivos XML", "*.xml")])
         if not ruta: return
         try:
             self.bloquear_autocompletado_ruc = True
@@ -1149,7 +1192,7 @@ class FacturasRecibidasTab:
         except ValueError: pass
 
     def seleccionar_archivo(self):
-        ruta = filedialog.askopenfilename(title="Seleccionar Documento", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg;*.xml")])
+        ruta = seleccionar_archivo_dialogo("Seleccionar Documento", [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg;*.xml")])
         if ruta:
             self.ruta_archivo_temp = ruta
             self.btn_archivo.configure(text="✅ Archivo Manual Listo", fg_color="#28a745", hover_color="#218838")
@@ -2025,7 +2068,7 @@ class CuentasPorPagarTab:
         Se invoca con after() para evitar el cierre de la app en macOS al abrir
         el diálogo nativo justo después de destruir la ventana modal."""
         try:
-            ruta_origen = filedialog.askopenfilename(title="Seleccionar Soporte de Egreso", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+            ruta_origen = seleccionar_archivo_dialogo("Seleccionar Soporte de Egreso", [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             ruta_destino = ""
             if ruta_origen:
                 try:
@@ -2217,7 +2260,7 @@ class CuentasPorPagarTab:
             sub_sel = sub_tabla.selection()
             if not sub_sel: return
             id_pago = sub_tabla.item(sub_sel[0], "values")[0]
-            ruta_origen = filedialog.askopenfilename(title="Seleccionar Soporte", filetypes=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+            ruta_origen = seleccionar_archivo_dialogo("Seleccionar Soporte", [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             if ruta_origen:
                 try:
                     carpeta_comprobantes = os.path.normpath(os.path.join(ruta_base, "comprobantes_egresos"))
