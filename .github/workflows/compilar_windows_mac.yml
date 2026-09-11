@@ -214,9 +214,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name != '')
 
     steps:
-    - name: Clonar el repositorio
-      uses: actions/checkout@v4
-
     - name: Descargar artifact Windows
       uses: actions/download-artifact@v4
       with:
@@ -232,15 +229,14 @@ jobs:
     - name: Ver archivos a publicar
       run: ls -la release-assets
 
-    - name: Agregar instalador macOS al release
-      run: cp Instalar_ControlFlota_Mac.command release-assets/
-
     - name: Publicar en GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
         name: ControlFlota ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
         files: |
-          release-assets/*
+          release-assets/*.zip
+          release-assets/*.dmg
+          release-assets/*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
