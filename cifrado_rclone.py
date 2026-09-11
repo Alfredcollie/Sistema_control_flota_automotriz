@@ -14,9 +14,19 @@ clave, pero esa clave NO se guarda en la base de datos.
 """
 import base64
 
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+# Importación tolerante: si 'cryptography' no está instalada (p. ej. en un Mac
+# que aún no corrió el instalador de dependencias), la app igual abre y el
+# cifrado queda desactivado hasta que se instale la librería.
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    _CRYPTO_DISPONIBLE = True
+except Exception:
+    _CRYPTO_DISPONIBLE = False
+    Fernet = None
+    hashes = None
+    PBKDF2HMAC = None
 
 _SAL = b"ControlFlota::rclone-token::v1"
 _ITERACIONES = 600_000
@@ -30,6 +40,10 @@ def _clave_fernet():
     global _clave_cache, _clave_cache_resuelta
     if _clave_cache_resuelta:
         return _clave_cache
+    if not _CRYPTO_DISPONIBLE:
+        _clave_cache = None
+        _clave_cache_resuelta = True
+        return None
 
     try:
         from conexion import leer_credenciales
