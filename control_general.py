@@ -26,10 +26,11 @@ import threading
 from datetime import datetime, timedelta
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
-from app_paths import CONFIG_FILE, obtener_device_id
+from app_paths import CONFIG_FILE, DATA_DIR, obtener_device_id
 from config_nube import (cargar_bancos, guardar_bancos, cargar_cuenta_grifo,
                          guardar_cuenta_grifo, clave_existe_en_nube,
-                         cargar_rclone_sync, registrar_rclone_sync, borrar_rclone_sync)
+                         cargar_rclone_sync, registrar_rclone_sync, borrar_rclone_sync,
+                         guardar_rclone_token, obtener_rclone_token, borrar_rclone_token)
 
 if sys.platform == "win32":
     import ctypes
@@ -151,6 +152,90 @@ def obtener_comando_rclone():
                 return r
                 
     return "rclone"
+
+
+# =========================================================
+# CONFIG Y TOKEN DE RCLONE COMPARTIDO (cifrado en Supabase)
+# =========================================================
+_config_rclone_asegurada = False
+
+
+def _ruta_config_rclone_por_defecto():
+    """Mejor intento de la ruta de config que rclone usa por defecto."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", os.path.join(os.path.expanduser("~"), "AppData", "Roaming"))
+        return os.path.join(base, "rclone", "rclone.conf")
+    return os.path.expanduser("~/.config/rclone/rclone.conf")
+
+
+def _asegurar_config_rclone():
+    """Devuelve la ruta del rclone.conf que controla la app (en DATA_DIR).
+
+    La primera vez, si ya existía un enlace hecho con el rclone.conf por defecto,
+    lo copiamos para no perder la cuenta ya vinculada.
+    """
+    global _config_rclone_asegurada
+    ruta = DATA_DIR / "rclone.conf"
+    try:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if not _config_rclone_asegurada:
+        _config_rclone_asegurada = True
+        if not ruta.exists():
+            origen = _ruta_config_rclone_por_defecto()
+            if origen and os.path.exists(origen):
+                try:
+                    shutil.copy2(origen, str(ruta))
+                except Exception:
+                    pass
+    return str(ruta)
+
+
+def _argumentos_config_rclone():
+    """Flags globales para que rclone use siempre nuestro rclone.conf."""
+    return ["--config", _asegurar_config_rclone()]
+
+
+def sincronizar_token_rclone_local():
+    """Descarga el token compartido (cifrado) desde Supabase y, si es válido y
+    distinto, lo escribe en el rclone.conf local. Así los equipos esclavos ven
+    los mismos archivos de Google Drive sin volver a vincular la cuenta."""
+    try:
+        texto = obtener_rclone_token()
+        if not texto:
+            return False
+        ruta = _asegurar_config_rclone()
+        actual = ""
+        if os.path.exists(ruta):
+            try:
+                with open(ruta, "r", encoding="utf-8") as f:
+                    actual = f.read()
+            except Exception:
+                pass
+        if texto == actual:
+            return False
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(texto)
+        return True
+    except Exception:
+        return False
+
+
+def subir_token_rclone_nube():
+    """Lee el rclone.conf local y lo sube cifrado a Supabase. Solo lo invoca el
+    equipo propietario del enlace Rclone."""
+    try:
+        ruta = _asegurar_config_rclone()
+        if not os.path.exists(ruta):
+            return False
+        with open(ruta, "r", encoding="utf-8") as f:
+            texto = f.read()
+        if not texto.strip():
+            return False
+        return guardar_rclone_token(texto)
+    except Exception:
+        return False
 
 
 def normalizar_ruta_local(ruta):
@@ -304,7 +389,12 @@ def ejecutar_sincronizacion_silenciosa():
     if not local or not remote or not nube or not os.path.exists(local):
         return
 
+    # Asegura que el token compartido (del equipo propietario) esté en el
+    # rclone.conf local antes de sincronizar.
+    sincronizar_token_rclone_local()
+
     cmd = obtener_comando_rclone()
+    args_cfg = _argumentos_config_rclone()
     ruta_remota = f"{remote}{nube}" if remote.endswith(":") else f"{remote}:{nube}"
 
     kwargs = {}
@@ -312,8 +402,8 @@ def ejecutar_sincronizacion_silenciosa():
         kwargs["creationflags"] = 0x08000000
 
     try:
-        subprocess.run([cmd, "copy", ruta_remota, local, "--update", "--quiet"], timeout=120, **kwargs)
-        subprocess.run([cmd, "copy", local, ruta_remota, "--update", "--quiet"], timeout=120, **kwargs)
+        subprocess.run([cmd, *args_cfg, "copy", ruta_remota, local, "--update", "--quiet"], timeout=120, **kwargs)
+        subprocess.run([cmd, *args_cfg, "copy", local, ruta_remota, "--update", "--quiet"], timeout=120, **kwargs)
     except Exception:
         pass
 
@@ -1675,9 +1765,12 @@ class ControlGeneralEventos:
                 parent=v_conf):
                 return
             if borrar_rclone_sync():
+                # También se elimina el token compartido: así ningún equipo
+                # esclavo seguirá usando la cuenta anterior.
+                borrar_rclone_token()
                 messagebox.showinfo(
                     "Registro Borrado",
-                    "El registro de sincronización en la nube fue eliminado.\n\n"
+                    "El registro de sincronización y su token compartido fueron eliminados.\n\n"
                     "Guarda los cambios si deseas registrar una nueva configuración desde este equipo.",
                     parent=v_conf)
                 _refrescar_estado_sync()
@@ -1696,6 +1789,7 @@ class ControlGeneralEventos:
                 ent_rclone_remote.delete(0, tk.END)
                 ent_rclone_remote.insert(0, remote + ":")
             cmd_rclone = obtener_comando_rclone()
+            args_cfg = _argumentos_config_rclone()
 
             msg = ("Se abrirá el navegador web automáticamente.\n\n"
                    "1. Selecciona tu cuenta de Google.\n"
@@ -1707,12 +1801,16 @@ class ControlGeneralEventos:
                 kwargs = {}
                 if sys.platform == "win32":
                     kwargs["creationflags"] = 0x08000000
-                result = subprocess.run([cmd_rclone, "config", "create", remote, "drive", "scope", "drive"], capture_output=True, text=True, timeout=60, **kwargs)
+                result = subprocess.run([cmd_rclone, *args_cfg, "config", "create", remote, "drive", "scope", "drive"], capture_output=True, text=True, timeout=60, **kwargs)
                 if result.returncode == 0:
                     # Este equipo queda registrado como propietario de la
                     # sincronización (el primero que lo registra es "el de siempre").
                     registrar_sync_nube()
-                    messagebox.showinfo("Éxito", "¡Google Drive vinculado correctamente!\n\nEste equipo quedó registrado como propietario de la sincronización.\nYa puedes realizar la prueba de conexión.", parent=v_conf)
+                    # Sube el token cifrado a Supabase solo si quedó como propietario.
+                    reg = cargar_rclone_sync() or {}
+                    if (reg.get("linked_by_device") or "") == device_id:
+                        subir_token_rclone_nube()
+                    messagebox.showinfo("Éxito", "¡Google Drive vinculado correctamente!\n\nEste equipo quedó registrado como propietario de la sincronización y su token fue compartido (cifrado) con los demás equipos.\nYa puedes realizar la prueba de conexión.", parent=v_conf)
                 else:
                     messagebox.showerror("Error", f"Falló la vinculación:\n{result.stderr}", parent=v_conf)
             except Exception as e:
@@ -1739,20 +1837,24 @@ class ControlGeneralEventos:
                                     "Los archivos se guardarán aquí y luego se enviarán a la nube.", parent=v_conf)
                 
             cmd_rclone = obtener_comando_rclone()
+            args_cfg = _argumentos_config_rclone()
+
+            # Asegura que el token compartido esté en el rclone.conf local.
+            sincronizar_token_rclone_local()
 
             kwargs = {}
             if sys.platform == "win32":
                 kwargs["creationflags"] = 0x08000000
 
             try:
-                subprocess.run([cmd_rclone, "version"], check=True, capture_output=True, timeout=10, **kwargs)
-                result = subprocess.run([cmd_rclone, "about", remote], capture_output=True, text=True, timeout=20, **kwargs)
+                subprocess.run([cmd_rclone, *args_cfg, "version"], check=True, capture_output=True, timeout=10, **kwargs)
+                result = subprocess.run([cmd_rclone, *args_cfg, "about", remote], capture_output=True, text=True, timeout=20, **kwargs)
                 
                 if result.returncode == 0:
                     msg_adicional = ""
                     if nube:
                         ruta_remota = f"{remote}{nube}" if remote.endswith(":") else f"{remote}:{nube}"
-                        res_mkdir = subprocess.run([cmd_rclone, "mkdir", ruta_remota], capture_output=True, text=True, timeout=20, **kwargs)
+                        res_mkdir = subprocess.run([cmd_rclone, *args_cfg, "mkdir", ruta_remota], capture_output=True, text=True, timeout=20, **kwargs)
                         if res_mkdir.returncode == 0:
                             msg_adicional = f"\n\n📁 Se verificó/creó la carpeta en la nube: '{nube}'"
                             lanzar_sync_background()
@@ -1939,6 +2041,13 @@ class ControlGeneralEventos:
             sync_final = cargar_rclone_sync() or {}
             remote_final = (sync_final.get("rclone_remote") or remote_val).strip()
             nube_final = (sync_final.get("rclone_ruta_nube") or nube_val).strip()
+
+            # Solo el equipo propietario comparte su token de Rclone (cifrado).
+            if (sync_final.get("linked_by_device") or "") == device_id:
+                try:
+                    subir_token_rclone_nube()
+                except Exception as e:
+                    print("Error subiendo token rclone:", e)
 
             nueva_config = config_actual.copy()
             nueva_config.update({

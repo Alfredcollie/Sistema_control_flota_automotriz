@@ -8,10 +8,12 @@ consistentes entre todos los equipos (Windows / macOS).
 """
 import json
 from conexion import conectar_db, liberar_conexion
+from cifrado_rclone import cifrar_texto, descifrar_texto
 
 CLAVE_BANCOS = "cuentas_bancarias"
 CLAVE_GRIFO = "cuenta_grifo_pagos"
 CLAVE_RCLONE = "rclone_sync"
+CLAVE_RCLONE_TOKEN = "rclone_token"
 
 
 def _asegurar_tabla(cursor):
@@ -170,6 +172,48 @@ def borrar_rclone_sync():
         with conn.cursor() as cursor:
             _asegurar_tabla(cursor)
             cursor.execute("DELETE FROM config_general WHERE clave = %s", (CLAVE_RCLONE,))
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        liberar_conexion(conn)
+
+
+def guardar_rclone_token(token_texto):
+    """Cifra el contenido de rclone.conf y lo guarda en Supabase.
+
+    Devuelve True solo si el texto se cifró y guardó correctamente.
+    """
+    if not token_texto or not token_texto.strip():
+        return False
+    cifrado = cifrar_texto(token_texto)
+    if not cifrado:
+        return False
+    return _guardar_clave(CLAVE_RCLONE_TOKEN, cifrado)
+
+
+def obtener_rclone_token():
+    """Descarga y descifra el token de Rclone compartido (o '' si no hay/falla)."""
+    cifrado = _cargar_clave(CLAVE_RCLONE_TOKEN, "")
+    if not cifrado:
+        return ""
+    return descifrar_texto(cifrado) or ""
+
+
+def borrar_rclone_token():
+    """Elimina el token de Rclone compartido de Supabase."""
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cursor:
+            _asegurar_tabla(cursor)
+            cursor.execute("DELETE FROM config_general WHERE clave = %s", (CLAVE_RCLONE_TOKEN,))
         conn.commit()
         return True
     except Exception:

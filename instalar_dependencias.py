@@ -11,6 +11,7 @@ def instalar_dependencias():
         "psycopg2-binary",      # Conexión a PostgreSQL (binarios para Mac/Windows)
         "keyring",              # Llavero del sistema (Windows Credential Manager / macOS Keychain)
         "bcrypt",               # Hash de contraseñas de usuarios
+        "cryptography",         # Cifrado del token de Rclone compartido en Supabase
         "reportlab",            # Generación de PDFs
         "pdfplumber",           # Extracción de datos de PDFs
         "pypdf",                # Lectura de fichas PDF interactivas
