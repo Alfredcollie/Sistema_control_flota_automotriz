@@ -37,33 +37,50 @@ SUPABASE_PORT = "6543"
 SERVICE_NAME = "ControlFlotaLicencias"
 
 
+_password_cache = None
+
+
 def _password_licencia():
     """Contraseña de la base de licencias.
-    Prioridad: llavero -> variable de entorno -> config_licencia.json."""
+    Prioridad: llavero -> variable de entorno -> config_licencia.json.
+
+    El resultado se cachea: en macOS cada acceso al llavero puede abrir un
+    aviso pidiendo la clave del usuario, por eso se consulta una sola vez
+    por proceso.
+    """
+    global _password_cache
+    if _password_cache is not None:
+        return _password_cache
+
+    pw = ""
     try:
-        pw = keyring.get_password(SERVICE_NAME, "SUPABASE_DB_PASSWORD")
-        if pw:
-            return pw
+        llave = keyring.get_password(SERVICE_NAME, "SUPABASE_DB_PASSWORD")
+        if llave:
+            pw = llave
     except Exception:
         pass
-    env_pw = os.environ.get("SUPABASE_LIC_DB_PASSWORD", "").strip()
-    if env_pw:
-        return env_pw
-    # 3) Archivo inyectado en la compilación (config_licencia.json)
-    try:
-        base = (
-            os.path.dirname(sys.executable)
-            if getattr(sys, "frozen", False)
-            else os.path.dirname(os.path.abspath(__file__))
-        )
-        ruta = os.path.join(base, "config_licencia.json")
-        if os.path.exists(ruta):
-            import json
-            with open(ruta, "r", encoding="utf-8") as f:
-                return json.load(f).get("password", "")
-    except Exception:
-        pass
-    return ""
+
+    if not pw:
+        pw = os.environ.get("SUPABASE_LIC_DB_PASSWORD", "").strip()
+
+    if not pw:
+        # Archivo inyectado en la compilación (config_licencia.json)
+        try:
+            base = (
+                os.path.dirname(sys.executable)
+                if getattr(sys, "frozen", False)
+                else os.path.dirname(os.path.abspath(__file__))
+            )
+            ruta = os.path.join(base, "config_licencia.json")
+            if os.path.exists(ruta):
+                import json
+                with open(ruta, "r", encoding="utf-8") as f:
+                    pw = json.load(f).get("password", "")
+        except Exception:
+            pw = ""
+
+    _password_cache = pw
+    return _password_cache
 
 # =========================================================
 # 🚀 IDENTIFICADOR DEL SOFTWARE

@@ -43,21 +43,37 @@ logging.basicConfig(
 # Variable global para el Pool de conexiones
 _connection_pool = None
 
+# Caché de credenciales. IMPORTANTE (macOS): cada lectura del llavero puede
+# abrir un aviso pidiendo la clave del usuario. Si se lee varias veces, el
+# aviso aparece varias veces; por eso se lee UNA sola vez por proceso.
+_llavero_cache = None
+_credenciales_cache = None
+
 
 def _credenciales_llavero():
-    """Credenciales leídas del llavero del sistema (None si no existen)."""
+    """Credenciales leídas del llavero del sistema (None si no existen).
+
+    El resultado se cachea para no volver a pedir la clave del usuario
+    (en macOS cada acceso al llavero puede mostrar un aviso).
+    """
+    global _llavero_cache
+    if _llavero_cache is not None:
+        return _llavero_cache
+
     def _get(clave):
         try:
             return keyring.get_password(SERVICE_NAME, clave)
         except Exception:
             return None
-    return {
+
+    _llavero_cache = {
         "host": _get("SUPABASE_DB_HOST"),
         "port": _get("SUPABASE_DB_PORT"),
         "dbname": _get("SUPABASE_DB_NAME"),
         "user": _get("SUPABASE_DB_USER"),
         "password": _get("SUPABASE_DB_PASSWORD"),
     }
+    return _llavero_cache
 
 
 def _credenciales_entorno():
@@ -102,17 +118,27 @@ def _credenciales_archivo():
 
 
 def leer_credenciales():
-    """Credenciales: llavero -> variables de entorno -> config_db.json."""
+    """Credenciales: llavero -> variables de entorno -> config_db.json.
+
+    El resultado se resuelve UNA sola vez por proceso (caché). Así, aunque el
+    programa pida credenciales muchas veces, el llavero se consulta una sola
+    vez y en macOS el aviso de la clave aparece una sola vez.
+    """
+    global _credenciales_cache
+    if _credenciales_cache is not None:
+        return _credenciales_cache
+
     ll = _credenciales_llavero()
     env = _credenciales_entorno()
     archivo = _credenciales_archivo()
-    return {
+    _credenciales_cache = {
         "host": ll["host"] or env["host"] or archivo["host"],
         "port": ll["port"] or env["port"] or archivo["port"],
         "dbname": ll["dbname"] or env["dbname"] or archivo["dbname"],
         "user": ll["user"] or env["user"] or archivo["user"],
         "password": ll["password"] or env["password"] or archivo["password"],
     }
+    return _credenciales_cache
 
 
 def _crear_pool(cred):
