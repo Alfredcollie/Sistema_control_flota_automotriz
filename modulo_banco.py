@@ -150,6 +150,23 @@ def guardar_comision_interbancaria(valor):
     return guardar_config_disco(cfg)
 
 
+def cargar_placas_flota():
+    """Placas de vehículos registrados en Flota Automotriz."""
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return []
+    placas = []
+    try:
+        with conn.cursor() as c:
+            c.execute("SELECT placa FROM flota_vehiculos WHERE placa IS NOT NULL AND TRIM(placa) != '' ORDER BY placa")
+            placas = [r[0] for r in c.fetchall()]
+    except Exception:
+        pass
+    finally:
+        liberar_conexion(conn)
+    return placas
+
+
 def normalizar_monto(v):
     """Convierte cualquier texto de monto a float, aceptando ambos formatos
     (1,234.56 y 1.234,56) y simbolos de moneda."""
@@ -1816,10 +1833,23 @@ class ModuloBancoApp:
         cmb_sub.pack(fill="x", pady=(0, 8))
         cmb_sub.set(subs_inicial[0])
 
+        # Tercer desplegable: placa (solo para Gastos Operativos)
+        placas = cargar_placas_flota()
+        lbl_placa = ctk.CTkLabel(f, text="Placa / Vehículo:", font=("Arial", 11, "bold"))
+        cmb_placa = ctk.CTkComboBox(f, values=placas or ["(Sin placas)"], width=300, state="readonly")
+        if placas:
+            cmb_placa.set(placas[0])
+
         def on_principal(_=None):
             subs = cats.get(cmb_principal.get(), []) or ["(Sin categoría)"]
             cmb_sub.configure(values=subs)
             cmb_sub.set(subs[0])
+            if cmb_principal.get() == "Gastos Operativos":
+                lbl_placa.pack(anchor="w", pady=(0, 2), before=btn_gestion)
+                cmb_placa.pack(fill="x", pady=(0, 8), before=btn_gestion)
+            else:
+                lbl_placa.pack_forget()
+                cmb_placa.pack_forget()
         cmb_principal.configure(command=on_principal)
 
         def abrir_gestion():
@@ -1830,8 +1860,10 @@ class ModuloBancoApp:
             cmb_principal.configure(values=principales)
             cmb_principal.set(principales[0])
             on_principal()
-        ctk.CTkButton(f, text="⚙️ Gestionar Categorías", height=26, font=("Arial", 11),
-                      fg_color="#8e44ad", hover_color="#703688", command=abrir_gestion).pack(fill="x", pady=(0, 8))
+        btn_gestion = ctk.CTkButton(f, text="⚙️ Gestionar Categorías", height=26, font=("Arial", 11),
+                                    fg_color="#8e44ad", hover_color="#703688", command=abrir_gestion)
+        btn_gestion.pack(fill="x", pady=(0, 8))
+        on_principal()
 
         ctk.CTkLabel(f, text="Fecha (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_fecha = ctk.CTkEntry(f)
@@ -1883,6 +1915,11 @@ class ModuloBancoApp:
             sub = cmb_sub.get()
             if sub == "(Sin categoría)":
                 sub = ""
+            placa = ""
+            if principal == "Gastos Operativos":
+                pv = cmb_placa.get()
+                if pv and pv != "(Sin placas)":
+                    placa = pv
             fecha = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
             desc_manual = ent_desc.get().strip()
 
@@ -1894,6 +1931,8 @@ class ModuloBancoApp:
                 partes.append(principal)
             if sub:
                 partes.append(sub)
+            if placa:
+                partes.append(f"Placa {placa}")
             if desc_manual:
                 partes.append(desc_manual)
             if inter:
