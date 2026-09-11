@@ -686,24 +686,20 @@ class FacturasRecibidasTab:
     def agregar_nueva_categoria(self):
         nueva = simpledialog.askstring("Nueva Categoría", "Ingrese el nombre de la nueva categoría de gasto:", parent=self.main_root.winfo_toplevel())
         if nueva:
-            nueva = nueva.strip().upper()
+            nueva = nueva.strip()
             if nueva:
                 try:
-                    config = {}
-                    if os.path.exists(str(CONFIG_FILE)):
-                        with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
-                            config = json.load(f)
-                    
-                    extras = config.get("categorias_gasto_extra", [])
-                    if nueva not in extras:
-                        extras.append(nueva)
-                        config["categorias_gasto_extra"] = extras
-                        with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
-                            json.dump(config, f, indent=4)
-                            
+                    from modulo_banco import cargar_categorias_gastos, guardar_categorias_gastos
+                    cats = cargar_categorias_gastos()
+                    cats.setdefault("Otros", [])
+                    if nueva not in cats["Otros"]:
+                        cats["Otros"].append(nueva)
+                        guardar_categorias_gastos(cats)
                     self.cargar_categorias()
-                    self.combo_categoria.set(nueva)
-                    messagebox.showinfo("Éxito", f"Categoría '{nueva}' agregada correctamente y guardada de forma permanente.")
+                    etiqueta = f"Otros - {nueva}"
+                    if etiqueta in self.combo_categoria.cget("values"):
+                        self.combo_categoria.set(etiqueta)
+                    messagebox.showinfo("Éxito", f"Categoría '{nueva}' agregada y guardada.")
                 except Exception as e:
                     messagebox.showerror("Error", f"No se pudo guardar la categoría:\n{e}")
 
@@ -987,38 +983,18 @@ class FacturasRecibidasTab:
         return descargados
 
     def cargar_categorias(self):
-        base_cats = [
-            "GENERAL / OFICINA", 
-            "Combustible y Peajes", 
-            "Repuestos, Llantas y Baterías", 
-            "Mantenimiento y Mano de Obra", 
-            "Seguros (SOAT/Vehicular) y Revisiones", 
-            "Trámites y Permisos (MTC)", 
-            "Servicios Generales (Lavado/Limpieza)",
-            "Comisiones Bancarias" 
-        ]
-        
-        try:
-            if os.path.exists(str(CONFIG_FILE)):
-                with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                    extras = config.get("categorias_gasto_extra", [])
-                    for ext in extras:
-                        if ext not in base_cats:
-                            base_cats.append(ext)
-        except Exception: pass
-        
-        conn = conectar_db(silencioso=True)
-        if conn:
-            try:
-                c = conn.cursor()
-                c.execute("SELECT DISTINCT categoria FROM facturas_recibidas WHERE categoria IS NOT NULL AND categoria != ''")
-                for r in c.fetchall():
-                    cat_db = str(r[0]).strip()
-                    if cat_db not in base_cats:
-                        base_cats.append(cat_db)
-            except: pass
-            finally: liberar_conexion(conn)
+        # Usar las MISMAS categorías que el módulo Banco (Conciliación → Agregar Movimiento)
+        from modulo_banco import cargar_categorias_gastos
+        cats = cargar_categorias_gastos()
+        base_cats = []
+        for principal, subs in cats.items():
+            if isinstance(subs, list):
+                for s in subs:
+                    etiqueta = f"{principal} - {s}".strip()
+                    if etiqueta and etiqueta not in base_cats:
+                        base_cats.append(etiqueta)
+        if not base_cats:
+            base_cats = ["Gastos Fijos - Alquiler"]
 
         self.combo_categoria.configure(values=base_cats)
         if not self.combo_categoria.get() or self.combo_categoria.get() not in base_cats:

@@ -89,5 +89,29 @@
         "usuarios",
         "bitacora"
     ],
-    "comision_interbancaria": "4.80"
+    "comision_interbancaria": "4.80",
+    "categorias_gastos": {
+        "Gastos Fijos": [
+            "Alquiler",
+            "Planilla / Sueldos",
+            "Servicios (Luz, Agua, Internet)",
+            "Seguros",
+            "Préstamos / Cuotas"
+        ],
+        "Gastos Operativos": [
+            "Combustible",
+            "Mantenimiento",
+            "Repuestos",
+            "Peajes",
+            "Otros operativos"
+        ],
+        "Ingresos": [
+            "Cobro de cliente",
+            "Otro ingreso"
+        ],
+        "Otros": [
+            "Varios",
+            "xxx"
+        ]
+    }
 }
