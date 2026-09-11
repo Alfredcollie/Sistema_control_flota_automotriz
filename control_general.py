@@ -120,6 +120,31 @@ def maximizar_ventana(ventana):
             pass
 
 
+def instalar_manejador_dock_mac(root, callback):
+    """macOS: hace que el clic en el icono del Dock vuelva a mostrar las ventanas.
+
+    En macOS Tk responde NO a "applicationShouldHandleReopen:" (ver
+    tkMacOSXWindowEvent.c) y delega todo en un comando Tcl llamado
+    ::tk::mac::ReopenApplication. Si ese comando NO existe, Tk no hace
+    absolutamente nada: la ventana minimizada se queda en el Dock y el clic
+    en el icono del programa no responde. Aquí registramos ese comando
+    apuntando a nuestro propio manejador para que sí restaure la ventana.
+    Devuelve True si el manejador quedó instalado.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        # El namespace ::tk::mac existe en macOS, pero lo aseguramos por si acaso
+        root.tk.eval("namespace eval ::tk::mac {}")
+    except Exception:
+        pass
+    try:
+        root.createcommand("::tk::mac::ReopenApplication", callback)
+        return True
+    except Exception:
+        return False
+
+
 def ruta_recurso(ruta_relativa):
     """Ruta absoluta válida en desarrollo y compilado (.exe / .app)."""
     try:
@@ -548,6 +573,12 @@ class ControlGeneralEventos:
         self.root.title("SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ")
         self.root.protocol("WM_DELETE_WINDOW", self.confirmar_salida)
 
+        # 🍏 macOS: si el programa se minimiza, el clic en su icono del Dock debe
+        # devolverlo a pantalla (ver instalar_manejador_dock_mac).
+        self.login_en_pantalla = False
+        self.dashboard_listo = False
+        self.manejador_dock_mac = instalar_manejador_dock_mac(self.root, self.restaurar_ventanas_desde_dock)
+
         # 🔒 Verificación de licencia al entrar al sistema
         if comprobar_acceso is not None:
             try:
@@ -620,6 +651,7 @@ class ControlGeneralEventos:
     # =======================================================
     def abrir_ventana_login(self):
         self.v_login = ctk.CTkToplevel(self.root)
+        self.login_en_pantalla = True
         self.v_login.title("Acceso Seguro")
         ancho_ventana = 400
         alto_ventana = 520
@@ -765,6 +797,74 @@ class ControlGeneralEventos:
         btn_entrar.pack(pady=5)
 
     # =======================================================
+    # macOS: CLIC EN EL ICONO DEL DOCK (VENTANAS MINIMIZADAS)
+    # =======================================================
+    def _ventanas_secundarias(self):
+        """Lista las ventanas Toplevel abiertas (login, diálogos, asistentes)."""
+        encontradas = []
+
+        def recorrer(widget):
+            try:
+                hijos = widget.winfo_children()
+            except Exception:
+                return
+            for hijo in hijos:
+                if isinstance(hijo, tk.Toplevel):
+                    encontradas.append(hijo)
+                recorrer(hijo)
+
+        try:
+            recorrer(self.root)
+        except Exception:
+            pass
+        return encontradas
+
+    def restaurar_ventanas_desde_dock(self):
+        """Devuelve a pantalla el programa cuando se pulsa su icono en el Dock.
+
+        En macOS Tk entrega el Apple Event "rapp" a este método (registrado como
+        ::tk::mac::ReopenApplication). Sin él, Tk no restauraba nada y la ventana
+        minimizada se quedaba en el Dock al hacer clic en el icono inferior.
+        """
+        if sys.platform != "darwin":
+            return
+        try:
+            # 1) Cualquier ventana que estuviera minimizada vuelve a pantalla
+            for ventana in self._ventanas_secundarias():
+                try:
+                    if ventana.winfo_exists() and ventana.state() == "iconic":
+                        ventana.deiconify()
+                except Exception:
+                    pass
+
+            # 2) En la pantalla de acceso, la ventana que debe subir es el login
+            if getattr(self, "login_en_pantalla", False):
+                try:
+                    if self.v_login.winfo_exists():
+                        if self.v_login.state() == "iconic":
+                            self.v_login.deiconify()
+                        self.v_login.lift()
+                        self.v_login.focus_force()
+                        try:
+                            self.v_login.grab_set()
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+
+            # 3) Ventana principal (dashboard ya construido)
+            if getattr(self, "dashboard_listo", False):
+                self.root.deiconify()
+                self.root.lift()
+                try:
+                    self.root.focus_force()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # =======================================================
     # DASHBOARD PRINCIPAL Y CICLO DE SINCRONIZACIÓN
     # =======================================================
     def construir_dashboard_spa(self):
@@ -790,6 +890,8 @@ class ControlGeneralEventos:
             if k not in todas:
                 orden_ops.append(k)
 
+        self.login_en_pantalla = False
+        self.dashboard_listo = True
         self.root.deiconify()
         maximizar_ventana(self.root)
         cache_sistema.iniciar_ciclo()
