@@ -33,7 +33,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography
 
     - name: Descargar rclone (Windows)
       run: |
@@ -43,7 +43,7 @@ jobs:
         Add-Content -Path $env:GITHUB_ENV -Value "RCLONE_BIN=$RCLONE_BIN"
 
     - name: Compilar con PyInstaller (Windows)
-      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.Windows control_general.py
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all cryptography --hidden-import keyring.backends.Windows control_general.py
 
     - name: Inyectar credenciales de Supabase (config_db.json)
       shell: pwsh
@@ -116,7 +116,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography
 
     - name: Descargar rclone (macOS)
       run: |
@@ -133,7 +133,7 @@ jobs:
         echo "RCLONE_BIN=$RCLONE_BIN" >> "$GITHUB_ENV"
 
     - name: Compilar con PyInstaller (macOS)
-      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.macOS control_general.py
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all cryptography --hidden-import keyring.backends.macOS control_general.py
 
     - name: Inyectar credenciales de Supabase (config_db.json)
       run: |
