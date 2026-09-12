@@ -1533,12 +1533,9 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns, text="✅ Conciliar Seleccionados", font=("Arial", 12, "bold"),
                       fg_color="#27ae60", hover_color="#1e8449",
                       command=self.conciliar_seleccionados).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="➕ Agregar Movimiento", font=("Arial", 12, "bold"),
+        ctk.CTkButton(f_btns, text="➕ Registrar Pago", font=("Arial", 12, "bold"),
                       fg_color="#8e44ad", hover_color="#703688",
                       command=self.agregar_movimiento_manual).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="🧾 Registrar Cobro/Pago", font=("Arial", 12, "bold"),
-                      fg_color="#2980b9", hover_color="#1f618d",
-                      command=self.registrar_pago_sistema).pack(side="left", padx=4)
         ctk.CTkButton(f_btns, text="✏️ Corregir", font=("Arial", 12, "bold"),
                       fg_color="#34495e", hover_color="#2c3e50",
                       command=self.corregir_movimiento).pack(side="left", padx=4)
@@ -2076,111 +2073,6 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns, text="✏️ Editar", width=100, command=edit).pack(side="left", padx=4)
         ctk.CTkButton(f_btns, text="🗑️ Eliminar", width=100, command=delete).pack(side="left", padx=4)
         ctk.CTkButton(f_btns, text="💾 Guardar y Cerrar", width=150, fg_color="#27ae60", command=guardar).pack(side="right", padx=4)
-
-    def registrar_pago_sistema(self):
-        """Registra un cobro/pago real (factura faltante) vinculado al banco."""
-        banco = self.banco_seleccionado()
-        if not banco:
-            messagebox.showwarning("Banco", "Seleccione un banco.", parent=self.parent_frame)
-            return
-        v = ctk.CTkToplevel(self.parent_frame)
-        v.title("Registrar Cobro/Pago en el Sistema")
-        v.geometry("480x480")
-        v.transient(self.parent_frame)
-        v.grab_set()
-
-        ctk.CTkLabel(v, text="🧾 Registrar movimiento real (factura faltante)", font=("Arial", 14, "bold"),
-                     text_color="#1f538d").pack(pady=(15, 5))
-        ctk.CTkLabel(v, text=f"Banco: {construir_etiqueta_banco(banco)}", font=("Arial", 11),
-                     text_color="gray").pack(pady=(0, 8))
-
-        f = ctk.CTkFrame(v, fg_color="transparent")
-        f.pack(fill="x", padx=20)
-
-        ctk.CTkLabel(f, text="Tipo de movimiento:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_tipo = ctk.CTkComboBox(f, values=["Ingreso (Cobro a Cliente)", "Egreso (Pago a Proveedor)"],
-                                   width=300, state="readonly")
-        cmb_tipo.pack(fill="x", pady=(0, 8)); cmb_tipo.set("Ingreso (Cobro a Cliente)")
-
-        ctk.CTkLabel(f, text="Cliente / Proveedor:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_nombre = ctk.CTkEntry(f)
-        ent_nombre.pack(fill="x", pady=(0, 8))
-
-        ctk.CTkLabel(f, text="N° Factura / Referencia:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_ref = ctk.CTkEntry(f)
-        ent_ref.pack(fill="x", pady=(0, 8))
-
-        ctk.CTkLabel(f, text="ID Factura (opcional, 0 si no aplica):", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_id = ctk.CTkEntry(f)
-        ent_id.pack(fill="x", pady=(0, 8)); ent_id.insert(0, "0")
-
-        ctk.CTkLabel(f, text="Monto:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_monto = ctk.CTkEntry(f)
-        ent_monto.pack(fill="x", pady=(0, 8))
-
-        ctk.CTkLabel(f, text="Fecha:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_fecha = ctk.CTkEntry(f)
-        ent_fecha.pack(fill="x", pady=(0, 8))
-
-        def actualizar_fecha(_=None):
-            es_ingreso = cmb_tipo.get().startswith("Ingreso")
-            ent_fecha.delete(0, tk.END)
-            ent_fecha.insert(0, datetime.now().strftime("%Y-%m-%d" if es_ingreso else "%d/%m/%Y"))
-        cmb_tipo.configure(command=actualizar_fecha)
-        actualizar_fecha()
-
-        def guardar():
-            try:
-                monto = float(ent_monto.get().strip())
-            except ValueError:
-                messagebox.showerror("Error", "Monto inválido.", parent=v)
-                return
-            if monto <= 0:
-                messagebox.showerror("Error", "El monto debe ser mayor a 0.", parent=v)
-                return
-            try:
-                id_factura = int(ent_id.get().strip() or "0")
-            except ValueError:
-                id_factura = 0
-            es_ingreso = cmb_tipo.get().startswith("Ingreso")
-            nombre = ent_nombre.get().strip() or ("Cliente" if es_ingreso else "Proveedor")
-            ref = ent_ref.get().strip()
-            fecha = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
-            etiqueta = construir_etiqueta_banco(banco)
-
-            conn = conectar_db(silencioso=True)
-            if not conn:
-                messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=v)
-                return
-            try:
-                with conn.cursor() as c:
-                    if es_ingreso:
-                        c.execute("""
-                            INSERT INTO pagos_clientes
-                            (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago, cuenta_destino)
-                            VALUES (%s, %s, '', %s, %s, %s)
-                        """, (id_factura, monto, nombre, fecha, etiqueta))
-                    else:
-                        c.execute("""
-                            INSERT INTO pagos_comprobantes
-                            (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago,
-                             categoria_suministro, codigo_cotizacion, cuenta_origen)
-                            VALUES (%s, %s, '', %s, %s, 'GENERAL', %s, %s)
-                        """, (id_factura, monto, nombre, fecha, ref, etiqueta))
-                    conn.commit()
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo registrar:\n{e}", parent=v)
-                return
-            finally:
-                liberar_conexion(conn)
-
-            registrar_auditoria(self.usuario_activo, "Banco",
-                                f"Registró {'cobro' if es_ingreso else 'pago'} {formatear_monto(monto)} en {etiqueta}")
-            v.destroy()
-            self.generar_reporte()
-            messagebox.showinfo("Éxito", "Movimiento registrado correctamente.", parent=self.parent_frame)
-
-        ctk.CTkButton(v, text="✅ Guardar", width=140, fg_color="#27ae60", command=guardar).pack(pady=10)
 
     def corregir_movimiento(self):
         filas = self._filas_seleccionadas()
