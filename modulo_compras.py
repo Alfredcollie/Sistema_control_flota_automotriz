@@ -188,6 +188,72 @@ def obtener_ruta_base_drive():
     if ruta: return os.path.expanduser(ruta)
     return ""
 
+# =========================================================
+# 🔃 ORDENAMIENTO POR CUALQUIER COLUMNA (TODAS LAS PÁGINAS)
+# =========================================================
+COLUMNAS_ORDEN_MONEDA = {"subtotal", "impuesto", "igv", "total", "detraccion", "neto",
+                         "neto_facturado", "pagado", "saldo"}
+COLUMNAS_ORDEN_NUMERO = {"num", "id", "id_factura", "dias", "kilometraje", "cantidad", "archivos"}
+
+def clave_orden_moneda(valor):
+    texto = "" if valor is None else str(valor).strip()
+    if texto in ("", "-"):
+        return (1, 0.0)
+    return (0, desformatear_numero(texto))
+
+def clave_orden_numero(valor):
+    texto = "" if valor is None else str(valor).strip()
+    if texto in ("", "-"):
+        return (1, 0.0)
+    try:
+        return (0, float(texto))
+    except ValueError:
+        pass
+    coincidencia = re.search(r"\d+(?:[.,]\d+)?", texto)
+    if coincidencia:
+        try:
+            return (0, float(coincidencia.group(0).replace(",", ".")))
+        except ValueError:
+            pass
+    return (1, 0.0)
+
+def clave_orden_fecha(valor):
+    texto = "" if valor is None else str(valor).strip()
+    if not texto:
+        return (1, "")
+    for formato in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y", "%m/%d/%Y"):
+        try:
+            return (0, datetime.strptime(texto, formato).strftime("%Y%m%d"))
+        except ValueError:
+            continue
+    return (1, texto.casefold())
+
+def clave_orden_texto(valor):
+    texto = "" if valor is None else str(valor).strip()
+    if texto in ("", "-"):
+        return (1, "")
+    return (0, texto.casefold())
+
+def clave_orden_columna(columna, valor):
+    """Clave comparable para ordenar cualquier columna mostrada en las tablas."""
+    if columna in COLUMNAS_ORDEN_MONEDA:
+        return clave_orden_moneda(valor)
+    if columna in COLUMNAS_ORDEN_NUMERO:
+        return clave_orden_numero(valor)
+    if columna == "fecha":
+        return clave_orden_fecha(valor)
+    return clave_orden_texto(valor)
+
+def aplicar_orden_filas(filas, columnas, columna, ascendente, indice_valores=0):
+    """Ordena TODAS las filas (todas las páginas) por la columna indicada."""
+    try:
+        indice = columnas.index(columna)
+    except ValueError:
+        return filas
+    return sorted(filas,
+                  key=lambda fila: clave_orden_columna(columna, fila[indice_valores][indice]),
+                  reverse=not ascendente)
+
 def aplicar_estilo_treeview():
     style = ttk.Style()
     try:
@@ -341,6 +407,10 @@ class FacturasRecibidasTab:
         self.app_padre = app_padre
         
         self.orden_columnas = {}
+        # 🔃 Ordenamiento por cualquier columna aplicado a TODAS las páginas
+        self.columna_orden = "id"
+        self.orden_ascendente = False
+        self.total_paginas = 1
         self.bloquear_autocompletado_ruc = False
         self._ruc_autocompletado = False
         self.ruta_archivo_temp = ""
@@ -390,15 +460,35 @@ class FacturasRecibidasTab:
     def abrir_calendario(self, entry_objetivo):
         CalendarioNativo(self.main_root.winfo_toplevel(), entry_objetivo)
 
-    def ordenar_por_columna(self, columna, es_numerico):
-        elementos = [(self.tabla.set(item, columna), item) for item in self.tabla.get_children("")]
-        ascendente = self.orden_columnas.get(columna, True)
-        self.orden_columnas[columna] = not ascendente
-        if es_numerico:
-            elementos.sort(key=lambda el: desformatear_numero(el[0]), reverse=not ascendente)
+    TITULOS_ORDEN = {
+        "fecha": "Fecha Fac.", "hora": "Hora", "nro_doc": "N° Doc.", "proveedor": "Proveedor",
+        "ruc": "RUC", "evento": "Vehículo (Placa)", "kilometraje": "Kilometraje",
+        "cantidad": "Galones/Cant.", "desc": "Concepto", "metodo_pago": "Forma de Pago",
+        "neto": "Neto Pagar",
+    }
+
+    def _actualizar_flechas_orden(self):
+        """Muestra ▲/▼ en la columna activa y ↕ en las demás."""
+        for columna, titulo in self.TITULOS_ORDEN.items():
+            if columna == self.columna_orden:
+                flecha = "▲" if self.orden_ascendente else "▼"
+            else:
+                flecha = "↕"
+            try:
+                self.tabla.heading(columna, text=f"{titulo} {flecha}")
+            except Exception:
+                pass
+
+    def ordenar_por_columna(self, columna, es_numerico=None):
+        """Ordena TODAS las páginas por la columna elegida (no solo la página visible)."""
+        if self.columna_orden == columna:
+            self.orden_ascendente = not self.orden_ascendente
         else:
-            elementos.sort(key=lambda el: str(el[0]).lower(), reverse=not ascendente)
-        for index, (_, item) in enumerate(elementos): self.tabla.move(item, "", index)
+            self.columna_orden = columna
+            self.orden_ascendente = True
+        self._actualizar_flechas_orden()
+        self.pagina_actual = 1
+        self.cargar_datos_tabla(reset_pagina=True)
 
     def autocompletar_desde_pdf(self):
         if pdfplumber is None:
@@ -791,6 +881,7 @@ class FacturasRecibidasTab:
         f_tabla.pack(fill="both", expand=True)
 
         columnas = ("num", "id", "fecha", "hora", "nro_doc", "dias", "tipo", "proveedor", "ruc", "categoria", "evento", "kilometraje", "cantidad", "desc", "metodo_pago", "subtotal", "impuesto", "total", "detraccion", "neto", "archivo")
+        self.columnas_tabla = columnas
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
         
         self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251") 
@@ -825,6 +916,7 @@ class FacturasRecibidasTab:
         self.tabla.column("neto", width=85, anchor="e")
         
         self.tabla.config(displaycolumns=("num", "fecha", "hora", "nro_doc", "proveedor", "ruc", "evento", "kilometraje", "cantidad", "desc", "metodo_pago", "neto"))
+        self._actualizar_flechas_orden()
         self.tabla.bind("<Double-1>", self.abrir_archivo)
 
         scroll_y = ttk.Scrollbar(f_tabla, orient="vertical", command=self.tabla.yview)
@@ -880,8 +972,9 @@ class FacturasRecibidasTab:
             self.cargar_datos_tabla()
             
     def pagina_siguiente(self):
-        self.pagina_actual += 1
-        self.cargar_datos_tabla()
+        if self.pagina_actual < getattr(self, "total_paginas", 1):
+            self.pagina_actual += 1
+            self.cargar_datos_tabla()
 
     def buscar_con_retraso(self):
         if hasattr(self, "_busqueda_job"):
@@ -1239,8 +1332,9 @@ class FacturasRecibidasTab:
         if hasattr(self, 'ent_buscar_facturas'):
             filtro = self.ent_buscar_facturas.get().strip().lower()
             
-        offset = (self.pagina_actual - 1) * self.registros_por_pagina
-        clave_cache = f"compras_recibidas_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
+        # 🔃 Se cargan TODOS los registros del filtro/mes para poder ordenar por
+        # cualquier columna afectando a todas las páginas (la paginación se hace al pintar)
+        clave_cache = f"compras_recibidas_v2_{filtro}_mes_{self.mes_filtro}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1266,8 +1360,7 @@ class FacturasRecibidasTab:
                         condiciones.append("fecha LIKE %s")
                         params.append(patron_mes)
                     where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
-                    params.extend([self.registros_por_pagina, offset])
-                    cursor.execute(f"{query_base}{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params))
+                    cursor.execute(f"{query_base}{where_sql} ORDER BY id DESC", tuple(params))
                         
                     datos_db = cursor.fetchall()
                     
@@ -1296,10 +1389,12 @@ class FacturasRecibidasTab:
             threading.Thread(target=tarea_descarga, daemon=True).start()
 
     def _pintar_datos_tabla(self, registros, cuentas_por_factura):
+        """Construye TODAS las filas, las ordena por la columna activa (todas las
+        páginas) y muestra únicamente la página actual."""
         for item in self.tabla.get_children():
             self.tabla.delete(item)
 
-        contador = 1
+        filas = []
         for r in registros:
             id_factura = r[0]
             archivo_bd = r[12]
@@ -1329,15 +1424,28 @@ class FacturasRecibidasTab:
             etiqueta_color = "con_cuenta" if id_factura in cuentas_por_factura else "sin_cuenta"
 
             row_vals = (
-                contador, id_factura, r[1], hora_consumo, r[2] if r[2] else "-", r[3], tipo_doc.split(" ")[0], r[5], ruc_val, cat,
+                0, id_factura, r[1], hora_consumo, r[2] if r[2] else "-", r[3], tipo_doc.split(" ")[0], r[5], ruc_val, cat,
                 r[6].split(" | ")[0] if " | " in str(r[6]) else r[6], km_val, cant_val, desc_limpia, metodo_pago, formatear_moneda(r[8]), formatear_moneda(impuesto), formatear_moneda(tot_bruto), formatear_moneda(det_monto), formatear_moneda(neto), tiene_arch
             )
-                    
-            self.tabla.insert("", tk.END, values=row_vals, tags=(etiqueta_color,))
-            contador += 1
-            
+
+            filas.append((row_vals, etiqueta_color))
+
+        # 🔃 Ordena TODAS las páginas según la columna seleccionada
+        filas = aplicar_orden_filas(filas, self.columnas_tabla, self.columna_orden, self.orden_ascendente)
+
+        total_registros = len(filas)
+        self.total_paginas = max(1, (total_registros + self.registros_por_pagina - 1) // self.registros_por_pagina)
+        if self.pagina_actual > self.total_paginas:
+            self.pagina_actual = self.total_paginas
+        offset = (self.pagina_actual - 1) * self.registros_por_pagina
+        pagina = filas[offset:offset + self.registros_por_pagina]
+
+        for numero, (row_vals, etiqueta_color) in enumerate(pagina, start=offset + 1):
+            self.tabla.insert("", tk.END, values=(numero,) + tuple(row_vals[1:]), tags=(etiqueta_color,))
+
+        self.lbl_pagina.configure(text=f"Pág {self.pagina_actual} de {self.total_paginas}")
         self.btn_ant.configure(state="normal" if self.pagina_actual > 1 else "disabled")
-        self.btn_sig.configure(state="normal" if len(registros) == self.registros_por_pagina else "disabled")
+        self.btn_sig.configure(state="normal" if self.pagina_actual < self.total_paginas else "disabled")
 
     def abrir_archivo(self, event):
         sel = self.tabla.selection()
@@ -1573,6 +1681,11 @@ class CuentasPorPagarTab:
         
         # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
         self.mes_filtro = mes_en_curso()
+
+        # 🔃 Ordenamiento por cualquier columna aplicado a TODAS las páginas
+        self.columna_orden = "id_factura"
+        self.orden_ascendente = False
+        self.total_paginas = 1
         
         self.inicializar_entorno()
         self.crear_interfaz()
@@ -1634,6 +1747,7 @@ class CuentasPorPagarTab:
         f_tabla.pack(fill="both", expand=True, padx=15, pady=0)
 
         columnas = ("num", "id_factura", "fecha", "hora", "nro_doc", "proveedor", "ruc", "evento", "kilometraje", "cantidad", "concepto", "metodo_pago", "subtotal", "igv", "detraccion", "neto_facturado", "pagado", "saldo", "archivos")
+        self.columnas_tabla = columnas
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
         
         self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251") 
@@ -1641,23 +1755,23 @@ class CuentasPorPagarTab:
 
         self.tabla.heading("num", text="N°")
         self.tabla.heading("id_factura", text="ID (Oculto)")
-        self.tabla.heading("fecha", text="Fecha Fac.")
-        self.tabla.heading("hora", text="Hora")
-        self.tabla.heading("nro_doc", text="N° Documento")
-        self.tabla.heading("proveedor", text="Proveedor")
-        self.tabla.heading("ruc", text="RUC")
-        self.tabla.heading("evento", text="Vehículo Asociado")
-        self.tabla.heading("kilometraje", text="Kilometraje")
-        self.tabla.heading("cantidad", text="Galones/Cant.")
-        self.tabla.heading("concepto", text="Concepto")
-        self.tabla.heading("metodo_pago", text="Forma de Pago")
-        self.tabla.heading("subtotal", text="Subtotal")
-        self.tabla.heading("igv", text="IGV")
-        self.tabla.heading("detraccion", text="Detracción")
-        self.tabla.heading("neto_facturado", text="Neto a Pagar")
-        self.tabla.heading("pagado", text="Total Pagado")
-        self.tabla.heading("saldo", text="Saldo Pendiente")
-        self.tabla.heading("archivos", text="Historial Adjuntos")
+        self.tabla.heading("fecha", text="Fecha Fac.", command=lambda: self.ordenar_por_columna("fecha"))
+        self.tabla.heading("hora", text="Hora", command=lambda: self.ordenar_por_columna("hora"))
+        self.tabla.heading("nro_doc", text="N° Documento", command=lambda: self.ordenar_por_columna("nro_doc"))
+        self.tabla.heading("proveedor", text="Proveedor", command=lambda: self.ordenar_por_columna("proveedor"))
+        self.tabla.heading("ruc", text="RUC", command=lambda: self.ordenar_por_columna("ruc"))
+        self.tabla.heading("evento", text="Vehículo Asociado", command=lambda: self.ordenar_por_columna("evento"))
+        self.tabla.heading("kilometraje", text="Kilometraje", command=lambda: self.ordenar_por_columna("kilometraje"))
+        self.tabla.heading("cantidad", text="Galones/Cant.", command=lambda: self.ordenar_por_columna("cantidad"))
+        self.tabla.heading("concepto", text="Concepto", command=lambda: self.ordenar_por_columna("concepto"))
+        self.tabla.heading("metodo_pago", text="Forma de Pago", command=lambda: self.ordenar_por_columna("metodo_pago"))
+        self.tabla.heading("subtotal", text="Subtotal", command=lambda: self.ordenar_por_columna("subtotal"))
+        self.tabla.heading("igv", text="IGV", command=lambda: self.ordenar_por_columna("igv"))
+        self.tabla.heading("detraccion", text="Detracción", command=lambda: self.ordenar_por_columna("detraccion"))
+        self.tabla.heading("neto_facturado", text="Neto a Pagar", command=lambda: self.ordenar_por_columna("neto_facturado"))
+        self.tabla.heading("pagado", text="Total Pagado", command=lambda: self.ordenar_por_columna("pagado"))
+        self.tabla.heading("saldo", text="Saldo Pendiente", command=lambda: self.ordenar_por_columna("saldo"))
+        self.tabla.heading("archivos", text="Historial Adjuntos", command=lambda: self.ordenar_por_columna("archivos"))
 
         self.tabla.column("num", width=40, anchor="center")
         self.tabla.column("id_factura", width=0, stretch=tk.NO)
@@ -1677,6 +1791,7 @@ class CuentasPorPagarTab:
         self.tabla.column("archivos", width=100, anchor="center")
 
         self.tabla.config(displaycolumns=("num", "fecha", "hora", "nro_doc", "proveedor", "ruc", "evento", "kilometraje", "cantidad", "concepto", "metodo_pago", "neto_facturado", "pagado", "saldo", "archivos"))
+        self._actualizar_flechas_orden()
         self.tabla.bind("<Double-1>", self.abrir_todos_los_archivos)
         
         scroll_y = ctk.CTkScrollbar(f_tabla, orientation="vertical", command=self.tabla.yview)
@@ -1726,8 +1841,9 @@ class CuentasPorPagarTab:
             self.cargar_datos_pagar()
             
     def pagina_siguiente(self):
-        self.pagina_actual += 1
-        self.cargar_datos_pagar()
+        if self.pagina_actual < getattr(self, "total_paginas", 1):
+            self.pagina_actual += 1
+            self.cargar_datos_pagar()
 
     def buscar_con_retraso(self):
         if hasattr(self, "_busqueda_job"):
@@ -1749,6 +1865,38 @@ class CuentasPorPagarTab:
             messagebox.showinfo("Éxito", f"Reporte exportado a:\n{ruta}")
             abrir_documento(ruta)
 
+    TITULOS_ORDEN = {
+        "fecha": "Fecha Fac.", "hora": "Hora", "nro_doc": "N° Documento", "proveedor": "Proveedor",
+        "ruc": "RUC", "evento": "Vehículo Asociado", "kilometraje": "Kilometraje",
+        "cantidad": "Galones/Cant.", "concepto": "Concepto", "metodo_pago": "Forma de Pago",
+        "subtotal": "Subtotal", "igv": "IGV", "detraccion": "Detracción",
+        "neto_facturado": "Neto a Pagar", "pagado": "Total Pagado", "saldo": "Saldo Pendiente",
+        "archivos": "Historial Adjuntos",
+    }
+
+    def _actualizar_flechas_orden(self):
+        """Muestra ▲/▼ en la columna activa y ↕ en las demás."""
+        for columna, titulo in self.TITULOS_ORDEN.items():
+            if columna == self.columna_orden:
+                flecha = "▲" if self.orden_ascendente else "▼"
+            else:
+                flecha = "↕"
+            try:
+                self.tabla.heading(columna, text=f"{titulo} {flecha}")
+            except Exception:
+                pass
+
+    def ordenar_por_columna(self, columna, es_numerico=None):
+        """Ordena TODAS las páginas por la columna elegida (no solo la página visible)."""
+        if self.columna_orden == columna:
+            self.orden_ascendente = not self.orden_ascendente
+        else:
+            self.columna_orden = columna
+            self.orden_ascendente = True
+        self._actualizar_flechas_orden()
+        self.pagina_actual = 1
+        self.cargar_datos_pagar(reset_pagina=True)
+
     # 🚀 MOTOR DE CONSULTA OPTIMIZADO (0 BUCLES SQL N+1)
     def cargar_datos_pagar(self, reset_pagina=False):
         if reset_pagina:
@@ -1762,8 +1910,9 @@ class CuentasPorPagarTab:
         if hasattr(self, 'ent_buscar_pagos'):
             filtro = self.ent_buscar_pagos.get().strip().lower()
 
-        offset = (self.pagina_actual - 1) * self.registros_por_pagina
-        clave_cache = f"pagos_compras_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
+        # 🔃 Se cargan TODOS los registros del filtro/mes para ordenar por cualquier
+        # columna afectando a todas las páginas (la paginación se hace al pintar)
+        clave_cache = f"pagos_compras_v2_{filtro}_mes_{self.mes_filtro}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1780,40 +1929,22 @@ class CuentasPorPagarTab:
                 
                 try:
                     cursor = conn.cursor()
-                    cursor.execute("SELECT id_factura, COALESCE(SUM(monto_pagado), 0) FROM pagos_comprobantes GROUP BY id_factura")
-                    mapa_pagos_totales = {r[0]: float(r[1]) for r in cursor.fetchall()}
-                    
+
                     condiciones = []
                     params = []
                     if filtro:
                         cond_busqueda, params_busqueda = construir_condicion_busqueda_compras(filtro)
                         condiciones.append(cond_busqueda)
                         params.extend(params_busqueda)
-                        params.extend([val, val, val, val])
                     patron_mes = patron_fecha_mes(self.mes_filtro)
                     if patron_mes:
                         condiciones.append("fecha LIKE %s")
                         params.append(patron_mes)
                     where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
-                    cursor.execute(f"SELECT id, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento FROM facturas_recibidas{where_sql}", tuple(params))
-                        
-                    for r_tot in cursor.fetchall():
-                        id_f_tot, s_tot, i_tot, t_bruto_tot, d_tot, tipo_doc_tot = r_tot
-                        tot_v = float(t_bruto_tot or 0.0)
-                        imp_v = float(i_tot or 0.0)
-                        det_v = float(d_tot or 0.0)
-                        
-                        if tipo_doc_tot and "Recibo" in tipo_doc_tot and "8%" in tipo_doc_tot: 
-                            neto_fac = tot_v - imp_v - det_v
-                        else: 
-                            neto_fac = tot_v - det_v
-                        
-                        m_cobrado = mapa_pagos_totales.get(id_f_tot, 0.0)
-                        total_pendiente_global += max(0.0, neto_fac - m_cobrado)
 
-                    params_reg = list(params)
-                    params_reg.extend([self.registros_por_pagina, offset])
-                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc FROM facturas_recibidas{where_sql} ORDER BY id DESC LIMIT %s OFFSET %s", tuple(params_reg))
+                    # Se traen TODOS los comprobantes del filtro/mes (sin LIMIT) para
+                    # poder ordenar por cualquier columna en todas las páginas
+                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
                     registros = cursor.fetchall()
                     
                     ids_actuales = [r[0] for r in registros]
@@ -1862,6 +1993,12 @@ class CuentasPorPagarTab:
                             "monto_pagado": monto_pagado, "saldo_pendiente": saldo_pendiente, "cant_archivos": cant_archivos, "tiene_cuenta": tiene_cuenta
                         })
                         
+                    # Total pendiente global (mismo criterio que antes) calculado
+                    # sobre todos los comprobantes procesados
+                    total_pendiente_global = sum(
+                        max(0.0, fl["neto_facturado"] - fl["monto_pagado"]) for fl in filas_procesadas
+                    )
+
                     datos_cache = {"filas": filas_procesadas, "total_pendiente": total_pendiente_global}
                     cache_sistema.guardar(clave_cache, datos_cache)
                     
@@ -1875,9 +2012,11 @@ class CuentasPorPagarTab:
             threading.Thread(target=tarea_descarga, daemon=True).start()
 
     def _pintar_pagos(self, filas, total_pendiente):
+        """Construye TODAS las filas, las ordena por la columna activa (todas las
+        páginas) y muestra únicamente la página actual."""
         for fila in self.tabla.get_children(): self.tabla.delete(fila)
-        
-        contador = 1
+
+        filas_tabla = []
         for f in filas:
             km_str = f['km_val'] if f['km_val'] else "-"
             cant_str = f['cant_val'] if f['cant_val'] else "-"
@@ -1898,17 +2037,30 @@ class CuentasPorPagarTab:
             etiqueta_color = "con_cuenta" if f['tiene_cuenta'] else "sin_cuenta"
 
             row_vals = (
-                contador, f['id_factura'], f['fecha'], hora_consumo, f['nro_doc'] if f['nro_doc'] else "S/N", f['proveedor'], ruc_str, f['evento'], km_str, cant_str, concepto_limpio, metodo_pago,
+                0, f['id_factura'], f['fecha'], hora_consumo, f['nro_doc'] if f['nro_doc'] else "S/N", f['proveedor'], ruc_str, f['evento'], km_str, cant_str, concepto_limpio, metodo_pago,
                 formatear_moneda(f['sub_val']), formatear_moneda(f['imp_val']), formatear_moneda(f['det_monto_val']),
                 formatear_moneda(f['neto_facturado']), formatear_moneda(f['monto_pagado']), formatear_moneda(f['saldo_pendiente']), txt_adjuntos
             )
 
-            self.tabla.insert("", tk.END, values=row_vals, tags=(etiqueta_color,))
-            contador += 1
+            filas_tabla.append((row_vals, etiqueta_color))
+
+        # 🔃 Ordena TODAS las páginas según la columna seleccionada
+        filas_tabla = aplicar_orden_filas(filas_tabla, self.columnas_tabla, self.columna_orden, self.orden_ascendente)
+
+        total_registros = len(filas_tabla)
+        self.total_paginas = max(1, (total_registros + self.registros_por_pagina - 1) // self.registros_por_pagina)
+        if self.pagina_actual > self.total_paginas:
+            self.pagina_actual = self.total_paginas
+        offset = (self.pagina_actual - 1) * self.registros_por_pagina
+        pagina = filas_tabla[offset:offset + self.registros_por_pagina]
+
+        for numero, (row_vals, etiqueta_color) in enumerate(pagina, start=offset + 1):
+            self.tabla.insert("", tk.END, values=(numero,) + tuple(row_vals[1:]), tags=(etiqueta_color,))
 
         self.lbl_total_general.configure(text=f"Total Pendiente Filtrado: {formatear_moneda(total_pendiente)}")
+        self.lbl_pagina.configure(text=f"Pág {self.pagina_actual} de {self.total_paginas}")
         self.btn_ant.configure(state="normal" if self.pagina_actual > 1 else "disabled")
-        self.btn_sig.configure(state="normal" if len(filas) == self.registros_por_pagina else "disabled")
+        self.btn_sig.configure(state="normal" if self.pagina_actual < self.total_paginas else "disabled")
 
     def cargar_comprobante_pago(self):
         ruta_base = obtener_ruta_base_drive()
