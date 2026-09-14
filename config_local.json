@@ -12,7 +12,7 @@
     "detraccion_porcentaje": "12",
     "renta_mensual_porcentaje": "1.5",
     "renta_anual_porcentaje": "0",
-    "regimen_empresa": "R\u00e9gimen General",
+    "regimen_empresa": "Régimen General",
     "proveedor_fe": "Nubefact",
     "url_api_fe": "",
     "token_api_fe": "",
@@ -89,14 +89,14 @@
         "usuarios",
         "bitacora"
     ],
-    "comision_interbancaria": "4.80",
+    "comision_interbancaria": "5.00",
     "categorias_gastos": {
         "Gastos Fijos": [
             "Alquiler",
             "Planilla / Sueldos",
             "Servicios (Luz, Agua, Internet)",
             "Seguros",
-            "Pr\u00e9stamos / Cuotas"
+            "Préstamos / Cuotas"
         ],
         "Gastos Operativos": [
             "Combustible",

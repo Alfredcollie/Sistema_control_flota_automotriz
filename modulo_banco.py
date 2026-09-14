@@ -304,6 +304,12 @@ def normalizar_monto(v):
             return 0.0
 
 
+def monto_desde_texto(texto):
+    """Extrae el primer monto que aparezca en un texto (ej. 'Comisión S/ 12.00')."""
+    coincidencia = re.search(r"\d+(?:[.,]\d+)?", str(texto or ""))
+    return normalizar_monto(coincidencia.group(0)) if coincidencia else 0.0
+
+
 def formatear_monto(valor):
     simbolo = CONFIG.get("simbolo_moneda", "S/.")
     formato = CONFIG.get("formato_numero", "1,000.00")
@@ -830,6 +836,14 @@ class ModuloBancoApp:
                     "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS pagado_por_tercero VARCHAR(255) DEFAULT ''",
                     "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS soporte_pago_tercero TEXT DEFAULT ''",
                     "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS es_compra_cruzada BOOLEAN DEFAULT FALSE",
+                    # Datos del pago manual, para poder reabrirlo y editarlo completo
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS categoria VARCHAR(120) DEFAULT ''",
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS subcategoria VARCHAR(120) DEFAULT ''",
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS placa VARCHAR(80) DEFAULT ''",
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS chofer VARCHAR(150) DEFAULT ''",
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS comision NUMERIC DEFAULT 0",
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS interbancario BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS es_cruzada BOOLEAN DEFAULT FALSE",
                 ):
                     try:
                         c.execute(col_sql)
@@ -1380,7 +1394,7 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns, text="➕ Registrar Pago / Compra Cruzada", font=("Arial", 12, "bold"),
                       fg_color="#8e44ad", hover_color="#703688",
                       command=self.agregar_movimiento_manual).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="✏️ Corregir", font=("Arial", 12, "bold"),
+        ctk.CTkButton(f_btns, text="✏️ Editar / Corregir", font=("Arial", 12, "bold"),
                       fg_color="#34495e", hover_color="#2c3e50",
                       command=self.corregir_movimiento).pack(side="left", padx=4)
         ctk.CTkButton(f_btns, text="🗑️ Eliminar", font=("Arial", 12, "bold"),
@@ -1552,17 +1566,39 @@ class ModuloBancoApp:
         movs = []
         try:
             with conn.cursor() as c:
-                c.execute("""
-                    SELECT id, fecha, descripcion, monto, tipo, estado
-                    FROM conciliacion_bancaria
-                    WHERE origen = 'manual' AND banco = %s
-                    ORDER BY id
-                """, (banco.get("banco", ""),))
-                for idp, fecha, desc, monto, tipo, estado in c.fetchall():
+                try:
+                    c.execute("""
+                        SELECT id, fecha, descripcion, monto, tipo, estado,
+                               COALESCE(categoria, ''), COALESCE(subcategoria, ''),
+                               COALESCE(placa, ''), COALESCE(chofer, ''),
+                               COALESCE(comision, 0), COALESCE(interbancario, FALSE),
+                               COALESCE(es_cruzada, FALSE)
+                        FROM conciliacion_bancaria
+                        WHERE origen = 'manual' AND banco = %s
+                        ORDER BY id
+                    """, (banco.get("banco", ""),))
+                    filas = c.fetchall()
+                except Exception:
+                    # Base de datos anterior sin las columnas de detalle
+                    conn.rollback()
+                    c.execute("""
+                        SELECT id, fecha, descripcion, monto, tipo, estado
+                        FROM conciliacion_bancaria
+                        WHERE origen = 'manual' AND banco = %s
+                        ORDER BY id
+                    """, (banco.get("banco", ""),))
+                    filas = [tuple(f) + ("", "", "", "", 0, False, False) for f in c.fetchall()]
+
+                for (idp, fecha, desc, monto, tipo, estado, categoria, subcategoria,
+                     placa, chofer, comision, interbancario, es_cruzada) in filas:
                     movs.append({
                         "id": idp, "fecha": fecha or "", "descripcion": desc or "",
                         "monto": float(monto or 0), "tipo": tipo or "ingreso",
                         "tabla": "conciliacion", "estado": estado or "pendiente",
+                        "categoria": categoria or "", "subcategoria": subcategoria or "",
+                        "placa": placa or "", "chofer": chofer or "",
+                        "comision": float(comision or 0), "interbancario": bool(interbancario),
+                        "es_cruzada": bool(es_cruzada),
                     })
         except Exception:
             pass
@@ -1647,7 +1683,54 @@ class ModuloBancoApp:
         finally:
             liberar_conexion(conn)
 
-    def agregar_movimiento_manual(self):
+    def _datos_iniciales_pago(self, registro, cats, principales):
+        """Datos de un pago ya registrado, para abrir la ventana en modo edición.
+
+        Se toman de las columnas de detalle del pago y, cuando el registro es
+        antiguo y no las tiene, se deducen de su descripción.
+        """
+        datos = {
+            "fecha": str(registro.get("fecha") or ""),
+            "monto": abs(float(registro.get("monto") or 0)),
+            "principal": str(registro.get("categoria") or ""),
+            "sub": str(registro.get("subcategoria") or ""),
+            "placa": str(registro.get("placa") or ""),
+            "chofer": str(registro.get("chofer") or ""),
+            "comision": float(registro.get("comision") or 0),
+            "interbancario": bool(registro.get("interbancario")),
+            "es_cruzada": bool(registro.get("es_cruzada")),
+            "descripcion": "",
+        }
+        libres = []
+        for parte in [p.strip() for p in str(registro.get("descripcion") or "").split(" - ") if p.strip()]:
+            bajo = parte.lower()
+            if bajo.startswith("placa "):
+                datos["placa"] = datos["placa"] or parte[6:].strip()
+            elif bajo.startswith("chofer "):
+                datos["chofer"] = datos["chofer"] or parte[7:].strip()
+            elif bajo.startswith("comisión interbancaria") or bajo.startswith("comision interbancaria"):
+                datos["interbancario"] = True
+                if not datos["comision"]:
+                    datos["comision"] = monto_desde_texto(parte)
+            elif parte == datos["principal"] or (datos["sub"] and parte == datos["sub"]):
+                pass                      # ya se recuperó de las columnas del pago
+            elif not datos["principal"] and parte in principales:
+                datos["principal"] = parte
+            elif datos["principal"] and not datos["sub"] and parte in (cats.get(datos["principal"]) or []):
+                datos["sub"] = parte
+            else:
+                libres.append(parte)
+        datos["descripcion"] = " - ".join(libres)
+        return datos
+
+    def agregar_movimiento_manual(self, registro=None):
+        """Ventana de Registrar Pago / Compra Cruzada.
+
+        Si se recibe 'registro' (una fila de la conciliación de origen manual)
+        se abre ESTA MISMA ventana en modo edición, con todos los datos del
+        pago cargados, y al guardar se actualiza ese registro en lugar de
+        crear uno nuevo.
+        """
         banco = self.banco_seleccionado()
         if not banco:
             messagebox.showwarning("Banco", "Seleccione un banco.", parent=self.parent_frame)
@@ -1656,16 +1739,20 @@ class ModuloBancoApp:
         cats = cargar_categorias_gastos()
         principales = list(cats.keys()) or ["Gastos Operativos"]
         comision = cargar_comision_interbancaria()
+        en_edicion = bool(registro)
+        datos_ini = (self._datos_iniciales_pago(registro, cats, principales) if en_edicion else {})
+        id_edicion = registro.get("id") if en_edicion else None
 
         v = ctk.CTkToplevel(self.parent_frame)
-        v.title("Registrar Pago (Conciliación)")
+        v.title("Editar Pago (Conciliación)" if en_edicion else "Registrar Pago (Conciliación)")
         v.geometry("580x700")
         v.minsize(520, 480)
         v.transient(self.parent_frame)
         v.grab_set()
 
-        ctk.CTkLabel(v, text="➕ Registrar Pago / Compra Cruzada", font=("Arial", 15, "bold"),
-                     text_color="#1f538d").pack(pady=(15, 5))
+        ctk.CTkLabel(v, text=("✏️ Editar Pago / Compra Cruzada" if en_edicion
+                              else "➕ Registrar Pago / Compra Cruzada"),
+                     font=("Arial", 15, "bold"), text_color="#1f538d").pack(pady=(15, 5))
 
         # Pie fijo: el botón Guardar siempre visible
         f_pie = ctk.CTkFrame(v, fg_color="transparent")
@@ -1675,16 +1762,23 @@ class ModuloBancoApp:
         f = ctk.CTkScrollableFrame(v, fg_color="transparent")
         f.pack(fill="both", expand=True, padx=6, pady=(0, 4))
 
+        principal_ini = str(datos_ini.get("principal") or "")
+        if principal_ini and principal_ini not in principales:
+            principales = principales + [principal_ini]
+
         ctk.CTkLabel(f, text="Categoría Principal:", font=("Arial", 11, "bold")).pack(anchor="w")
         cmb_principal = ctk.CTkComboBox(f, values=principales, width=300, state="readonly")
         cmb_principal.pack(fill="x", pady=(0, 8))
-        cmb_principal.set(principales[0])
+        cmb_principal.set(principal_ini or principales[0])
 
+        sub_ini = str(datos_ini.get("sub") or "")
         ctk.CTkLabel(f, text="Categoría:", font=("Arial", 11, "bold")).pack(anchor="w")
-        subs_inicial = cats.get(principales[0], []) or ["(Sin categoría)"]
+        subs_inicial = list(cats.get(cmb_principal.get(), []) or ["(Sin categoría)"])
+        if sub_ini and sub_ini not in subs_inicial:
+            subs_inicial.append(sub_ini)
         cmb_sub = ctk.CTkComboBox(f, values=subs_inicial, width=300, state="readonly")
         cmb_sub.pack(fill="x", pady=(0, 8))
-        cmb_sub.set(subs_inicial[0])
+        cmb_sub.set(sub_ini or subs_inicial[0])
 
         # Tercer desplegable: placa (solo para Gastos Operativos)
         placas = cargar_placas_flota()
@@ -1734,12 +1828,34 @@ class ModuloBancoApp:
         btn_gestion.pack(fill="x", pady=(0, 8))
         on_principal()
 
+        # En edición se restauran los valores guardados (on_principal los reinicia)
+        if sub_ini:
+            valores_sub = list(cmb_sub.cget("values"))
+            if sub_ini not in valores_sub:
+                cmb_sub.configure(values=valores_sub + [sub_ini])
+            cmb_sub.set(sub_ini)
+        placa_ini = str(datos_ini.get("placa") or "")
+        if placa_ini and placa_ini != "(Sin placas)":
+            valores_placa = list(cmb_placa.cget("values"))
+            if placa_ini not in valores_placa:
+                valores_placa.append(placa_ini)          # placa que ya no está en la flota
+                cmb_placa.configure(values=valores_placa)
+            cmb_placa.set(placa_ini)
+        chofer_ini = str(datos_ini.get("chofer") or "")
+        if chofer_ini:
+            valores_chofer = list(cmb_chofer.cget("values"))
+            if chofer_ini not in valores_chofer:
+                valores_chofer.append(chofer_ini)
+                cmb_chofer.configure(values=valores_chofer)
+            cmb_chofer.set(chofer_ini)
+        actualizar_chofer()
+
         ctk.CTkLabel(f, text="Fecha (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w")
         f_fecha = ctk.CTkFrame(f, fg_color="transparent")
         f_fecha.pack(fill="x", pady=(0, 8))
         ent_fecha = ctk.CTkEntry(f_fecha)
         ent_fecha.pack(side="left", fill="x", expand=True)
-        ent_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        ent_fecha.insert(0, str(datos_ini.get("fecha") or datetime.now().strftime("%d/%m/%Y")))
         ctk.CTkButton(f_fecha, text="📅", width=42, font=("Arial", 13, "bold"),
                       fg_color="#1f538d", hover_color="#163b65",
                       command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(6, 0))
@@ -1747,14 +1863,17 @@ class ModuloBancoApp:
         ctk.CTkLabel(f, text="Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_desc = ctk.CTkEntry(f)
         ent_desc.pack(fill="x", pady=(0, 8))
+        ent_desc.insert(0, str(datos_ini.get("descripcion") or ""))
 
         ctk.CTkLabel(f, text="Monto:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_monto = ctk.CTkEntry(f)
         ent_monto.pack(fill="x", pady=(0, 8))
+        if datos_ini.get("monto"):
+            ent_monto.insert(0, formatear_numero_entrada(f"{float(datos_ini['monto']):.2f}"))
         ent_monto.bind("<KeyRelease>", lambda e: self._formatear_entrada_monto(ent_monto))
         ent_monto.bind("<FocusOut>", lambda e: self._formatear_entrada_monto(ent_monto))
 
-        var_inter = tk.BooleanVar(value=False)
+        var_inter = tk.BooleanVar(value=bool(datos_ini.get("interbancario")))
         chk_inter = ctk.CTkCheckBox(f, text="Pago Interbancario", variable=var_inter)
         chk_inter.pack(anchor="w", pady=(0, 4))
         f_com = ctk.CTkFrame(f, fg_color="transparent")
@@ -1762,7 +1881,8 @@ class ModuloBancoApp:
         ctk.CTkLabel(f_com, text="Comisión (S/.):", font=("Arial", 11, "bold")).pack(side="left")
         ent_comision = ctk.CTkEntry(f_com, width=90)
         ent_comision.pack(side="left", padx=6)
-        ent_comision.insert(0, f"{comision:.2f}")
+        comision_ini = datos_ini.get("comision")
+        ent_comision.insert(0, f"{(float(comision_ini) if comision_ini else comision):.2f}")
         lbl_total = ctk.CTkLabel(f_com, text=f"Total: {formatear_monto(0)}", font=("Arial", 12, "bold"),
                                  text_color="#1f538d")
         lbl_total.pack(side="right")
@@ -1783,7 +1903,14 @@ class ModuloBancoApp:
         var_cruzada = tk.BooleanVar(value=False)
         chk_cruzada = ctk.CTkCheckBox(f, text="🔁 Es compra cruzada (factura pagada por un tercero)",
                                       font=("Arial", 11, "bold"), variable=var_cruzada)
-        chk_cruzada.pack(anchor="w", pady=(4, 4))
+        if not en_edicion:
+            chk_cruzada.pack(anchor="w", pady=(4, 4))
+        elif datos_ini.get("es_cruzada"):
+            # La compra cruzada ya quedó registrada en Compras: al editar no se repite
+            ctk.CTkLabel(f, text=("🔁 Este pago se registró como COMPRA CRUZADA en el módulo de Compras.\n"
+                                  "Aquí solo se modifican los datos del movimiento bancario."),
+                         font=("Arial", 11, "italic"), text_color="#7d3c98",
+                         justify="left").pack(anchor="w", pady=(6, 4))
 
         estado_cruzada = {"soporte": "", "factura": ""}
         f_cruzada = ctk.CTkFrame(f, fg_color="#f4ecf7", corner_radius=8,
@@ -1963,11 +2090,25 @@ class ModuloBancoApp:
             if conn:
                 try:
                     with conn.cursor() as c:
-                        c.execute("""
-                            INSERT INTO conciliacion_bancaria
-                            (banco, cuenta, fecha, descripcion, monto, tipo, origen, id_movimiento, estado)
-                            VALUES (%s, %s, %s, %s, %s, %s, 'manual', 0, 'pendiente')
-                        """, (banco.get("banco", ""), banco.get("cuenta", ""), fecha, desc, monto_final, tipo))
+                        if en_edicion:
+                            c.execute("""
+                                UPDATE conciliacion_bancaria
+                                SET fecha=%s, descripcion=%s, monto=%s, tipo=%s,
+                                    categoria=%s, subcategoria=%s, placa=%s, chofer=%s,
+                                    comision=%s, interbancario=%s
+                                WHERE id=%s
+                            """, (fecha, desc, monto_final, tipo, principal, sub, placa, chofer,
+                                  com, bool(inter), id_edicion))
+                        else:
+                            c.execute("""
+                                INSERT INTO conciliacion_bancaria
+                                (banco, cuenta, fecha, descripcion, monto, tipo, origen, id_movimiento, estado,
+                                 categoria, subcategoria, placa, chofer, comision, interbancario, es_cruzada)
+                                VALUES (%s, %s, %s, %s, %s, %s, 'manual', 0, 'pendiente',
+                                        %s, %s, %s, %s, %s, %s, %s)
+                            """, (banco.get("banco", ""), banco.get("cuenta", ""), fecha, desc,
+                                  monto_final, tipo, principal, sub, placa, chofer, com,
+                                  bool(inter), es_cruzada))
                         conn.commit()
                 except Exception as e:
                     messagebox.showerror("Error", f"No se pudo guardar:\n{e}", parent=v)
@@ -1976,7 +2117,9 @@ class ModuloBancoApp:
                 finally:
                     liberar_conexion(conn)
             registrar_auditoria(self.usuario_activo, "Banco",
-                                f"Agregó movimiento manual {formatear_monto(monto_final)} en {construir_etiqueta_banco(banco)}")
+                                (f"Editó el pago {formatear_monto(monto_final)} en {construir_etiqueta_banco(banco)}"
+                                 if en_edicion else
+                                 f"Agregó movimiento manual {formatear_monto(monto_final)} en {construir_etiqueta_banco(banco)}"))
 
             if es_cruzada:
                 ok, estado_txt = self.registrar_compra_cruzada_desde_pago({
@@ -2005,10 +2148,14 @@ class ModuloBancoApp:
                     f"{ent_cruz_tercero.get().strip()}).",
                     parent=v)
 
+            if en_edicion:
+                messagebox.showinfo("Pago actualizado",
+                                    "Los datos del pago se actualizaron correctamente.", parent=v)
             v.destroy()
             self.generar_reporte()
 
-        ctk.CTkButton(f_pie, text="✅ Guardar", width=160, height=36, font=("Arial", 13, "bold"),
+        ctk.CTkButton(f_pie, text=("💾 Guardar Cambios" if en_edicion else "✅ Guardar"),
+                      width=160, height=36, font=("Arial", 13, "bold"),
                       fg_color="#27ae60", hover_color="#1e8449",
                       command=guardar).pack(pady=10)
         ctk.CTkButton(f_pie, text="✖ Cancelar", width=110, height=36, font=("Arial", 12),
@@ -2270,6 +2417,13 @@ class ModuloBancoApp:
                                 parent=self.parent_frame)
             return
         f = filas[0]
+
+        # Los pagos registrados desde este módulo ("➕ Registrar Pago / Compra
+        # Cruzada") se editan en ESA MISMA ventana, con todos los datos cargados.
+        if f.get("origen") == "manual" and f.get("id"):
+            self.agregar_movimiento_manual(registro=f)
+            return
+
         v = ctk.CTkToplevel(self.parent_frame)
         v.title("Corregir Movimiento")
         v.geometry("460x400")

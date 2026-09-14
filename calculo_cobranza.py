@@ -234,6 +234,41 @@ def formatear_moneda(valor):
     return f"{simbolo} {str_val}"
 
 
+def _recortar_texto(c, texto, ancho_max, fuente="Helvetica", tam=10):
+    """Recorta el texto con '...' para que NUNCA se salga del ancho indicado."""
+    t = str(texto if texto is not None else "")
+    if c.stringWidth(t, fuente, tam) <= ancho_max:
+        return t
+    while t and c.stringWidth(t + "...", fuente, tam) > ancho_max:
+        t = t[:-1]
+    return (t + "...") if t else ""
+
+
+def _envolver_texto(c, texto, ancho_max, max_lineas=2, fuente="Helvetica", tam=10):
+    """Parte el texto en líneas que quepan en 'ancho_max' (máximo 'max_lineas').
+
+    Cada línea devuelta cumple el ancho máximo, así el contenido nunca se sale
+    de la hoja; si sobra texto, la última línea termina en '...'.
+    """
+    lineas, actual = [], ""
+    for palabra in str(texto if texto is not None else "").split():
+        prueba = f"{actual} {palabra}".strip()
+        if actual and c.stringWidth(prueba, fuente, tam) > ancho_max:
+            lineas.append(actual)
+            actual = palabra
+        else:
+            actual = prueba
+    if actual:
+        lineas.append(actual)
+    if len(lineas) > max_lineas:
+        lineas = lineas[:max_lineas]
+        cola = lineas[-1]
+        while cola and c.stringWidth(cola + "...", fuente, tam) > ancho_max:
+            cola = cola[:-1]
+        lineas[-1] = cola + "..."
+    return [_recortar_texto(c, linea, ancho_max, fuente, tam) for linea in lineas]
+
+
 def _ruta_cache_feriados():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), ARCHIVO_CACHE_FERIADOS)
 
@@ -2438,107 +2473,71 @@ class CalculoCobranzaApp:
         c.line(40, y, 572, y)
         y -= 18.0
 
-        # ---- Datos del cliente ----
+        # ---- Datos del cliente (nada se sale del margen de la hoja) ----
+        MARGEN_DER = 572.0
+        ANCHO_TOTAL = MARGEN_DER - 40.0     # 532 pt de ancho útil
+        ANCHO_IZQ = 250.0
+        ANCHO_DER = 265.0
+
         c.setFont("Helvetica-Bold", 11)
         c.drawString(40, y, "CLIENTE")
         c.setFont("Helvetica", 10)
-        c.drawString(40, y - 14, f"Razón Social: {nom_cli}")
-        if cliente_info["comercial"]:
-            c.drawString(40, y - 27, f"Razón Comercial: {cliente_info['comercial']}")
-        if cliente_info["contacto"]:
-            c.drawString(40, y - 40, f"Contacto: {cliente_info['contacto']}")
-        if cliente_info["telefono"]:
-            c.drawString(300, y - 14, f"Teléfono: {cliente_info['telefono']}")
-        if cliente_info["direccion"]:
-            dire = cliente_info["direccion"]
-            # Dirección alineada a la DERECHA junto al RUC, repartida en 2
-            # líneas equilibradas: se corta en el espacio más cercano a la
-            # mitad del texto, así la cola "baja" a la línea siguiente y el
-            # bloque nunca se ve cortado ni roza el borde del margen.
-            c.setFont("Helvetica", 10)
-            texto = f"Dirección: {dire}"
-            borde_der = 566                       # 6 pt de aire al margen derecho
-            max_ancho = borde_der - 300           # ancho útil de la columna
-            # Si cabe en una sola línea, se dibuja así; si no, se parte en 2.
-            if c.stringWidth(texto, "Helvetica", 10) <= max_ancho:
-                lineas = [texto]
-            else:
-                t = texto
-                mitad = len(t) // 2
-                mejor = -1
-                for i, ch in enumerate(t):
-                    if ch == " " and abs(i - mitad) <= abs(mejor - mitad):
-                        mejor = i
-                if mejor <= 0:
-                    lineas = [texto]
-                else:
-                    l1 = t[:mejor].strip()
-                    l2 = t[mejor:].strip()
-                    while c.stringWidth(l2, "Helvetica", 10) > max_ancho and mejor > 0:
-                        mejor = t.rfind(" ", 0, mejor)
-                        l1 = t[:mejor].strip()
-                        l2 = t[mejor:].strip()
-                    if l1 and l2:
-                        lineas = [l1, l2]
-                    else:
-                        lineas = [texto]
-            # Recorte de seguridad: nunca más de 2 líneas y nunca del margen
-            if len(lineas) > 2:
-                lineas = lineas[:2]
-            c.drawRightString(borde_der, y, lineas[0])
-            if len(lineas) > 1:
-                c.drawRightString(borde_der, y - 24, lineas[1])
-            c.setFont("Helvetica", 10)
-        c.drawString(40, y - 53, f"RUC: {ruc_cli}")
+        y_cli = y - 14.0
 
+        # Razón Social: ancho completo, hasta 2 líneas
+        for linea in _envolver_texto(c, f"Razón Social: {nom_cli}", ANCHO_TOTAL, max_lineas=2):
+            c.drawString(40, y_cli, linea)
+            y_cli -= 13.0
+
+        # Razón Comercial: ancho completo, 1 línea
+        if cliente_info["comercial"]:
+            c.drawString(40, y_cli,
+                         _envolver_texto(c, f"Razón Comercial: {cliente_info['comercial']}",
+                                         ANCHO_TOTAL, max_lineas=1)[0])
+            y_cli -= 13.0
+
+        # Contacto (izquierda) y Teléfono (derecha) en la misma fila
+        fila_usada = False
+        if cliente_info["contacto"]:
+            c.drawString(40, y_cli, _envolver_texto(
+                c, f"Contacto: {cliente_info['contacto']}", ANCHO_IZQ, max_lineas=1)[0])
+            fila_usada = True
+        if cliente_info["telefono"]:
+            c.drawRightString(MARGEN_DER, y_cli, _envolver_texto(
+                c, f"Teléfono: {cliente_info['telefono']}", ANCHO_DER, max_lineas=1)[0])
+            fila_usada = True
+        if fila_usada:
+            y_cli -= 13.0
+
+        # RUC (izquierda) y DIRECCIÓN (derecha, hasta 2 líneas)
+        c.drawString(40, y_cli, f"RUC: {ruc_cli}")
+        lineas_dire = []
+        if cliente_info["direccion"]:
+            lineas_dire = _envolver_texto(c, f"Dirección: {cliente_info['direccion']}",
+                                          ANCHO_DER, max_lineas=2)
+            c.drawRightString(MARGEN_DER, y_cli, lineas_dire[0])
+            if len(lineas_dire) > 1:
+                c.drawRightString(MARGEN_DER, y_cli - 13.0, lineas_dire[1])
+        y_cli -= 13.0 + (13.0 if len(lineas_dire) > 1 else 0.0)
+
+        # ---- Periodo (debajo del bloque del cliente) ----
+        y_cli -= 4.0
         c.setFont("Helvetica-Bold", 11)
-        c.drawString(300, y - 40, "PERIODO")
+        c.drawString(40, y_cli, "PERIODO")
         c.setFont("Helvetica", 10)
         periodo_txt = f"{NOMBRES_MESES[mes-1]} {anio} — Quincena {'1ª (1 al 15)' if quincena == 1 else '2ª (16 al fin)'}"
-        c.drawString(300, y - 53, periodo_txt)
-        c.drawString(300, y - 66, f"Plan de Cobro: {plan}")
-        y -= 90.0
+        c.drawString(40, y_cli - 13.0, _recortar_texto(c, periodo_txt, ANCHO_TOTAL, tam=10))
+        c.drawString(40, y_cli - 26.0, f"Plan de Cobro: {plan}")
+        y = y_cli - 40.0
 
         c.line(40, y, 572, y)
         y -= 16.0
 
-        # ---- Tabla: detalle día por día ----
+        # ---- Días de la quincena: solo el resumen total ----
+        c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 11)
         c.drawString(40, y, "DETALLE DE DÍAS DE LA QUINCENA")
         y -= 16.0
-        etiquetas_cat = dict(CATEGORIAS)
-        x0, x1, x2, x3, x4 = 40, 120, 230, 330, 572
-        c.setFillColorRGB(0.9, 0.93, 0.97)
-        c.rect(x0, y - 14, x4 - x0, 14, stroke=0, fill=1)
-        c.setFillColorRGB(0, 0, 0)
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(x0 + 4, y - 10, "FECHA")
-        c.drawString(x1 + 4, y - 10, "DÍA")
-        c.drawString(x2 + 4, y - 10, "CATEGORÍA")
-        c.drawString(x3 + 4, y - 10, "FERIADO")
-        y -= 16.0
-        c.setFont("Helvetica", 9)
-        for fecha_s, categoria, fer_nombre in detalle:
-            if y < 90:
-                c.showPage()
-                y = 750.0
-            try:
-                dt = datetime.strptime(fecha_s, "%d/%m/%Y").date()
-                fecha_v = fecha_s
-                dia_v = DIAS_SEMANA[dt.weekday()]
-            except Exception:
-                fecha_v, dia_v = fecha_s, ""
-            c.setFillColorRGB(0, 0, 0)
-            c.drawString(x0 + 4, y - 10, fecha_v)
-            c.drawString(x1 + 4, y - 10, dia_v)
-            c.drawString(x2 + 4, y - 10, etiquetas_cat.get(categoria, categoria))
-            c.drawString(x3 + 4, y - 10, str(fer_nombre or "")[:48])
-            c.setStrokeColorRGB(0.85, 0.85, 0.85)
-            c.line(x0, y - 13, x4, y - 13)
-            y -= 15.0
-        y -= 6.0
-
-        c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 10)
         c.drawString(40, y, f"Total días: {len(detalle)}  |  Días Normales (Lun–Sáb): {c_lunvie}  |  Domingos: {c_dom}  |  Feriados: {c_fer}")
         y -= 24.0
@@ -2637,22 +2636,22 @@ class CalculoCobranzaApp:
             if y < 90:
                 c.showPage()
                 y = 750.0
-            cols_u = [118, 45, 55, 58, 53, 47, 74, 82]
+            # Cuadro limpio: solo precios y base por unidad (sin deducciones ni horas extras)
+            cols_u = [150, 55, 62, 62, 62, 100]
             xs_u = [40]
             for w in cols_u:
                 xs_u.append(xs_u[-1] + w)
             ancho_tabla = sum(cols_u)
-            cab_u = ["UNIDAD", "HORAS/DÍA", "P. NORMAL", "P. DOMINGO", "P. FERIADO",
-                     "H. EXTRA", "MONTO EXTRA", "SUBTOTAL"]
+            cab_u = ["UNIDAD", "HORAS/DÍA", "P. NORMAL", "P. DOMINGO", "P. FERIADO", "SUBTOTAL"]
 
             def _cabecera_unidades():
                 c.setFillColorRGB(0.9, 0.93, 0.97)
                 c.rect(40, y - 14, ancho_tabla, 14, stroke=0, fill=1)
                 c.setFillColorRGB(0, 0, 0)
-                c.setFont("Helvetica-Bold", 7.5)
+                c.setFont("Helvetica-Bold", 8)
                 for j, (w, txt) in enumerate(zip(cols_u, cab_u)):
                     c.drawCentredString(xs_u[j] + w / 2, y - 10, txt)
-                c.setFont("Helvetica", 8)
+                c.setFont("Helvetica", 9)
 
             _cabecera_unidades()
             y -= 16.0
@@ -2663,18 +2662,15 @@ class CalculoCobranzaApp:
                     y = 750.0
                     _cabecera_unidades()
                     y -= 16.0
-                horas_ex, monto_ex = extras_por_unidad_pdf.get(str(uni or ""), (0.0, 0.0))
+                # Base de la unidad = días normales + domingos + feriados (sin ajustes)
+                base_u = float(mn or 0) + float(md or 0) + float(mf or 0)
                 c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_u[0] + 3, y - 10, str(uni)[:30])
+                c.drawString(xs_u[0] + 4, y - 10, str(uni)[:36])
                 c.drawCentredString(xs_u[1] + cols_u[1] / 2, y - 10, f"{float(hd or 0):g}")
-                c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - 10, f"{float(pn or 0):,.2f}")
-                c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - 10, f"{float(pd or 0):,.2f}")
-                c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - 10, f"{float(pf or 0):,.2f}")
-                c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - 10,
-                                    f"{horas_ex:g}" if horas_ex else "-")
-                c.drawCentredString(xs_u[6] + cols_u[6] / 2, y - 10,
-                                    f"{simbolo} {monto_ex:,.2f}" if monto_ex else "-")
-                c.drawCentredString(xs_u[7] + cols_u[7] / 2, y - 10, f"{simbolo} {float(sub or 0):,.2f}")
+                c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - 10, f"{simbolo} {float(pn or 0):,.2f}")
+                c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - 10, f"{simbolo} {float(pd or 0):,.2f}")
+                c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - 10, f"{simbolo} {float(pf or 0):,.2f}")
+                c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - 10, f"{simbolo} {base_u:,.2f}")
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
                 c.line(40, y - 13, 40 + ancho_tabla, y - 13)
                 y -= 15.0
@@ -2684,58 +2680,6 @@ class CalculoCobranzaApp:
             c.setFont("Helvetica-Bold", 10)
             c.drawString(xs_u[0] + 4, y - 10, "SUBTOTAL (BASE)")
             c.drawRightString(40 + ancho_tabla, y - 10, f"{simbolo} {float(m_base or 0):,.2f}")
-            y -= 15.0
-            if m_extras_pdf > 0:
-                c.drawString(xs_u[0] + 4, y - 10, "+ HORAS EXTRAS")
-                c.drawRightString(40 + ancho_tabla, y - 10, f"+ {simbolo} {m_extras_pdf:,.2f}")
-                y -= 15.0
-            y -= 3.0
-
-            # ---- Deducciones por unidad (en la página siguiente) ----
-            c.showPage()
-            y = 750.0
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(40, y, "DEDUCCIONES POR UNIDAD")
-            y -= 16.0
-            if y < 90:
-                c.showPage()
-                y = 750.0
-            cols_d = [150, 75, 75, 75, 105]
-            xs_d = [40]
-            for w in cols_d:
-                xs_d.append(xs_d[-1] + w)
-            ancho_tabla_d = sum(cols_d)
-            c.setFillColorRGB(0.9, 0.93, 0.97)
-            c.rect(40, y - 14, ancho_tabla_d, 14, stroke=0, fill=1)
-            c.setFillColorRGB(0, 0, 0)
-            c.setFont("Helvetica-Bold", 8)
-            c.drawString(xs_d[0] + 4, y - 10, "UNIDAD")
-            c.drawCentredString(xs_d[1] + cols_d[1] / 2, y - 10, "HRS NORMAL")
-            c.drawCentredString(xs_d[2] + cols_d[2] / 2, y - 10, "HRS DOMINGO")
-            c.drawCentredString(xs_d[3] + cols_d[3] / 2, y - 10, "HRS FERIADO")
-            c.drawCentredString(xs_d[4] + cols_d[4] / 2, y - 10, "MONTO DEDUCCIÓN")
-            y -= 16.0
-            c.setFont("Helvetica", 9)
-            for (uni, pn, pd, pf, hd, cn, cdom, cfer,
-                 dn, dd, df, mn, md, mf, mded, sub) in unidades:
-                if y < 90:
-                    c.showPage()
-                    y = 750.0
-                c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_d[0] + 4, y - 10, str(uni)[:36])
-                c.drawCentredString(xs_d[1] + cols_d[1] / 2, y - 10, f"{float(dn or 0):g}")
-                c.drawCentredString(xs_d[2] + cols_d[2] / 2, y - 10, f"{float(dd or 0):g}")
-                c.drawCentredString(xs_d[3] + cols_d[3] / 2, y - 10, f"{float(df or 0):g}")
-                c.drawCentredString(xs_d[4] + cols_d[4] / 2, y - 10, f"{simbolo} {float(mded or 0):,.2f}")
-                c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                c.line(40, y - 13, 40 + ancho_tabla_d, y - 13)
-                y -= 15.0
-            c.setStrokeColorRGB(0, 0, 0)
-            c.setLineWidth(1)
-            c.line(40, y + 1, 40 + ancho_tabla_d, y + 1)
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(xs_d[0] + 4, y - 10, "TOTAL DEDUCCIONES")
-            c.drawRightString(40 + ancho_tabla_d, y - 10, f"- {simbolo} {float(m_ded or 0):,.2f}")
             y -= 26.0
 
         # ---- Asientos con fecha: deducciones y horas extras (uno por uno) ----
@@ -2840,25 +2784,15 @@ class CalculoCobranzaApp:
                 y -= 12.0
             y -= 10.0
 
-        # ---- Firmas ----
-        y -= 20.0
-        if y < 90:
-            c.showPage()
-            y = 700.0
-        c.setFont("Helvetica", 10)
-        c.line(70, y - 8, 260, y - 8)
-        c.line(360, y - 8, 550, y - 8)
-        c.setFont("Helvetica-Bold", 9)
-        c.drawCentredString(165, y - 20, "FIRMA CLIENTE")
-        c.drawCentredString(455, y - 20, "FIRMA EMPRESA")
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(165, y - 30, nom_cli)
-        c.drawCentredString(455, y - 30, razon_empresa)
+        # (Sin firmas: el documento ya no lleva líneas de firma)
 
         c.setFont("Helvetica", 8)
         c.setFillColorRGB(0.4, 0.4, 0.4)
-        c.drawCentredString(306, 40, f"Documento generado por el Sistema de Control de Flota Automotriz — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        c.drawCentredString(306, 30, f"Registro N° {id_rec:04d} — {periodo_txt} — Cliente: {nom_cli}")
+        c.drawCentredString(306, 40, _recortar_texto(
+            c, f"Documento generado por el Sistema de Control de Flota Automotriz — {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+            520, "Helvetica", 8))
+        c.drawCentredString(306, 30, _recortar_texto(
+            c, f"Registro N° {id_rec:04d} — {periodo_txt} — Cliente: {nom_cli}", 520, "Helvetica", 8))
 
         try:
             c.save()
