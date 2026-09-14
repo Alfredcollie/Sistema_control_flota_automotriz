@@ -8,6 +8,9 @@ MODULO_BANCO.PY - MODULO DE BANCO (SALDOS Y CONCILIACION BANCARIA)
   en el sistema (cobros y pagos) y generar un reporte en pantalla.
 - Permite conciliar, corregir montos/fechas y agregar movimientos faltantes
   (tanto ajustes manuales como cobros/pagos reales en el sistema).
+- Registro unificado de pagos ("Registrar Pago / Compra Cruzada"): al marcar el
+  check "Es compra cruzada" el pago a un tercero se registra tambien como factura
+  pagada por tercero en el modulo de Compras, adjuntando el PDF del soporte.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
@@ -16,13 +19,15 @@ import os
 import re
 import json
 import shutil
+import calendar
 import sys
 import subprocess
 import threading
 from datetime import datetime
 
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
-from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
+from dialogos_seguros import (seleccionar_archivo_dialogo, seleccionar_archivos_dialogo,
+                              guardar_archivo_dialogo)
 from app_paths import CONFIG_FILE, ruta_para_guardar
 from config_nube import cargar_bancos
 
@@ -192,6 +197,31 @@ def cargar_placas_flota():
     finally:
         liberar_conexion(conn)
     return placas
+
+
+def es_categoria_planilla(texto):
+    """True si el texto de categoría corresponde a planilla / sueldos."""
+    t = (texto or "").lower()
+    return "planilla" in t or "sueldo" in t
+
+
+def cargar_choferes():
+    """Choferes registrados en el módulo de Choferes (activos primero)."""
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT nombres FROM choferes
+                WHERE nombres IS NOT NULL AND TRIM(nombres) != ''
+                ORDER BY (COALESCE(estado, '') = 'Activo') DESC, nombres ASC
+            """)
+            return [str(r[0]) for r in c.fetchall()]
+    except Exception:
+        return []
+    finally:
+        liberar_conexion(conn)
 
 
 def cargar_proveedores():
@@ -550,6 +580,172 @@ def mes_etiqueta_a_key(etiqueta):
 # =========================================================
 # CLASE PRINCIPAL
 # =========================================================
+def centrar_ventana(ventana, parent, ancho, alto):
+    """Coloca una ventana secundaria centrada sobre su ventana padre."""
+    ventana.update_idletasks()
+    try:
+        if parent and parent.winfo_ismapped():
+            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (ancho // 2)
+            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (alto // 2)
+        else:
+            x = (ventana.winfo_screenwidth() // 2) - (ancho // 2)
+            y = (ventana.winfo_screenheight() // 2) - (alto // 2)
+    except Exception:
+        x = (ventana.winfo_screenwidth() // 2) - (ancho // 2)
+        y = (ventana.winfo_screenheight() // 2) - (alto // 2)
+    ventana.geometry(f"{ancho}x{alto}+{max(10, x)}+{max(35, y)}")
+
+
+class CalendarioNativo(ctk.CTkToplevel):
+    """Calendario emergente para escribir la fecha en un campo de texto.
+
+    Se abre en el mes de la fecha que ya tenga el campo (o en el mes actual),
+    resalta el día de hoy y trae un botón "Hoy" para ir a la fecha de hoy."""
+
+    def __init__(self, parent, target_entry):
+        super().__init__(parent)
+        self.target_entry = target_entry
+        self.title("Seleccionar Fecha")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        hoy = datetime.now()
+        self.current_year = hoy.year
+        self.current_month = hoy.month
+        self.dia_marcado = None
+
+        # Si el campo ya trae una fecha válida, se abre en ese mes y se resalta ese día
+        texto = ""
+        try:
+            texto = (target_entry.get() or "").strip()
+        except Exception:
+            texto = ""
+        m = re.match(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$", texto)
+        if m:
+            d, mes, anio = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if anio < 100:
+                anio += 2000
+            if 1 <= mes <= 12 and 1 <= d <= 31:
+                self.current_month, self.current_year = mes, anio
+                self.dia_marcado = d
+
+        centrar_ventana(self, parent, 330, 350)
+
+        header = ctk.CTkFrame(self, fg_color="#1f538d", corner_radius=0)
+        header.pack(fill="x")
+
+        ctk.CTkButton(header, text="<", width=28, fg_color="transparent", text_color="white",
+                      hover_color="#163b65", font=("Arial", 14, "bold"),
+                      command=self.mes_anterior).pack(side="left", padx=5, pady=10)
+
+        self.cmb_mes = ctk.CTkComboBox(header, values=NOMBRES_MESES, width=105,
+                                       command=self.cambiar_mes, state="readonly")
+        self.cmb_mes.pack(side="left", padx=2, pady=10)
+
+        anios = [str(y) for y in range(hoy.year - 80, hoy.year + 20)]
+        self.cmb_anio = ctk.CTkComboBox(header, values=anios, width=80,
+                                        command=self.cambiar_anio, state="readonly")
+        self.cmb_anio.pack(side="left", padx=2, pady=10)
+
+        ctk.CTkButton(header, text=">", width=28, fg_color="transparent", text_color="white",
+                      hover_color="#163b65", font=("Arial", 14, "bold"),
+                      command=self.mes_siguiente).pack(side="right", padx=5, pady=10)
+
+        self.days_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.days_frame.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+
+        for i, dia in enumerate(["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]):
+            ctk.CTkLabel(self.days_frame, text=dia, font=("Arial", 11, "bold"),
+                         text_color="#1f538d").grid(row=0, column=i, padx=5, pady=5)
+
+        f_pie = ctk.CTkFrame(self, fg_color="transparent")
+        f_pie.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(f_pie, text="📅 Hoy", width=90, font=("Arial", 11, "bold"),
+                      fg_color="#27ae60", hover_color="#1e8449",
+                      command=self.ir_a_hoy).pack(side="left")
+        ctk.CTkButton(f_pie, text="✖ Cerrar", width=90, font=("Arial", 11),
+                      fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=self.destroy).pack(side="right")
+
+        self.dibujar_mes()
+
+    # ------------------------------------------------------------------
+    def dibujar_mes(self):
+        self.cmb_mes.set(NOMBRES_MESES[self.current_month - 1])
+        self.cmb_anio.set(str(self.current_year))
+
+        for widget in self.days_frame.winfo_children():
+            try:
+                if int(widget.grid_info()["row"]) > 0:
+                    widget.destroy()
+            except Exception:
+                pass
+
+        hoy = datetime.now()
+        for fila, semana in enumerate(calendar.monthcalendar(self.current_year, self.current_month), start=1):
+            for col, dia in enumerate(semana):
+                if dia == 0:
+                    continue
+                es_hoy = (dia == hoy.day and self.current_month == hoy.month
+                          and self.current_year == hoy.year)
+                es_marcado = (self.dia_marcado == dia)
+                if es_marcado:
+                    color, texto_color = "#1f538d", "white"
+                elif es_hoy:
+                    color, texto_color = "#d4edda", "#155724"
+                else:
+                    color, texto_color = "transparent", "black"
+                btn = ctk.CTkButton(self.days_frame, text=str(dia), width=30, height=30,
+                                    fg_color=color, text_color=texto_color,
+                                    hover_color="#e0e0e0", font=("Arial", 11),
+                                    command=lambda d=dia: self.seleccionar(d))
+                btn.grid(row=fila, column=col, padx=3, pady=2)
+
+    def cambiar_mes(self, eleccion):
+        try:
+            self.current_month = NOMBRES_MESES.index(eleccion) + 1
+        except ValueError:
+            return
+        self.dia_marcado = None
+        self.dibujar_mes()
+
+    def cambiar_anio(self, eleccion):
+        try:
+            self.current_year = int(eleccion)
+        except (TypeError, ValueError):
+            return
+        self.dia_marcado = None
+        self.dibujar_mes()
+
+    def mes_anterior(self):
+        self.current_month -= 1
+        if self.current_month < 1:
+            self.current_month, self.current_year = 12, self.current_year - 1
+        self.dia_marcado = None
+        self.dibujar_mes()
+
+    def mes_siguiente(self):
+        self.current_month += 1
+        if self.current_month > 12:
+            self.current_month, self.current_year = 1, self.current_year + 1
+        self.dia_marcado = None
+        self.dibujar_mes()
+
+    def ir_a_hoy(self):
+        hoy = datetime.now()
+        self.current_year, self.current_month, self.dia_marcado = hoy.year, hoy.month, hoy.day
+        self.dibujar_mes()
+
+    def seleccionar(self, dia):
+        try:
+            self.target_entry.delete(0, tk.END)
+            self.target_entry.insert(0, f"{dia:02d}/{self.current_month:02d}/{self.current_year}")
+        except Exception:
+            pass
+        self.destroy()
+
+
 class ModuloBancoApp:
     def __init__(self, parent_frame, usuario_activo=""):
         self.parent_frame = parent_frame
@@ -577,12 +773,10 @@ class ModuloBancoApp:
         self.tab_saldos = self.tabview.add(" 💵 Saldo de Bancos ")
         self.tab_conciliacion = self.tabview.add(" 🧾 Conciliación Bancaria ")
         self.tab_transferencias = self.tabview.add(" 🔄 Transferencias ")
-        self.tab_compras_cruzadas = self.tabview.add(" 🧾 Compras Cruzadas ")
 
         self.construir_tab_saldos()
         self.construir_tab_conciliacion()
         self.construir_tab_transferencias()
-        self.construir_tab_compras_cruzadas()
 
     # -----------------------------------------------------
     # BASE DE DATOS DE CONCILIACION
@@ -1059,8 +1253,14 @@ class ModuloBancoApp:
         cmb_destino.set(tx["destino"] if tx["destino"] in etiquetas else (etiquetas[1] if len(etiquetas) > 1 else (etiquetas[0] if etiquetas else "")))
 
         ctk.CTkLabel(f, text="Fecha:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_fecha = ctk.CTkEntry(f)
-        ent_fecha.pack(fill="x", pady=(0, 8)); ent_fecha.insert(0, tx["fecha"])
+        f_fecha = ctk.CTkFrame(f, fg_color="transparent")
+        f_fecha.pack(fill="x", pady=(0, 8))
+        ent_fecha = ctk.CTkEntry(f_fecha)
+        ent_fecha.pack(side="left", fill="x", expand=True)
+        ent_fecha.insert(0, tx["fecha"])
+        ctk.CTkButton(f_fecha, text="📅", width=42, font=("Arial", 13, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(6, 0))
 
         ctk.CTkLabel(f, text="Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_desc = ctk.CTkEntry(f)
@@ -1144,532 +1344,6 @@ class ModuloBancoApp:
         messagebox.showinfo("Éxito", "Transferencia(s) eliminada(s) correctamente.", parent=self.parent_frame)
 
     # -----------------------------------------------------
-    # TAB: COMPRAS CRUZADAS (factura de compra pagada por tercero)
-    # -----------------------------------------------------
-    def construir_tab_compras_cruzadas(self):
-        self.ruta_factura_cc = ""
-        self.ruta_soporte_cc = ""
-
-        f_form = ctk.CTkFrame(self.tab_compras_cruzadas, fg_color="#f8f9fa",
-                              border_width=1, border_color="#e0e0e0", corner_radius=8)
-        f_form.pack(fill="x", padx=5, pady=(5, 10))
-
-        proveedores = cargar_proveedores()
-        cats_cc = cargar_categorias_gastos()
-        princ_cc = list(cats_cc.keys()) or ["Gastos Operativos"]
-        placas_cc = cargar_placas_flota()
-
-        r1 = ctk.CTkFrame(f_form, fg_color="transparent"); r1.pack(fill="x", padx=12, pady=(12, 4))
-        ctk.CTkLabel(r1, text="Proveedor:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.ent_cc_proveedor = ctk.CTkComboBox(r1, values=proveedores or ["(Sin proveedores)"])
-        self.ent_cc_proveedor.pack(side="left", fill="x", expand=True, padx=6)
-        self.ent_cc_proveedor.set("")
-        ctk.CTkLabel(r1, text="N° Doc:", width=70, anchor="w", font=("Arial", 12, "bold")).pack(side="left", padx=(10, 0))
-        self.ent_cc_nro = ctk.CTkEntry(r1, width=200)
-        self.ent_cc_nro.pack(side="left", padx=6)
-
-        r2 = ctk.CTkFrame(f_form, fg_color="transparent"); r2.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(r2, text="Fecha:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.ent_cc_fecha = ctk.CTkEntry(r2, width=150)
-        self.ent_cc_fecha.pack(side="left", padx=6)
-        self.ent_cc_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
-        ctk.CTkLabel(r2, text="Monto Total:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left", padx=(10, 0))
-        self.ent_cc_monto = ctk.CTkEntry(r2, width=170)
-        self.ent_cc_monto.pack(side="left", padx=6)
-        self.ent_cc_monto.bind("<KeyRelease>", lambda e: self._formatear_entrada_monto(self.ent_cc_monto))
-        self.ent_cc_monto.bind("<FocusOut>", lambda e: self._formatear_entrada_monto(self.ent_cc_monto))
-
-        r3 = ctk.CTkFrame(f_form, fg_color="transparent"); r3.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(r3, text="Categoría Principal:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.cmb_cc_principal = ctk.CTkComboBox(r3, values=princ_cc, width=200, state="readonly")
-        self.cmb_cc_principal.pack(side="left", padx=6)
-        self.cmb_cc_principal.set(princ_cc[0])
-        ctk.CTkLabel(r3, text="Categoría:", width=80, anchor="w", font=("Arial", 12, "bold")).pack(side="left", padx=(10, 0))
-        subs_cc = cats_cc.get(princ_cc[0], []) or ["(Sin categoría)"]
-        self.cmb_cc_categoria = ctk.CTkComboBox(r3, values=subs_cc, width=200, state="readonly")
-        self.cmb_cc_categoria.pack(side="left", padx=6)
-        self.cmb_cc_categoria.set(subs_cc[0])
-
-        r_cat_btn = ctk.CTkFrame(f_form, fg_color="transparent"); r_cat_btn.pack(fill="x", padx=12, pady=(0, 4))
-
-        r_placa = ctk.CTkFrame(f_form, fg_color="transparent")
-        ctk.CTkLabel(r_placa, text="Placa / Vehículo:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.cmb_cc_placa = ctk.CTkComboBox(r_placa, values=placas_cc or ["(Sin placas)"], width=200, state="readonly")
-        self.cmb_cc_placa.pack(side="left", padx=6)
-        if placas_cc:
-            self.cmb_cc_placa.set(placas_cc[0])
-
-        r4 = ctk.CTkFrame(f_form, fg_color="transparent"); r4.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(r4, text="Concepto:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.ent_cc_concepto = ctk.CTkEntry(r4)
-        self.ent_cc_concepto.pack(side="left", fill="x", expand=True, padx=6)
-
-        r5 = ctk.CTkFrame(f_form, fg_color="transparent"); r5.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(r5, text="Pagado a (tercero):", width=130, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.ent_cc_tercero = ctk.CTkEntry(r5)
-        self.ent_cc_tercero.pack(side="left", fill="x", expand=True, padx=6)
-
-        def on_principal_cc(_=None):
-            subs = cats_cc.get(self.cmb_cc_principal.get(), []) or ["(Sin categoría)"]
-            self.cmb_cc_categoria.configure(values=subs)
-            self.cmb_cc_categoria.set(subs[0])
-            if self.cmb_cc_principal.get() == "Gastos Operativos":
-                r_placa.pack(fill="x", padx=12, pady=4, before=r4)
-            else:
-                r_placa.pack_forget()
-        self.cmb_cc_principal.configure(command=on_principal_cc)
-        on_principal_cc()
-
-        def abrir_gestion_cc():
-            self.gestionar_categorias()
-            nonlocal cats_cc, princ_cc
-            cats_cc = cargar_categorias_gastos()
-            princ_cc = list(cats_cc.keys()) or ["Gastos Operativos"]
-            self.cmb_cc_principal.configure(values=princ_cc)
-            self.cmb_cc_principal.set(princ_cc[0])
-            on_principal_cc()
-        ctk.CTkButton(r_cat_btn, text="⚙️ Gestionar Categorías", height=26, font=("Arial", 11),
-                      fg_color="#8e44ad", hover_color="#703688", command=abrir_gestion_cc).pack(side="left")
-
-        r6 = ctk.CTkFrame(f_form, fg_color="transparent"); r6.pack(fill="x", padx=12, pady=(4, 4))
-        ctk.CTkButton(r6, text="📄 Cargar Factura PDF", width=180, height=34,
-                      font=("Arial", 12, "bold"), fg_color="#e67e22", hover_color="#ca6f1e",
-                      command=self.cargar_factura_cc).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(r6, text="🧾 Adjuntar Soporte de Pago", width=220, height=34,
-                      font=("Arial", 12, "bold"), fg_color="#2980b9", hover_color="#1f618d",
-                      command=self.adjuntar_soporte_cc).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(r6, text="✅ Guardar Compra Cruzada", width=210, height=34,
-                      font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449",
-                      command=self.guardar_compra_cruzada).pack(side="left")
-
-        self.lbl_archivos_cc = ctk.CTkLabel(f_form, text="Factura: sin cargar   |   Soporte: sin cargar",
-                                            font=("Arial", 11, "italic"), text_color="gray")
-        self.lbl_archivos_cc.pack(anchor="w", padx=12, pady=(0, 12))
-
-        f_hist = ctk.CTkFrame(self.tab_compras_cruzadas, fg_color="transparent")
-        f_hist.pack(fill="x", padx=5, pady=(0, 4))
-        ctk.CTkLabel(f_hist, text="Historial de compras cruzadas:", font=("Arial", 13, "bold"),
-                     text_color="#1f538d").pack(side="left")
-        ctk.CTkButton(f_hist, text="🗑️ Eliminar", width=100, font=("Arial", 11, "bold"),
-                      fg_color="#e74c3c", hover_color="#c0392b",
-                      command=self.eliminar_compra_cruzada).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(f_hist, text="✏️ Editar", width=100, font=("Arial", 11, "bold"),
-                      fg_color="#2980b9", hover_color="#1f618d",
-                      command=self.editar_compra_cruzada).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(f_hist, text="👁 Abrir Soporte", width=140, font=("Arial", 11, "bold"),
-                      fg_color="#34495e", hover_color="#2c3e50",
-                      command=self.abrir_soporte_cc).pack(side="right", padx=(6, 0))
-
-        f_tabla = ctk.CTkFrame(self.tab_compras_cruzadas, fg_color="transparent")
-        f_tabla.pack(fill="both", expand=True, padx=5, pady=(0, 5))
-        columnas = ("fecha", "nro", "proveedor", "total", "tercero", "soporte")
-        self.tabla_cc = ttk.Treeview(f_tabla, columns=columnas, show="headings")
-        for col, txt, w, anc in (("fecha", "Fecha", 95, "center"),
-                                 ("nro", "N° Doc", 130, "center"),
-                                 ("proveedor", "Proveedor", 220, "w"),
-                                 ("total", "Total", 110, "e"),
-                                 ("tercero", "Pagado a", 180, "w"),
-                                 ("soporte", "Soporte", 80, "center")):
-            self.tabla_cc.heading(col, text=txt)
-            self.tabla_cc.column(col, width=w, anchor=anc)
-        vsb = ttk.Scrollbar(f_tabla, orient="vertical", command=self.tabla_cc.yview)
-        self.tabla_cc.configure(yscrollcommand=vsb.set)
-        self.tabla_cc.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-        self.refrescar_compras_cruzadas()
-
-    def cargar_factura_cc(self):
-        ruta = seleccionar_archivo_dialogo(titulo="Seleccionar Factura de Compra (PDF)",
-                                           tipos=[("Archivos PDF", "*.pdf")])
-        if not ruta:
-            return
-        self.ruta_factura_cc = ruta
-        datos = extraer_datos_factura_pdf(ruta)
-        if datos.get("proveedor"):
-            self.ent_cc_proveedor.set(datos["proveedor"])
-        if datos.get("numero_documento"):
-            self.ent_cc_nro.delete(0, tk.END); self.ent_cc_nro.insert(0, datos["numero_documento"])
-        if datos.get("fecha"):
-            self.ent_cc_fecha.delete(0, tk.END); self.ent_cc_fecha.insert(0, datos["fecha"])
-        if datos.get("total"):
-            self.ent_cc_monto.delete(0, tk.END); self.ent_cc_monto.insert(0, formatear_numero_entrada(f"{datos['total']:.2f}"))
-        self.lbl_archivos_cc.configure(text=f"Factura: {os.path.basename(ruta)}   |   Soporte: {os.path.basename(self.ruta_soporte_cc) if self.ruta_soporte_cc else 'sin cargar'}")
-        messagebox.showinfo("Factura", "Datos extraídos del PDF. Revise y complete los campos antes de guardar.", parent=self.parent_frame)
-
-    def _formatear_entrada_monto(self, entry):
-        try:
-            txt = entry.get()
-        except Exception:
-            return
-        fmt = formatear_numero_entrada(txt)
-        if fmt != txt:
-            entry.delete(0, tk.END)
-            entry.insert(0, fmt)
-
-    def adjuntar_soporte_cc(self):
-        ruta = seleccionar_archivo_dialogo(titulo="Seleccionar Soporte del Pago (PDF o imagen)",
-                                           tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
-        if not ruta:
-            return
-        self.ruta_soporte_cc = ruta
-        self.lbl_archivos_cc.configure(text=f"Factura: {os.path.basename(self.ruta_factura_cc) if self.ruta_factura_cc else 'sin cargar'}   |   Soporte: {os.path.basename(ruta)}")
-
-    def guardar_compra_cruzada(self):
-        proveedor = self.ent_cc_proveedor.get().strip()
-        nro = self.ent_cc_nro.get().strip().replace(" ", "")
-        fecha = self.ent_cc_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
-        concepto = self.ent_cc_concepto.get().strip()
-        tercero = self.ent_cc_tercero.get().strip()
-        monto = normalizar_monto(self.ent_cc_monto.get())
-
-        principal_cc = self.cmb_cc_principal.get()
-        sub_cc = self.cmb_cc_categoria.get()
-        if sub_cc == "(Sin categoría)":
-            sub_cc = ""
-        placa_cc = ""
-        if principal_cc == "Gastos Operativos":
-            pv = self.cmb_cc_placa.get()
-            if pv and pv != "(Sin placas)":
-                placa_cc = pv
-        categoria_cc = f"{principal_cc} - {sub_cc}".strip(" -") if sub_cc else principal_cc
-        partes_desc = [concepto] if concepto else []
-        if placa_cc:
-            partes_desc.append(f"Placa {placa_cc}")
-        descripcion_final = " - ".join(partes_desc) or "Compra cruzada pagada por tercero"
-
-        if not proveedor:
-            messagebox.showwarning("Compras Cruzadas", "Ingrese el proveedor.", parent=self.parent_frame)
-            return
-        if monto <= 0:
-            messagebox.showwarning("Compras Cruzadas", "Ingrese un monto mayor a 0.", parent=self.parent_frame)
-            return
-
-        base = obtener_ruta_base()
-        if not base:
-            try:
-                from politica_almacenamiento import advertir
-                advertir(self.parent_frame)
-            except Exception:
-                messagebox.showwarning("Almacenamiento bloqueado",
-                                       "Este equipo no está autorizado a guardar archivos.",
-                                       parent=self.parent_frame)
-            return
-        ruta_factura = ""
-        if self.ruta_factura_cc and os.path.isfile(self.ruta_factura_cc):
-            try:
-                carpeta = os.path.normpath(os.path.join(base, "facturas_recibidas"))
-                if not os.path.exists(carpeta):
-                    os.makedirs(carpeta)
-                prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor).replace(" ", "_")[:40]
-                ext = os.path.splitext(self.ruta_factura_cc)[1]
-                ruta_factura = os.path.normpath(os.path.join(carpeta, f"Cruzada_{datetime.now().strftime('%Y%m%d%H%M%S')}_{prov_limpio}{ext}"))
-                shutil.copy2(self.ruta_factura_cc, ruta_factura)
-            except Exception as e:
-                messagebox.showerror("Error", f"Fallo al guardar la factura:\n{e}", parent=self.parent_frame)
-                return
-
-        ruta_soporte = ""
-        if self.ruta_soporte_cc and os.path.isfile(self.ruta_soporte_cc):
-            try:
-                carpeta = os.path.normpath(os.path.join(base, "soportes_pagos_terceros"))
-                if not os.path.exists(carpeta):
-                    os.makedirs(carpeta)
-                ext = os.path.splitext(self.ruta_soporte_cc)[1]
-                ruta_soporte = os.path.normpath(os.path.join(carpeta, f"Soporte_{datetime.now().strftime('%Y%m%d%H%M%S')}_{nro or 'sin_doc'}{ext}"))
-                shutil.copy2(self.ruta_soporte_cc, ruta_soporte)
-            except Exception as e:
-                messagebox.showerror("Error", f"Fallo al guardar el soporte:\n{e}", parent=self.parent_frame)
-                return
-
-        conn = conectar_db(silencioso=True)
-        if not conn:
-            messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=self.parent_frame)
-            return
-        actualizada = False
-        try:
-            with conn.cursor() as c:
-                # Evitar duplicar: ¿la factura ya está registrada en Compras?
-                existente = None
-                if nro:
-                    c.execute("SELECT id, COALESCE(archivo_ruta,'') FROM facturas_recibidas WHERE REPLACE(numero_documento, ' ', '') = %s ORDER BY id LIMIT 1", (nro,))
-                    existente = c.fetchone()
-                    if not existente and proveedor:
-                        c.execute("SELECT id, COALESCE(archivo_ruta,'') FROM facturas_recibidas WHERE REPLACE(numero_documento, ' ', '') = %s AND proveedor ILIKE %s ORDER BY id LIMIT 1", (nro, proveedor))
-                        existente = c.fetchone()
-
-                if existente:
-                    id_existente, archivo_existente = existente
-                    sets = ["categoria = %s", "es_compra_cruzada = TRUE"]
-                    params = [categoria_cc]
-                    if tercero:
-                        sets.append("pagado_por_tercero = %s"); params.append(tercero)
-                    if ruta_soporte:
-                        sets.append("soporte_pago_tercero = %s"); params.append(ruta_soporte)
-                    if ruta_factura and not archivo_existente:
-                        sets.append("archivo_ruta = %s"); params.append(ruta_para_guardar(ruta_factura))
-                    params.append(id_existente)
-                    c.execute("UPDATE facturas_recibidas SET " + ", ".join(sets) + " WHERE id = %s", tuple(params))
-                    conn.commit()
-                    actualizada = True
-                else:
-                    c.execute("""
-                        INSERT INTO facturas_recibidas
-                        (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado,
-                         subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto,
-                         categoria, ruc, pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, ("FACTURA", nro, fecha, proveedor, descripcion_final, "",
-                          monto, 0, monto, ruta_para_guardar(ruta_factura), 0, 0, 0, categoria_cc, "", tercero, ruta_para_guardar(ruta_soporte), True))
-                    conn.commit()
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo guardar la compra cruzada:\n{e}", parent=self.parent_frame)
-            return
-        finally:
-            liberar_conexion(conn)
-
-        registrar_auditoria(self.usuario_activo, "Banco",
-                            f"Compra cruzada {nro or ''} de {proveedor} pagada a {tercero or 'tercero'}")
-        self.ent_cc_proveedor.set("")
-        self.ent_cc_nro.delete(0, tk.END)
-        self.ent_cc_concepto.delete(0, tk.END)
-        self.ent_cc_tercero.delete(0, tk.END)
-        self.ent_cc_monto.delete(0, tk.END)
-        self.ruta_factura_cc = ""
-        self.ruta_soporte_cc = ""
-        self.lbl_archivos_cc.configure(text="Factura: sin cargar   |   Soporte: sin cargar")
-        self.refrescar_compras_cruzadas()
-        if actualizada:
-            messagebox.showinfo("Compras Cruzadas", "La factura ya estaba registrada en Compras.\nSe actualizó con el pago a tercero y su soporte (sin duplicar).", parent=self.parent_frame)
-        else:
-            messagebox.showinfo("Éxito", "Compra cruzada registrada en Compras (sin afectar los bancos).", parent=self.parent_frame)
-
-    def cargar_compras_cruzadas(self):
-        conn = conectar_db(silencioso=True)
-        if not conn:
-            return []
-        rows = []
-        try:
-            with conn.cursor() as c:
-                c.execute("""
-                    SELECT id, fecha, numero_documento, proveedor, total,
-                           COALESCE(pagado_por_tercero,''), COALESCE(soporte_pago_tercero,''), COALESCE(archivo_ruta,'')
-                    FROM facturas_recibidas
-                    WHERE (COALESCE(es_compra_cruzada, FALSE) = TRUE OR COALESCE(pagado_por_tercero,'') != '' OR categoria = 'COMPRA CRUZADA')
-                    ORDER BY id DESC
-                """)
-                for idf, fecha, nro, prov, total, tercero, soporte, factura in c.fetchall():
-                    rows.append({
-                        "id": idf, "fecha": fecha or "", "nro": nro or "", "proveedor": prov or "",
-                        "total": float(total or 0), "tercero": tercero, "soporte": soporte, "factura": factura,
-                    })
-        except Exception:
-            pass
-        finally:
-            liberar_conexion(conn)
-        return rows
-
-    def refrescar_compras_cruzadas(self):
-        self.tabla_cc.delete(*self.tabla_cc.get_children())
-        for r in self.cargar_compras_cruzadas():
-            tiene_soporte = "✅" if r["soporte"] else "—"
-            self.tabla_cc.insert("", tk.END, iid=str(r["id"]),
-                                 values=(r["fecha"], r["nro"], r["proveedor"], formatear_monto(r["total"]),
-                                         r["tercero"], tiene_soporte))
-
-    def abrir_soporte_cc(self):
-        sel = self.tabla_cc.selection()
-        if len(sel) != 1:
-            messagebox.showinfo("Soporte", "Seleccione una compra cruzada para abrir su soporte.", parent=self.parent_frame)
-            return
-        idf = int(sel[0])
-        for r in self.cargar_compras_cruzadas():
-            if r["id"] == idf:
-                from app_paths import resolver_ruta_archivo
-                ruta = resolver_ruta_archivo(r["soporte"] or r["factura"])
-                if ruta:
-                    abrir_documento(ruta)
-                else:
-                    messagebox.showinfo("Soporte", "No hay archivo adjunto para este registro.", parent=self.parent_frame)
-                return
-
-    def editar_compra_cruzada(self):
-        sel = self.tabla_cc.selection()
-        if len(sel) != 1:
-            messagebox.showinfo("Editar", "Seleccione exactamente una compra cruzada para editar.", parent=self.parent_frame)
-            return
-        idf = int(sel[0])
-        conn = conectar_db(silencioso=True)
-        if not conn:
-            messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=self.parent_frame)
-            return
-        row = None
-        try:
-            with conn.cursor() as c:
-                c.execute("""
-                    SELECT proveedor, numero_documento, fecha, total, COALESCE(descripcion,''),
-                           COALESCE(pagado_por_tercero,''), COALESCE(soporte_pago_tercero,''), COALESCE(archivo_ruta,'')
-                    FROM facturas_recibidas WHERE id = %s
-                """, (idf,))
-                r = c.fetchone()
-                if r:
-                    row = {"proveedor": r[0] or "", "nro": r[1] or "", "fecha": r[2] or "",
-                           "total": float(r[3] or 0), "concepto": r[4] or "", "tercero": r[5] or "",
-                           "soporte": r[6] or "", "factura": r[7] or ""}
-        finally:
-            liberar_conexion(conn)
-        if not row:
-            messagebox.showerror("Error", "No se encontró la compra cruzada.", parent=self.parent_frame)
-            return
-
-        v = ctk.CTkToplevel(self.parent_frame)
-        v.title("Editar Compra Cruzada")
-        v.geometry("500x560")
-        v.transient(self.parent_frame)
-        v.grab_set()
-
-        ctk.CTkLabel(v, text="✏️ Editar compra cruzada", font=("Arial", 15, "bold"),
-                     text_color="#1f538d").pack(pady=(15, 5))
-        f = ctk.CTkFrame(v, fg_color="transparent")
-        f.pack(fill="x", padx=20)
-
-        def _fila(texto, ancho=130):
-            fr = ctk.CTkFrame(f, fg_color="transparent"); fr.pack(fill="x", pady=4)
-            ctk.CTkLabel(fr, text=texto, width=ancho, anchor="w", font=("Arial", 11, "bold")).pack(side="left")
-            ent = ctk.CTkEntry(fr)
-            ent.pack(side="left", fill="x", expand=True, padx=6)
-            return ent
-
-        ent_prov = _fila("Proveedor:"); ent_prov.insert(0, row["proveedor"])
-        ent_nro = _fila("N° Doc:"); ent_nro.insert(0, row["nro"])
-        ent_fecha = _fila("Fecha:"); ent_fecha.insert(0, row["fecha"])
-        ent_monto = _fila("Monto Total:"); ent_monto.insert(0, f"{row['total']:.2f}")
-        ent_concepto = _fila("Concepto:"); ent_concepto.insert(0, row["concepto"])
-        ent_tercero = _fila("Pagado a (tercero):", ancho=140); ent_tercero.insert(0, row["tercero"])
-
-        nueva_factura = {"ruta": ""}
-        nuevo_soporte = {"ruta": ""}
-
-        def adj_factura():
-            r = seleccionar_archivo_dialogo(titulo="Seleccionar nueva Factura PDF", tipos=[("Archivos PDF", "*.pdf")])
-            if r:
-                nueva_factura["ruta"] = r
-
-        def adj_soporte():
-            r = seleccionar_archivo_dialogo(titulo="Seleccionar nuevo Soporte", tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
-            if r:
-                nuevo_soporte["ruta"] = r
-
-        fbtns = ctk.CTkFrame(f, fg_color="transparent"); fbtns.pack(fill="x", pady=6)
-        ctk.CTkButton(fbtns, text="📄 Reemplazar Factura", width=160, fg_color="#e67e22",
-                      command=adj_factura).pack(side="left", padx=4)
-        ctk.CTkButton(fbtns, text="🧾 Reemplazar Soporte", width=170, fg_color="#2980b9",
-                      command=adj_soporte).pack(side="left", padx=4)
-
-        def guardar():
-            proveedor = ent_prov.get().strip()
-            nro = ent_nro.get().strip().replace(" ", "")
-            fecha = ent_fecha.get().strip()
-            monto = normalizar_monto(ent_monto.get())
-            concepto = ent_concepto.get().strip()
-            tercero = ent_tercero.get().strip()
-            if not proveedor:
-                messagebox.showwarning("Editar", "Ingrese el proveedor.", parent=v)
-                return
-            if monto <= 0:
-                messagebox.showwarning("Editar", "Ingrese un monto mayor a 0.", parent=v)
-                return
-
-            base = obtener_ruta_base()
-            if not base:
-                try:
-                    from politica_almacenamiento import advertir
-                    advertir(v)
-                except Exception:
-                    messagebox.showwarning("Almacenamiento bloqueado",
-                                           "Este equipo no está autorizado a guardar archivos.",
-                                           parent=v)
-                return
-            ruta_factura = row["factura"]
-            if nueva_factura["ruta"] and os.path.isfile(nueva_factura["ruta"]):
-                try:
-                    carpeta = os.path.normpath(os.path.join(base, "facturas_recibidas"))
-                    if not os.path.exists(carpeta):
-                        os.makedirs(carpeta)
-                    prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor).replace(" ", "_")[:40]
-                    ext = os.path.splitext(nueva_factura["ruta"])[1]
-                    ruta_factura = os.path.normpath(os.path.join(carpeta, f"Cruzada_{datetime.now().strftime('%Y%m%d%H%M%S')}_{prov_limpio}{ext}"))
-                    shutil.copy2(nueva_factura["ruta"], ruta_factura)
-                except Exception as e:
-                    messagebox.showerror("Error", f"Fallo al guardar factura:\n{e}", parent=v)
-                    return
-
-            ruta_soporte = row["soporte"]
-            if nuevo_soporte["ruta"] and os.path.isfile(nuevo_soporte["ruta"]):
-                try:
-                    carpeta = os.path.normpath(os.path.join(base, "soportes_pagos_terceros"))
-                    if not os.path.exists(carpeta):
-                        os.makedirs(carpeta)
-                    ext = os.path.splitext(nuevo_soporte["ruta"])[1]
-                    ruta_soporte = os.path.normpath(os.path.join(carpeta, f"Soporte_{datetime.now().strftime('%Y%m%d%H%M%S')}_{nro or 'sin_doc'}{ext}"))
-                    shutil.copy2(nuevo_soporte["ruta"], ruta_soporte)
-                except Exception as e:
-                    messagebox.showerror("Error", f"Fallo al guardar soporte:\n{e}", parent=v)
-                    return
-
-            conn2 = conectar_db(silencioso=True)
-            if not conn2:
-                messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=v)
-                return
-            try:
-                with conn2.cursor() as c:
-                    c.execute("""
-                        UPDATE facturas_recibidas
-                        SET proveedor=%s, numero_documento=%s, fecha=%s, total=%s, subtotal=%s,
-                            descripcion=%s, pagado_por_tercero=%s, archivo_ruta=%s, soporte_pago_tercero=%s
-                        WHERE id=%s
-                    """, (proveedor, nro, fecha, monto, monto, concepto or "Compra cruzada pagada por tercero",
-                          tercero, ruta_factura, ruta_soporte, idf))
-                    conn2.commit()
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo actualizar:\n{e}", parent=v)
-                return
-            finally:
-                liberar_conexion(conn2)
-
-            registrar_auditoria(self.usuario_activo, "Banco", f"Editó compra cruzada #{idf}")
-            v.destroy()
-            self.refrescar_compras_cruzadas()
-            messagebox.showinfo("Éxito", "Compra cruzada actualizada correctamente.", parent=self.parent_frame)
-
-        ctk.CTkButton(v, text="✅ Guardar Cambios", width=160, fg_color="#27ae60", command=guardar).pack(pady=10)
-
-    def eliminar_compra_cruzada(self):
-        sel = self.tabla_cc.selection()
-        if not sel:
-            messagebox.showinfo("Eliminar", "Seleccione una o más compras cruzadas para eliminar.", parent=self.parent_frame)
-            return
-        if not messagebox.askyesno("Confirmar", f"¿Eliminar {len(sel)} compra(s) cruzada(s)?\n"
-                                               "Esto borrará la factura del módulo de Compras.", parent=self.parent_frame):
-            return
-        ids = [int(i) for i in sel]
-        conn = conectar_db(silencioso=True)
-        if not conn:
-            messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=self.parent_frame)
-            return
-        try:
-            with conn.cursor() as c:
-                c.execute("DELETE FROM facturas_recibidas WHERE id = ANY(%s)", (ids,))
-                conn.commit()
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo eliminar:\n{e}", parent=self.parent_frame)
-            return
-        finally:
-            liberar_conexion(conn)
-        registrar_auditoria(self.usuario_activo, "Banco", f"Eliminó {len(ids)} compra(s) cruzada(s)")
-        self.refrescar_compras_cruzadas()
-        messagebox.showinfo("Éxito", "Compra(s) cruzada(s) eliminada(s).", parent=self.parent_frame)
-
-    # -----------------------------------------------------
     # TAB: CONCILIACION BANCARIA
     # -----------------------------------------------------
     def construir_tab_conciliacion(self):
@@ -1703,12 +1377,15 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns, text="✅ Conciliar Seleccionados", font=("Arial", 12, "bold"),
                       fg_color="#27ae60", hover_color="#1e8449",
                       command=self.conciliar_seleccionados).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="➕ Registrar Pago", font=("Arial", 12, "bold"),
+        ctk.CTkButton(f_btns, text="➕ Registrar Pago / Compra Cruzada", font=("Arial", 12, "bold"),
                       fg_color="#8e44ad", hover_color="#703688",
                       command=self.agregar_movimiento_manual).pack(side="left", padx=4)
         ctk.CTkButton(f_btns, text="✏️ Corregir", font=("Arial", 12, "bold"),
                       fg_color="#34495e", hover_color="#2c3e50",
                       command=self.corregir_movimiento).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns, text="🗑️ Eliminar", font=("Arial", 12, "bold"),
+                      fg_color="#c0392b", hover_color="#96281b",
+                      command=self.eliminar_movimiento_conciliacion).pack(side="left", padx=4)
         ctk.CTkButton(f_btns, text="💾 Exportar", font=("Arial", 12, "bold"),
                       fg_color="#7f8c8d", hover_color="#606b6b",
                       command=self.exportar_reporte).pack(side="left", padx=4)
@@ -1739,6 +1416,7 @@ class ModuloBancoApp:
         self.tabla_conc.configure(yscrollcommand=vsb.set)
         self.tabla_conc.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
+        self.tabla_conc.bind("<Delete>", lambda _e: self.eliminar_movimiento_conciliacion())
         self.tabla_conc.tag_configure("conciliado", background="#d5f5e3")
         self.tabla_conc.tag_configure("diferencia", background="#fadbd8")
         self.tabla_conc.tag_configure("estado_cuenta", background="#d6eaf8")
@@ -1980,15 +1658,22 @@ class ModuloBancoApp:
         comision = cargar_comision_interbancaria()
 
         v = ctk.CTkToplevel(self.parent_frame)
-        v.title("Agregar Movimiento (Conciliación)")
-        v.geometry("520x600")
+        v.title("Registrar Pago (Conciliación)")
+        v.geometry("580x700")
+        v.minsize(520, 480)
         v.transient(self.parent_frame)
         v.grab_set()
 
-        ctk.CTkLabel(v, text="➕ Agregar movimiento manual", font=("Arial", 15, "bold"),
+        ctk.CTkLabel(v, text="➕ Registrar Pago / Compra Cruzada", font=("Arial", 15, "bold"),
                      text_color="#1f538d").pack(pady=(15, 5))
-        f = ctk.CTkFrame(v, fg_color="transparent")
-        f.pack(fill="x", padx=20)
+
+        # Pie fijo: el botón Guardar siempre visible
+        f_pie = ctk.CTkFrame(v, fg_color="transparent")
+        f_pie.pack(side="bottom", fill="x")
+
+        # Área desplazable (scroll) con todos los campos
+        f = ctk.CTkScrollableFrame(v, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=6, pady=(0, 4))
 
         ctk.CTkLabel(f, text="Categoría Principal:", font=("Arial", 11, "bold")).pack(anchor="w")
         cmb_principal = ctk.CTkComboBox(f, values=principales, width=300, state="readonly")
@@ -2008,6 +1693,20 @@ class ModuloBancoApp:
         if placas:
             cmb_placa.set(placas[0])
 
+        # Cuarto desplegable: chofer (solo para categorías de Planilla / Sueldos)
+        choferes = cargar_choferes()
+        lbl_chofer = ctk.CTkLabel(f, text="Chofer (planilla):", font=("Arial", 11, "bold"))
+        cmb_chofer = ctk.CTkComboBox(f, values=["Ninguno"] + choferes, width=300, state="readonly")
+        cmb_chofer.set("Ninguno")
+
+        def actualizar_chofer():
+            if es_categoria_planilla(f"{cmb_principal.get()} {cmb_sub.get()}"):
+                lbl_chofer.pack(anchor="w", pady=(0, 2), before=btn_gestion)
+                cmb_chofer.pack(fill="x", pady=(0, 8), before=btn_gestion)
+            else:
+                lbl_chofer.pack_forget()
+                cmb_chofer.pack_forget()
+
         def on_principal(_=None):
             subs = cats.get(cmb_principal.get(), []) or ["(Sin categoría)"]
             cmb_sub.configure(values=subs)
@@ -2018,7 +1717,9 @@ class ModuloBancoApp:
             else:
                 lbl_placa.pack_forget()
                 cmb_placa.pack_forget()
+            actualizar_chofer()
         cmb_principal.configure(command=on_principal)
+        cmb_sub.configure(command=lambda _=None: actualizar_chofer())
 
         def abrir_gestion():
             self.gestionar_categorias()
@@ -2034,9 +1735,14 @@ class ModuloBancoApp:
         on_principal()
 
         ctk.CTkLabel(f, text="Fecha (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_fecha = ctk.CTkEntry(f)
-        ent_fecha.pack(fill="x", pady=(0, 8))
+        f_fecha = ctk.CTkFrame(f, fg_color="transparent")
+        f_fecha.pack(fill="x", pady=(0, 8))
+        ent_fecha = ctk.CTkEntry(f_fecha)
+        ent_fecha.pack(side="left", fill="x", expand=True)
         ent_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        ctk.CTkButton(f_fecha, text="📅", width=42, font=("Arial", 13, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(6, 0))
 
         ctk.CTkLabel(f, text="Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_desc = ctk.CTkEntry(f)
@@ -2045,6 +1751,8 @@ class ModuloBancoApp:
         ctk.CTkLabel(f, text="Monto:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_monto = ctk.CTkEntry(f)
         ent_monto.pack(fill="x", pady=(0, 8))
+        ent_monto.bind("<KeyRelease>", lambda e: self._formatear_entrada_monto(ent_monto))
+        ent_monto.bind("<FocusOut>", lambda e: self._formatear_entrada_monto(ent_monto))
 
         var_inter = tk.BooleanVar(value=False)
         chk_inter = ctk.CTkCheckBox(f, text="Pago Interbancario", variable=var_inter)
@@ -2068,6 +1776,120 @@ class ModuloBancoApp:
         ent_monto.bind("<KeyRelease>", actualizar_total)
         ent_comision.bind("<KeyRelease>", actualizar_total)
 
+        # ------------------------------------------------------------------
+        # UNIFICACIÓN CON COMPRAS CRUZADAS (pago a tercero)
+        # Al marcar el check se habilitan los datos del tercero y el PDF del soporte
+        # ------------------------------------------------------------------
+        var_cruzada = tk.BooleanVar(value=False)
+        chk_cruzada = ctk.CTkCheckBox(f, text="🔁 Es compra cruzada (factura pagada por un tercero)",
+                                      font=("Arial", 11, "bold"), variable=var_cruzada)
+        chk_cruzada.pack(anchor="w", pady=(4, 4))
+
+        estado_cruzada = {"soporte": "", "factura": ""}
+        f_cruzada = ctk.CTkFrame(f, fg_color="#f4ecf7", corner_radius=8,
+                                 border_width=1, border_color="#d7bde2")
+
+        ctk.CTkLabel(f_cruzada, text="Proveedor de la factura:", font=("Arial", 11, "bold")).pack(
+            anchor="w", padx=10, pady=(8, 0))
+        cmb_cruz_prov = ctk.CTkComboBox(f_cruzada, values=cargar_proveedores() or ["(Sin proveedores)"],
+                                        width=300)
+        cmb_cruz_prov.pack(fill="x", padx=10, pady=(0, 6))
+        cmb_cruz_prov.set("")
+
+        ctk.CTkLabel(f_cruzada, text="N° Documento / Factura (opcional):", font=("Arial", 11, "bold")).pack(
+            anchor="w", padx=10)
+        ent_cruz_nro = ctk.CTkEntry(f_cruzada)
+        ent_cruz_nro.pack(fill="x", padx=10, pady=(0, 6))
+
+        ctk.CTkLabel(f_cruzada, text="Pagado a (tercero):", font=("Arial", 11, "bold")).pack(
+            anchor="w", padx=10)
+        ent_cruz_tercero = ctk.CTkEntry(f_cruzada)
+        ent_cruz_tercero.pack(fill="x", padx=10, pady=(0, 6))
+
+        lbl_cruz_soporte = ctk.CTkLabel(f_cruzada, text="📄 Factura de compra: sin cargar\n🧾 Soporte del pago: sin cargar",
+                                        font=("Arial", 11, "italic"), text_color="#7d3c98",
+                                        wraplength=400, justify="left")
+        lbl_cruz_soporte.pack(anchor="w", padx=10, pady=(0, 4))
+
+        def actualizar_lbl_docs():
+            fact = os.path.basename(estado_cruzada["factura"]) if estado_cruzada["factura"] else "sin cargar"
+            sop = os.path.basename(estado_cruzada["soporte"]) if estado_cruzada["soporte"] else "sin cargar"
+            lbl_cruz_soporte.configure(text=f"📄 Factura de compra: {fact}\n🧾 Soporte del pago: {sop}")
+
+        def cargar_documentos_cruzada():
+            """Un solo botón: carga la factura de compra y/o el comprobante del pago a tercero."""
+            rutas = seleccionar_archivos_dialogo(
+                titulo="Cargar Factura de Compra y/o Comprobante de Pago (puede elegir ambos)",
+                tipos=[("Archivos PDF", "*.pdf"), ("Imágenes", "*.png;*.jpg;*.jpeg")])
+            if not rutas:
+                return
+            for ruta in rutas:
+                datos = {}
+                if ruta.lower().endswith(".pdf"):
+                    try:
+                        datos = extraer_datos_factura_pdf(ruta) or {}
+                    except Exception:
+                        datos = {}
+                # Se reconoce como factura de compra si el PDF trae N° de documento o RUC SUNAT
+                es_factura = bool(datos.get("numero_documento") or datos.get("ruc"))
+                if es_factura and not estado_cruzada["factura"]:
+                    estado_cruzada["factura"] = ruta
+                    if datos.get("proveedor") and not cmb_cruz_prov.get().strip():
+                        cmb_cruz_prov.set(datos["proveedor"])
+                    if datos.get("numero_documento"):
+                        ent_cruz_nro.delete(0, tk.END)
+                        ent_cruz_nro.insert(0, datos["numero_documento"])
+                    if datos.get("fecha"):
+                        ent_fecha.delete(0, tk.END)
+                        ent_fecha.insert(0, datos["fecha"])
+                    if datos.get("total") and not ent_monto.get().strip():
+                        ent_monto.insert(0, formatear_numero_entrada(f"{datos['total']:.2f}"))
+                        actualizar_total()
+                else:
+                    estado_cruzada["soporte"] = ruta
+            actualizar_lbl_docs()
+
+        def intercambiar_documentos():
+            """Si el reconocimiento automático los asignó al revés, se intercambian."""
+            estado_cruzada["factura"], estado_cruzada["soporte"] = \
+                estado_cruzada["soporte"], estado_cruzada["factura"]
+            actualizar_lbl_docs()
+
+        def ver_documento_cruzada(cual):
+            ruta = estado_cruzada.get(cual, "")
+            if ruta and os.path.isfile(ruta):
+                abrir_documento(ruta)
+            else:
+                messagebox.showinfo("Documentos",
+                                    "Todavía no ha cargado " +
+                                    ("la factura de compra." if cual == "factura"
+                                     else "el comprobante del pago."),
+                                    parent=v)
+
+        f_btn_cruz = ctk.CTkFrame(f_cruzada, fg_color="transparent")
+        f_btn_cruz.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(f_btn_cruz, text="🧾 Cargar Factura de Compra y Comprobante de Pago", height=30,
+                      font=("Arial", 11, "bold"), fg_color="#2980b9", hover_color="#1f618d",
+                      command=cargar_documentos_cruzada).pack(fill="x")
+        f_ver_cruz = ctk.CTkFrame(f_cruzada, fg_color="transparent")
+        f_ver_cruz.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(f_ver_cruz, text="👁 Ver factura", width=110, height=26, font=("Arial", 11),
+                      fg_color="#34495e", hover_color="#2c3e50",
+                      command=lambda: ver_documento_cruzada("factura")).pack(side="left")
+        ctk.CTkButton(f_ver_cruz, text="👁 Ver comprobante", width=140, height=26, font=("Arial", 11),
+                      fg_color="#34495e", hover_color="#2c3e50",
+                      command=lambda: ver_documento_cruzada("soporte")).pack(side="left", padx=6)
+        ctk.CTkButton(f_ver_cruz, text="🔄 Intercambiar", width=120, height=26, font=("Arial", 11),
+                      fg_color="#8e44ad", hover_color="#703688",
+                      command=intercambiar_documentos).pack(side="left")
+
+        def on_cruzada():
+            if var_cruzada.get():
+                f_cruzada.pack(fill="x", pady=(2, 8))
+            else:
+                f_cruzada.pack_forget()
+        chk_cruzada.configure(command=on_cruzada)
+
         def guardar():
             base = normalizar_monto(ent_monto.get())
             if base <= 0:
@@ -2088,6 +1910,11 @@ class ModuloBancoApp:
                 pv = cmb_placa.get()
                 if pv and pv != "(Sin placas)":
                     placa = pv
+            chofer = ""
+            if es_categoria_planilla(f"{principal} {sub}"):
+                chv = cmb_chofer.get().strip()
+                if chv and chv != "Ninguno":
+                    chofer = chv
             fecha = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
             desc_manual = ent_desc.get().strip()
 
@@ -2101,11 +1928,36 @@ class ModuloBancoApp:
                 partes.append(sub)
             if placa:
                 partes.append(f"Placa {placa}")
+            if chofer:
+                partes.append(f"Chofer {chofer}")
             if desc_manual:
                 partes.append(desc_manual)
             if inter:
                 partes.append(f"Comisión interbancaria {formatear_monto(com)}")
             desc = " - ".join(p for p in partes if p) or "Ajuste manual de conciliación"
+
+            es_cruzada = bool(var_cruzada.get())
+            if es_cruzada:
+                if not cmb_cruz_prov.get().strip():
+                    messagebox.showwarning("Compra cruzada", "Ingrese el proveedor de la factura.",
+                                           parent=v)
+                    return
+                if not ent_cruz_tercero.get().strip():
+                    messagebox.showwarning("Compra cruzada", "Ingrese quién pagó (tercero).", parent=v)
+                    return
+                faltantes = []
+                if not (estado_cruzada["factura"] and os.path.isfile(estado_cruzada["factura"])):
+                    faltantes.append("la factura de compra")
+                if not (estado_cruzada["soporte"] and os.path.isfile(estado_cruzada["soporte"])):
+                    faltantes.append("el comprobante del pago a tercero")
+                if faltantes:
+                    if not messagebox.askyesno(
+                            "Compra cruzada",
+                            "No se ha cargado " + " ni ".join(faltantes) + ".\n"
+                            "¿Desea registrar la compra cruzada sin " +
+                            ("esos documentos" if len(faltantes) > 1 else "ese documento") + "?",
+                            parent=v):
+                        return
 
             conn = conectar_db(silencioso=True)
             if conn:
@@ -2125,10 +1977,177 @@ class ModuloBancoApp:
                     liberar_conexion(conn)
             registrar_auditoria(self.usuario_activo, "Banco",
                                 f"Agregó movimiento manual {formatear_monto(monto_final)} en {construir_etiqueta_banco(banco)}")
+
+            if es_cruzada:
+                ok, estado_txt = self.registrar_compra_cruzada_desde_pago({
+                    "proveedor": cmb_cruz_prov.get().strip(),
+                    "nro": ent_cruz_nro.get().strip(),
+                    "fecha": fecha,
+                    "total": total,
+                    "tercero": ent_cruz_tercero.get().strip(),
+                    "categoria": f"{principal} - {sub}".strip(" -") if sub else principal,
+                    "descripcion": desc,
+                    "soporte_origen": estado_cruzada["soporte"],
+                    "factura_origen": estado_cruzada["factura"],
+                }, v)
+                if not ok:
+                    messagebox.showwarning(
+                        "Compra cruzada",
+                        "El movimiento del banco quedó registrado, pero la compra cruzada no se pudo "
+                        "guardar en Compras. Vuelva a intentar el registro del pago.",
+                        parent=v)
+                    self.generar_reporte()
+                    return
+                messagebox.showinfo(
+                    "Compra cruzada",
+                    f"Compra cruzada {estado_txt} en el módulo de Compras "
+                    f"(proveedor {cmb_cruz_prov.get().strip()}, pagada por "
+                    f"{ent_cruz_tercero.get().strip()}).",
+                    parent=v)
+
             v.destroy()
             self.generar_reporte()
 
-        ctk.CTkButton(v, text="✅ Guardar", width=140, fg_color="#27ae60", command=guardar).pack(pady=10)
+        ctk.CTkButton(f_pie, text="✅ Guardar", width=160, height=36, font=("Arial", 13, "bold"),
+                      fg_color="#27ae60", hover_color="#1e8449",
+                      command=guardar).pack(pady=10)
+        ctk.CTkButton(f_pie, text="✖ Cancelar", width=110, height=36, font=("Arial", 12),
+                      fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=v.destroy).pack(pady=(0, 10))
+
+    def _formatear_entrada_monto(self, entry):
+        """Da formato con separador de miles al escribir un monto en un campo de texto."""
+        try:
+            txt = entry.get()
+        except Exception:
+            return
+        fmt = formatear_numero_entrada(txt)
+        if fmt != txt:
+            entry.delete(0, tk.END)
+            entry.insert(0, fmt)
+
+    def registrar_compra_cruzada_desde_pago(self, datos, parent=None):
+        """Registra (o actualiza, sin duplicar) una compra cruzada en el módulo de Compras
+        a partir del pago registrado en la pestaña de Conciliación.
+
+        Devuelve (ok, estado) donde estado es 'creada' o 'actualizada'."""
+        parent = parent or self.parent_frame
+        proveedor = (datos.get("proveedor") or "").strip()
+        tercero = (datos.get("tercero") or "").strip()
+        if not proveedor:
+            messagebox.showwarning("Compra cruzada", "Ingrese el proveedor de la factura.", parent=parent)
+            return False, ""
+        if not tercero:
+            messagebox.showwarning("Compra cruzada", "Ingrese quién pagó (tercero).", parent=parent)
+            return False, ""
+
+        nro = (datos.get("nro") or "").strip().replace(" ", "")
+        fecha = datos.get("fecha") or datetime.now().strftime("%d/%m/%Y")
+        total = float(datos.get("total") or 0)
+        categoria = datos.get("categoria") or "Compra Cruzada"
+        descripcion = (datos.get("descripcion") or "").strip() or "Compra cruzada pagada por tercero"
+
+        # Copiar los PDF (factura de compra y soporte del pago a tercero) a las carpetas autorizadas
+        origen_soporte = datos.get("soporte_origen") or ""
+        origen_factura = datos.get("factura_origen") or ""
+        ruta_soporte = ""
+        ruta_factura = ""
+
+        if (origen_soporte and os.path.isfile(origen_soporte)) or            (origen_factura and os.path.isfile(origen_factura)):
+            base = obtener_ruta_base()
+            if not base:
+                try:
+                    from politica_almacenamiento import advertir
+                    advertir(parent)
+                except Exception:
+                    messagebox.showwarning("Almacenamiento bloqueado",
+                                           "Este equipo no está autorizado a guardar archivos.",
+                                           parent=parent)
+                return False, ""
+            marca = datetime.now().strftime('%Y%m%d%H%M%S')
+            if origen_factura and os.path.isfile(origen_factura):
+                try:
+                    carpeta = os.path.normpath(os.path.join(base, "facturas_recibidas"))
+                    if not os.path.exists(carpeta):
+                        os.makedirs(carpeta)
+                    prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor).replace(" ", "_")[:40]
+                    ext = os.path.splitext(origen_factura)[1] or ".pdf"
+                    ruta_factura = os.path.normpath(os.path.join(
+                        carpeta, f"Cruzada_{marca}_{prov_limpio}{ext}"))
+                    shutil.copy2(origen_factura, ruta_factura)
+                except Exception as e:
+                    messagebox.showerror("Error", f"Fallo al guardar la factura de compra:\n{e}",
+                                         parent=parent)
+                    return False, ""
+            if origen_soporte and os.path.isfile(origen_soporte):
+                try:
+                    carpeta = os.path.normpath(os.path.join(base, "soportes_pagos_terceros"))
+                    if not os.path.exists(carpeta):
+                        os.makedirs(carpeta)
+                    ext = os.path.splitext(origen_soporte)[1] or ".pdf"
+                    ruta_soporte = os.path.normpath(os.path.join(
+                        carpeta, f"Soporte_{marca}_{nro or 'sin_doc'}{ext}"))
+                    shutil.copy2(origen_soporte, ruta_soporte)
+                except Exception as e:
+                    messagebox.showerror("Error", f"Fallo al guardar el soporte del pago a tercero:\n{e}",
+                                         parent=parent)
+                    return False, ""
+
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=parent)
+            return False, ""
+
+        actualizada = False
+        try:
+            with conn.cursor() as c:
+                # Evitar duplicar: ¿la factura ya está registrada en Compras?
+                existente = None
+                if nro:
+                    c.execute("""SELECT id, COALESCE(archivo_ruta, '') FROM facturas_recibidas
+                                 WHERE REPLACE(numero_documento, ' ', '') = %s ORDER BY id LIMIT 1""", (nro,))
+                    existente = c.fetchone()
+                    if not existente and proveedor:
+                        c.execute("""SELECT id, COALESCE(archivo_ruta, '') FROM facturas_recibidas
+                                     WHERE REPLACE(numero_documento, ' ', '') = %s AND proveedor ILIKE %s
+                                     ORDER BY id LIMIT 1""", (nro, proveedor))
+                        existente = c.fetchone()
+
+                if existente:
+                    sets = ["es_compra_cruzada = TRUE", "categoria = %s", "pagado_por_tercero = %s"]
+                    params = [categoria, tercero]
+                    if ruta_soporte:
+                        sets.append("soporte_pago_tercero = %s")
+                        params.append(ruta_para_guardar(ruta_soporte))
+                    # La factura ya adjunta no se reemplaza (igual que en el flujo anterior)
+                    if ruta_factura and not existente[1]:
+                        sets.append("archivo_ruta = %s")
+                        params.append(ruta_para_guardar(ruta_factura))
+                    params.append(existente[0])
+                    c.execute("UPDATE facturas_recibidas SET " + ", ".join(sets) + " WHERE id = %s",
+                              tuple(params))
+                    actualizada = True
+                else:
+                    c.execute("""
+                        INSERT INTO facturas_recibidas
+                        (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado,
+                         subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto,
+                         categoria, ruc, pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, ("FACTURA", nro, fecha, proveedor, descripcion, "",
+                            total, 0, total, ruta_para_guardar(ruta_factura), 0, 0, 0, categoria, "", tercero,
+                            ruta_para_guardar(ruta_soporte), True))
+                conn.commit()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo registrar la compra cruzada:\n{e}", parent=parent)
+            return False, ""
+        finally:
+            liberar_conexion(conn)
+
+        registrar_auditoria(self.usuario_activo, "Banco",
+                            f"Compra cruzada {nro or ''} de {proveedor} pagada a {tercero} "
+                            f"(registrada desde Registrar Pago)")
+        return True, ("actualizada" if actualizada else "creada")
 
     def gestionar_categorias(self):
         cats = cargar_categorias_gastos()
@@ -2263,8 +2282,14 @@ class ModuloBancoApp:
         frm.pack(fill="x", padx=20)
 
         ctk.CTkLabel(frm, text="Fecha:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_fecha = ctk.CTkEntry(frm)
-        ent_fecha.pack(fill="x", pady=(0, 8)); ent_fecha.insert(0, f["fecha"])
+        f_fecha = ctk.CTkFrame(frm, fg_color="transparent")
+        f_fecha.pack(fill="x", pady=(0, 8))
+        ent_fecha = ctk.CTkEntry(f_fecha)
+        ent_fecha.pack(side="left", fill="x", expand=True)
+        ent_fecha.insert(0, f["fecha"])
+        ctk.CTkButton(f_fecha, text="📅", width=42, font=("Arial", 13, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(6, 0))
 
         ctk.CTkLabel(frm, text="Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_desc = ctk.CTkEntry(frm)
@@ -2327,6 +2352,81 @@ class ModuloBancoApp:
             self.refrescar_tree()
 
         ctk.CTkButton(v, text="✅ Guardar", width=140, fg_color="#27ae60", command=guardar).pack(pady=10)
+
+    def eliminar_movimiento_conciliacion(self):
+        sel = self.tabla_conc.selection()
+        if not sel:
+            messagebox.showinfo("Eliminar", "Seleccione uno o más movimientos para eliminar.",
+                                parent=self.parent_frame)
+            return
+        indices = sorted({int(i) for i in sel if str(i).isdigit()})
+        filas = [self.filas_conciliacion[i] for i in indices
+                 if 0 <= i < len(self.filas_conciliacion)]
+        if not filas:
+            return
+
+        if not messagebox.askyesno(
+                "Confirmar eliminación",
+                f"¿Eliminar {len(filas)} movimiento(s) de la conciliación?\n\n"
+                "• Los movimientos manuales se borran de la base de datos.\n"
+                "• Los movimientos del sistema / estado de cuenta pierden su marca de conciliado "
+                "y vuelven a quedar pendientes.\n"
+                "• Las líneas leídas del PDF desaparecen de la vista hasta que vuelva a cargar el PDF.",
+                parent=self.parent_frame):
+            return
+
+        banco = self.banco_seleccionado()
+        nombre_banco = banco.get("banco", "") if banco else ""
+        borrados_db = 0
+        errores = []
+
+        conn = conectar_db(silencioso=True)
+        try:
+            if conn:
+                with conn.cursor() as c:
+                    for f in filas:
+                        origen = f.get("origen", "")
+                        idp = f.get("id", 0) or 0
+                        try:
+                            if origen == "manual" and idp:
+                                c.execute("DELETE FROM conciliacion_bancaria WHERE id = %s", (idp,))
+                                borrados_db += max(c.rowcount, 0)
+                            elif origen == "sistema" and idp:
+                                c.execute("""DELETE FROM conciliacion_bancaria
+                                             WHERE origen = 'sistema' AND id_movimiento = %s AND banco = %s""",
+                                          (idp, nombre_banco))
+                                borrados_db += max(c.rowcount, 0)
+                            elif origen == "estado_cuenta":
+                                c.execute("""DELETE FROM conciliacion_bancaria
+                                             WHERE origen = 'estado_cuenta' AND banco = %s
+                                               AND fecha = %s AND monto = %s AND descripcion = %s""",
+                                          (nombre_banco, f.get("fecha", ""),
+                                           f.get("monto", 0), f.get("descripcion", "")))
+                                borrados_db += max(c.rowcount, 0)
+                        except Exception as e:
+                            errores.append(str(e))
+                    conn.commit()
+        except Exception as e:
+            errores.append(str(e))
+        finally:
+            if conn:
+                liberar_conexion(conn)
+
+        excluir = set(indices)
+        self.filas_conciliacion = [f for i, f in enumerate(self.filas_conciliacion)
+                                   if i not in excluir]
+        self.refrescar_tree()
+
+        registrar_auditoria(self.usuario_activo, "Banco",
+                            f"Eliminó {len(filas)} movimiento(s) de la conciliación "
+                            f"en {construir_etiqueta_banco(banco) if banco else 'banco'}")
+
+        msg = f"{len(filas)} movimiento(s) eliminado(s) de la conciliación."
+        if borrados_db:
+            msg += f"\n{borrados_db} registro(s) eliminado(s) de la base de datos."
+        if errores:
+            msg += f"\n⚠️ Algunos registros no se pudieron borrar: {errores[0]}"
+        messagebox.showinfo("Eliminar", msg, parent=self.parent_frame)
 
     def exportar_reporte(self):
         if not self.filas_conciliacion:

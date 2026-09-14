@@ -93,6 +93,13 @@ def seleccionar_archivo_dialogo(titulo="Seleccionar Documento", tipos=None):
     return filedialog.askopenfilename(title=titulo, filetypes=tipos)
 
 
+def seleccionar_archivos_dialogo(titulo="Seleccionar Documentos", tipos=None):
+    """Pide elegir uno o VARIOS archivos existentes. Devuelve una lista (vacía si canceló)."""
+    tipos = tipos or [("Todos los archivos", "*.*")]
+    rutas = filedialog.askopenfilenames(title=titulo, filetypes=tipos)
+    return [r for r in rutas if r] if rutas else []
+
+
 def seleccionar_carpeta_dialogo(titulo="Seleccionar Carpeta"):
     """Pide elegir una CARPETA. Devuelve la ruta (sin barra final), o "" si canceló."""
     if sys.platform == "darwin":
