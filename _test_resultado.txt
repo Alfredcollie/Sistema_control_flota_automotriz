@@ -1,0 +1,91 @@
+### SIN FILTROS 2026
+   Compras: S/. 3.308,69 | Pagado: S/. 1.086,26 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 3.308,69 1.028,553
+   conteos: {'categorias': 1, 'placas': 7, 'proveedores_res': 8, 'cuentas': 2, 'compras': 227, 'pagos': 79, 'combustible': 227, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 13, 'conciliacion': 2, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### PLACA CHD817 (sin guion)
+   Compras: S/. 827,03 | Pagado: S/. 282,97 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 827,03 395,775
+   conteos: {'categorias': 1, 'placas': 1, 'proveedores_res': 5, 'cuentas': 2, 'compras': 76, 'pagos': 25, 'combustible': 76, 'cobranza': 2, 'cobranza_unidades': 2, 'flota': 1, 'ordenes_servicio': 2, 'conciliacion': 2, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### PLACA BSK-758
+   Compras: S/. 313,63 | Pagado: S/. 124,91 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 313,63 29,856
+   conteos: {'categorias': 1, 'placas': 1, 'proveedores_res': 3, 'cuentas': 2, 'compras': 7, 'pagos': 2, 'combustible': 7, 'cobranza': 2, 'cobranza_unidades': 0, 'flota': 1, 'ordenes_servicio': 0, 'conciliacion': 2, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### CATEGORIA Gastos Fijos
+   Compras: S/. 0,00 | Pagado: S/. 0,00 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 0,00 0,000
+   conteos: {'categorias': 0, 'placas': 0, 'proveedores_res': 0, 'cuentas': 2, 'compras': 0, 'pagos': 0, 'combustible': 0, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 0, 'conciliacion': 2, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### CATEGORIA Alquiler (sub)
+   Compras: S/. 0,00 | Pagado: S/. 0,00 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 0,00 0,000
+   conteos: {'categorias': 0, 'placas': 0, 'proveedores_res': 0, 'cuentas': 2, 'compras': 0, 'pagos': 0, 'combustible': 0, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 0, 'conciliacion': 1, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### CATEGORIA Taller Mecanico
+   Compras: S/. 0,00 | Pagado: S/. 0,00 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 0,00 0,000
+   conteos: {'categorias': 0, 'placas': 0, 'proveedores_res': 0, 'cuentas': 2, 'compras': 0, 'pagos': 0, 'combustible': 0, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 0, 'conciliacion': 0, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: []
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### CATEGORIA del banco: Planilla
+   Compras: S/. 0,00 | Pagado: S/. 0,00 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 0,00 0,000
+   conteos: {'categorias': 0, 'placas': 0, 'proveedores_res': 0, 'cuentas': 2, 'compras': 0, 'pagos': 0, 'combustible': 0, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 0, 'conciliacion': 1, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### BANCO Interbank
+   Compras: S/. 1.086,26 | Pagado: S/. 1.086,26 | SaldosBancos: S/. -1.198,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 1.086,26 318,513
+   conteos: {'categorias': 1, 'placas': 5, 'proveedores_res': 8, 'cuentas': 1, 'compras': 68, 'pagos': 79, 'combustible': 68, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 13, 'conciliacion': 0, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: []
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### BANCO BCP
+   Compras: S/. 0,00 | Pagado: S/. 0,00 | SaldosBancos: S/. 488,00
+   Cobranza: S/. 44.494,00 | Combustible: S/. 0,00 0,000
+   conteos: {'categorias': 0, 'placas': 3, 'proveedores_res': 0, 'cuentas': 1, 'compras': 0, 'pagos': 0, 'combustible': 0, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 13, 'conciliacion': 2, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### CLIENTE BAGUETERIA
+   Compras: S/. 0,00 | Pagado: S/. 0,00 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 0,00 0,000
+   conteos: {'categorias': 0, 'placas': 3, 'proveedores_res': 0, 'cuentas': 2, 'compras': 0, 'pagos': 0, 'combustible': 0, 'cobranza': 2, 'cobranza_unidades': 10, 'flota': 6, 'ordenes_servicio': 13, 'conciliacion': 2, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+
+### MES 09/2026
+   Compras: S/. 986,26 | Pagado: S/. 986,26 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 22.212,00 | Combustible: S/. 986,26 314,511
+   conteos: {'categorias': 1, 'placas': 7, 'proveedores_res': 8, 'cuentas': 2, 'compras': 227, 'pagos': 79, 'combustible': 227, 'cobranza': 1, 'cobranza_unidades': 5, 'flota': 6, 'ordenes_servicio': 2, 'conciliacion': 2, 'bitacora': 483, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 9, 1, "Por Hora", 22212.0, "Sí", "F001-2", "07/09/2026 17:41:03", ""]
+
+### RANGO 01-15 sep 2026
+   Compras: S/. 986,26 | Pagado: S/. 986,26 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 22.212,00 | Combustible: S/. 986,26 314,511
+   conteos: {'categorias': 1, 'placas': 7, 'proveedores_res': 8, 'cuentas': 2, 'compras': 227, 'pagos': 79, 'combustible': 227, 'cobranza': 1, 'cobranza_unidades': 5, 'flota': 6, 'ordenes_servicio': 2, 'conciliacion': 2, 'bitacora': 483, 'clientes': 2}
+   conciliacion: [["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO", "Gastos Fijos - Planilla / Sueldos", -176.54, "egreso", "manual", "pendiente", ""], ["BCP", "1937218112021", "1/09/2026", "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO", "Gastos Fijos - Alquiler", -472.77, "egreso", "manual", "pendiente", ""]]
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 9, 1, "Por Hora", 22212.0, "Sí", "F001-2", "07/09/2026 17:41:03", ""]
+
+### PLACA + CATEGORIA
+   Compras: S/. 827,03 | Pagado: S/. 282,97 | SaldosBancos: S/. -710,53
+   Cobranza: S/. 44.494,00 | Combustible: S/. 827,03 395,775
+   conteos: {'categorias': 1, 'placas': 1, 'proveedores_res': 5, 'cuentas': 2, 'compras': 76, 'pagos': 25, 'combustible': 76, 'cobranza': 2, 'cobranza_unidades': 2, 'flota': 1, 'ordenes_servicio': 0, 'conciliacion': 0, 'bitacora': 1043, 'clientes': 2}
+   conciliacion: []
+   cobranza fila0: ["BAGUETERIA DON MARIO SAC", "20100875463", 2026, 8, 1, "Por Hora", 22282.0, "Sí", "F001-1", "27/08/2026 07:55:58", ""]
+

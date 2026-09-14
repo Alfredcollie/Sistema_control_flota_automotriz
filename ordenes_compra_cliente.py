@@ -15,7 +15,7 @@ import threading
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
-from app_paths import CONFIG_FILE
+from app_paths import CONFIG_FILE, ruta_para_guardar
 
 try:
     import pdfplumber
@@ -450,8 +450,17 @@ class OrdenesCompraClienteApp:
 
         ruta_final = ""
         if self.ruta_archivo_temp:
-            ruta_base = CONFIG_REGIONAL.get("ruta_drive", "")
-            if not ruta_base: return messagebox.showwarning("Configuración", "Debe configurar la ruta de Google Drive en los ajustes del sistema para guardar PDFs.")
+            try:
+                from politica_almacenamiento import ruta_base_autorizada, avisar_sin_ruta
+                ruta_base = ruta_base_autorizada(mostrar_alerta=False)
+            except Exception:
+                ruta_base = CONFIG_REGIONAL.get("ruta_drive", "")
+            if not ruta_base:
+                try:
+                    avisar_sin_ruta()
+                except Exception:
+                    messagebox.showwarning("Configuración", "Debe configurar la ruta de Google Drive en los ajustes del sistema para guardar PDFs.")
+                return
             
             carpeta_dest = os.path.join(ruta_base, "ordenes_compra_recibidas")
             if not os.path.exists(carpeta_dest): os.makedirs(carpeta_dest)
@@ -471,7 +480,7 @@ class OrdenesCompraClienteApp:
             c.execute("""
                 INSERT INTO ordenes_compra_clientes (numero_oc, cotizacion_asociada, fecha, cliente, descripcion, subtotal, igv, monto_total, archivo_ruta) 
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (oc, cot_codigo, fecha, cli, desc, subtotal, igv, monto, ruta_final))
+            """, (oc, cot_codigo, fecha, cli, desc, subtotal, igv, monto, ruta_para_guardar(ruta_final)))
             conn.commit()
             
             cache_sistema.invalidar() # 🚀 FIX: Borramos el caché

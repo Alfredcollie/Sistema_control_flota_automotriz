@@ -1,0 +1,547 @@
+{
+ "fr_categoria": [
+  [
+   "Combustible y Peajes",
+   227,
+   "3308.69",
+   "504.68"
+  ]
+ ],
+ "fr_tipo_doc": [
+  [
+   "Factura (18% IGV)",
+   226
+  ],
+  [
+   "Boleta / Ticket",
+   1
+  ]
+ ],
+ "fr_evento": [
+  [
+   "CHD-817",
+   76
+  ],
+  [
+   "CHC-892",
+   64
+  ],
+  [
+   "CFP-792",
+   60
+  ],
+  [
+   "BBY-726",
+   18
+  ],
+  [
+   "BSK-758",
+   7
+  ],
+  [
+   "4344-LA",
+   1
+  ],
+  [
+   "B4I-179",
+   1
+  ]
+ ],
+ "fr_proveedor": [
+  [
+   "COESTI S.A E/S ORRANTIA",
+   201
+  ],
+  [
+   "COESTI S.A.",
+   9
+  ],
+  [
+   "EDS BRASIL",
+   9
+  ],
+  [
+   "COESTI S.A",
+   3
+  ],
+  [
+   "E/S MONTREAL COESTI S.A.",
+   2
+  ],
+  [
+   "BLACK RIDERS E.I.R.L.",
+   1
+  ],
+  [
+   "COESTI S.A E/S ORRANTÍA",
+   1
+  ],
+  [
+   "REPSOL COMERCIAL S.A.C.",
+   1
+  ]
+ ],
+ "pc_cuenta": [
+  [
+   "Interbank - 297-3007235833",
+   79,
+   "1198.53"
+  ]
+ ],
+ "pc_categoria": [
+  [
+   "Combustible y Peajes",
+   79,
+   "1198.53"
+  ]
+ ],
+ "flota": [
+  [
+   "4344-LA",
+   "HERO",
+   "HUNK",
+   "L3",
+   "Operativo",
+   "Gasolina",
+   ""
+  ],
+  [
+   "BBY-726",
+   "Ram",
+   "V 700",
+   "N1",
+   "Operativo",
+   "Dual (Gasolina + GLP)",
+   "143783"
+  ],
+  [
+   "BSK-758",
+   "Ram",
+   "V 700",
+   "N1",
+   "Operativo",
+   "Dual (Gasolina + GLP)",
+   "61234"
+  ],
+  [
+   "CFP-792",
+   "DFSK",
+   "C35",
+   "N1",
+   "Operativo",
+   "Dual (Gasolina + GNV)",
+   "18690"
+  ],
+  [
+   "CHC-892",
+   "DFSK",
+   "C35",
+   "N1",
+   "Operativo",
+   "Dual (Gasolina + GNV)",
+   "20909"
+  ],
+  [
+   "CHD-817",
+   "DFSK",
+   "C35",
+   "N1",
+   "Operativo",
+   "Dual (Gasolina + GNV)",
+   "22520"
+  ]
+ ],
+ "conc": [
+  [
+   1,
+   "BCP",
+   "1937218112021",
+   "1/09/2026",
+   "Gastos Fijos - Planilla / Sueldos - AFP HABITAD - AGOSTO",
+   "-176.54",
+   "egreso",
+   "manual",
+   0,
+   "pendiente",
+   ""
+  ],
+  [
+   2,
+   "BCP",
+   "1937218112021",
+   "1/09/2026",
+   "Gastos Fijos - Alquiler - AFP INTEGRA - AGOSTO",
+   "-472.77",
+   "egreso",
+   "manual",
+   0,
+   "pendiente",
+   ""
+  ]
+ ],
+ "config": [
+  [
+   "cuentas_bancarias",
+   "[{\"banco\": \"BCP\", \"cuenta\": \"1937218112021\", \"fecha\": \"01/09/2026\", \"saldo_inicial\": \"488,00\"}, {\"banco\": \"Interbank\", \"cuenta\": \"297-3007235833\", \"fecha\": \"01/09/2026\", \"saldo_inicial\": \"0,00\"}]"
+  ],
+  [
+   "cuenta_grifo_pagos",
+   "Interbank - 297-3007235833"
+  ],
+  [
+   "ruc_empresa",
+   "20613993682"
+  ],
+  [
+   "rclone_sync",
+   "{\"rclone_remote\": \"gdrive:\", \"rclone_ruta_nube\": \"BLACK RIDERS - SISTEMA\", \"linked_by_device\": \"44b53e89-1c21-4aa8-8167-d251a88aeb11\", \"linked_at\": \"11/09/2026 09:49:02\"}"
+  ],
+  [
+   "rclone_token",
+   "cf1:gAAAAABqpEnYByGIEY6cKgZ-Zz-vW74_pAYI-dMzxOkRC_MR5LKLCD6ssg8IlTKSZU85cveAzKdqgzAW-eDjcXuocpEnHT-N2mB0obkUcYSwuhoy03ZUTiW7Ml99YWy58bAhuStnaThyPJwrEsRAfVA48Szd00apn-Zpeiwb-H8gKAkeKA7yAQiJMpddUwWhxazF"
+  ]
+ ],
+ "osf": [
+  [
+   "CFP-792",
+   "Cambio de Aceite / Filtros",
+   "2000.0",
+   "02/09/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CHD817",
+   "Cambio de Aceite / Filtros",
+   "2500.0",
+   "03/08/2026 (Modif.)",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CHD817",
+   "Otro",
+   "1000.0",
+   "06/08/2026 (Modif.)",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "BBY-726",
+   "Mantenimiento Preventivo",
+   "400.02",
+   "07/09/2026 (Modif.)",
+   "Activa",
+   "AUTOMOTRIZ ARP S.A.C."
+  ],
+  [
+   "CFP-792",
+   "Mantenimiento Correctivo",
+   "0.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CFP-792",
+   "Llantas / Alineación / Balanceo",
+   "3000.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CFP-792",
+   "Llantas / Alineación / Balanceo",
+   "0.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CFP-792",
+   "Cambio de Aceite / Filtros",
+   "1000.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "BBY-726",
+   "Llantas / Alineación / Balanceo",
+   "2342.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CFP-792",
+   "Cambio de Aceite / Filtros",
+   "500.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CFP-792",
+   "Cambio de Aceite / Filtros",
+   "2000.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CFP-792",
+   "Cambio de Aceite / Filtros",
+   "2000.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ],
+  [
+   "CFP-792",
+   "Llantas / Alineación / Balanceo",
+   "500.0",
+   "24/08/2026",
+   "Anulada",
+   "COESTI S.A E/S ORRANTIA"
+  ]
+ ],
+ "prov": [
+  [
+   "REPSOL COMERCIAL S.A.C.",
+   "Combustible / Grifo",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada"
+  ],
+  [
+   "COESTI S.A E/S ORRANTIA",
+   "Combustible / Grifo",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada"
+  ],
+  [
+   "EDS BRASIL",
+   "Combustible / Grifo",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada"
+  ],
+  [
+   "GRIFOS DEL SUR S.A.C.",
+   "Combustible / Grifo",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada"
+  ],
+  [
+   "AUTOMOTRIZ ARP S.A.C.",
+   "Taller Mecánico",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada"
+  ],
+  [
+   "BLACK RIDERS E.I.R.L.",
+   "Combustible / Grifo",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada",
+   "No seleccionada"
+  ]
+ ],
+ "cli": [
+  [
+   6,
+   "20519049237",
+   "PANIFICADORA, COMERCIALIZADORA Y DISTRIBUIDORA PIADINA SAC - PIADINA SAC",
+   "Por Punto o Viaje",
+   "0.0"
+  ],
+  [
+   5,
+   "20100875463",
+   "BAGUETERIA DON MARIO SAC",
+   "Por Hora",
+   "0.0"
+  ]
+ ],
+ "cliun": [
+  [
+   214,
+   5,
+   13,
+   "4344-LA — HERO HUNK 2017 NEGRO MATE",
+   "12.00",
+   "0.00",
+   "18.00",
+   "13.00",
+   true
+  ],
+  [
+   215,
+   5,
+   12,
+   "BBY-726 — Ram V 700 Blanco",
+   "25.50",
+   "29.00",
+   "31.00",
+   "13.00",
+   true
+  ],
+  [
+   216,
+   5,
+   11,
+   "CFP-792 — DFSK C35 2025 BLANCO",
+   "25.50",
+   "29.00",
+   "31.00",
+   "13.00",
+   true
+  ],
+  [
+   217,
+   5,
+   10,
+   "CHC-892 — DFSK C35 2025 BLANCO",
+   "25.50",
+   "29.00",
+   "31.00",
+   "13.00",
+   true
+  ],
+  [
+   218,
+   5,
+   9,
+   "CHD-817 — DFSK C35 2026 BLANCO",
+   "25.50",
+   "29.00",
+   "31.00",
+   "13.00",
+   true
+  ],
+  [
+   219,
+   5,
+   14,
+   "BSK-758 — Ram V 700 BLANCO",
+   "22.50",
+   "29.00",
+   "31.00",
+   "13.00",
+   true
+  ]
+ ],
+ "fr_fechas": [
+  [
+   "01/09/2026",
+   "31/08/2026",
+   41
+  ]
+ ],
+ "pc_fechas": [
+  [
+   "01/09/2026",
+   "30/07/2026"
+  ]
+ ],
+ "cq": [
+  [
+   "BAGUETERIA DON MARIO SAC",
+   2026,
+   8,
+   1,
+   "22282.00",
+   true,
+   "27/08/2026 07:55:58"
+  ],
+  [
+   "BAGUETERIA DON MARIO SAC",
+   2026,
+   9,
+   1,
+   "22212.00",
+   true,
+   "07/09/2026 17:41:03"
+  ]
+ ],
+ "fr_tercero": [
+  [
+   "(no)",
+   false,
+   227
+  ]
+ ],
+ "fr_km": [
+  [
+   227
+  ]
+ ],
+ "bitacora": [
+  [
+   "Seguridad",
+   576
+  ],
+  [
+   "Facturas Recibidas",
+   116
+  ],
+  [
+   "Inspección Vehicular",
+   107
+  ],
+  [
+   "Cobranza",
+   83
+  ],
+  [
+   "Cuentas por Pagar",
+   62
+  ],
+  [
+   "Clientes",
+   24
+  ],
+  [
+   "Órdenes Servicio",
+   21
+  ],
+  [
+   "Flota",
+   20
+  ],
+  [
+   "Choferes",
+   10
+  ],
+  [
+   "Proveedores",
+   9
+  ],
+  [
+   "Banco",
+   7
+  ],
+  [
+   "Facturas Emitidas",
+   4
+  ],
+  [
+   "Cuentas por Cobrar",
+   2
+  ],
+  [
+   "Bitácora",
+   2
+  ]
+ ]
+}

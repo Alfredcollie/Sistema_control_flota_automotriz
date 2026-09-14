@@ -45,7 +45,7 @@ from datetime import datetime, date, timedelta
 
 # 🚀 HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
-from app_paths import CONFIG_FILE
+from app_paths import CONFIG_FILE, ruta_para_guardar
 
 try:
     from reportlab.pdfgen import canvas
@@ -76,6 +76,12 @@ ARCHIVO_CACHE_FERIADOS = "feriados_peru.json"
 # =========================================================
 def abrir_documento(ruta):
     try:
+        # Resuelve rutas guardadas en otro equipo/SO (Mac <-> Windows)
+        try:
+            from app_paths import resolver_ruta_archivo
+            ruta = resolver_ruta_archivo(ruta) or ruta
+        except Exception:
+            pass
         ruta_abs = os.path.abspath(ruta)
         if sys.platform == "win32":
             os.startfile(ruta_abs)
@@ -146,6 +152,13 @@ def _carpeta_pdf():
     la carpeta local 'cobranzas_generadas' como respaldo.
     """
     try:
+        from politica_almacenamiento import estado_almacenamiento
+        if not estado_almacenamiento().get("autorizado"):
+            # Equipo NO autorizado: no se guarda nada (ni local ni nube)
+            return ""
+    except Exception:
+        pass
+    try:
         config = _cargar_config_local()
         ruta_drive = str(config.get("ruta_drive", "") or "").strip()
         if ruta_drive:
@@ -178,6 +191,13 @@ def _carpeta_pdf():
     # Respaldo local: ruta ABSOLUTA junto al programa (no depende del directorio de trabajo).
     # En macOS (apps .app) el directorio de trabajo puede ser "/" o no escribible, por eso
     # una ruta relativa como "cobranzas_generadas" causaría Errno 2 al guardar el PDF.
+    # Respaldo junto al programa: SOLO en modo monousuario (local).
+    try:
+        from politica_almacenamiento import permitir_respaldo_local
+        if not permitir_respaldo_local():
+            return ""
+    except Exception:
+        pass
     carpeta_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cobranzas_generadas")
     try:
         os.makedirs(carpeta_local, exist_ok=True)
@@ -1895,6 +1915,13 @@ class CalculoCobranzaApp:
         # Carpeta de destino: la configurada en 'Configuración del Sistema'
         # (ruta_drive + cobranzas_generadas), con respaldo local si no existe.
         carpeta_pdf = _carpeta_pdf()
+        if not carpeta_pdf:
+            try:
+                from politica_almacenamiento import advertir
+                advertir()
+            except Exception:
+                messagebox.showwarning("Almacenamiento bloqueado", "Este equipo no está autorizado a guardar archivos.")
+            return
         # Si el PDF del mismo periodo ya está abierto en el visor (bloqueado),
         # se guarda una copia nueva con marca de tiempo para poder abrirla.
         nombre_base = os.path.join(
@@ -2303,7 +2330,7 @@ class CalculoCobranzaApp:
         if conn2:
             try:
                 cur2 = conn2.cursor()
-                cur2.execute("UPDATE cobranza_quincenas SET pdf_ruta=%s WHERE id=%s", (nombre_archivo, id_cob))
+                cur2.execute("UPDATE cobranza_quincenas SET pdf_ruta=%s WHERE id=%s", (ruta_para_guardar(nombre_archivo), id_cob))
                 conn2.commit()
                 cur2.close()
             except Exception:
@@ -3571,10 +3598,12 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
         finally:
             liberar_conexion(conn)
 
-        if pdf_ruta and os.path.exists(pdf_ruta):
+        from app_paths import resolver_ruta_archivo, eliminar_archivo
+        pdf_ruta_real = resolver_ruta_archivo(pdf_ruta)
+        if pdf_ruta_real:
             if messagebox.askyesno("Archivo PDF", "¿Eliminar también el archivo PDF del disco?", parent=self):
                 try:
-                    os.remove(pdf_ruta)
+                    eliminar_archivo(pdf_ruta)
                 except Exception:
                     pass
         self.cargar_registros()

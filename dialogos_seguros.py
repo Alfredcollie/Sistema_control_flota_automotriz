@@ -104,7 +104,18 @@ def seleccionar_carpeta_dialogo(titulo="Seleccionar Carpeta"):
 
 
 def guardar_archivo_dialogo(titulo="Guardar como", defaultextension="", initialfile="", tipos=None):
-    """Pide una ruta de DESTINO. Devuelve la ruta, o "" si el usuario canceló."""
+    """Pide una ruta de DESTINO. Devuelve la ruta, o "" si el usuario canceló.
+
+    🔒 Respeta la política de almacenamiento: si este equipo no está autorizado
+    (equipo secundario sin la cuenta Rclone del principal) no se permite guardar
+    ningún archivo, en ningún módulo.
+    """
+    try:
+        from politica_almacenamiento import exigir_permiso
+        if not exigir_permiso():
+            return ""
+    except ImportError:
+        pass
     tipos = tipos or [("Todos los archivos", "*.*")]
     if sys.platform == "darwin":
         nombre = initialfile or (f"archivo{defaultextension}" if defaultextension else "")

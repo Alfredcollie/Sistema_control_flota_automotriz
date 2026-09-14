@@ -162,6 +162,49 @@ def registrar_rclone_sync(datos):
     return cargar_rclone_sync()
 
 
+def actualizar_cuenta_remotos(cuenta_remotos, device_id=""):
+    """Guarda en el registro de sincronización la IDENTIDAD de las cuentas Rclone
+    (remote -> huella estable, sin el access_token que rclone renueva).
+
+    Así los equipos secundarios pueden verificar que usan la misma cuenta del
+    principal sin depender de descifrar el token. Solo puede cambiarla el equipo
+    PROPIETARIO del registro (o cualquiera si aún está vacía).
+    Devuelve True si quedó guardada.
+    """
+    if not isinstance(cuenta_remotos, dict) or not cuenta_remotos:
+        return False
+    registro = cargar_rclone_sync()
+    if not registro:
+        return False
+    propietario = registro.get("linked_by_device") or ""
+    # Solo el equipo principal (dueño del registro) define la cuenta de referencia:
+    # así un equipo secundario no puede fijar su propia cuenta como "la correcta".
+    if propietario and device_id and propietario != device_id:
+        return False
+
+    registro["cuenta_remotos"] = cuenta_remotos
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cursor:
+            _asegurar_tabla(cursor)
+            cursor.execute(
+                "UPDATE config_general SET valor = %s WHERE clave = %s",
+                (json.dumps(registro, ensure_ascii=False), CLAVE_RCLONE),
+            )
+        conn.commit()
+        return True
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        liberar_conexion(conn)
+
+
 def borrar_rclone_sync():
     """Borra el registro de sincronización en la nube (solo lo hace el equipo
     propietario desde la interfaz; aquí no se valida quién lo pide)."""

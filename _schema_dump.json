@@ -1,0 +1,1832 @@
+{
+ "app_tokens_acceso": {
+  "n": 32,
+  "cols": [
+   {
+    "c": "token",
+    "t": "text"
+   },
+   {
+    "c": "username",
+    "t": "character varying"
+   },
+   {
+    "c": "creado_en",
+    "t": "timestamp with time zone"
+   }
+  ]
+ },
+ "app_usuarios": {
+  "n": 2,
+  "cols": [
+   {
+    "c": "username",
+    "t": "character varying"
+   },
+   {
+    "c": "password_hash",
+    "t": "text"
+   },
+   {
+    "c": "nombre",
+    "t": "character varying"
+   },
+   {
+    "c": "activo",
+    "t": "boolean"
+   },
+   {
+    "c": "creado_en",
+    "t": "timestamp with time zone"
+   }
+  ]
+ },
+ "bitacora_auditoria": {
+  "n": 1043,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "hora",
+    "t": "character varying"
+   },
+   {
+    "c": "usuario",
+    "t": "character varying"
+   },
+   {
+    "c": "modulo",
+    "t": "character varying"
+   },
+   {
+    "c": "accion",
+    "t": "text"
+   }
+  ]
+ },
+ "categorias": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "nombre",
+    "t": "character varying"
+   }
+  ]
+ },
+ "choferes": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "dni",
+    "t": "character varying"
+   },
+   {
+    "c": "nombres",
+    "t": "character varying"
+   },
+   {
+    "c": "ruc",
+    "t": "character varying"
+   },
+   {
+    "c": "telefono",
+    "t": "character varying"
+   },
+   {
+    "c": "correo",
+    "t": "character varying"
+   },
+   {
+    "c": "licencia",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria_licencia",
+    "t": "character varying"
+   },
+   {
+    "c": "vencimiento_licencia",
+    "t": "character varying"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   },
+   {
+    "c": "direccion",
+    "t": "character varying"
+   },
+   {
+    "c": "seguro_salud_num",
+    "t": "character varying"
+   },
+   {
+    "c": "seguro_salud_venc",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_nacimiento",
+    "t": "character varying"
+   },
+   {
+    "c": "numero_hijos",
+    "t": "character varying"
+   },
+   {
+    "c": "sexo",
+    "t": "character varying"
+   },
+   {
+    "c": "seguro_vida_num",
+    "t": "character varying"
+   },
+   {
+    "c": "seguro_vida_venc",
+    "t": "character varying"
+   },
+   {
+    "c": "movil_asignado",
+    "t": "character varying"
+   },
+   {
+    "c": "ruta_documentos",
+    "t": "text"
+   }
+  ]
+ },
+ "clientes": {
+  "n": 2,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "ruc",
+    "t": "character varying"
+   },
+   {
+    "c": "nombre_empresa",
+    "t": "character varying"
+   },
+   {
+    "c": "direccion_fiscal",
+    "t": "text"
+   },
+   {
+    "c": "persona_contacto",
+    "t": "character varying"
+   },
+   {
+    "c": "telefono",
+    "t": "character varying"
+   },
+   {
+    "c": "correo",
+    "t": "character varying"
+   },
+   {
+    "c": "pagina_web",
+    "t": "character varying"
+   },
+   {
+    "c": "notas",
+    "t": "text"
+   },
+   {
+    "c": "limite_credito",
+    "t": "numeric"
+   },
+   {
+    "c": "razon_comercial",
+    "t": "character varying"
+   },
+   {
+    "c": "plan_cobro",
+    "t": "character varying"
+   }
+  ]
+ },
+ "clientes_unidades": {
+  "n": 6,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "id_cliente",
+    "t": "integer"
+   },
+   {
+    "c": "id_vehiculo",
+    "t": "integer"
+   },
+   {
+    "c": "unidad",
+    "t": "character varying"
+   },
+   {
+    "c": "precio_normal",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_domingo",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_feriado",
+    "t": "numeric"
+   },
+   {
+    "c": "horas_dia",
+    "t": "numeric"
+   },
+   {
+    "c": "activo",
+    "t": "boolean"
+   }
+  ]
+ },
+ "cobranza_detalle_dias": {
+  "n": 30,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "id_cobranza",
+    "t": "integer"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria",
+    "t": "character varying"
+   },
+   {
+    "c": "feriado_nombre",
+    "t": "character varying"
+   }
+  ]
+ },
+ "cobranza_quincena_unidades": {
+  "n": 10,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "id_cobranza",
+    "t": "integer"
+   },
+   {
+    "c": "unidad",
+    "t": "character varying"
+   },
+   {
+    "c": "precio_normal",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_domingo",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_feriado",
+    "t": "numeric"
+   },
+   {
+    "c": "horas_dia",
+    "t": "numeric"
+   },
+   {
+    "c": "cant_normal",
+    "t": "integer"
+   },
+   {
+    "c": "cant_domingo",
+    "t": "integer"
+   },
+   {
+    "c": "cant_feriado",
+    "t": "integer"
+   },
+   {
+    "c": "ded_normal_h",
+    "t": "numeric"
+   },
+   {
+    "c": "ded_domingo_h",
+    "t": "numeric"
+   },
+   {
+    "c": "ded_feriado_h",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_normal",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_domingo",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_feriado",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_deducciones",
+    "t": "numeric"
+   },
+   {
+    "c": "subtotal",
+    "t": "numeric"
+   }
+  ]
+ },
+ "cobranza_quincena_viajes": {
+  "n": 3,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "id_cobranza",
+    "t": "integer"
+   },
+   {
+    "c": "distancia_desde",
+    "t": "numeric"
+   },
+   {
+    "c": "distancia_hasta",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_normal",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_domingo",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_feriado",
+    "t": "numeric"
+   },
+   {
+    "c": "viajes_normal",
+    "t": "integer"
+   },
+   {
+    "c": "viajes_domingo",
+    "t": "integer"
+   },
+   {
+    "c": "viajes_feriado",
+    "t": "integer"
+   },
+   {
+    "c": "ded_normal",
+    "t": "integer"
+   },
+   {
+    "c": "ded_domingo",
+    "t": "integer"
+   },
+   {
+    "c": "ded_feriado",
+    "t": "integer"
+   },
+   {
+    "c": "monto_base",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_deducciones",
+    "t": "numeric"
+   },
+   {
+    "c": "subtotal",
+    "t": "numeric"
+   }
+  ]
+ },
+ "cobranza_quincenas": {
+  "n": 2,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "id_cliente",
+    "t": "integer"
+   },
+   {
+    "c": "cliente_nombre",
+    "t": "character varying"
+   },
+   {
+    "c": "cliente_ruc",
+    "t": "character varying"
+   },
+   {
+    "c": "anio",
+    "t": "integer"
+   },
+   {
+    "c": "mes",
+    "t": "integer"
+   },
+   {
+    "c": "quincena",
+    "t": "integer"
+   },
+   {
+    "c": "plan_cobro",
+    "t": "character varying"
+   },
+   {
+    "c": "precio_normal",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_domingo",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_feriado",
+    "t": "numeric"
+   },
+   {
+    "c": "cant_lunvie",
+    "t": "integer"
+   },
+   {
+    "c": "cant_sabado",
+    "t": "integer"
+   },
+   {
+    "c": "cant_domingo",
+    "t": "integer"
+   },
+   {
+    "c": "cant_feriado",
+    "t": "integer"
+   },
+   {
+    "c": "ded_normal_h",
+    "t": "numeric"
+   },
+   {
+    "c": "ded_sabado_h",
+    "t": "numeric"
+   },
+   {
+    "c": "ded_domingo_h",
+    "t": "numeric"
+   },
+   {
+    "c": "ded_feriado_h",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_lunvie",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_sabado",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_domingo",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_feriado",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_base",
+    "t": "numeric"
+   },
+   {
+    "c": "monto_deducciones",
+    "t": "numeric"
+   },
+   {
+    "c": "total",
+    "t": "numeric"
+   },
+   {
+    "c": "notas",
+    "t": "text"
+   },
+   {
+    "c": "pdf_ruta",
+    "t": "text"
+   },
+   {
+    "c": "fecha_registro",
+    "t": "character varying"
+   },
+   {
+    "c": "facturado",
+    "t": "boolean"
+   },
+   {
+    "c": "factura_referencia",
+    "t": "character varying"
+   }
+  ]
+ },
+ "cobranza_viajes_detalle": {
+  "n": 1,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "id_cobranza",
+    "t": "integer"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "vehiculo",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria",
+    "t": "character varying"
+   },
+   {
+    "c": "distancia_desde",
+    "t": "numeric"
+   },
+   {
+    "c": "distancia_hasta",
+    "t": "numeric"
+   },
+   {
+    "c": "precio",
+    "t": "numeric"
+   },
+   {
+    "c": "monto",
+    "t": "numeric"
+   }
+  ]
+ },
+ "conciliacion_bancaria": {
+  "n": 2,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "banco",
+    "t": "character varying"
+   },
+   {
+    "c": "cuenta",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "descripcion",
+    "t": "text"
+   },
+   {
+    "c": "monto",
+    "t": "numeric"
+   },
+   {
+    "c": "tipo",
+    "t": "character varying"
+   },
+   {
+    "c": "origen",
+    "t": "character varying"
+   },
+   {
+    "c": "id_movimiento",
+    "t": "integer"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_conciliacion",
+    "t": "character varying"
+   }
+  ]
+ },
+ "config_general": {
+  "n": 5,
+  "cols": [
+   {
+    "c": "clave",
+    "t": "character varying"
+   },
+   {
+    "c": "valor",
+    "t": "text"
+   }
+  ]
+ },
+ "configuracion_geocerca": {
+  "n": 1,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "latitud",
+    "t": "numeric"
+   },
+   {
+    "c": "longitud",
+    "t": "numeric"
+   },
+   {
+    "c": "radio",
+    "t": "numeric"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   }
+  ]
+ },
+ "configuracion_sistema": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "data",
+    "t": "jsonb"
+   },
+   {
+    "c": "actualizado_el",
+    "t": "timestamp without time zone"
+   }
+  ]
+ },
+ "facturas_emitidas": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "tipo_documento",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "cliente",
+    "t": "character varying"
+   },
+   {
+    "c": "descripcion",
+    "t": "text"
+   },
+   {
+    "c": "evento_asociado",
+    "t": "character varying"
+   },
+   {
+    "c": "subtotal",
+    "t": "numeric"
+   },
+   {
+    "c": "impuesto",
+    "t": "numeric"
+   },
+   {
+    "c": "total",
+    "t": "numeric"
+   },
+   {
+    "c": "archivo_ruta",
+    "t": "text"
+   },
+   {
+    "c": "dias_credito",
+    "t": "integer"
+   },
+   {
+    "c": "det_porcentaje",
+    "t": "numeric"
+   },
+   {
+    "c": "det_monto",
+    "t": "numeric"
+   },
+   {
+    "c": "numero_documento",
+    "t": "character varying"
+   },
+   {
+    "c": "estado_sunat",
+    "t": "character varying"
+   },
+   {
+    "c": "enlace_pdf_sunat",
+    "t": "text"
+   },
+   {
+    "c": "enlace_xml_sunat",
+    "t": "text"
+   },
+   {
+    "c": "enlace_pdf_nc",
+    "t": "text"
+   },
+   {
+    "c": "orden_compra",
+    "t": "character varying"
+   }
+  ]
+ },
+ "facturas_recibidas": {
+  "n": 227,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "tipo_documento",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "proveedor",
+    "t": "character varying"
+   },
+   {
+    "c": "descripcion",
+    "t": "text"
+   },
+   {
+    "c": "evento_asociado",
+    "t": "character varying"
+   },
+   {
+    "c": "subtotal",
+    "t": "numeric"
+   },
+   {
+    "c": "impuesto",
+    "t": "numeric"
+   },
+   {
+    "c": "total",
+    "t": "numeric"
+   },
+   {
+    "c": "archivo_ruta",
+    "t": "text"
+   },
+   {
+    "c": "dias_credito",
+    "t": "integer"
+   },
+   {
+    "c": "det_porcentaje",
+    "t": "numeric"
+   },
+   {
+    "c": "det_monto",
+    "t": "numeric"
+   },
+   {
+    "c": "numero_documento",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria",
+    "t": "character varying"
+   },
+   {
+    "c": "kilometraje",
+    "t": "character varying"
+   },
+   {
+    "c": "cantidad_combustible",
+    "t": "character varying"
+   },
+   {
+    "c": "ruc",
+    "t": "character varying"
+   },
+   {
+    "c": "imagen_base64",
+    "t": "text"
+   },
+   {
+    "c": "hora",
+    "t": "character varying"
+   },
+   {
+    "c": "pagado_por_tercero",
+    "t": "character varying"
+   },
+   {
+    "c": "soporte_pago_tercero",
+    "t": "text"
+   },
+   {
+    "c": "es_compra_cruzada",
+    "t": "boolean"
+   }
+  ]
+ },
+ "flota_vehiculos": {
+  "n": 6,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "placa",
+    "t": "character varying"
+   },
+   {
+    "c": "marca",
+    "t": "character varying"
+   },
+   {
+    "c": "modelo",
+    "t": "character varying"
+   },
+   {
+    "c": "anio",
+    "t": "character varying"
+   },
+   {
+    "c": "color",
+    "t": "character varying"
+   },
+   {
+    "c": "serial_motor",
+    "t": "character varying"
+   },
+   {
+    "c": "serial_carroceria",
+    "t": "character varying"
+   },
+   {
+    "c": "tipo_combustible",
+    "t": "character varying"
+   },
+   {
+    "c": "vencimiento_soat",
+    "t": "character varying"
+   },
+   {
+    "c": "vencimiento_rt",
+    "t": "character varying"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   },
+   {
+    "c": "kilometraje",
+    "t": "character varying"
+   },
+   {
+    "c": "emision_soat",
+    "t": "character varying"
+   },
+   {
+    "c": "emision_seguro",
+    "t": "character varying"
+   },
+   {
+    "c": "vencimiento_seguro",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria",
+    "t": "character varying"
+   },
+   {
+    "c": "nro_titulo",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_titulo",
+    "t": "character varying"
+   },
+   {
+    "c": "ruta_tarjeta",
+    "t": "text"
+   },
+   {
+    "c": "fec_aceite",
+    "t": "character varying"
+   },
+   {
+    "c": "fec_correa",
+    "t": "character varying"
+   },
+   {
+    "c": "fec_rev_gas",
+    "t": "character varying"
+   },
+   {
+    "c": "fec_compra_bat",
+    "t": "character varying"
+   },
+   {
+    "c": "fec_venc_bat",
+    "t": "character varying"
+   },
+   {
+    "c": "extintor_num",
+    "t": "character varying"
+   },
+   {
+    "c": "fec_venc_extintor",
+    "t": "character varying"
+   },
+   {
+    "c": "km_prox_correa",
+    "t": "character varying"
+   },
+   {
+    "c": "km_ultimo_aceite",
+    "t": "numeric"
+   },
+   {
+    "c": "fecha_ultimo_aceite",
+    "t": "character varying"
+   },
+   {
+    "c": "km_ultimo_general",
+    "t": "numeric"
+   },
+   {
+    "c": "fecha_ultimo_general",
+    "t": "character varying"
+   }
+  ]
+ },
+ "inspecciones": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "placa",
+    "t": "text"
+   },
+   {
+    "c": "chofer",
+    "t": "text"
+   },
+   {
+    "c": "inspector",
+    "t": "text"
+   },
+   {
+    "c": "fecha_hora",
+    "t": "text"
+   },
+   {
+    "c": "payload",
+    "t": "text"
+   },
+   {
+    "c": "creado_en",
+    "t": "timestamp with time zone"
+   }
+  ]
+ },
+ "ordenes_compra": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "codigo_cotizacion",
+    "t": "character varying"
+   },
+   {
+    "c": "proveedor",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_emision",
+    "t": "character varying"
+   },
+   {
+    "c": "locacion",
+    "t": "character varying"
+   },
+   {
+    "c": "fh_instalacion",
+    "t": "character varying"
+   },
+   {
+    "c": "fh_desmontaje",
+    "t": "character varying"
+   },
+   {
+    "c": "detalles_tecnicos",
+    "t": "text"
+   },
+   {
+    "c": "total_orden",
+    "t": "numeric"
+   },
+   {
+    "c": "pdf_ruta",
+    "t": "text"
+   },
+   {
+    "c": "numero_orden",
+    "t": "character varying"
+   },
+   {
+    "c": "version",
+    "t": "integer"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   }
+  ]
+ },
+ "ordenes_compra_clientes": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "numero_oc",
+    "t": "character varying"
+   },
+   {
+    "c": "cotizacion_asociada",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "cliente",
+    "t": "character varying"
+   },
+   {
+    "c": "monto_total",
+    "t": "numeric"
+   },
+   {
+    "c": "archivo_ruta",
+    "t": "text"
+   },
+   {
+    "c": "descripcion",
+    "t": "text"
+   },
+   {
+    "c": "subtotal",
+    "t": "numeric"
+   },
+   {
+    "c": "igv",
+    "t": "numeric"
+   }
+  ]
+ },
+ "ordenes_servicio_flota": {
+  "n": 13,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "numero_orden",
+    "t": "character varying"
+   },
+   {
+    "c": "placa",
+    "t": "character varying"
+   },
+   {
+    "c": "vehiculo_info",
+    "t": "character varying"
+   },
+   {
+    "c": "proveedor",
+    "t": "character varying"
+   },
+   {
+    "c": "servicio",
+    "t": "character varying"
+   },
+   {
+    "c": "descripcion",
+    "t": "text"
+   },
+   {
+    "c": "costo_total",
+    "t": "numeric"
+   },
+   {
+    "c": "fecha_emision",
+    "t": "character varying"
+   },
+   {
+    "c": "pdf_ruta",
+    "t": "text"
+   },
+   {
+    "c": "version",
+    "t": "integer"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   }
+  ]
+ },
+ "pagos_clientes": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "codigo_cotizacion",
+    "t": "character varying"
+   },
+   {
+    "c": "monto_pagado",
+    "t": "numeric"
+   },
+   {
+    "c": "archivo_ruta",
+    "t": "text"
+   },
+   {
+    "c": "cliente_nombre",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_pago",
+    "t": "character varying"
+   },
+   {
+    "c": "id_factura",
+    "t": "integer"
+   },
+   {
+    "c": "cuenta_destino",
+    "t": "character varying"
+   }
+  ]
+ },
+ "pagos_comprobantes": {
+  "n": 79,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "codigo_cotizacion",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria_suministro",
+    "t": "character varying"
+   },
+   {
+    "c": "monto_pagado",
+    "t": "numeric"
+   },
+   {
+    "c": "archivo_ruta",
+    "t": "text"
+   },
+   {
+    "c": "proveedor_nombre",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_pago",
+    "t": "character varying"
+   },
+   {
+    "c": "id_factura",
+    "t": "integer"
+   },
+   {
+    "c": "cuenta_origen",
+    "t": "character varying"
+   }
+  ]
+ },
+ "pautas_eventos": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "codigo_cotizacion",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_creacion",
+    "t": "character varying"
+   }
+  ]
+ },
+ "pautas_items": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "codigo_cotizacion",
+    "t": "character varying"
+   },
+   {
+    "c": "hora",
+    "t": "character varying"
+   },
+   {
+    "c": "actividad",
+    "t": "text"
+   },
+   {
+    "c": "responsable",
+    "t": "character varying"
+   }
+  ]
+ },
+ "personal_proveedor": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "solicitud_id",
+    "t": "integer"
+   },
+   {
+    "c": "nombre_completo",
+    "t": "character varying"
+   },
+   {
+    "c": "dni",
+    "t": "character varying"
+   },
+   {
+    "c": "cargo",
+    "t": "character varying"
+   }
+  ]
+ },
+ "precios_viaje_distancia": {
+  "n": 3,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "id_cliente",
+    "t": "integer"
+   },
+   {
+    "c": "distancia_desde",
+    "t": "numeric"
+   },
+   {
+    "c": "distancia_hasta",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_normal",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_domingo",
+    "t": "numeric"
+   },
+   {
+    "c": "precio_feriado",
+    "t": "numeric"
+   }
+  ]
+ },
+ "proveedores": {
+  "n": 6,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "ruc",
+    "t": "character varying"
+   },
+   {
+    "c": "nombre",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria",
+    "t": "character varying"
+   },
+   {
+    "c": "contacto",
+    "t": "character varying"
+   },
+   {
+    "c": "whatsapp",
+    "t": "character varying"
+   },
+   {
+    "c": "ubicacion",
+    "t": "character varying"
+   },
+   {
+    "c": "direccion_fiscal",
+    "t": "text"
+   },
+   {
+    "c": "contacto_2",
+    "t": "character varying"
+   },
+   {
+    "c": "whatsapp_2",
+    "t": "character varying"
+   },
+   {
+    "c": "correo",
+    "t": "character varying"
+   },
+   {
+    "c": "web",
+    "t": "character varying"
+   },
+   {
+    "c": "catalogo",
+    "t": "character varying"
+   },
+   {
+    "c": "banco_1",
+    "t": "character varying"
+   },
+   {
+    "c": "cuenta_1",
+    "t": "character varying"
+   },
+   {
+    "c": "cci_1",
+    "t": "character varying"
+   },
+   {
+    "c": "banco_2",
+    "t": "character varying"
+   },
+   {
+    "c": "cuenta_2",
+    "t": "character varying"
+   },
+   {
+    "c": "cci_2",
+    "t": "character varying"
+   },
+   {
+    "c": "cuenta_detraccion",
+    "t": "character varying"
+   },
+   {
+    "c": "porcentaje_detraccion",
+    "t": "character varying"
+   },
+   {
+    "c": "descripcion",
+    "t": "text"
+   },
+   {
+    "c": "categoria_2",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria_3",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria_4",
+    "t": "character varying"
+   },
+   {
+    "c": "categoria_5",
+    "t": "character varying"
+   }
+  ]
+ },
+ "registro_asistencia": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "placa",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "hora_entrada",
+    "t": "character varying"
+   },
+   {
+    "c": "hora_salida",
+    "t": "character varying"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   }
+  ]
+ },
+ "registro_impuestos": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "periodo",
+    "t": "character varying"
+   },
+   {
+    "c": "ventas_netas",
+    "t": "numeric"
+   },
+   {
+    "c": "igv_ventas",
+    "t": "numeric"
+   },
+   {
+    "c": "compras_netas",
+    "t": "numeric"
+   },
+   {
+    "c": "igv_compras",
+    "t": "numeric"
+   },
+   {
+    "c": "credito_fiscal_anterior",
+    "t": "numeric"
+   },
+   {
+    "c": "igv_a_pagar",
+    "t": "numeric"
+   },
+   {
+    "c": "credito_fiscal_siguiente",
+    "t": "numeric"
+   },
+   {
+    "c": "impuesto_renta",
+    "t": "numeric"
+   },
+   {
+    "c": "total_sunat",
+    "t": "numeric"
+   },
+   {
+    "c": "saldo_nacion_anterior",
+    "t": "numeric"
+   },
+   {
+    "c": "detracciones_del_mes",
+    "t": "numeric"
+   },
+   {
+    "c": "nacion_utilizado",
+    "t": "numeric"
+   },
+   {
+    "c": "saldo_nacion_siguiente",
+    "t": "numeric"
+   },
+   {
+    "c": "pago_bolsillo",
+    "t": "numeric"
+   },
+   {
+    "c": "detracciones_compras",
+    "t": "numeric"
+   },
+   {
+    "c": "archivo_pago",
+    "t": "text"
+   },
+   {
+    "c": "provision_anual",
+    "t": "numeric"
+   }
+  ]
+ },
+ "solicitudes_proveedor": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "codigo_cotizacion",
+    "t": "character varying"
+   },
+   {
+    "c": "proveedor",
+    "t": "character varying"
+   },
+   {
+    "c": "tipo_respuesta",
+    "t": "character varying"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_solicitud",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_recepcion",
+    "t": "character varying"
+   },
+   {
+    "c": "archivo_sctr",
+    "t": "text"
+   },
+   {
+    "c": "notas",
+    "t": "text"
+   },
+   {
+    "c": "sctr_compania",
+    "t": "character varying"
+   },
+   {
+    "c": "sctr_poliza",
+    "t": "character varying"
+   },
+   {
+    "c": "sctr_desde",
+    "t": "character varying"
+   },
+   {
+    "c": "sctr_hasta",
+    "t": "character varying"
+   },
+   {
+    "c": "rep_nombre",
+    "t": "character varying"
+   },
+   {
+    "c": "rep_dni",
+    "t": "character varying"
+   }
+  ]
+ },
+ "tareas_evento": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "evento_asociado",
+    "t": "character varying"
+   },
+   {
+    "c": "nombre_tarea",
+    "t": "character varying"
+   },
+   {
+    "c": "responsable",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha_limite",
+    "t": "character varying"
+   },
+   {
+    "c": "estado",
+    "t": "character varying"
+   },
+   {
+    "c": "notas",
+    "t": "text"
+   },
+   {
+    "c": "orden",
+    "t": "integer"
+   },
+   {
+    "c": "tipo_pago",
+    "t": "character varying"
+   },
+   {
+    "c": "archivo_pago",
+    "t": "text"
+   },
+   {
+    "c": "tipo_entrada",
+    "t": "character varying"
+   },
+   {
+    "c": "repeticion",
+    "t": "character varying"
+   },
+   {
+    "c": "ubicacion",
+    "t": "text"
+   },
+   {
+    "c": "tiempo_aviso",
+    "t": "character varying"
+   }
+  ]
+ },
+ "tipos_entrada_cronograma": {
+  "n": 3,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "nombre",
+    "t": "character varying"
+   }
+  ]
+ },
+ "tokens_acceso": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "token",
+    "t": "text"
+   },
+   {
+    "c": "username",
+    "t": "character varying"
+   },
+   {
+    "c": "creado_en",
+    "t": "timestamp with time zone"
+   }
+  ]
+ },
+ "transferencias_bancarias": {
+  "n": 0,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "banco_origen",
+    "t": "character varying"
+   },
+   {
+    "c": "cuenta_origen",
+    "t": "character varying"
+   },
+   {
+    "c": "banco_destino",
+    "t": "character varying"
+   },
+   {
+    "c": "cuenta_destino",
+    "t": "character varying"
+   },
+   {
+    "c": "fecha",
+    "t": "character varying"
+   },
+   {
+    "c": "descripcion",
+    "t": "text"
+   },
+   {
+    "c": "monto",
+    "t": "numeric"
+   }
+  ]
+ },
+ "usuarios": {
+  "n": 2,
+  "cols": [
+   {
+    "c": "id",
+    "t": "integer"
+   },
+   {
+    "c": "usuario",
+    "t": "character varying"
+   },
+   {
+    "c": "clave",
+    "t": "character varying"
+   },
+   {
+    "c": "rol",
+    "t": "character varying"
+   },
+   {
+    "c": "permisos",
+    "t": "text"
+   },
+   {
+    "c": "clave_hash",
+    "t": "text"
+   },
+   {
+    "c": "activo",
+    "t": "boolean"
+   },
+   {
+    "c": "intentos_fallidos",
+    "t": "integer"
+   }
+  ]
+ }
+}

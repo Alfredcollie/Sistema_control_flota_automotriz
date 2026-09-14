@@ -1,7 +1,7 @@
 {
-    "ruta_drive": "C:/Users/Alberto/Desktop/Programa de control de flotilla automotriz para Win-Mac 210826",
+    "ruta_drive": "C:\\Users\\Alberto\\BlackCube_Archivos",
     "rclone_remote": "gdrive:",
-    "rclone_ruta_nube": "BlackRider",
+    "rclone_ruta_nube": "BLACK RIDERS - SISTEMA",
     "impresora": "",
     "simbolo_moneda": "S/.",
     "formato_numero": "1.000,00",
@@ -12,7 +12,7 @@
     "detraccion_porcentaje": "12",
     "renta_mensual_porcentaje": "1.5",
     "renta_anual_porcentaje": "0",
-    "regimen_empresa": "Régimen General",
+    "regimen_empresa": "R\u00e9gimen General",
     "proveedor_fe": "Nubefact",
     "url_api_fe": "",
     "token_api_fe": "",
@@ -69,7 +69,7 @@
         "bitacora"
     ],
     "retencion_porcentaje": "8",
-    "ruta_logo_cotizacion": "C:/Users/Alberto/Desktop/Programa de control de flotilla automotriz para Win-Mac 210826\\logo_encabezado.png",
+    "ruta_logo_cotizacion": "",
     "orden_modulos": [
         "clientes",
         "proveedores",
@@ -96,7 +96,7 @@
             "Planilla / Sueldos",
             "Servicios (Luz, Agua, Internet)",
             "Seguros",
-            "Préstamos / Cuotas"
+            "Pr\u00e9stamos / Cuotas"
         ],
         "Gastos Operativos": [
             "Combustible",

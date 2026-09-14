@@ -20,6 +20,12 @@ from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialog
 
 def abrir_documento_local(ruta):
     if not ruta: return False
+    # Resuelve la ruta aunque el expediente se haya guardado en otro equipo/SO
+    try:
+        from app_paths import resolver_ruta_archivo
+        ruta = resolver_ruta_archivo(ruta) or ruta
+    except Exception:
+        pass
     ruta_norm = os.path.normpath(ruta)
     if not os.path.exists(ruta_norm):
         return False
@@ -884,6 +890,13 @@ class ChoferesApp:
         diccionario_final = self.rutas_documentos_db.copy()
         
         if self.rutas_documentos_temp:
+            # 🔒 Política de almacenamiento: sin autorización no se guarda ningún archivo
+            try:
+                from politica_almacenamiento import exigir_permiso
+                if not exigir_permiso(self):
+                    return
+            except ImportError:
+                pass
             try:
                 # En Mac (app empaquetada) la carpeta del programa puede ser de solo lectura:
                 # _carpeta_expedientes() cae automáticamente a la carpeta de datos del usuario.

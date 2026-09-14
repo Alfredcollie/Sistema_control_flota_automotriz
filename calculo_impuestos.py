@@ -126,9 +126,25 @@ def desformatear_numero(valor_str):
     except ValueError: return 0.0
 
 def obtener_ruta_base_drive():
-    ruta = str(CONFIG_REGIONAL.get("ruta_drive", "")).strip()
-    if ruta: return os.path.expanduser(ruta)
-    return ""
+    """Carpeta base para guardar archivos (respeta la política de almacenamiento)."""
+    try:
+        from politica_almacenamiento import ruta_base_autorizada
+        return ruta_base_autorizada(mostrar_alerta=False)
+    except Exception:
+        ruta = str(CONFIG_REGIONAL.get("ruta_drive", "")).strip()
+        return os.path.expanduser(ruta) if ruta else ""
+
+
+def avisar_sin_permiso_guardado(parent=None):
+    """Advertencia de bloqueo (cuenta Rclone distinta) o de configuración faltante."""
+    try:
+        from politica_almacenamiento import avisar_sin_ruta
+        return avisar_sin_ruta(parent)
+    except Exception:
+        messagebox.showwarning("Configuración Requerida",
+                               "No ha configurado la ruta de Google Drive.\nEs obligatorio para guardar archivos.",
+                               parent=parent)
+        return False
 
 def aplicar_estilo_treeview():
     style = ttk.Style()
@@ -648,9 +664,7 @@ class CalculoImpuestosApp:
             
         ruta_base = obtener_ruta_base_drive()
         if not ruta_base:
-            messagebox.showwarning("Configuración Requerida",
-                                   "No ha configurado la ruta de Google Drive.\n\n"
-                                   "Vaya a: ⚙️ Configuración General → 'Carpeta de Google Drive'\ny guárdela para poder adjuntar comprobantes de pago.")
+            avisar_sin_permiso_guardado()
             return
             
         self.carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_impuestos")

@@ -377,8 +377,10 @@ class FlotaAutomotrizApp:
         threading.Thread(target=correr, daemon=True).start()
 
     def abrir_tarjeta(self):
+        from app_paths import resolver_ruta_archivo
         ruta = self.ruta_tarjeta_db if self.ruta_tarjeta_db else self.ruta_tarjeta_temp
-        if ruta and os.path.exists(ruta):
+        ruta = resolver_ruta_archivo(ruta) if ruta else ""
+        if ruta:
             try:
                 if sys.platform == "win32": os.startfile(ruta)
                 elif sys.platform == "darwin": subprocess.call(["open", ruta])
@@ -752,6 +754,13 @@ class FlotaAutomotrizApp:
 
         ruta_final_archivo = self.ruta_tarjeta_db
         if self.ruta_tarjeta_temp and os.path.exists(self.ruta_tarjeta_temp):
+            # 🔒 Política de almacenamiento: sin autorización no se guarda ningún archivo
+            try:
+                from politica_almacenamiento import exigir_permiso
+                if not exigir_permiso(self):
+                    return
+            except ImportError:
+                pass
             try:
                 base_dir = os.path.dirname(os.path.abspath(__file__))
                 carpeta_destino = os.path.join(base_dir, "archivos_flota", "tarjetas_propiedad")

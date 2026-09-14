@@ -16,7 +16,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
-from app_paths import CONFIG_FILE
+from app_paths import CONFIG_FILE, ruta_para_guardar
 
 try:
     from reportlab.pdfgen import canvas
@@ -105,6 +105,16 @@ def obtener_ruta_logo():
                 return r
     return ""
 
+def _avisar_guardado_bloqueado(parent=None):
+    """Muestra la advertencia de bloqueo de almacenamiento (cuenta Rclone distinta)."""
+    try:
+        from politica_almacenamiento import advertir
+        advertir(parent, forzar=True)
+    except Exception:
+        messagebox.showwarning("Almacenamiento bloqueado",
+                               "Este equipo no está autorizado a guardar archivos.", parent=parent)
+
+
 def _carpeta_base_ordenes():
     """Carpeta base ABSOLUTA y escribible para los PDFs de órdenes.
 
@@ -112,6 +122,14 @@ def _carpeta_base_ordenes():
     del programa. En macOS el directorio de trabajo puede ser '/' o una carpeta
     de solo lectura (app empaquetada), y una ruta relativa como 'ordenes_generadas'
     provocaría 'Read-only file system' al crear/anular una orden."""
+    try:
+        from politica_almacenamiento import estado_almacenamiento
+        if not estado_almacenamiento().get("autorizado"):
+            # Equipo NO autorizado (cuenta Rclone distinta a la del principal):
+            # no se guarda nada, ni siquiera en local.
+            return ""
+    except Exception:
+        pass
     try:
         config = _cargar_config_local()
         ruta_drive = str(config.get("ruta_drive", "") or "").strip()
@@ -134,13 +152,31 @@ def _carpeta_base_ordenes():
                     pass
     except Exception:
         pass
+    # Respaldo junto al programa: SOLO en modo monousuario (local)
+    try:
+        from politica_almacenamiento import permitir_respaldo_local
+        if not permitir_respaldo_local():
+            return ""
+    except Exception:
+        pass
     return os.path.dirname(os.path.abspath(__file__))
 
 def _resolver_ruta_pdf(ruta):
-    """Resuelve rutas de PDF guardadas en BD: si son relativas (registros
-    antiguos) las ancla a la carpeta del programa."""
+    """Resuelve rutas de PDF guardadas en BD.
+
+    Usa el resolvedor portable (funciona con rutas de otro equipo o sistema
+    operativo, p. ej. una ruta de macOS en Windows). Si no se encuentra el
+    archivo, mantiene el comportamiento anterior (ruta relativa al programa).
+    """
     if not ruta:
         return ""
+    try:
+        from app_paths import resolver_ruta_archivo
+        encontrada = resolver_ruta_archivo(ruta)
+        if encontrada:
+            return encontrada
+    except Exception:
+        pass
     if os.path.isabs(ruta):
         return ruta
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), ruta)
@@ -226,7 +262,11 @@ class OrdenesCompraApp:
         threading.Thread(target=tarea_curacion, daemon=True).start()
 
     def abrir_carpeta_anuladas(self):
-        carpeta = os.path.join(_carpeta_base_ordenes(), "ordenes_anuladas")
+        base_ordenes = _carpeta_base_ordenes()
+        if not base_ordenes:
+            _avisar_guardado_bloqueado()
+            return
+        carpeta = os.path.join(base_ordenes, "ordenes_anuladas")
         if not os.path.exists(carpeta):
             os.makedirs(carpeta)
         abrir_documento(carpeta)
@@ -552,10 +592,13 @@ class OrdenesCompraApp:
                 cursor.execute("SELECT pdf_ruta FROM ordenes_servicio_flota WHERE id = %s", (id_orden,))
                 ruta_pdf = cursor.fetchone()[0]
                 
-                carpeta_anuladas = os.path.join(_carpeta_base_ordenes(), "ordenes_anuladas")
-                if not os.path.exists(carpeta_anuladas): os.makedirs(carpeta_anuladas)
+                base_ordenes = _carpeta_base_ordenes()
+                carpeta_anuladas = os.path.join(base_ordenes, "ordenes_anuladas") if base_ordenes else ""
+                if carpeta_anuladas and not os.path.exists(carpeta_anuladas): os.makedirs(carpeta_anuladas)
+                if not base_ordenes:
+                    _avisar_guardado_bloqueado()
                 
-                ruta_pdf_abs = _resolver_ruta_pdf(ruta_pdf)
+                ruta_pdf_abs = _resolver_ruta_pdf(ruta_pdf) if base_ordenes else ""
                 if ruta_pdf_abs and os.path.exists(ruta_pdf_abs):
                     try: shutil.move(ruta_pdf_abs, os.path.join(carpeta_anuladas, os.path.basename(ruta_pdf_abs)))
                     except Exception as e:
@@ -572,7 +615,11 @@ class OrdenesCompraApp:
         try: total_orden = float(total_orden)
         except ValueError: total_orden = 0.0
         
-        carpeta_destino = os.path.join(_carpeta_base_ordenes(), "ordenes_generadas")
+        base_ordenes = _carpeta_base_ordenes()
+        if not base_ordenes:
+            _avisar_guardado_bloqueado()
+            return ""
+        carpeta_destino = os.path.join(base_ordenes, "ordenes_generadas")
         if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
         marca_tiempo = datetime.now().strftime("%H%M%S")
         nombre_archivo = os.path.join(carpeta_destino, f"Orden_Servicio_{placa}_{marca_tiempo}.pdf")
@@ -710,7 +757,7 @@ class OrdenesCompraApp:
             cursor.execute("""
                 INSERT INTO ordenes_servicio_flota (numero_orden, placa, vehiculo_info, proveedor, servicio, descripcion, costo_total, fecha_emision, pdf_ruta, version, estado)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (numero_orden_base, placa, vehiculo_info, prov, servicio, detalles, costo_total, fecha_emision, ruta_pdf, version_inicial, 'Activa'))
+            """, (numero_orden_base, placa, vehiculo_info, prov, servicio, detalles, costo_total, fecha_emision, ruta_para_guardar(ruta_pdf), version_inicial, 'Activa'))
             conn.commit(); 
             cache_sistema.invalidar()
             liberar_conexion(conn)
@@ -880,7 +927,11 @@ class OrdenesCompraApp:
             
             ruta_pdf_antigua_abs = _resolver_ruta_pdf(ruta_pdf_antigua)
             if ruta_pdf_antigua_abs and os.path.exists(ruta_pdf_antigua_abs):
-                carpeta_anuladas = os.path.join(_carpeta_base_ordenes(), "ordenes_anuladas")
+                base_ordenes = _carpeta_base_ordenes()
+                carpeta_anuladas = os.path.join(base_ordenes, "ordenes_anuladas") if base_ordenes else ""
+                if not carpeta_anuladas:
+                    _avisar_guardado_bloqueado()
+                    return
                 if not os.path.exists(carpeta_anuladas): os.makedirs(carpeta_anuladas)
                 try: shutil.move(ruta_pdf_antigua_abs, os.path.join(carpeta_anuladas, os.path.basename(ruta_pdf_antigua_abs)))
                 except Exception as e:
@@ -893,7 +944,7 @@ class OrdenesCompraApp:
                 cursor = c2.cursor()
                 cursor.execute("""
                     UPDATE ordenes_servicio_flota SET servicio=%s, descripcion=%s, costo_total=%s, fecha_emision=%s, pdf_ruta=%s, version=%s WHERE id=%s
-                """, (n_serv, n_det, n_costo, n_fecha_emision, n_ruta_pdf, n_version, id_orden))
+                """, (n_serv, n_det, n_costo, n_fecha_emision, ruta_para_guardar(n_ruta_pdf), n_version, id_orden))
                 c2.commit()
                 cache_sistema.invalidar()
                 liberar_conexion(c2)

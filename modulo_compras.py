@@ -32,7 +32,7 @@ import threading
 # 🚀 IMPORTAMOS NUESTRAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
-from app_paths import CONFIG_FILE
+from app_paths import CONFIG_FILE, eliminar_archivo, ruta_para_guardar, resolver_ruta_archivo
 from config_nube import cargar_bancos
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 
@@ -82,7 +82,18 @@ def centrar_ventana(ventana, parent, ancho, alto):
     ventana.geometry(f"{ancho}x{alto}+{x}+{y}")
 
 def abrir_documento(ruta):
-    """Abre documentos de forma nativa en Windows, macOS y Linux"""
+    """Abre documentos de forma nativa en Windows, macOS y Linux.
+
+    Resuelve la ruta aunque se haya guardado en otro equipo u otro sistema
+    operativo (por ejemplo, una ruta de macOS usada desde Windows).
+    """
+    try:
+        from app_paths import resolver_ruta_archivo
+        encontrada = resolver_ruta_archivo(ruta)
+        if encontrada:
+            ruta = encontrada
+    except Exception:
+        pass
     try:
         ruta_norm = os.path.normpath(ruta)
         if not os.path.exists(ruta_norm):
@@ -184,9 +195,32 @@ def desformatear_numero(valor_str):
     except ValueError: return 0.0
 
 def obtener_ruta_base_drive():
-    ruta = CONFIG_REGIONAL.get("ruta_drive", "").strip()
-    if ruta: return os.path.expanduser(ruta)
-    return ""
+    """Carpeta base para guardar archivos.
+
+    Devuelve "" si el equipo NO está autorizado (equipo secundario sin la cuenta
+    Rclone del equipo principal): en ese caso ningún módulo debe guardar archivos.
+    """
+    try:
+        from politica_almacenamiento import ruta_base_autorizada
+        return ruta_base_autorizada(mostrar_alerta=False)
+    except Exception:
+        ruta = CONFIG_REGIONAL.get("ruta_drive", "").strip()
+        return os.path.expanduser(ruta) if ruta else ""
+
+
+def avisar_sin_permiso_guardado(parent=None):
+    """Muestra el aviso correcto cuando no hay carpeta base disponible.
+
+    Si el bloqueo viene de la política de almacenamiento (cuenta Rclone distinta a
+    la del equipo principal) muestra esa advertencia; si no, la de configuración.
+    Devuelve True si ya se mostró el aviso de bloqueo.
+    """
+    try:
+        from politica_almacenamiento import avisar_sin_ruta
+        return avisar_sin_ruta(parent)
+    except Exception:
+        messagebox.showwarning("Configuración Requerida", "No ha configurado la ruta de Google Drive.\nEs obligatorio para guardar archivos.", parent=parent)
+        return False
 
 # =========================================================
 # 🔃 ORDENAMIENTO POR CUALQUIER COLUMNA (TODAS LAS PÁGINAS)
@@ -989,13 +1023,39 @@ class FacturasRecibidasTab:
             if n:
                 self.main_root.after(0, lambda: messagebox.showinfo("Actualización Exitosa", f"Se descargaron {n} ticket(s) de la aplicación móvil."))
             else:
+                # Si no se descargó nada por el bloqueo de almacenamiento, se avisa
+                # de eso (los tickets quedan en la nube para un equipo autorizado).
+                try:
+                    from politica_almacenamiento import estado_almacenamiento, advertir, mensaje_bloqueo
+                    if not estado_almacenamiento().get("autorizado"):
+                        self.main_root.after(0, lambda: messagebox.showwarning(
+                            "Descarga bloqueada",
+                            mensaje_bloqueo() + "\n\nLos tickets del App Grifo NO se borraron de la nube: "
+                            "quedan disponibles para un equipo configurado con la cuenta del principal.",
+                            parent=self.main_root))
+                        return
+                except Exception:
+                    pass
                 self.main_root.after(0, lambda: messagebox.showinfo("Sin tickets nuevos", "No hay tickets de la aplicación móvil pendientes de descargar.\n\nSi acabas de enviar uno, revisa en el celular si fue rechazado (RUC de la empresa no encontrado)."))
         threading.Thread(target=tarea, daemon=True).start()
 
     def sincronizar_tickets_pendientes_automatico(self):
         ruta_base = obtener_ruta_base_drive()
-        if not ruta_base: return 0
-        
+
+        # 🔒 EQUIPO NO AUTORIZADO: no se descargan los tickets del App Grifo y
+        # TAMPOCO se borran de la nube (imagen_base64 se conserva), para que otro
+        # equipo configurado con la cuenta del principal pueda descargarlos.
+        if not ruta_base:
+            try:
+                from politica_almacenamiento import estado_almacenamiento
+                if not estado_almacenamiento().get("autorizado"):
+                    print("🔒 Descarga de tickets App Grifo bloqueada: este equipo no usa la cuenta Rclone del principal. "
+                          "Los tickets se mantienen en la nube.")
+                    return 0
+            except Exception:
+                pass
+            return 0
+
         conn = conectar_db(silencioso=True)
         if not conn: return 0
         descargados = 0
@@ -1021,8 +1081,9 @@ class FacturasRecibidasTab:
                     with open(ruta_final, "wb") as f:
                         f.write(base64.b64decode(img_b64))
                     
-                    cursor.execute("UPDATE facturas_recibidas SET archivo_ruta = %s, imagen_base64 = NULL WHERE id = %s", (ruta_final, id_doc))
-                    cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id_factura = %s AND archivo_ruta = 'PENDIENTE_DESCARGA'", (ruta_final, id_doc))
+                    ruta_bd = ruta_para_guardar(ruta_final, ruta_base)
+                    cursor.execute("UPDATE facturas_recibidas SET archivo_ruta = %s, imagen_base64 = NULL WHERE id = %s", (ruta_bd, id_doc))
+                    cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id_factura = %s AND archivo_ruta = 'PENDIENTE_DESCARGA'", (ruta_bd, id_doc))
                     conn.commit()
                     descargados += 1
                 except Exception as e_escribir: 
@@ -1230,7 +1291,7 @@ class FacturasRecibidasTab:
     def guardar_registro(self):
         ruta_base = obtener_ruta_base_drive()
         if not ruta_base:
-            messagebox.showwarning("Configuración Requerida", "No ha configurado la ruta de Google Drive.")
+            avisar_sin_permiso_guardado()
             return
             
         tipo = self.combo_tipo.get()
@@ -1299,7 +1360,7 @@ class FacturasRecibidasTab:
             cursor.execute("""
                 INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_final, dias, det_pct, det_monto, categoria, ruc_val))
+            """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val))
             conn.commit()
             
             cache_sistema.invalidar()
@@ -1460,11 +1521,14 @@ class FacturasRecibidasTab:
             res = cursor.fetchone()
             
             if res and res[0]:
-                ruta_almacenada = os.path.normpath(res[0])
-                if ruta_almacenada == "PENDIENTE_DESCARGA":
+                if str(res[0]).strip() == "PENDIENTE_DESCARGA":
                     if messagebox.askyesno("Archivo no disponible", "¿Desea forzar la descarga de los archivos pendientes ahora?"):
                         self.ejecutar_sincronizacion_manual()
-                elif os.path.exists(ruta_almacenada):
+                    return
+                # 🔎 Se resuelve la ruta aunque venga de otro equipo/sistema (Mac/Windows)
+                from app_paths import resolver_ruta_archivo
+                ruta_almacenada = resolver_ruta_archivo(res[0])
+                if ruta_almacenada:
                     abrir_documento(ruta_almacenada)
                 else:
                     if messagebox.askyesno("Archivo Extraviado", "El archivo local no se encuentra.\n¿Desea recuperarlo desde la nube (Supabase)?"):
@@ -1490,8 +1554,9 @@ class FacturasRecibidasTab:
                                 with open(ruta_final, "wb") as f:
                                     f.write(base64.b64decode(img_b64))
                                 
-                                cursor.execute("UPDATE facturas_recibidas SET archivo_ruta = %s WHERE id = %s", (ruta_final, id_doc))
-                                cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id_factura = %s", (ruta_final, id_doc))
+                                ruta_bd = ruta_para_guardar(ruta_final)
+                                cursor.execute("UPDATE facturas_recibidas SET archivo_ruta = %s WHERE id = %s", (ruta_bd, id_doc))
+                                cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id_factura = %s", (ruta_bd, id_doc))
                                 conn.commit()
                                 
                                 messagebox.showinfo("Recuperación Exitosa", "Imagen recuperada y guardada.")
@@ -1649,7 +1714,8 @@ class FacturasRecibidasTab:
                     cursor.execute("SELECT archivo_ruta FROM facturas_recibidas WHERE id = %s", (id_doc,))
                     row = cursor.fetchone()
                     ruta_archivo = os.path.normpath(row[0]) if row and row[0] else None
-                    if ruta_archivo and os.path.exists(ruta_archivo): os.remove(ruta_archivo)
+                    eliminar_archivo(ruta_archivo)   # resuelve rutas de otros equipos/SO
+
                     cursor.execute("DELETE FROM facturas_recibidas WHERE id = %s", (id_doc,))
                     conn.commit()
                     liberar_conexion(conn)
@@ -2065,7 +2131,7 @@ class CuentasPorPagarTab:
     def cargar_comprobante_pago(self):
         ruta_base = obtener_ruta_base_drive()
         if not ruta_base:
-            messagebox.showwarning("Configuración Requerida", "No ha configurado la ruta de Google Drive.\nEs obligatorio para guardar archivos.")
+            avisar_sin_permiso_guardado()
             return
             
         seleccion = self.tabla.selection()
@@ -2181,7 +2247,7 @@ class CuentasPorPagarTab:
                 cursor.execute("""
                     INSERT INTO pagos_comprobantes (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen) 
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (id_factura, monto_val, ruta_destino, proveedor, fecha_val, categoria_db, nro_doc, cuenta_val))
+                """, (id_factura, monto_val, ruta_para_guardar(ruta_destino), proveedor, fecha_val, categoria_db, nro_doc, cuenta_val))
                 conn.commit()
                 cache_sistema.invalidar()
                 registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar", f"Pagó {formatear_moneda(monto_val)} a Fac. {nro_doc} desde {cuenta_val}")
@@ -2206,10 +2272,16 @@ class CuentasPorPagarTab:
             rutas = cursor.fetchall()
             liberar_conexion(conn)
             if rutas:
+                from app_paths import resolver_ruta_archivo
+                abiertos = 0
                 for r in rutas:
-                    ruta_norm = os.path.normpath(r[0])
-                    if os.path.exists(ruta_norm): 
+                    # 🔎 Resuelve rutas guardadas por otro equipo/sistema (Mac/Windows)
+                    ruta_norm = resolver_ruta_archivo(r[0])
+                    if ruta_norm:
                         abrir_documento(ruta_norm)
+                        abiertos += 1
+                if not abiertos:
+                    messagebox.showwarning("Aviso", "Los soportes están registrados pero los archivos no se encuentran en este equipo.")
             else: messagebox.showinfo("Aviso", "No hay soportes cargados.")
         except Exception: pass
 
@@ -2242,7 +2314,8 @@ class CuentasPorPagarTab:
                 conn = conectar_db(); cursor = conn.cursor()
                 cursor.execute("SELECT id, monto_pagado, fecha_pago, archivo_ruta, cuenta_origen FROM pagos_comprobantes WHERE id_factura = %s", (id_factura,))
                 for a in cursor.fetchall(): 
-                    sub_tabla.insert("", tk.END, values=(a[0], formatear_moneda(a[1]), a[2] if a[2] else "Sin fecha", a[4] if a[4] else "-", "✅ Sí" if (a[3] and os.path.exists(os.path.normpath(a[3]))) else "❌ No"))
+                    # El indicador resuelve la ruta (sirve con rutas relativas o de otro equipo)
+                    sub_tabla.insert("", tk.END, values=(a[0], formatear_moneda(a[1]), a[2] if a[2] else "Sin fecha", a[4] if a[4] else "-", "✅ Sí" if resolver_ruta_archivo(a[3]) else "❌ No"))
                 liberar_conexion(conn)
             except Exception: pass
         refrescar_subtabla()
@@ -2313,7 +2386,8 @@ class CuentasPorPagarTab:
                         cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id = %s", (id_pago,))
                         r = cursor.fetchone()
                         ruta_norm = os.path.normpath(r[0]) if r and r[0] else None
-                        if ruta_norm and os.path.exists(ruta_norm): os.remove(ruta_norm)
+                        eliminar_archivo(ruta_norm)   # resuelve rutas de otros equipos/SO
+
                         cursor.execute("DELETE FROM pagos_comprobantes WHERE id = %s", (id_pago,))
                         conn.commit(); liberar_conexion(conn)
                         cache_sistema.invalidar()
@@ -2343,7 +2417,7 @@ class CuentasPorPagarTab:
         def cambiar_soporte():
             ruta_base = obtener_ruta_base_drive()
             if not ruta_base:
-                messagebox.showwarning("Configuración Requerida", "No ha configurado la ruta de Google Drive.\nEs obligatorio para guardar archivos.")
+                avisar_sin_permiso_guardado(v_edit)
                 return
             
             sub_sel = sub_tabla.selection()
@@ -2357,13 +2431,13 @@ class CuentasPorPagarTab:
                     conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id = %s", (id_pago,))
                     antigua_ruta = os.path.normpath(cursor.fetchone()[0])
-                    if antigua_ruta and os.path.exists(antigua_ruta): os.remove(antigua_ruta)
-                    
+                    eliminar_archivo(antigua_ruta)   # resuelve rutas de otros equipos/SO
+
                     prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor)
                     nombre_limpio = f"Egreso_Fac_{id_factura}_{prov_limpio.replace(' ', '_')}_R_{id_pago}{os.path.splitext(ruta_origen)[1]}"
                     ruta_destino = os.path.normpath(os.path.join(carpeta_comprobantes, nombre_limpio))
                     shutil.copy2(ruta_origen, ruta_destino)
-                    cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id = %s", (ruta_destino, id_pago))
+                    cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id = %s", (ruta_para_guardar(ruta_destino), id_pago))
                     conn.commit(); liberar_conexion(conn)
                     registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar", f"Actualizó soporte del pago ID {id_pago}")
                     messagebox.showinfo("Éxito", "Soporte actualizado.", parent=v_edit)
@@ -2379,7 +2453,8 @@ class CuentasPorPagarTab:
                     conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id = %s", (id_pago,))
                     ruta_archivo = os.path.normpath(cursor.fetchone()[0])
-                    if ruta_archivo and os.path.exists(ruta_archivo): os.remove(ruta_archivo)
+                    eliminar_archivo(ruta_archivo)   # resuelve rutas de otros equipos/SO
+
                     cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = '' WHERE id = %s", (id_pago,))
                     conn.commit(); liberar_conexion(conn)
                     registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar", f"Eliminó soporte del pago ID {id_pago}")
@@ -2400,7 +2475,8 @@ class CuentasPorPagarTab:
                     cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id = %s", (id_pago,))
                     r = cursor.fetchone()
                     ruta_norm = os.path.normpath(r[0]) if r and r[0] else None
-                    if ruta_norm and os.path.exists(ruta_norm): os.remove(ruta_norm)
+                    eliminar_archivo(ruta_norm)   # resuelve rutas de otros equipos/SO
+
                     cursor.execute("DELETE FROM pagos_comprobantes WHERE id = %s", (id_pago,))
                     conn.commit(); liberar_conexion(conn)
                     cache_sistema.invalidar()

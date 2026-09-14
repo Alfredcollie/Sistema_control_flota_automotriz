@@ -23,7 +23,7 @@ from datetime import datetime
 
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
-from app_paths import CONFIG_FILE
+from app_paths import CONFIG_FILE, ruta_para_guardar
 from config_nube import cargar_bancos
 
 try:
@@ -71,17 +71,43 @@ CONFIG = cargar_config()
 
 
 def obtener_ruta_base():
-    """Carpeta de archivos del programa (misma lógica que Compras/Ventas)."""
+    """Carpeta de archivos del programa (misma lógica que Compras/Ventas).
+
+    Devuelve "" si el equipo NO está autorizado (equipo secundario sin la cuenta
+    Rclone del principal): así ningún flujo del Banco guarda archivos.
+    """
+    try:
+        from politica_almacenamiento import estado_almacenamiento, ruta_base_autorizada
+        if not estado_almacenamiento().get("autorizado"):
+            return ""
+        ruta = ruta_base_autorizada(mostrar_alerta=False)
+        if ruta and os.path.isdir(ruta):
+            return ruta
+    except Exception:
+        pass
     ruta = CONFIG.get("ruta_drive", "").strip()
     if ruta:
         ruta = os.path.expanduser(ruta)
         if os.path.isdir(ruta):
             return ruta
+    # Respaldo junto al programa: SOLO en modo monousuario (local)
+    try:
+        from politica_almacenamiento import permitir_respaldo_local
+        if not permitir_respaldo_local():
+            return ""
+    except Exception:
+        pass
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def abrir_documento(ruta):
     try:
+        # Resuelve rutas guardadas en otro equipo/SO (Mac <-> Windows)
+        try:
+            from app_paths import resolver_ruta_archivo
+            ruta = resolver_ruta_archivo(ruta) or ruta
+        except Exception:
+            pass
         ruta_abs = os.path.abspath(ruta)
         if sys.platform == "win32":
             os.startfile(ruta_abs)
@@ -166,6 +192,55 @@ def cargar_placas_flota():
     finally:
         liberar_conexion(conn)
     return placas
+
+
+def cargar_proveedores():
+    """Proveedores registrados en el módulo de Proveedores."""
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as c:
+            c.execute("SELECT nombre FROM proveedores WHERE nombre IS NOT NULL AND TRIM(nombre) != '' ORDER BY nombre ASC")
+            return [str(r[0]) for r in c.fetchall()]
+    except Exception:
+        return []
+    finally:
+        liberar_conexion(conn)
+
+
+def formatear_numero_entrada(texto):
+    """Formatea un monto con separador de miles y decimal según la configuración,
+    sin símbolo de moneda, para mostrarlo mientras el usuario escribe."""
+    formato = CONFIG.get("formato_numero", "1,000.00")
+    es_latino = (formato == "1.000,00")
+    sep_dec = "," if es_latino else "."
+    s = (texto or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"[.,](\d{1,2})$", s)
+    termina_sep = bool(re.search(r"[.,]$", s))
+    if m:
+        parte_dec = m.group(1)
+        base = s[:m.start()]
+    elif termina_sep:
+        parte_dec = None
+        base = s[:-1]
+    else:
+        parte_dec = None
+        base = s
+    digitos = re.sub(r"\D", "", base)
+    if not digitos and parte_dec is None:
+        return ""
+    entero = int(digitos) if digitos else 0
+    ent_fmt = f"{entero:,}"
+    if es_latino:
+        ent_fmt = ent_fmt.replace(",", ".")
+    if m:
+        return f"{ent_fmt}{sep_dec}{parte_dec}"
+    if termina_sep:
+        return f"{ent_fmt}{sep_dec}"
+    return ent_fmt
 
 
 def normalizar_monto(v):
@@ -560,6 +635,7 @@ class ModuloBancoApp:
                     "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ruc VARCHAR(50)",
                     "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS pagado_por_tercero VARCHAR(255) DEFAULT ''",
                     "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS soporte_pago_tercero TEXT DEFAULT ''",
+                    "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS es_compra_cruzada BOOLEAN DEFAULT FALSE",
                 ):
                     try:
                         c.execute(col_sql)
@@ -1078,10 +1154,16 @@ class ModuloBancoApp:
                               border_width=1, border_color="#e0e0e0", corner_radius=8)
         f_form.pack(fill="x", padx=5, pady=(5, 10))
 
+        proveedores = cargar_proveedores()
+        cats_cc = cargar_categorias_gastos()
+        princ_cc = list(cats_cc.keys()) or ["Gastos Operativos"]
+        placas_cc = cargar_placas_flota()
+
         r1 = ctk.CTkFrame(f_form, fg_color="transparent"); r1.pack(fill="x", padx=12, pady=(12, 4))
         ctk.CTkLabel(r1, text="Proveedor:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.ent_cc_proveedor = ctk.CTkEntry(r1)
+        self.ent_cc_proveedor = ctk.CTkComboBox(r1, values=proveedores or ["(Sin proveedores)"])
         self.ent_cc_proveedor.pack(side="left", fill="x", expand=True, padx=6)
+        self.ent_cc_proveedor.set("")
         ctk.CTkLabel(r1, text="N° Doc:", width=70, anchor="w", font=("Arial", 12, "bold")).pack(side="left", padx=(10, 0))
         self.ent_cc_nro = ctk.CTkEntry(r1, width=200)
         self.ent_cc_nro.pack(side="left", padx=6)
@@ -1094,25 +1176,69 @@ class ModuloBancoApp:
         ctk.CTkLabel(r2, text="Monto Total:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left", padx=(10, 0))
         self.ent_cc_monto = ctk.CTkEntry(r2, width=170)
         self.ent_cc_monto.pack(side="left", padx=6)
+        self.ent_cc_monto.bind("<KeyRelease>", lambda e: self._formatear_entrada_monto(self.ent_cc_monto))
+        self.ent_cc_monto.bind("<FocusOut>", lambda e: self._formatear_entrada_monto(self.ent_cc_monto))
 
         r3 = ctk.CTkFrame(f_form, fg_color="transparent"); r3.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(r3, text="Concepto:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.ent_cc_concepto = ctk.CTkEntry(r3)
-        self.ent_cc_concepto.pack(side="left", fill="x", expand=True, padx=6)
+        ctk.CTkLabel(r3, text="Categoría Principal:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
+        self.cmb_cc_principal = ctk.CTkComboBox(r3, values=princ_cc, width=200, state="readonly")
+        self.cmb_cc_principal.pack(side="left", padx=6)
+        self.cmb_cc_principal.set(princ_cc[0])
+        ctk.CTkLabel(r3, text="Categoría:", width=80, anchor="w", font=("Arial", 12, "bold")).pack(side="left", padx=(10, 0))
+        subs_cc = cats_cc.get(princ_cc[0], []) or ["(Sin categoría)"]
+        self.cmb_cc_categoria = ctk.CTkComboBox(r3, values=subs_cc, width=200, state="readonly")
+        self.cmb_cc_categoria.pack(side="left", padx=6)
+        self.cmb_cc_categoria.set(subs_cc[0])
+
+        r_cat_btn = ctk.CTkFrame(f_form, fg_color="transparent"); r_cat_btn.pack(fill="x", padx=12, pady=(0, 4))
+
+        r_placa = ctk.CTkFrame(f_form, fg_color="transparent")
+        ctk.CTkLabel(r_placa, text="Placa / Vehículo:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
+        self.cmb_cc_placa = ctk.CTkComboBox(r_placa, values=placas_cc or ["(Sin placas)"], width=200, state="readonly")
+        self.cmb_cc_placa.pack(side="left", padx=6)
+        if placas_cc:
+            self.cmb_cc_placa.set(placas_cc[0])
 
         r4 = ctk.CTkFrame(f_form, fg_color="transparent"); r4.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(r4, text="Pagado a (tercero):", width=130, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
-        self.ent_cc_tercero = ctk.CTkEntry(r4)
+        ctk.CTkLabel(r4, text="Concepto:", width=110, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
+        self.ent_cc_concepto = ctk.CTkEntry(r4)
+        self.ent_cc_concepto.pack(side="left", fill="x", expand=True, padx=6)
+
+        r5 = ctk.CTkFrame(f_form, fg_color="transparent"); r5.pack(fill="x", padx=12, pady=4)
+        ctk.CTkLabel(r5, text="Pagado a (tercero):", width=130, anchor="w", font=("Arial", 12, "bold")).pack(side="left")
+        self.ent_cc_tercero = ctk.CTkEntry(r5)
         self.ent_cc_tercero.pack(side="left", fill="x", expand=True, padx=6)
 
-        r5 = ctk.CTkFrame(f_form, fg_color="transparent"); r5.pack(fill="x", padx=12, pady=(4, 4))
-        ctk.CTkButton(r5, text="📄 Cargar Factura PDF", width=180, height=34,
+        def on_principal_cc(_=None):
+            subs = cats_cc.get(self.cmb_cc_principal.get(), []) or ["(Sin categoría)"]
+            self.cmb_cc_categoria.configure(values=subs)
+            self.cmb_cc_categoria.set(subs[0])
+            if self.cmb_cc_principal.get() == "Gastos Operativos":
+                r_placa.pack(fill="x", padx=12, pady=4, before=r4)
+            else:
+                r_placa.pack_forget()
+        self.cmb_cc_principal.configure(command=on_principal_cc)
+        on_principal_cc()
+
+        def abrir_gestion_cc():
+            self.gestionar_categorias()
+            nonlocal cats_cc, princ_cc
+            cats_cc = cargar_categorias_gastos()
+            princ_cc = list(cats_cc.keys()) or ["Gastos Operativos"]
+            self.cmb_cc_principal.configure(values=princ_cc)
+            self.cmb_cc_principal.set(princ_cc[0])
+            on_principal_cc()
+        ctk.CTkButton(r_cat_btn, text="⚙️ Gestionar Categorías", height=26, font=("Arial", 11),
+                      fg_color="#8e44ad", hover_color="#703688", command=abrir_gestion_cc).pack(side="left")
+
+        r6 = ctk.CTkFrame(f_form, fg_color="transparent"); r6.pack(fill="x", padx=12, pady=(4, 4))
+        ctk.CTkButton(r6, text="📄 Cargar Factura PDF", width=180, height=34,
                       font=("Arial", 12, "bold"), fg_color="#e67e22", hover_color="#ca6f1e",
                       command=self.cargar_factura_cc).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(r5, text="🧾 Adjuntar Soporte de Pago", width=220, height=34,
+        ctk.CTkButton(r6, text="🧾 Adjuntar Soporte de Pago", width=220, height=34,
                       font=("Arial", 12, "bold"), fg_color="#2980b9", hover_color="#1f618d",
                       command=self.adjuntar_soporte_cc).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(r5, text="✅ Guardar Compra Cruzada", width=210, height=34,
+        ctk.CTkButton(r6, text="✅ Guardar Compra Cruzada", width=210, height=34,
                       font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449",
                       command=self.guardar_compra_cruzada).pack(side="left")
 
@@ -1160,15 +1286,25 @@ class ModuloBancoApp:
         self.ruta_factura_cc = ruta
         datos = extraer_datos_factura_pdf(ruta)
         if datos.get("proveedor"):
-            self.ent_cc_proveedor.delete(0, tk.END); self.ent_cc_proveedor.insert(0, datos["proveedor"])
+            self.ent_cc_proveedor.set(datos["proveedor"])
         if datos.get("numero_documento"):
             self.ent_cc_nro.delete(0, tk.END); self.ent_cc_nro.insert(0, datos["numero_documento"])
         if datos.get("fecha"):
             self.ent_cc_fecha.delete(0, tk.END); self.ent_cc_fecha.insert(0, datos["fecha"])
         if datos.get("total"):
-            self.ent_cc_monto.delete(0, tk.END); self.ent_cc_monto.insert(0, f"{datos['total']:.2f}")
+            self.ent_cc_monto.delete(0, tk.END); self.ent_cc_monto.insert(0, formatear_numero_entrada(f"{datos['total']:.2f}"))
         self.lbl_archivos_cc.configure(text=f"Factura: {os.path.basename(ruta)}   |   Soporte: {os.path.basename(self.ruta_soporte_cc) if self.ruta_soporte_cc else 'sin cargar'}")
         messagebox.showinfo("Factura", "Datos extraídos del PDF. Revise y complete los campos antes de guardar.", parent=self.parent_frame)
+
+    def _formatear_entrada_monto(self, entry):
+        try:
+            txt = entry.get()
+        except Exception:
+            return
+        fmt = formatear_numero_entrada(txt)
+        if fmt != txt:
+            entry.delete(0, tk.END)
+            entry.insert(0, fmt)
 
     def adjuntar_soporte_cc(self):
         ruta = seleccionar_archivo_dialogo(titulo="Seleccionar Soporte del Pago (PDF o imagen)",
@@ -1186,6 +1322,21 @@ class ModuloBancoApp:
         tercero = self.ent_cc_tercero.get().strip()
         monto = normalizar_monto(self.ent_cc_monto.get())
 
+        principal_cc = self.cmb_cc_principal.get()
+        sub_cc = self.cmb_cc_categoria.get()
+        if sub_cc == "(Sin categoría)":
+            sub_cc = ""
+        placa_cc = ""
+        if principal_cc == "Gastos Operativos":
+            pv = self.cmb_cc_placa.get()
+            if pv and pv != "(Sin placas)":
+                placa_cc = pv
+        categoria_cc = f"{principal_cc} - {sub_cc}".strip(" -") if sub_cc else principal_cc
+        partes_desc = [concepto] if concepto else []
+        if placa_cc:
+            partes_desc.append(f"Placa {placa_cc}")
+        descripcion_final = " - ".join(partes_desc) or "Compra cruzada pagada por tercero"
+
         if not proveedor:
             messagebox.showwarning("Compras Cruzadas", "Ingrese el proveedor.", parent=self.parent_frame)
             return
@@ -1194,6 +1345,15 @@ class ModuloBancoApp:
             return
 
         base = obtener_ruta_base()
+        if not base:
+            try:
+                from politica_almacenamiento import advertir
+                advertir(self.parent_frame)
+            except Exception:
+                messagebox.showwarning("Almacenamiento bloqueado",
+                                       "Este equipo no está autorizado a guardar archivos.",
+                                       parent=self.parent_frame)
+            return
         ruta_factura = ""
         if self.ruta_factura_cc and os.path.isfile(self.ruta_factura_cc):
             try:
@@ -1239,14 +1399,14 @@ class ModuloBancoApp:
 
                 if existente:
                     id_existente, archivo_existente = existente
-                    sets = ["categoria = 'COMPRA CRUZADA'"]
-                    params = []
+                    sets = ["categoria = %s", "es_compra_cruzada = TRUE"]
+                    params = [categoria_cc]
                     if tercero:
                         sets.append("pagado_por_tercero = %s"); params.append(tercero)
                     if ruta_soporte:
                         sets.append("soporte_pago_tercero = %s"); params.append(ruta_soporte)
                     if ruta_factura and not archivo_existente:
-                        sets.append("archivo_ruta = %s"); params.append(ruta_factura)
+                        sets.append("archivo_ruta = %s"); params.append(ruta_para_guardar(ruta_factura))
                     params.append(id_existente)
                     c.execute("UPDATE facturas_recibidas SET " + ", ".join(sets) + " WHERE id = %s", tuple(params))
                     conn.commit()
@@ -1256,10 +1416,10 @@ class ModuloBancoApp:
                         INSERT INTO facturas_recibidas
                         (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado,
                          subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto,
-                         categoria, ruc, pagado_por_tercero, soporte_pago_tercero)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, ("FACTURA", nro, fecha, proveedor, concepto or "Compra cruzada pagada por tercero", "",
-                          monto, 0, monto, ruta_factura, 0, 0, 0, "COMPRA CRUZADA", "", tercero, ruta_soporte))
+                         categoria, ruc, pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, ("FACTURA", nro, fecha, proveedor, descripcion_final, "",
+                          monto, 0, monto, ruta_para_guardar(ruta_factura), 0, 0, 0, categoria_cc, "", tercero, ruta_para_guardar(ruta_soporte), True))
                     conn.commit()
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo guardar la compra cruzada:\n{e}", parent=self.parent_frame)
@@ -1269,7 +1429,7 @@ class ModuloBancoApp:
 
         registrar_auditoria(self.usuario_activo, "Banco",
                             f"Compra cruzada {nro or ''} de {proveedor} pagada a {tercero or 'tercero'}")
-        self.ent_cc_proveedor.delete(0, tk.END)
+        self.ent_cc_proveedor.set("")
         self.ent_cc_nro.delete(0, tk.END)
         self.ent_cc_concepto.delete(0, tk.END)
         self.ent_cc_tercero.delete(0, tk.END)
@@ -1294,7 +1454,7 @@ class ModuloBancoApp:
                     SELECT id, fecha, numero_documento, proveedor, total,
                            COALESCE(pagado_por_tercero,''), COALESCE(soporte_pago_tercero,''), COALESCE(archivo_ruta,'')
                     FROM facturas_recibidas
-                    WHERE (COALESCE(pagado_por_tercero,'') != '' OR categoria = 'COMPRA CRUZADA')
+                    WHERE (COALESCE(es_compra_cruzada, FALSE) = TRUE OR COALESCE(pagado_por_tercero,'') != '' OR categoria = 'COMPRA CRUZADA')
                     ORDER BY id DESC
                 """)
                 for idf, fecha, nro, prov, total, tercero, soporte, factura in c.fetchall():
@@ -1324,8 +1484,9 @@ class ModuloBancoApp:
         idf = int(sel[0])
         for r in self.cargar_compras_cruzadas():
             if r["id"] == idf:
-                ruta = r["soporte"] or r["factura"]
-                if ruta and os.path.isfile(ruta):
+                from app_paths import resolver_ruta_archivo
+                ruta = resolver_ruta_archivo(r["soporte"] or r["factura"])
+                if ruta:
                     abrir_documento(ruta)
                 else:
                     messagebox.showinfo("Soporte", "No hay archivo adjunto para este registro.", parent=self.parent_frame)
@@ -1419,6 +1580,15 @@ class ModuloBancoApp:
                 return
 
             base = obtener_ruta_base()
+            if not base:
+                try:
+                    from politica_almacenamiento import advertir
+                    advertir(v)
+                except Exception:
+                    messagebox.showwarning("Almacenamiento bloqueado",
+                                           "Este equipo no está autorizado a guardar archivos.",
+                                           parent=v)
+                return
             ruta_factura = row["factura"]
             if nueva_factura["ruta"] and os.path.isfile(nueva_factura["ruta"]):
                 try:

@@ -39,6 +39,13 @@ def _normalizar_ruta(ruta):
 
 def _carpeta_archivos():
     """Carpeta donde el programa guarda sus archivos (ruta_drive de Configuración General)."""
+    try:
+        from politica_almacenamiento import estado_almacenamiento
+        if not estado_almacenamiento().get("autorizado"):
+            # Equipo NO autorizado: no se guarda nada (ni local ni nube)
+            return ""
+    except Exception:
+        pass
     config = {}
     try:
         if os.path.exists(str(CONFIG_FILE)):
@@ -58,6 +65,15 @@ def _carpeta_archivos():
                 return ruta
             except Exception:
                 pass
+    # Respaldo en la carpeta del programa: SOLO en modo monousuario (local).
+    # En multiusuario los archivos deben ir a la carpeta sincronizada con la
+    # cuenta del principal.
+    try:
+        from politica_almacenamiento import permitir_respaldo_local
+        if not permitir_respaldo_local():
+            return ""
+    except Exception:
+        pass
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -631,7 +647,15 @@ class InspeccionVehicularApp:
     # ---------------- Descargar y borrar ----------------
     def _guardar_inspeccion(self, reg):
         """Guarda el JSON y las imágenes de una inspección en disco."""
-        carpeta = os.path.join(_carpeta_archivos(), "Inspecciones")
+        base_archivos = _carpeta_archivos()
+        if not base_archivos:
+            try:
+                from politica_almacenamiento import advertir
+                advertir()
+            except Exception:
+                messagebox.showwarning("Almacenamiento bloqueado", "Este equipo no está autorizado a guardar archivos.")
+            return ""
+        carpeta = os.path.join(base_archivos, "Inspecciones")
         os.makedirs(carpeta, exist_ok=True)
         datos = _datos_payload(reg.get("payload"))
         placa = str(reg.get("placa") or datos.get("placa") or "SIN_PLACA").strip()
@@ -731,7 +755,15 @@ class InspeccionVehicularApp:
         datos = _datos_payload(reg.get("payload"))
         placa = str(reg.get("placa") or datos.get("placa") or "SIN_PLACA")
         fecha = _fecha_archivo(reg, datos)
-        carpeta = os.path.join(_carpeta_archivos(), "Inspecciones_PDF")
+        base_archivos = _carpeta_archivos()
+        if not base_archivos:
+            try:
+                from politica_almacenamiento import advertir
+                advertir()
+            except Exception:
+                messagebox.showwarning("Almacenamiento bloqueado", "Este equipo no está autorizado a guardar archivos.")
+            return
+        carpeta = os.path.join(base_archivos, "Inspecciones_PDF")
         os.makedirs(carpeta, exist_ok=True)
         sello = datetime.now().strftime("%H%M%S")
         ruta_pdf = os.path.join(carpeta, "Inspeccion_" + placa + "_" + fecha + "_" + sello + ".pdf")
