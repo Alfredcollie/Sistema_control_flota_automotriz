@@ -179,12 +179,71 @@ jobs:
     - name: Copiar config_local.json al build (macOS)
       run: cp "config_local.json" "dist/ControlFlota.app/Contents/MacOS/config_local.json"
 
+    # Las credenciales DENTRO de la app evitan que macOS pida la clave del
+    # llavero (antes salían 6 avisos: 5 datos de Supabase + 1 de licencias).
+    - name: Verificar credenciales incluidas (macOS, evita el aviso del llavero)
+      run: |
+        APP="dist/ControlFlota.app"
+        for f in config_db.json config_licencia.json config_local.json; do
+          if [ ! -s "$APP/Contents/MacOS/$f" ]; then
+            echo "ERROR: falta $f dentro de la app." >&2
+            echo "       Sin ese archivo la app abre el llavero y macOS pide la clave del usuario." >&2
+            exit 1
+          fi
+        done
+        echo "OK: credenciales incluidas; la app no pedirá la clave del llavero."
+
     - name: Forzar Modo Claro en la app (macOS)
       run: |
         plutil -replace NSRequiresAquaSystemAppearance -bool YES "$PWD/dist/ControlFlota.app/Contents/Info.plist" 2>/dev/null || plutil -insert NSRequiresAquaSystemAppearance -bool YES "$PWD/dist/ControlFlota.app/Contents/Info.plist" || true
 
-    - name: Re-firmar la app (macOS, corrige la firma al inyectar archivos)
-      run: codesign --force --deep --sign - "dist/ControlFlota.app"
+    # Firma ESTABLE: con el mismo certificado en cada compilación macOS
+    # reconoce siempre la misma aplicación y conserva los permisos que el
+    # usuario conceda. Con la firma ad-hoc (-) la identidad cambia en cada
+    # versión y macOS vuelve a preguntar todo de nuevo.
+    # Se activa creando los secretos MAC_CERT_P12_BASE64 y MAC_CERT_PASSWORD
+    # (certificado .p12 de "Code Signing" exportado en base64). Si no existen,
+    # el workflow sigue funcionando con firma ad-hoc.
+    - name: Preparar identidad de firma estable (macOS)
+      env:
+        MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+        MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+      run: |
+        if [ -z "${MAC_CERT_P12_BASE64}" ]; then
+          echo "SIN_IDENTIDAD=1" >> "$GITHUB_ENV"
+          echo "Aviso: no hay certificado (secreto MAC_CERT_P12_BASE64). Se firmará en modo ad-hoc."
+          exit 0
+        fi
+        echo "$MAC_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+        KEYCHAIN="build.keychain"
+        security create-keychain -p "" "$KEYCHAIN"
+        security set-keychain-settings -lut 3600 "$KEYCHAIN"
+        security unlock-keychain -p "" "$KEYCHAIN"
+        security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MAC_CERT_PASSWORD" \
+          -T /usr/bin/codesign -T /usr/bin/security
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN" >/dev/null
+        security list-keychains -d user -s "$KEYCHAIN"
+        rm -f "$RUNNER_TEMP/cert.p12"
+        IDENTIDAD="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(.*\)".*/\1/p' | head -1)"
+        if [ -z "$IDENTIDAD" ]; then
+          echo "SIN_IDENTIDAD=1" >> "$GITHUB_ENV"
+          echo "Aviso: el certificado no contiene una identidad de firma válida; se usará firma ad-hoc."
+        else
+          echo "SIGN_IDENTITY=$IDENTIDAD" >> "$GITHUB_ENV"
+          echo "Identidad de firma: $IDENTIDAD"
+        fi
+
+    - name: Firmar la app (macOS, corrige la firma tras inyectar archivos)
+      run: |
+        APP="dist/ControlFlota.app"
+        # Limpiar atributos extendidos/cuarentena ANTES de firmar
+        xattr -cr "$APP" || true
+        if [ -n "${SIGN_IDENTITY:-}" ] && [ -z "${SIN_IDENTIDAD:-}" ]; then
+          codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+        else
+          codesign --force --deep --sign - "$APP"
+        fi
+        codesign --verify --deep --strict --verbose=2 "$APP"
 
     - name: Comprimir en ZIP (macOS)
       run: |
