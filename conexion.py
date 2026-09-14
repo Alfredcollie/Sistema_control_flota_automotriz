@@ -118,19 +118,28 @@ def _credenciales_archivo():
 
 
 def leer_credenciales():
-    """Credenciales: llavero -> variables de entorno -> config_db.json.
+    """Credenciales para la base de datos.
 
-    El resultado se resuelve UNA sola vez por proceso (caché). Así, aunque el
-    programa pida credenciales muchas veces, el llavero se consulta una sola
-    vez y en macOS el aviso de la clave aparece una sola vez.
+    Orden de búsqueda:
+      - App COMPILADA (.exe / .app): primero config_db.json (el archivo que se
+        inyecta al compilar). Así la app NO toca el llavero y en macOS no
+        aparece el aviso pidiendo la clave del usuario (antes salían 5 avisos,
+        uno por cada dato guardado en el llavero).
+      - Código fuente: llavero -> variables de entorno -> config_db.json.
+
+    El resultado se resuelve UNA sola vez por proceso (caché).
     """
     global _credenciales_cache
     if _credenciales_cache is not None:
         return _credenciales_cache
 
-    ll = _credenciales_llavero()
     env = _credenciales_entorno()
     archivo = _credenciales_archivo()
+    if getattr(sys, "frozen", False) and archivo.get("password"):
+        # Credenciales incluidas dentro de la app: no se abre el llavero.
+        ll = {"host": "", "port": "", "dbname": "", "user": "", "password": ""}
+    else:
+        ll = _credenciales_llavero()
     _credenciales_cache = {
         "host": ll["host"] or env["host"] or archivo["host"],
         "port": ll["port"] or env["port"] or archivo["port"],
