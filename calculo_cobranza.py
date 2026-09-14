@@ -269,6 +269,87 @@ def _envolver_texto(c, texto, ancho_max, max_lineas=2, fuente="Helvetica", tam=1
     return [_recortar_texto(c, linea, ancho_max, fuente, tam) for linea in lineas]
 
 
+# =========================================================
+# 🚀 NOMBRE DE LA UNIDAD: PLACA — MARCA — CHOFER
+# =========================================================
+def choferes_por_placa():
+    """Devuelve {PLACA: NOMBRE DEL CHOFER} según la asignación del módulo de Choferes.
+
+    En Choferes el móvil se guarda como "PLACA | MARCA MODELO"; aquí solo se
+    necesita la placa para saber quién maneja cada unidad.
+    """
+    mapa = {}
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return mapa
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COALESCE(movil_asignado, ''), COALESCE(nombres, '')
+            FROM choferes
+            WHERE COALESCE(movil_asignado, '') <> ''
+        """)
+        for asignado, nombres in cursor.fetchall():
+            asignado = str(asignado or "").strip()
+            if not asignado or asignado.lower().startswith("ninguno"):
+                continue          # "Ninguno / Sin Asignar"
+            placa = asignado.split("|")[0].strip().upper()
+            if placa and nombres and placa not in mapa:
+                mapa[placa] = str(nombres).strip()
+        cursor.close()
+    except Exception as e:
+        print("[Choferes por placa]", e)
+    finally:
+        liberar_conexion(conn)
+    return mapa
+
+
+def etiqueta_unidad(placa, marca, chofer=""):
+    """Nombre de la unidad: PLACA — MARCA — CHOFER (sin modelo, año ni color)."""
+    partes = [str(placa or "").strip().upper(), str(marca or "").strip()]
+    partes = [p for p in partes if p]
+    base = " — ".join(partes) if partes else "Unidad"
+    chofer = str(chofer or "").strip()
+    return f"{base} — {chofer}" if chofer else f"{base} — (sin chofer)"
+
+
+def refrescar_etiquetas_unidades(unidades):
+    """Reescribe el nombre de las unidades ya asignadas con el formato nuevo.
+
+    Usa el vehículo de la flota (id_vehiculo) y el chofer asignado a esa placa.
+    Las unidades sin vehículo de flota se quedan como están.
+    """
+    ids = [u.get("id_vehiculo") for u in (unidades or []) if u.get("id_vehiculo")]
+    if not ids:
+        return
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return
+    datos = {}
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, COALESCE(placa, ''), COALESCE(marca, '')
+            FROM flota_vehiculos WHERE id = ANY(%s)
+        """, (ids,))
+        for idv, placa, marca in cursor.fetchall():
+            datos[idv] = (str(placa or ""), str(marca or ""))
+        cursor.close()
+    except Exception as e:
+        print("[Etiquetas de unidades]", e)
+    finally:
+        liberar_conexion(conn)
+    if not datos:
+        return
+    choferes = choferes_por_placa()
+    for u in unidades:
+        info = datos.get(u.get("id_vehiculo"))
+        if not info:
+            continue
+        placa, marca = info
+        u["unidad"] = etiqueta_unidad(placa, marca, choferes.get(placa.strip().upper(), ""))
+
+
 def _ruta_cache_feriados():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), ARCHIVO_CACHE_FERIADOS)
 
@@ -1224,6 +1305,8 @@ class CalculoCobranzaApp:
             print("[Unidades Error]", e)
         finally:
             liberar_conexion(conn)
+        # Nombre de las unidades: PLACA — MARCA — CHOFER (se actualiza solo)
+        refrescar_etiquetas_unidades(self.unidades)
         self.pintar_unidades()
         self.recalcular()
 
@@ -3529,7 +3612,7 @@ class DialogoSeleccionVehiculo(ctk.CTkToplevel):
         f_tbl = ctk.CTkFrame(self, corner_radius=10)
         f_tbl.pack(fill="both", expand=True, padx=15, pady=8)
 
-        columnas = ("placa", "vehiculo", "estado")
+        columnas = ("placa", "marca", "chofer", "estado")
         style = ttk.Style()
         if sys.platform == "darwin":
             style.theme_use("clam")
@@ -3543,10 +3626,12 @@ class DialogoSeleccionVehiculo(ctk.CTkToplevel):
         self.tabla = ttk.Treeview(f_tbl, columns=columnas, show="headings", selectmode="extended",
                                   style="Treeview")
         self.tabla.heading("placa", text="Placa", anchor="center")
-        self.tabla.heading("vehiculo", text="Vehículo", anchor="center")
+        self.tabla.heading("marca", text="Marca", anchor="center")
+        self.tabla.heading("chofer", text="Chofer asignado", anchor="center")
         self.tabla.heading("estado", text="Estado", anchor="center")
-        self.tabla.column("placa", width=90, anchor="center")
-        self.tabla.column("vehiculo", width=380, anchor="w")
+        self.tabla.column("placa", width=95, anchor="center")
+        self.tabla.column("marca", width=180, anchor="w")
+        self.tabla.column("chofer", width=250, anchor="w")
         self.tabla.column("estado", width=100, anchor="center")
         self.tabla.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
         scr = ttk.Scrollbar(f_tbl, orient="vertical", command=self.tabla.yview)
@@ -3590,13 +3675,22 @@ class DialogoSeleccionVehiculo(ctk.CTkToplevel):
                 )
                 ORDER BY v.placa ASC
             ''', (self.id_cliente,))
-            for r in cursor.fetchall():
+            filas_db = cursor.fetchall()
+            cursor.close()
+            # Nombre del chofer asignado a cada placa (módulo de Choferes)
+            choferes = choferes_por_placa()
+            for r in filas_db:
                 if r[0] in self.excluir_ids:
                     continue  # ya está en la lista actual (sin guardar)
-                desc = " ".join(str(x) for x in (r[2], r[3], r[4], r[5]) if x and str(x).strip())
-                self.tabla.insert("", tk.END, values=(r[1], desc, r[6]))
+                placa = str(r[1] or "")
+                marca = str(r[2] or "")
+                chofer = choferes.get(placa.strip().upper(), "")
+                # Nombre de la unidad: PLACA — MARCA — CHOFER (sin modelo, año ni color)
+                etiqueta = etiqueta_unidad(placa, marca, chofer)
+                self.tabla.insert("", tk.END, values=(placa, marca, chofer or "(sin chofer)", r[6]))
                 self._filas = getattr(self, "_filas", [])
-                self._filas.append({"id_vehiculo": r[0], "placa": str(r[1]), "desc": desc})
+                self._filas.append({"id_vehiculo": r[0], "placa": placa, "marca": marca,
+                                    "chofer": chofer, "desc": etiqueta})
         except Exception as e:
             messagebox.showerror("Error", f"No se pudieron cargar los vehículos:\n{e}", parent=self)
         finally:
@@ -3622,7 +3716,8 @@ class DialogoSeleccionVehiculo(ctk.CTkToplevel):
                 f = filas[idx]
                 resultados.append({
                     "id_vehiculo": f["id_vehiculo"],
-                    "unidad": f"{f['placa']} — {f['desc']}".strip(),
+                    "unidad": f.get("desc") or etiqueta_unidad(f["placa"], f.get("marca", ""),
+                                                               f.get("chofer", "")),
                 })
         if resultados:
             self.result = resultados  # lista de vehículos seleccionados
@@ -3736,6 +3831,7 @@ class VentanaUnidadesCliente(ctk.CTkToplevel):
                 messagebox.showerror("Error", f"No se pudieron cargar las unidades:\n{e}", parent=self)
             finally:
                 liberar_conexion(conn)
+        refrescar_etiquetas_unidades(self.filas)   # PLACA — MARCA — CHOFER
         self.pintar()
 
     def pintar(self):
