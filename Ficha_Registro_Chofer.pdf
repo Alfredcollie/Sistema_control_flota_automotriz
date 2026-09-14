@@ -2,7 +2,7 @@
 %“Œ‹ž ReportLab Generated PDF document (opensource)
 1 0 obj
 <<
-/F1 2 0 R /F2 4 0 R /F3 5 0 R /F4 52 0 R
+/F1 2 0 R /F2 4 0 R /F3 5 0 R /F4 58 0 R
 >>
 endobj
 2 0 obj
@@ -53,7 +53,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 12 /P 53 0 R /Rect [ 205 625 580 641 ] /Subtype /Widget 
+>> /MaxLen 12 /P 59 0 R /Rect [ 205 625 580 641 ] /Subtype /Widget 
   /T (dni) /TU (DNI \(8 digitos\) o Carnet de Extranjeria) /Type /Annot /V ()
 >>
 endobj
@@ -79,7 +79,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 80 /P 53 0 R /Rect [ 205 595 580 611 ] /Subtype /Widget 
+>> /MaxLen 80 /P 59 0 R /Rect [ 205 599 580 615 ] /Subtype /Widget 
   /T (nombres) /TU (Nombres completos del chofer) /Type /Annot /V ()
 >>
 endobj
@@ -105,7 +105,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 11 /P 53 0 R /Rect [ 205 565 580 581 ] /Subtype /Widget 
+>> /MaxLen 11 /P 59 0 R /Rect [ 205 573 580 589 ] /Subtype /Widget 
   /T (ruc) /TU (RUC del chofer) /Type /Annot /V ()
 >>
 endobj
@@ -131,7 +131,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 100 /P 53 0 R /Rect [ 205 535 580 551 ] /Subtype /Widget 
+>> /MaxLen 100 /P 59 0 R /Rect [ 205 547 580 563 ] /Subtype /Widget 
   /T (direccion) /TU (Domicilio del chofer) /Type /Annot /V ()
 >>
 endobj
@@ -157,7 +157,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 10 /P 53 0 R /Rect [ 205 505 580 521 ] /Subtype /Widget 
+>> /MaxLen 10 /P 59 0 R /Rect [ 205 521 580 537 ] /Subtype /Widget 
   /T (fecha_nacimiento) /TU (Fecha de nacimiento) /Type /Annot /V ()
 >>
 endobj
@@ -182,7 +182,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV (Masculino) /F 4 /FT /Ch 
   /Ff 131072 /I [ 0 ] /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /Opt [ (Masculino) (Femenino) (Otro) ] /P 53 0 R /Rect [ 205 475 580 491 ] 
+>> /Opt [ (Masculino) (Femenino) (Otro) ] /P 59 0 R /Rect [ 205 495 580 511 ] 
   /Subtype /Widget /T (sexo) /TU (Sexo) /Type /Annot /V (Masculino)
 >>
 endobj
@@ -208,7 +208,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 2 /P 53 0 R /Rect [ 205 445 580 461 ] /Subtype /Widget 
+>> /MaxLen 2 /P 59 0 R /Rect [ 205 469 580 485 ] /Subtype /Widget 
   /T (numero_hijos) /TU (Cantidad de hijos) /Type /Annot /V ()
 >>
 endobj
@@ -234,7 +234,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 20 /P 53 0 R /Rect [ 205 415 580 431 ] /Subtype /Widget 
+>> /MaxLen 20 /P 59 0 R /Rect [ 205 443 580 459 ] /Subtype /Widget 
   /T (telefono) /TU (Telefono de contacto) /Type /Annot /V ()
 >>
 endobj
@@ -260,7 +260,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 80 /P 53 0 R /Rect [ 205 385 580 401 ] /Subtype /Widget 
+>> /MaxLen 80 /P 59 0 R /Rect [ 205 417 580 433 ] /Subtype /Widget 
   /T (correo) /TU (Correo del chofer) /Type /Annot /V ()
 >>
 endobj
@@ -285,7 +285,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV (Activo) /F 4 /FT /Ch 
   /Ff 131072 /I [ 0 ] /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /Opt [ (Activo) (Inactivo) (Suspendido) ] /P 53 0 R /Rect [ 205 355 580 371 ] 
+>> /Opt [ (Activo) (Inactivo) (Suspendido) ] /P 59 0 R /Rect [ 205 391 580 407 ] 
   /Subtype /Widget /T (estado_laboral) /TU (Estado laboral) /Type /Annot /V (Activo)
 >>
 endobj
@@ -311,7 +311,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 30 /P 53 0 R /Rect [ 205 280 580 296 ] /Subtype /Widget 
+>> /MaxLen 30 /P 59 0 R /Rect [ 205 318 580 334 ] /Subtype /Widget 
   /T (licencia) /TU (Numero de brevete) /Type /Annot /V ()
 >>
 endobj
@@ -337,7 +337,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 20 /P 53 0 R /Rect [ 205 250 580 266 ] /Subtype /Widget 
+>> /MaxLen 20 /P 59 0 R /Rect [ 205 291 580 307 ] /Subtype /Widget 
   /T (categoria_licencia) /TU (Categoria de licencia \(Ej: A-IIb\)) /Type /Annot /V ()
 >>
 endobj
@@ -363,7 +363,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 10 /P 53 0 R /Rect [ 205 220 580 236 ] /Subtype /Widget 
+>> /MaxLen 10 /P 59 0 R /Rect [ 205 264 580 280 ] /Subtype /Widget 
   /T (venc_licencia) /TU (Vencimiento del brevete) /Type /Annot /V ()
 >>
 endobj
@@ -389,7 +389,7 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 10 /P 53 0 R /Rect [ 205 153 580 169 ] /Subtype /Widget 
+>> /MaxLen 10 /P 59 0 R /Rect [ 205 199 580 215 ] /Subtype /Widget 
   /T (inicio_contrato) /TU (Fecha de inicio de contrato) /Type /Annot /V ()
 >>
 endobj
@@ -415,19 +415,71 @@ endobj
 >> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
   /Ff 0 /MK <<
 /BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
->> /MaxLen 10 /P 53 0 R /Rect [ 205 123 580 139 ] /Subtype /Widget 
+>> /MaxLen 10 /P 59 0 R /Rect [ 205 171 580 187 ] /Subtype /Widget 
   /T (fin_contrato) /TU (Fecha de culminacion del contrato) /Type /Annot /V ()
 >>
 endobj
 52 0 obj
+<< /BaseFont /Helvetica /Subtype /Type1 /Name /Helv /Type /Font /Encoding 6 0 R >>
+endobj
+53 0 obj
+<<
+/BBox [ 0 0 375 16 ] /Filter [ /FlateDecode ] /FormType 1 /Length 97 /Matrix [ 1 0 0 1 0 0 ] /Resources << /ProcSet [/PDF /Text] /Font <</Helv 52 0 R>> >> 
+  /Subtype /Form /Type /XObject
+>>
+stream
+xœ%Œ1
+„0ûwŠ9AÌOŒ±^+EØ¬v‚n¡Ç— ¼©fx®ÅµuÄ87y<1'¬áüi•3ÞÍƒŒKÞ%
+1×X*Í_Õró;t(ˆÙ°PÔW»<åtÐ¤~ìô –•£endstream
+endobj
+54 0 obj
+<<
+/AP <<
+/N 53 0 R
+>> /BS <<
+/S /S /W 1
+>> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
+  /Ff 0 /MK <<
+/BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
+>> /MaxLen 30 /P 59 0 R /Rect [ 205 106 580 122 ] /Subtype /Widget 
+  /T (carnet_sanidad) /TU (Numero del carne de sanidad) /Type /Annot /V ()
+>>
+endobj
+55 0 obj
+<< /BaseFont /Helvetica /Subtype /Type1 /Name /Helv /Type /Font /Encoding 6 0 R >>
+endobj
+56 0 obj
+<<
+/BBox [ 0 0 375 16 ] /Filter [ /FlateDecode ] /FormType 1 /Length 97 /Matrix [ 1 0 0 1 0 0 ] /Resources << /ProcSet [/PDF /Text] /Font <</Helv 55 0 R>> >> 
+  /Subtype /Form /Type /XObject
+>>
+stream
+xœ%Œ1
+„0ûwŠ9AÌOŒ±^+EØ¬v‚n¡Ç— ¼©fx®ÅµuÄ87y<1'¬áüi•3ÞÍƒŒKÞ%
+1×X*Í_Õró;t(ˆÙ°PÔW»<åtÐ¤~ìô –•£endstream
+endobj
+57 0 obj
+<<
+/AP <<
+/N 56 0 R
+>> /BS <<
+/S /S /W 1
+>> /DA (/Helv 9 Tf .1 .1 .1 rg) /DV () /F 4 /FT /Tx 
+  /Ff 0 /MK <<
+/BC [ .1 .1 .1 ] /BG [ .8 .843 1 ]
+>> /MaxLen 10 /P 59 0 R /Rect [ 205 78 580 94 ] /Subtype /Widget 
+  /T (venc_sanidad) /TU (Vencimiento del carne de sanidad) /Type /Annot /V ()
+>>
+endobj
+58 0 obj
 <<
 /BaseFont /Helvetica-BoldOblique /Encoding /WinAnsiEncoding /Name /F4 /Subtype /Type1 /Type /Font
 >>
 endobj
-53 0 obj
+59 0 obj
 <<
 /Annots [ 9 0 R 12 0 R 15 0 R 18 0 R 21 0 R 24 0 R 27 0 R 30 0 R 33 0 R 36 0 R 
-  39 0 R 42 0 R 45 0 R 48 0 R 51 0 R ] /Contents 57 0 R /MediaBox [ 0 0 612 792 ] /Parent 56 0 R /Resources <<
+  39 0 R 42 0 R 45 0 R 48 0 R 51 0 R 54 0 R 57 0 R ] /Contents 63 0 R /MediaBox [ 0 0 612 792 ] /Parent 62 0 R /Resources <<
 /Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ] /XObject <<
 /FormXob.ff8af1dc7a98d09d3acd5940ff5b6213 3 0 R
 >>
@@ -437,30 +489,30 @@ endobj
 >> /Type /Page
 >>
 endobj
-54 0 obj
+60 0 obj
 <<
-/AcroForm 58 0 R /PageMode /UseNone /Pages 56 0 R /Type /Catalog
+/AcroForm 64 0 R /PageMode /UseNone /Pages 62 0 R /Type /Catalog
 >>
 endobj
-55 0 obj
+61 0 obj
 <<
-/Author (anonymous) /CreationDate (D:20260914124227-05'00') /Creator (anonymous) /Keywords () /ModDate (D:20260914124227-05'00') /Producer (ReportLab PDF Library - \(opensource\)) 
+/Author (anonymous) /CreationDate (D:20260914125812-05'00') /Creator (anonymous) /Keywords () /ModDate (D:20260914125812-05'00') /Producer (ReportLab PDF Library - \(opensource\)) 
   /Subject (unspecified) /Title (untitled) /Trapped /False
 >>
 endobj
-56 0 obj
+62 0 obj
 <<
-/Count 1 /Kids [ 53 0 R ] /Type /Pages
+/Count 1 /Kids [ 59 0 R ] /Type /Pages
 >>
 endobj
-57 0 obj
+63 0 obj
 <<
-/Filter [ /ASCII85Decode /FlateDecode ] /Length 1182
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 1149
 >>
 stream
-GatUr?ZY3b'ZJu*'^(VFA;k&'`jANJ@iAsbOFjt/9^.0R$_eZr@O8p8qrp2N*0ql)9U<CHH4[i<ma:uC$3C:_rJCr,T49^QTK_ouB]t/kDis.6cNDa)+^bEr_:XekWkiAG:%a:UpU8hDDeUB7HkI6+;?U5=C_DouQJG%p%5?=b?O%V,#7Wb>jMa:;UHZ=5JB&MNY.`s#;,H7^*(@q!$to2(-G_OV.f3ekc<&3_SDGf0fd^39KY)'.?7qDq/**=a^MCY\Z9sXa!@D)[EXM_,'(`_+CL(Zh][7LABrnI_.IAub-"JSAa&`OP2hj9F_]:ZUALVD$BN3ceUP=H%p=_?.-s_HI)I;l&$1=?UUE7C@6&dRU0d[$f`aCN[`-Uo#"o/N/`M6qJa*QkH9BG+XncBFYN'etB[`k(/PLUl#cN<en)`cFCHQFk-4m'5LJ97SK\`3nlo0K)2f]kpj"b)ZN]J0d3`kIY@),:uhN0&@R#E='TO0Xn;X)eAJq?53!TE:$SG:Kj]eHtW+%_eDh5nl>AeAF,bQg7QNA8=lFgV,LN3\]gCUo34$`pJsSbM_2P(LW':/9H#QUr?C\HWcZ7d.SY))`upA@uANm;A<lD)JuZd(&5LBJo@eEiJ)clb"0npCa$'H<Y\oF?UCQK30W?Q\$Q;TW`$-?1cE89FS+P0-qTT_,.V.Ki+r.t^?"aaJ!EAINGc_kW)),R6Ll-GQ_iL&>%<6C+*_:ZrVck%0QFI!)^@5G;MrKX>)>n8%/S8jCsu.U>CNab0@)piiroJL)m;E<^$u0H3kYLFGgd)1o/'[Io)tQALHL"5k\h1&a,[a`p^t@0j/a9[]c/"/pu!r`9R.k,g0@V$^@)oR[;u*f0'"s>s'=!Ba$+e@\37O]@iEBnf\k!6FLfIo8\Y,m,Ud`@H*)bboV_Whqu7*sIE,(nAYj.NnpV]HptAV`nY\+q]R7Fp2gS$AS(RE8[]5lfM^>GWPu%qY2gcdbXkNHj9>+94h::-d.t(CYjpJM203PhI(i@TCpsWV\="#/+NhcLW6<F%^2S@u"fH%IN,\.4!`'aEYE&X>q*t_PB,HhK7;HjE5mBqYJ)elfqe59Eefmd5=&iannGG-1^i3efO@TDfTW]6ek,RQ+5<EHb9AX1V,[o0<5NN>*3ND`Bd+\tI\\!JCOh.9kVMiPWgZtGFi~>endstream
+GatU29lo&I&A@C2]VD"e:]N`!p;E%lX;P/]7J:5gl2`(P)&\T6!8;/dI>8rI.!D%ofF)=&i7k_Zh_%/[5X<T'W.F\'Ad\r\,<p^iQA^-E1nT/aGhir5O2*%IC`c)/R4Y57s,_TnE1!s6/W5.5o9+d'_hukM?#hoLHf(\1&ioc!@_chWf7<bLHiUXS%Eia!GokJ?44Y(>TYs=XqoEPH(X)S+6BYfIITU4XG14G#h.DdedgS#pUt]^lN`J*[59bU/!V_h*aP"ErBG-MMin'S\gLNoY.lC(,C"]_JlW[>_i(YBI/Mq62a\$qH+e)N;<a'`UMP7%p_b,cSC%3aV$Pq6dpcN9KqJudmJC6Hj3>=tAq3-F."bQ;6S@R_j,ji&dh9`VNid1sdT'9^JD\,FnFdcY_*1H*c:r2nKoa%rf]0gUp6$hHZVSGAY#uh<<fue46^JaR&^iMXAG#)O*:"Dt]&6l+;M7qop]]Hbp9*+n[$2fmXL,\j#<$=>-JsrF)mhSXUq`RMc+c5baG4'LA+\>af$f3?E%V!kmO'giU`EuU6m\^XN`&05a=mm*Wpk%_JX%JUSO2CL?\\[&")Ik_&'W!dH<pEn&!HtJ2_0.bIE*rMp'JBe:)jD=HY!m'K4U0:TAs4$lX@$3u6I^TGXi,+G,d[CF=VO<P34bpS:<*=",CXihTdrnr=0a&p-U(-c#0H90On4GPA0WhHmuOR#dHNIlD&AdF.`E^^MANCXN@;d\l%FHe;VcN>B>sRBZ0DtC%%\-Z@IUklqS@58C>eKG_+R\-Q>sKrQP"Diq`Ojid'"a44+1ab[SO+GFt70Lh_1$&3nT&p0l-S^W_mB:rQnsM`gajA9'bA_Co"JpE0.MdY*[^_H5eg[d`.c!^5_^.#k#S;=uN)d`pE574oPC@UqnbGU:Coh#X^b)&>kAg(PXu!)dKGYffEQIBY@*6A-DWZg"C*p;[r21aSK+gKG\dn_BV5#!;9bd]0CUjR-d"@,4/V+3^<I"3<.`M!?=M:Mq8n]=c#JP%&J6qPT3ATA&HOQYN/RE<YV+>C\]N]h$k:M*Ral\Unk_P_7X)^-J=/%VFh>)JZ7X+4A.d^MsaSu8no'A5"Q4&LNem[\N?dEDL'K'8Q;31#(GEXXQE7#0=,-Y%uTD2T)~>endstream
 endobj
-58 0 obj
+64 0 obj
 <<
 /DA (/Helv 0 Tf 0 g) /DR << /Encoding
 <<
@@ -469,11 +521,11 @@ endobj
 >>
 /Font << /Helv 7 0 R >>
 >> /Fields [ 9 0 R 12 0 R 15 0 R 18 0 R 21 0 R 24 0 R 27 0 R 30 0 R 33 0 R 36 0 R 
-  39 0 R 42 0 R 45 0 R 48 0 R 51 0 R ]
+  39 0 R 42 0 R 45 0 R 48 0 R 51 0 R 54 0 R 57 0 R ]
 >>
 endobj
 xref
-0 59
+0 65
 0000000000 65535 f 
 0000000061 00000 n 
 0000000123 00000 n 
@@ -527,22 +579,28 @@ xref
 0000021944 00000 n 
 0000022268 00000 n 
 0000022578 00000 n 
-0000022698 00000 n 
-0000023076 00000 n 
-0000023163 00000 n 
-0000023425 00000 n 
-0000023486 00000 n 
-0000024760 00000 n 
+0000022677 00000 n 
+0000023001 00000 n 
+0000023307 00000 n 
+0000023406 00000 n 
+0000023730 00000 n 
+0000024037 00000 n 
+0000024157 00000 n 
+0000024549 00000 n 
+0000024636 00000 n 
+0000024898 00000 n 
+0000024959 00000 n 
+0000026200 00000 n 
 trailer
 <<
 /ID 
-[<2e7925cd14f6aad885762b626be42fed><2e7925cd14f6aad885762b626be42fed>]
+[<01716f992622f815cf2fe4e752082783><01716f992622f815cf2fe4e752082783>]
 % ReportLab generated PDF document -- digest (opensource)
 
-/Info 55 0 R
-/Root 54 0 R
-/Size 59
+/Info 61 0 R
+/Root 60 0 R
+/Size 65
 >>
 startxref
-24992
+26446
 %%EOF

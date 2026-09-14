@@ -352,7 +352,9 @@ class ChoferesApp:
                     "ALTER TABLE choferes ADD COLUMN ruta_documentos TEXT DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN fecha_inicio_contrato VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN fecha_fin_contrato VARCHAR(20) DEFAULT ''",
-                    "ALTER TABLE choferes ADD COLUMN observacion_estado VARCHAR(300) DEFAULT ''"
+                    "ALTER TABLE choferes ADD COLUMN observacion_estado VARCHAR(300) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN carnet_sanidad_num VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN carnet_sanidad_venc VARCHAR(20) DEFAULT ''"
                 ]
                 
                 for query in columnas_nuevas:
@@ -634,6 +636,8 @@ class ChoferesApp:
 
             ini_contrato = _valor_campo("inicio_contrato")
             fin_contrato = _valor_campo("fin_contrato")
+            sanidad_num = _valor_campo("carnet_sanidad")
+            sanidad_venc = _valor_campo("venc_sanidad")
 
             # NOTA: la ficha NO trae logística ni seguros (móvil / seguros salud-vida)
             self.limpiar_formulario()
@@ -654,6 +658,8 @@ class ChoferesApp:
             self.ent_venc_licencia.insert(0, venc_licencia)
             self.ent_ini_contrato.insert(0, ini_contrato)
             self.ent_fin_contrato.insert(0, fin_contrato)
+            self.ent_sanidad_num.insert(0, sanidad_num)
+            self.ent_sanidad_venc.insert(0, sanidad_venc)
 
             messagebox.showinfo("Ficha Importada", "¡Datos extraídos del PDF!\nRevisa el formulario y dale a guardar.")
         except Exception as e:
@@ -741,6 +747,11 @@ class ChoferesApp:
         self.ent_licencia = crear_campo("N° Licencia / Brevete:", "Ej: Q12345678")
         self.ent_cat_licencia = crear_campo("Categoría:", "Ej: A-IIb")
         self.ent_venc_licencia = crear_campo_fecha("Vencimiento de Licencia:")
+
+        # --- Carné de Sanidad ---
+        ctk.CTkLabel(self.f_form, text="--- Carné de Sanidad ---", font=("Arial", 11, "bold"), text_color="#2e86c1").pack(anchor="w", padx=10, pady=(10,5))
+        self.ent_sanidad_num = crear_campo("N° Carné de Sanidad:", "Ej: CS-001234")
+        self.ent_sanidad_venc = crear_campo_fecha("Vencimiento Carné de Sanidad:")
 
         # --- Datos de Contrato ---
         ctk.CTkLabel(self.f_form, text="--- Contrato ---", font=("Arial", 11, "bold"), text_color="#16a085").pack(anchor="w", padx=10, pady=(10,5))
@@ -975,6 +986,8 @@ class ChoferesApp:
         self.ent_licencia.delete(0, tk.END)
         self.ent_cat_licencia.delete(0, tk.END)
         self.ent_venc_licencia.delete(0, tk.END)
+        self.ent_sanidad_num.delete(0, tk.END)
+        self.ent_sanidad_venc.delete(0, tk.END)
 
         self.ent_ini_contrato.delete(0, tk.END)
         self.ent_fin_contrato.delete(0, tk.END)
@@ -1106,6 +1119,9 @@ class ChoferesApp:
         cat = self.ent_cat_licencia.get().strip().upper()
         venc = self.ent_venc_licencia.get().strip()
 
+        sanidad_num = self.ent_sanidad_num.get().strip()
+        sanidad_venc = self.ent_sanidad_venc.get().strip()
+
         ini_contrato = self.ent_ini_contrato.get().strip()
         fin_contrato = self.ent_fin_contrato.get().strip()
         estado = self.cmb_estado.get()
@@ -1126,6 +1142,9 @@ class ChoferesApp:
         if f_ini and f_fin and f_fin < f_ini:
             return messagebox.showwarning("Fechas incoherentes",
                                           "La fecha de culminación no puede ser anterior a la fecha de inicio de contrato.")
+        if sanidad_venc and self._fecha_valida(sanidad_venc) is None:
+            return messagebox.showwarning("Fecha inválida",
+                                          "El vencimiento del Carné de Sanidad debe tener el formato DD/MM/AAAA.")
 
         # Si queda INACTIVO es obligatorio registrar el motivo
         if estado == "Inactivo" and not observacion:
@@ -1182,11 +1201,12 @@ class ChoferesApp:
                     direccion=%s, fecha_nacimiento=%s, sexo=%s, numero_hijos=%s,
                     movil_asignado=%s, seguro_salud_num=%s, seguro_salud_venc=%s, seguro_vida_num=%s, seguro_vida_venc=%s,
                     ruta_documentos=%s, fecha_inicio_contrato=%s, fecha_fin_contrato=%s,
-                    observacion_estado=%s
+                    observacion_estado=%s, carnet_sanidad_num=%s, carnet_sanidad_venc=%s
                     WHERE id=%s
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
-                      json_rutas_finales, ini_contrato, fin_contrato, observacion, self.id_edicion))
+                      json_rutas_finales, ini_contrato, fin_contrato, observacion,
+                      sanidad_num, sanidad_venc, self.id_edicion))
                 detalle_estado = f" — marcado INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Actualizó datos de {nombres}{detalle_estado}"[:240])
@@ -1200,11 +1220,13 @@ class ChoferesApp:
                 cursor.execute("""
                     INSERT INTO choferes (dni, nombres, ruc, telefono, correo, licencia, categoria_licencia, vencimiento_licencia, estado, 
                     direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc, ruta_documentos,
-                    fecha_inicio_contrato, fecha_fin_contrato, observacion_estado) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
+                    carnet_sanidad_num, carnet_sanidad_venc) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
-                      json_rutas_finales, ini_contrato, fin_contrato, observacion))
+                      json_rutas_finales, ini_contrato, fin_contrato, observacion,
+                      sanidad_num, sanidad_venc))
                 detalle_estado = f" — INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Registró nuevo conductor/personal: {nombres}{detalle_estado}"[:240])
@@ -1219,6 +1241,7 @@ class ChoferesApp:
                     (f"Venc. Licencia ({cat})", venc),
                     ("Venc. Seguro Salud (EsSalud/EPS)", salud_venc),
                     ("Venc. Seguro Vida Ley", vida_venc),
+                    ("Venc. Carné de Sanidad", sanidad_venc),
                     ("Fin de Contrato", fin_contrato)
                 ]
                 
@@ -1256,7 +1279,8 @@ class ChoferesApp:
             cursor.execute("""
                 SELECT id, dni, nombres, ruc, telefono, correo, licencia, categoria_licencia, vencimiento_licencia, estado,
                 direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc,
-                ruta_documentos, fecha_inicio_contrato, fecha_fin_contrato, observacion_estado
+                ruta_documentos, fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
+                carnet_sanidad_num, carnet_sanidad_venc
                 FROM choferes WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -1286,6 +1310,8 @@ class ChoferesApp:
                 self.ent_vida_num.insert(0, r[17] if r[17] else "")
                 self.ent_vida_venc.insert(0, r[18] if r[18] else "")
 
+                self.ent_sanidad_num.insert(0, r[23] if len(r) > 23 and r[23] else "")
+                self.ent_sanidad_venc.insert(0, r[24] if len(r) > 24 and r[24] else "")
                 self.ent_ini_contrato.insert(0, r[20] if len(r) > 20 and r[20] else "")
                 self.ent_fin_contrato.insert(0, r[21] if len(r) > 21 and r[21] else "")
                 self._observacion_estado = (r[22] or "") if len(r) > 22 else ""

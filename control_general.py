@@ -1301,19 +1301,21 @@ class ControlGeneralEventos:
                         cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'choferes')")
                         if cursor.fetchone()[0]:
                             try:
-                                cursor.execute("SELECT nombres, vencimiento_licencia, seguro_salud_venc, seguro_vida_venc, fecha_nacimiento FROM choferes WHERE estado = 'Activo'")
+                                cursor.execute("SELECT nombres, vencimiento_licencia, seguro_salud_venc, seguro_vida_venc, fecha_nacimiento, carnet_sanidad_venc FROM choferes WHERE estado = 'Activo'")
                                 choferes = cursor.fetchall()
                             except Exception:
                                 conn.rollback()
                                 cursor.execute("SELECT nombres, vencimiento_licencia FROM choferes WHERE estado = 'Activo'")
-                                choferes = [(r[0], r[1], None, None, None) for r in cursor.fetchall()]
+                                choferes = [(r[0], r[1], None, None, None, None) for r in cursor.fetchall()]
 
                             for c in choferes:
-                                nombre, v_lic, v_salud, v_vida, f_nac = c
+                                nombre, v_lic, v_salud, v_vida, f_nac = c[:5]
+                                v_sanidad = c[5] if len(c) > 5 else None
                                 docs = {
                                     "Licencia": v_lic,
                                     "Seguro de Salud": v_salud,
-                                    "Seguro Vida Ley": v_vida
+                                    "Seguro Vida Ley": v_vida,
+                                    "Carné de Sanidad": v_sanidad
                                 }
                                 for doc_nombre, doc_fecha in docs.items():
                                     if doc_fecha and str(doc_fecha).strip():

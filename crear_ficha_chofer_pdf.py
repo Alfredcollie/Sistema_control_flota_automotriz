@@ -36,7 +36,7 @@ def generar_ficha_chofer_pdf(ruta_salida=None):
     c.drawString(102, 766, "FICHA DE REGISTRO DE CHOFERES / PERSONAL")
     c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica-Oblique", 9)
-    c.drawString(102, 752, "Solo datos personales, licencia y contrato. Para llenado masivo e importacion automatica.")
+    c.drawString(102, 752, "Datos personales, licencia, sanidad y contrato. Para llenado masivo.")
 
     # --- RECUADRO FOTO CARNET (dibujo; quien imprime la ficha pega la foto) ---
     x0, y0, x1, y1 = 468, 700, 586, 758
@@ -69,49 +69,59 @@ def generar_ficha_chofer_pdf(ruta_salida=None):
                            x=205, y=y - 5, width=375, height=16, fontSize=9)
 
     _campo(630, "DNI / C.E. *:", "dni", "DNI (8 digitos) o Carnet de Extranjeria", maxlen=12)
-    _campo(600, "Nombres y Apellidos *:", "nombres", "Nombres completos del chofer", maxlen=80)
-    _campo(570, "RUC (11 digitos, si aplica):", "ruc", "RUC del chofer", maxlen=11)
-    _campo(540, "Direccion de Residencia:", "direccion", "Domicilio del chofer", maxlen=100)
-    _campo(510, "Fecha de Nacimiento (DD/MM/AAAA):", "fecha_nacimiento", "Fecha de nacimiento", maxlen=10)
-    _campo(480, "Sexo:", "sexo", "Sexo", opciones=["Masculino", "Femenino", "Otro"], valor="Masculino")
-    _campo(450, "Numero de Hijos:", "numero_hijos", "Cantidad de hijos", maxlen=2)
-    _campo(420, "Telefono / WhatsApp:", "telefono", "Telefono de contacto", maxlen=20)
-    _campo(390, "Correo Electronico:", "correo", "Correo del chofer", maxlen=80)
-    _campo(360, "Estado Laboral:", "estado_laboral", "Estado laboral",
+    _campo(604, "Nombres y Apellidos *:", "nombres", "Nombres completos del chofer", maxlen=80)
+    _campo(578, "RUC (11 digitos, si aplica):", "ruc", "RUC del chofer", maxlen=11)
+    _campo(552, "Direccion de Residencia:", "direccion", "Domicilio del chofer", maxlen=100)
+    _campo(526, "Fecha de Nacimiento (DD/MM/AAAA):", "fecha_nacimiento", "Fecha de nacimiento", maxlen=10)
+    _campo(500, "Sexo:", "sexo", "Sexo", opciones=["Masculino", "Femenino", "Otro"], valor="Masculino")
+    _campo(474, "Numero de Hijos:", "numero_hijos", "Cantidad de hijos", maxlen=2)
+    _campo(448, "Telefono / WhatsApp:", "telefono", "Telefono de contacto", maxlen=20)
+    _campo(422, "Correo Electronico:", "correo", "Correo del chofer", maxlen=80)
+    _campo(396, "Estado Laboral:", "estado_laboral", "Estado laboral",
            opciones=["Activo", "Inactivo", "Suspendido"], valor="Activo")
 
-    c.line(40, 335, 585, 335)
+    c.line(40, 371, 585, 371)
 
     # =============================================================
     # SECCION 2: DATOS DE LICENCIA (MTC)
     # =============================================================
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(40, 315, "2. DATOS DE LICENCIA (MTC)")
+    c.drawString(40, 351, "2. DATOS DE LICENCIA (MTC)")
 
-    _campo(285, "N° Licencia / Brevete:", "licencia", "Numero de brevete", maxlen=30)
-    _campo(255, "Categoria:", "categoria_licencia", "Categoria de licencia (Ej: A-IIb)", maxlen=20)
-    _campo(225, "Vencimiento de Licencia (DD/MM/AAAA):", "venc_licencia", "Vencimiento del brevete", maxlen=10)
+    _campo(323, "N° Licencia / Brevete:", "licencia", "Numero de brevete", maxlen=30)
+    _campo(296, "Categoria:", "categoria_licencia", "Categoria de licencia (Ej: A-IIb)", maxlen=20)
+    _campo(269, "Venc. Licencia (DD/MM/AAAA):", "venc_licencia", "Vencimiento del brevete", maxlen=10)
 
-    c.line(40, 205, 585, 205)
+    c.line(40, 249, 585, 249)
 
     # =============================================================
     # SECCION 3: DATOS DE CONTRATO
     # =============================================================
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(40, 188, "3. DATOS DE CONTRATO")
+    c.drawString(40, 232, "3. DATOS DE CONTRATO")
 
-    _campo(158, "Inicio de Contrato (DD/MM/AAAA):", "inicio_contrato", "Fecha de inicio de contrato", maxlen=10)
-    _campo(128, "Culminacion de Contrato (DD/MM/AAAA):", "fin_contrato", "Fecha de culminacion del contrato", maxlen=10)
+    _campo(204, "Inicio de Contrato (DD/MM/AAAA):", "inicio_contrato", "Fecha de inicio de contrato", maxlen=10)
+    _campo(176, "Fin de Contrato (DD/MM/AAAA):", "fin_contrato", "Fecha de culminacion del contrato", maxlen=10)
+
+    c.line(40, 156, 585, 156)
+
+    # =============================================================
+    # SECCION 4: CARNE DE SANIDAD
+    # =============================================================
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(40, 139, "4. CARNE DE SANIDAD")
+
+    _campo(111, "N° Carne de Sanidad:", "carnet_sanidad", "Numero del carne de sanidad", maxlen=30)
+    _campo(83, "Venc. Carne Sanidad (DD/MM/AAAA):", "venc_sanidad", "Vencimiento del carne de sanidad", maxlen=10)
 
     # =============================================================
     # INSTRUCCIONES FINALES
     # =============================================================
     c.setFont("Helvetica-BoldOblique", 9)
-    c.drawString(40, 100, "Nota:")
+    c.drawString(40, 55, "Nota:")
     c.setFont("Helvetica-Oblique", 9)
-    c.drawString(40, 88, "Esta ficha NO solicita datos de asignacion logistica (movil) ni de seguros.")
-    c.drawString(40, 75, "Una vez completada, guarde el archivo PDF conservando los campos interactivos rellenados.")
-    c.drawString(40, 62, "No escanee ni imprima este documento fisico; el sistema lo leera electronicamente en segundos.")
+    c.drawString(70, 55, "Esta ficha NO solicita datos de asignacion logistica (movil) ni de seguros.")
+    c.drawString(40, 42, "Guarde el archivo PDF con los campos rellenados; el sistema lo leera electronicamente.")
 
     c.save()
     return ruta_salida
