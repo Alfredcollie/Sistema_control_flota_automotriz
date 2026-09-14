@@ -763,6 +763,7 @@ class ModuloBancoApp:
         self.filas_conciliacion = []
         self.saldo_final_estado = None
         self.banco_conciliado = None
+        self.id_tx_edicion = None      # transferencia que se está editando (None = nueva)
         aplicar_estilo_treeview()
         self.inicializar_db()
 
@@ -1116,15 +1117,26 @@ class ModuloBancoApp:
         self.ent_tx_desc.pack(side="left", fill="x", expand=True, padx=6)
 
         r5 = ctk.CTkFrame(f_form, fg_color="transparent"); r5.pack(fill="x", padx=12, pady=(4, 12))
-        ctk.CTkButton(r5, text="💸 Realizar Transferencia", width=220, height=38,
-                      font=("Arial", 13, "bold"), fg_color="#27ae60", hover_color="#1e8449",
-                      command=self.realizar_transferencia).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(r5, text="✏️ Editar", width=120, height=38,
-                      font=("Arial", 12, "bold"), fg_color="#2980b9", hover_color="#1f618d",
-                      command=self.editar_transferencia).pack(side="left", padx=(0, 8))
+        self.btn_tx_guardar = ctk.CTkButton(r5, text="💸 Realizar Transferencia", width=220, height=38,
+                                            font=("Arial", 13, "bold"), fg_color="#27ae60",
+                                            hover_color="#1e8449", command=self.realizar_transferencia)
+        self.btn_tx_guardar.pack(side="left", padx=(0, 8))
+        self.btn_tx_editar = ctk.CTkButton(r5, text="✏️ Editar", width=120, height=38,
+                                           font=("Arial", 12, "bold"), fg_color="#2980b9",
+                                           hover_color="#1f618d", command=self.editar_transferencia)
+        self.btn_tx_editar.pack(side="left", padx=(0, 8))
+        # Este botón solo se muestra mientras se está editando una transferencia
+        self.btn_tx_cancelar = ctk.CTkButton(r5, text="✖ Cancelar edición", width=150, height=38,
+                                             font=("Arial", 12, "bold"), fg_color="#7f8c8d",
+                                             hover_color="#606b6b",
+                                             command=self.cancelar_edicion_transferencia)
         ctk.CTkButton(r5, text="🗑️ Eliminar", width=120, height=38,
                       font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
                       command=self.eliminar_transferencia).pack(side="left")
+
+        self.lbl_tx_modo = ctk.CTkLabel(f_form, text="", font=("Arial", 11, "bold"),
+                                        text_color="#2980b9")
+        self.lbl_tx_modo.pack(anchor="w", padx=12, pady=(0, 10))
 
         ctk.CTkLabel(self.tab_transferencias, text="Historial de transferencias:",
                      font=("Arial", 13, "bold"), text_color="#1f538d").pack(anchor="w", padx=5, pady=(0, 4))
@@ -1142,8 +1154,79 @@ class ModuloBancoApp:
         vsb = ttk.Scrollbar(f_tabla, orient="vertical", command=self.tabla_tx.yview)
         self.tabla_tx.configure(yscrollcommand=vsb.set)
         self.tabla_tx.pack(side="left", fill="both", expand=True)
+        # Doble clic: carga la transferencia en el mismo formulario para editarla
+        self.tabla_tx.bind("<Double-1>", lambda _e: (
+            self.editar_transferencia() if self.tabla_tx.selection() else None))
         vsb.pack(side="right", fill="y")
         self.refrescar_transferencias()
+
+    def _preparar_form_transferencia(self, tx=None):
+        """Deja el formulario de transferencias listo: en blanco (nueva) o con los datos de 'tx'.
+
+        Se usa TANTO para registrar como para editar: el mismo formulario sirve
+        para las dos cosas (al editar, el botón pasa a 'Guardar Cambios').
+        """
+        etiquetas = [construir_etiqueta_banco(b) for b in self.bancos] or ["(Sin bancos configurados)"]
+        tx = tx or {}
+
+        valores_origen = list(self.cmb_tx_origen.cget("values"))
+        valores_destino = list(self.cmb_tx_destino.cget("values"))
+        origen = tx.get("origen") or etiquetas[0]
+        destino = tx.get("destino") or (etiquetas[1] if len(etiquetas) > 1 else etiquetas[0])
+        if origen not in valores_origen:
+            valores_origen.append(origen)
+            self.cmb_tx_origen.configure(values=valores_origen)
+        if destino not in valores_destino:
+            valores_destino.append(destino)
+            self.cmb_tx_destino.configure(values=valores_destino)
+        self.cmb_tx_origen.set(origen)
+        self.cmb_tx_destino.set(destino)
+
+        self.ent_tx_fecha.delete(0, tk.END)
+        self.ent_tx_fecha.insert(0, tx.get("fecha") or datetime.now().strftime("%d/%m/%Y"))
+        self.ent_tx_monto.delete(0, tk.END)
+        if tx:
+            self.ent_tx_monto.insert(0, formatear_numero_entrada(f"{float(tx.get('monto') or 0):.2f}"))
+        self.ent_tx_desc.delete(0, tk.END)
+        if tx:
+            self.ent_tx_desc.insert(0, tx.get("descripcion", ""))
+
+        self.id_tx_edicion = tx.get("id")
+        try:
+            if self.id_tx_edicion:
+                self.btn_tx_guardar.configure(text="💾 Guardar Cambios")
+                self.lbl_tx_modo.configure(
+                    text=f"✏️ Editando la transferencia #{self.id_tx_edicion}: "
+                         f"modifique los datos y pulse «Guardar Cambios».")
+                self.btn_tx_cancelar.pack(side="left", padx=(0, 8), before=self.btn_tx_editar)
+            else:
+                self.btn_tx_guardar.configure(text="💸 Realizar Transferencia")
+                self.lbl_tx_modo.configure(text="")
+                self.btn_tx_cancelar.pack_forget()
+        except Exception:
+            pass
+
+    def cancelar_edicion_transferencia(self):
+        """Sale del modo edición y deja el formulario listo para una transferencia nueva."""
+        self._preparar_form_transferencia()
+
+    def editar_transferencia(self):
+        """Edita la transferencia seleccionada EN EL MISMO formulario con el que se crea."""
+        sel = self.tabla_tx.selection()
+        if len(sel) != 1:
+            messagebox.showinfo("Editar", "Seleccione exactamente una transferencia para editar.",
+                                parent=self.parent_frame)
+            return
+        id_tx = int(sel[0])
+        tx = next((t for t in self.cargar_transferencias() if t["id"] == id_tx), None)
+        if not tx:
+            messagebox.showerror("Error", "No se encontró la transferencia.", parent=self.parent_frame)
+            return
+        self._preparar_form_transferencia(tx)
+        try:
+            self.tabview.set(" 🔄 Transferencias ")
+        except Exception:
+            pass
 
     def realizar_transferencia(self):
         etiquetas = [construir_etiqueta_banco(b) for b in self.bancos]
@@ -1164,6 +1247,7 @@ class ModuloBancoApp:
 
         bo = self.bancos[etiquetas.index(origen)]
         bd = self.bancos[etiquetas.index(destino)]
+        id_edicion = self.id_tx_edicion
 
         conn = conectar_db(silencioso=True)
         if not conn:
@@ -1171,27 +1255,40 @@ class ModuloBancoApp:
             return
         try:
             with conn.cursor() as c:
-                c.execute("""
-                    INSERT INTO transferencias_bancarias
-                    (banco_origen, cuenta_origen, banco_destino, cuenta_destino, fecha, descripcion, monto)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (bo.get("banco", ""), bo.get("cuenta", ""), bd.get("banco", ""), bd.get("cuenta", ""),
-                      fecha, desc, monto))
+                if id_edicion:
+                    c.execute("""
+                        UPDATE transferencias_bancarias
+                        SET banco_origen=%s, cuenta_origen=%s, banco_destino=%s, cuenta_destino=%s,
+                            fecha=%s, descripcion=%s, monto=%s
+                        WHERE id=%s
+                    """, (bo.get("banco", ""), bo.get("cuenta", ""), bd.get("banco", ""), bd.get("cuenta", ""),
+                          fecha, desc, monto, id_edicion))
+                else:
+                    c.execute("""
+                        INSERT INTO transferencias_bancarias
+                        (banco_origen, cuenta_origen, banco_destino, cuenta_destino, fecha, descripcion, monto)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (bo.get("banco", ""), bo.get("cuenta", ""), bd.get("banco", ""), bd.get("cuenta", ""),
+                          fecha, desc, monto))
                 conn.commit()
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo registrar la transferencia:\n{e}", parent=self.parent_frame)
+            messagebox.showerror("Error", f"No se pudo guardar la transferencia:\n{e}", parent=self.parent_frame)
             return
         finally:
             liberar_conexion(conn)
 
         registrar_auditoria(self.usuario_activo, "Banco",
-                            f"Transferencia {formatear_monto(monto)} de {origen} a {destino}")
-        self.ent_tx_monto.delete(0, tk.END)
-        self.ent_tx_desc.delete(0, tk.END)
+                            (f"Editó la transferencia #{id_edicion} ({formatear_monto(monto)} {origen} → {destino})"
+                             if id_edicion else
+                             f"Transferencia {formatear_monto(monto)} de {origen} a {destino}"))
+        self._preparar_form_transferencia()      # el formulario vuelve al modo "nueva"
         self.refrescar_transferencias()
         self.refrescar_saldos()
-        messagebox.showinfo("Éxito", f"Transferencia de {formatear_monto(monto)} registrada:\n"
-                                     f"• Egreso en {origen}\n• Ingreso en {destino}", parent=self.parent_frame)
+        if id_edicion:
+            messagebox.showinfo("Éxito", "Transferencia actualizada correctamente.", parent=self.parent_frame)
+        else:
+            messagebox.showinfo("Éxito", f"Transferencia de {formatear_monto(monto)} registrada:\n"
+                                         f"• Egreso en {origen}\n• Ingreso en {destino}", parent=self.parent_frame)
 
     def cargar_transferencias(self):
         conn = conectar_db(silencioso=True)
@@ -1225,111 +1322,6 @@ class ModuloBancoApp:
             self.tabla_tx.insert("", tk.END, iid=str(t["id"]),
                                  values=(t["fecha"], t["origen"], t["destino"],
                                          t["descripcion"], formatear_monto(t["monto"])))
-
-    def editar_transferencia(self):
-        sel = self.tabla_tx.selection()
-        if len(sel) != 1:
-            messagebox.showinfo("Editar", "Seleccione exactamente una transferencia para editar.", parent=self.parent_frame)
-            return
-        id_tx = int(sel[0])
-        tx = None
-        for t in self.cargar_transferencias():
-            if t["id"] == id_tx:
-                tx = t
-                break
-        if not tx:
-            messagebox.showerror("Error", "No se encontró la transferencia.", parent=self.parent_frame)
-            return
-
-        etiquetas = [construir_etiqueta_banco(b) for b in self.bancos]
-        if not etiquetas:
-            etiquetas = ["(Sin bancos configurados)"]
-
-        v = ctk.CTkToplevel(self.parent_frame)
-        v.title("Editar Transferencia")
-        v.geometry("460x430")
-        v.transient(self.parent_frame)
-        v.grab_set()
-
-        ctk.CTkLabel(v, text="✏️ Editar transferencia", font=("Arial", 15, "bold"),
-                     text_color="#1f538d").pack(pady=(15, 5))
-        f = ctk.CTkFrame(v, fg_color="transparent")
-        f.pack(fill="x", padx=20)
-
-        ctk.CTkLabel(f, text="Banco Origen:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_origen = ctk.CTkComboBox(f, values=etiquetas, width=300, state="readonly")
-        cmb_origen.pack(fill="x", pady=(0, 8))
-        cmb_origen.set(tx["origen"] if tx["origen"] in etiquetas else (etiquetas[0] if etiquetas else ""))
-
-        ctk.CTkLabel(f, text="Banco Destino:", font=("Arial", 11, "bold")).pack(anchor="w")
-        cmb_destino = ctk.CTkComboBox(f, values=etiquetas, width=300, state="readonly")
-        cmb_destino.pack(fill="x", pady=(0, 8))
-        cmb_destino.set(tx["destino"] if tx["destino"] in etiquetas else (etiquetas[1] if len(etiquetas) > 1 else (etiquetas[0] if etiquetas else "")))
-
-        ctk.CTkLabel(f, text="Fecha:", font=("Arial", 11, "bold")).pack(anchor="w")
-        f_fecha = ctk.CTkFrame(f, fg_color="transparent")
-        f_fecha.pack(fill="x", pady=(0, 8))
-        ent_fecha = ctk.CTkEntry(f_fecha)
-        ent_fecha.pack(side="left", fill="x", expand=True)
-        ent_fecha.insert(0, tx["fecha"])
-        ctk.CTkButton(f_fecha, text="📅", width=42, font=("Arial", 13, "bold"),
-                      fg_color="#1f538d", hover_color="#163b65",
-                      command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(6, 0))
-
-        ctk.CTkLabel(f, text="Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_desc = ctk.CTkEntry(f)
-        ent_desc.pack(fill="x", pady=(0, 8)); ent_desc.insert(0, tx["descripcion"])
-
-        ctk.CTkLabel(f, text="Monto:", font=("Arial", 11, "bold")).pack(anchor="w")
-        ent_monto = ctk.CTkEntry(f)
-        ent_monto.pack(fill="x", pady=(0, 8)); ent_monto.insert(0, f"{tx['monto']:.2f}")
-
-        def guardar():
-            etiquetas_all = [construir_etiqueta_banco(b) for b in self.bancos]
-            origen = cmb_origen.get()
-            destino = cmb_destino.get()
-            if origen not in etiquetas_all or destino not in etiquetas_all:
-                messagebox.showwarning("Transferencia", "Seleccione bancos válidos.", parent=v)
-                return
-            if origen == destino:
-                messagebox.showwarning("Transferencia", "El banco origen y destino deben ser diferentes.", parent=v)
-                return
-            monto = normalizar_monto(ent_monto.get())
-            if monto <= 0:
-                messagebox.showerror("Error", "Ingrese un monto mayor a 0.", parent=v)
-                return
-            fecha = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
-            desc = ent_desc.get().strip() or "Transferencia entre cuentas"
-            bo = self.bancos[etiquetas_all.index(origen)]
-            bd = self.bancos[etiquetas_all.index(destino)]
-
-            conn = conectar_db(silencioso=True)
-            if not conn:
-                messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=v)
-                return
-            try:
-                with conn.cursor() as c:
-                    c.execute("""
-                        UPDATE transferencias_bancarias
-                        SET banco_origen=%s, cuenta_origen=%s, banco_destino=%s, cuenta_destino=%s,
-                            fecha=%s, descripcion=%s, monto=%s
-                        WHERE id=%s
-                    """, (bo.get("banco", ""), bo.get("cuenta", ""), bd.get("banco", ""), bd.get("cuenta", ""),
-                          fecha, desc, monto, id_tx))
-                    conn.commit()
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo actualizar:\n{e}", parent=v)
-                return
-            finally:
-                liberar_conexion(conn)
-
-            registrar_auditoria(self.usuario_activo, "Banco", f"Editó transferencia #{id_tx}")
-            v.destroy()
-            self.refrescar_transferencias()
-            self.refrescar_saldos()
-            messagebox.showinfo("Éxito", "Transferencia actualizada correctamente.", parent=self.parent_frame)
-
-        ctk.CTkButton(v, text="✅ Guardar Cambios", width=160, fg_color="#27ae60", command=guardar).pack(pady=10)
 
     def eliminar_transferencia(self):
         sel = self.tabla_tx.selection()
@@ -1431,6 +1423,9 @@ class ModuloBancoApp:
         self.tabla_conc.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
         self.tabla_conc.bind("<Delete>", lambda _e: self.eliminar_movimiento_conciliacion())
+        # Doble clic: abre el editor del movimiento (pago del módulo o corrección simple)
+        self.tabla_conc.bind("<Double-1>", lambda _e: (
+            self.corregir_movimiento() if self.tabla_conc.selection() else None))
         self.tabla_conc.tag_configure("conciliado", background="#d5f5e3")
         self.tabla_conc.tag_configure("diferencia", background="#fadbd8")
         self.tabla_conc.tag_configure("estado_cuenta", background="#d6eaf8")
