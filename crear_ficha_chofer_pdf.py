@@ -36,7 +36,7 @@ def generar_ficha_chofer_pdf(ruta_salida=None):
     c.drawString(102, 766, "FICHA DE REGISTRO DE CHOFERES / PERSONAL")
     c.setFillColorRGB(0, 0, 0)
     c.setFont("Helvetica-Oblique", 9)
-    c.drawString(102, 752, "Solo datos personales y licencia (sin logistica ni seguros). Para llenado masivo e importacion automatica.")
+    c.drawString(102, 752, "Solo datos personales, licencia y contrato. Para llenado masivo e importacion automatica.")
 
     # --- RECUADRO FOTO CARNET (dibujo; quien imprime la ficha pega la foto) ---
     x0, y0, x1, y1 = 468, 700, 586, 758
@@ -47,7 +47,7 @@ def generar_ficha_chofer_pdf(ruta_salida=None):
     c.drawCentredString((x0 + x1) / 2.0, y1 - 16, "FOTO CARNET")
     c.setFont("Helvetica", 6.5)
     c.drawCentredString((x0 + x1) / 2.0, y1 - 28, "Pegar aqui la foto")
-    c.drawCentredString((x0 + x1) / 2.0, y1 - 36, "(DNI o brevete)")
+    c.drawCentredString((x0 + x1) / 2.0, y1 - 36, "(DNI / C.E. o brevete)")
 
     c.setLineWidth(1)
     c.line(40, 690, 585, 690)
@@ -68,7 +68,7 @@ def generar_ficha_chofer_pdf(ruta_salida=None):
             form.textfield(name=nombre, tooltip=tooltip, maxlen=maxlen,
                            x=205, y=y - 5, width=375, height=16, fontSize=9)
 
-    _campo(630, "DNI (8 digitos) *:", "dni", "DNI del chofer", maxlen=8)
+    _campo(630, "DNI / C.E. *:", "dni", "DNI (8 digitos) o Carnet de Extranjeria", maxlen=12)
     _campo(600, "Nombres y Apellidos *:", "nombres", "Nombres completos del chofer", maxlen=80)
     _campo(570, "RUC (11 digitos, si aplica):", "ruc", "RUC del chofer", maxlen=11)
     _campo(540, "Direccion de Residencia:", "direccion", "Domicilio del chofer", maxlen=100)
@@ -92,15 +92,26 @@ def generar_ficha_chofer_pdf(ruta_salida=None):
     _campo(255, "Categoria:", "categoria_licencia", "Categoria de licencia (Ej: A-IIb)", maxlen=20)
     _campo(225, "Vencimiento de Licencia (DD/MM/AAAA):", "venc_licencia", "Vencimiento del brevete", maxlen=10)
 
+    c.line(40, 205, 585, 205)
+
+    # =============================================================
+    # SECCION 3: DATOS DE CONTRATO
+    # =============================================================
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(40, 188, "3. DATOS DE CONTRATO")
+
+    _campo(158, "Inicio de Contrato (DD/MM/AAAA):", "inicio_contrato", "Fecha de inicio de contrato", maxlen=10)
+    _campo(128, "Culminacion de Contrato (DD/MM/AAAA):", "fin_contrato", "Fecha de culminacion del contrato", maxlen=10)
+
     # =============================================================
     # INSTRUCCIONES FINALES
     # =============================================================
     c.setFont("Helvetica-BoldOblique", 9)
-    c.drawString(40, 185, "Nota:")
+    c.drawString(40, 100, "Nota:")
     c.setFont("Helvetica-Oblique", 9)
-    c.drawString(40, 175, "Esta ficha NO solicita datos de asignacion logistica (movil) ni de seguros.")
-    c.drawString(40, 162, "Una vez completada, guarde el archivo PDF conservando los campos interactivos rellenados.")
-    c.drawString(40, 149, "No escanee ni imprima este documento fisico; el sistema lo leera electronicamente en segundos.")
+    c.drawString(40, 88, "Esta ficha NO solicita datos de asignacion logistica (movil) ni de seguros.")
+    c.drawString(40, 75, "Una vez completada, guarde el archivo PDF conservando los campos interactivos rellenados.")
+    c.drawString(40, 62, "No escanee ni imprima este documento fisico; el sistema lo leera electronicamente en segundos.")
 
     c.save()
     return ruta_salida

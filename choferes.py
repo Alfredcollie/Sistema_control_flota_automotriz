@@ -103,10 +103,10 @@ class AsistenteCargaDocs(ctk.CTkToplevel):
             
         doc_actual = self.documentos[self.indice]
         self.lbl_paso.configure(text=f"Paso {self.indice + 1} de {len(self.documentos)}")
-        self.lbl_doc.configure(text=f"Cargar: {doc_actual}")
+        self.lbl_doc.configure(text=f"Cargar: {ETIQUETAS_DOC.get(doc_actual, doc_actual)}")
 
     def cargar_actual(self):
-        ruta = seleccionar_archivo_dialogo(titulo=f"Seleccionar {self.documentos[self.indice]}", tipos=[("Documentos", "*.pdf;*.png;*.jpg;*.jpeg")])
+        ruta = seleccionar_archivo_dialogo(titulo=f"Seleccionar {ETIQUETAS_DOC.get(self.documentos[self.indice], self.documentos[self.indice])}", tipos=[("Documentos", "*.pdf;*.png;*.jpg;*.jpeg")])
         if ruta:
             self.target_dict[self.documentos[self.indice]] = ruta
             self.siguiente()
@@ -209,6 +209,87 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.target_entry.insert(0, f"{day:02d}/{self.current_month:02d}/{self.current_year}")
         self.destroy()
 
+# Nombres visibles de los documentos del expediente.
+# La CLAVE interna ("DNI") se conserva para no perder los archivos ya guardados.
+ETIQUETAS_DOC = {"DNI": "DNI / C.E."}
+
+
+# =========================================================
+# CLASE: DIÁLOGO DE OBSERVACIÓN DEL ESTADO
+# =========================================================
+class DialogoObservacionEstado(ctk.CTkToplevel):
+    """Pide la observación (motivo) del cambio de estado del chofer.
+
+    Se abre al marcar al personal como INACTIVO y también desde el botón
+    '📝 Observación / motivo'. El texto escrito queda en .result
+    (None si el usuario cancela).
+    """
+
+    def __init__(self, parent, texto_inicial="", obligatorio=True,
+                 titulo="Observación del estado", subtitulo=""):
+        super().__init__(parent)
+        self.result = None
+        self.obligatorio = obligatorio
+        familia = "Helvetica" if sys.platform == "darwin" else "Arial"
+
+        self.title(titulo)
+        self.geometry("480x340")
+        self.resizable(False, False)
+        self.transient(parent)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        self.update_idletasks()
+        try:
+            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (480 // 2)
+            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (340 // 2)
+            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        ctk.CTkLabel(self, text="📝 Observación", font=(familia, 15, "bold"),
+                     text_color="#1f538d").pack(anchor="w", padx=20, pady=(18, 4))
+        ctk.CTkLabel(self, text=subtitulo or "Escriba la observación.",
+                     font=(familia, 11), text_color="gray", justify="left",
+                     wraplength=440).pack(anchor="w", padx=20, pady=(0, 8))
+
+        self.txt = ctk.CTkTextbox(self, height=140, font=(familia, 12))
+        self.txt.pack(fill="both", expand=True, padx=20, pady=(4, 6))
+        if texto_inicial:
+            self.txt.insert("1.0", texto_inicial)
+        try:
+            self.txt.focus_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(self, text="Obligatorio: indique el motivo." if obligatorio else "Opcional.",
+                     font=(familia, 10), text_color="gray").pack(anchor="w", padx=20)
+
+        f_btns = ctk.CTkFrame(self, fg_color="transparent")
+        f_btns.pack(fill="x", padx=20, pady=(8, 16))
+        ctk.CTkButton(f_btns, text="💾 Guardar", width=150, height=36,
+                      font=(familia, 12, "bold"), fg_color="#27ae60", hover_color="#1e8449",
+                      command=self._aceptar).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(f_btns, text="✖ Cancelar", width=120, height=36,
+                      font=(familia, 12, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=self.destroy).pack(side="left")
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.wait_window()
+
+    def _aceptar(self):
+        texto = self.txt.get("1.0", "end").strip()
+        if self.obligatorio and not texto:
+            messagebox.showwarning("Falta la observación",
+                                   "Escriba el motivo por el que el chofer queda inactivo.",
+                                   parent=self)
+            return
+        self.result = texto
+        self.destroy()
+
+
 _SCHEMA_CHOFERES_OK = False
 
 # =========================================================
@@ -221,6 +302,8 @@ class ChoferesApp:
         self.id_edicion = None
         self.rutas_documentos_temp = {}
         self.rutas_documentos_db = {}
+        self._observacion_estado = ""      # motivo/observación del estado (baja, suspensión, etc.)
+        self._estado_anterior = "Activo"   # para restaurar el estado si se cancela el diálogo
         
         # 🚀 VARIABLES DE PAGINACIÓN (LAZY LOADING)
         self.pagina_actual = 1
@@ -266,7 +349,10 @@ class ChoferesApp:
                     "ALTER TABLE choferes ADD COLUMN seguro_vida_num VARCHAR(100) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN seguro_vida_venc VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN movil_asignado VARCHAR(100) DEFAULT 'Ninguno / Sin Asignar'",
-                    "ALTER TABLE choferes ADD COLUMN ruta_documentos TEXT DEFAULT ''"
+                    "ALTER TABLE choferes ADD COLUMN ruta_documentos TEXT DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN fecha_inicio_contrato VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN fecha_fin_contrato VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN observacion_estado VARCHAR(300) DEFAULT ''"
                 ]
                 
                 for query in columnas_nuevas:
@@ -375,12 +461,15 @@ class ChoferesApp:
 
     def lanzar_asistente_carga(self):
         todas_rutas_actuales = {**self.rutas_documentos_db, **self.rutas_documentos_temp}
-        docs_requeridos = ["DNI", "Brevete", "Antecedentes Penales", "Antecedentes Judiciales"]
-        
+        docs_requeridos = ["DNI", "Brevete", "Antecedentes Penales", "Antecedentes Policiales"]
+        # Compatibilidad: los expedientes antiguos guardaban "Antecedentes Judiciales"
+        equivalentes = {"Antecedentes Policiales": ("Antecedentes Judiciales",)}
+
         faltantes = []
         for doc in docs_requeridos:
-            ruta = todas_rutas_actuales.get(doc)
-            if not ruta or not os.path.exists(os.path.normpath(ruta)):
+            opciones = [todas_rutas_actuales.get(doc)] + [
+                todas_rutas_actuales.get(alt) for alt in equivalentes.get(doc, ())]
+            if not any(r and os.path.exists(os.path.normpath(r)) for r in opciones):
                 faltantes.append(doc)
                 
         if not faltantes:
@@ -536,6 +625,16 @@ class ChoferesApp:
             categoria = fields.get("categoria_licencia", {}).get("/V", "").strip()
             venc_licencia = fields.get("venc_licencia", {}).get("/V", "").strip()
 
+            def _valor_campo(nombre_campo):
+                """Valor de un campo del PDF (sin fallar si viene vacío o nulo)."""
+                try:
+                    return str((fields.get(nombre_campo, {}) or {}).get("/V", "") or "").strip()
+                except Exception:
+                    return ""
+
+            ini_contrato = _valor_campo("inicio_contrato")
+            fin_contrato = _valor_campo("fin_contrato")
+
             # NOTA: la ficha NO trae logística ni seguros (móvil / seguros salud-vida)
             self.limpiar_formulario()
             self.ent_dni.insert(0, dni)
@@ -553,6 +652,8 @@ class ChoferesApp:
             self.ent_licencia.insert(0, licencia)
             self.ent_cat_licencia.insert(0, categoria)
             self.ent_venc_licencia.insert(0, venc_licencia)
+            self.ent_ini_contrato.insert(0, ini_contrato)
+            self.ent_fin_contrato.insert(0, fin_contrato)
 
             messagebox.showinfo("Ficha Importada", "¡Datos extraídos del PDF!\nRevisa el formulario y dale a guardar.")
         except Exception as e:
@@ -602,7 +703,7 @@ class ChoferesApp:
 
         # --- Datos Personales ---
         ctk.CTkLabel(self.f_form, text="Datos Personales", font=("Arial", 14, "bold")).pack(pady=(5, 10))
-        self.ent_dni = crear_campo("DNI: *", "Ej: 12345678")
+        self.ent_dni = crear_campo("DNI / C.E.: *", "Ej: 12345678  ó  001234567")
         
         self.ent_ruc = crear_campo("RUC (Enter para auto-completar):", "Ej: 10123456789")
         self.ent_ruc.bind("<Return>", self.buscar_documento_api)
@@ -641,10 +742,24 @@ class ChoferesApp:
         self.ent_cat_licencia = crear_campo("Categoría:", "Ej: A-IIb")
         self.ent_venc_licencia = crear_campo_fecha("Vencimiento de Licencia:")
 
+        # --- Datos de Contrato ---
+        ctk.CTkLabel(self.f_form, text="--- Contrato ---", font=("Arial", 11, "bold"), text_color="#16a085").pack(anchor="w", padx=10, pady=(10,5))
+        self.ent_ini_contrato = crear_campo_fecha("Inicio de Contrato:")
+        self.ent_fin_contrato = crear_campo_fecha("Culminación de Contrato:")
+
         ctk.CTkLabel(self.f_form, text="Estado Laboral:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.cmb_estado = ctk.CTkComboBox(self.f_form, values=["Activo", "Inactivo", "Suspendido"], state="readonly")
-        self.cmb_estado.pack(fill="x", padx=10, pady=(0, 15))
+        self.cmb_estado = ctk.CTkComboBox(self.f_form, values=["Activo", "Inactivo", "Suspendido"],
+                                          state="readonly", command=self._al_cambiar_estado)
+        self.cmb_estado.pack(fill="x", padx=10, pady=(0, 5))
         self.cmb_estado.set("Activo")
+
+        ctk.CTkButton(self.f_form, text="📝 Observación / motivo", font=("Arial", 11, "bold"),
+                      fg_color="#8e44ad", hover_color="#6c3483",
+                      command=self.editar_observacion).pack(fill="x", padx=10, pady=(0, 3))
+        self.lbl_observacion = ctk.CTkLabel(self.f_form, text="", font=("Arial", 10),
+                                            text_color="#c0392b", wraplength=280, justify="left")
+        self.lbl_observacion.pack(anchor="w", padx=10, pady=(0, 15))
+        self._actualizar_lbl_observacion()
 
         # --- CARGA DE EXPEDIENTE ASISTIDA ---
         ctk.CTkLabel(self.f_form, text="--- Expediente Físico del Chofer ---", font=("Arial", 11, "bold"), text_color="#8e44ad").pack(anchor="w", padx=10, pady=(5,5))
@@ -682,7 +797,7 @@ class ChoferesApp:
         f_busqueda = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_busqueda.pack(fill="x", pady=(0, 5))
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 12, "bold")).pack(side="left", padx=(0, 5))
-        self.ent_buscar = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por DNI, Nombres, Licencia, Móvil...")
+        self.ent_buscar = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por DNI / C.E., Nombres, Licencia, Móvil...")
         self.ent_buscar.pack(side="left", fill="x", expand=True)
         
         self.ent_buscar.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
@@ -691,27 +806,39 @@ class ChoferesApp:
         f_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
 
-        columnas = ("id", "dni", "nombres", "telefono", "licencia", "vencimiento", "movil", "estado")
+        columnas = ("id", "dni", "nombres", "telefono", "licencia", "vencimiento", "movil",
+                    "estado", "fin_contrato", "observacion")
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
         self.tabla.heading("id", text="ID")
-        self.tabla.heading("dni", text="DNI")
+        self.tabla.heading("dni", text="DNI / C.E.")
         self.tabla.heading("nombres", text="Nombres y Apellidos")
         self.tabla.heading("telefono", text="Teléfono")
         self.tabla.heading("licencia", text="N° Licencia")
         self.tabla.heading("vencimiento", text="Venc. Licencia")
         self.tabla.heading("movil", text="Móvil Asignado")
         self.tabla.heading("estado", text="Estado")
+        self.tabla.heading("fin_contrato", text="Fin de Contrato")
+        self.tabla.heading("observacion", text="Observación / Motivo")
 
         self.tabla.column("id", width=0, stretch=tk.NO)
-        self.tabla.column("dni", width=80, anchor="center")
-        self.tabla.column("nombres", width=200, anchor="w")
-        self.tabla.column("telefono", width=90, anchor="center")
-        self.tabla.column("licencia", width=90, anchor="center")
+        self.tabla.column("dni", width=95, anchor="center")
+        self.tabla.column("nombres", width=190, anchor="w")
+        self.tabla.column("telefono", width=85, anchor="center")
+        self.tabla.column("licencia", width=85, anchor="center")
         self.tabla.column("vencimiento", width=95, anchor="center")
-        self.tabla.column("movil", width=120, anchor="center")
+        self.tabla.column("movil", width=115, anchor="center")
         self.tabla.column("estado", width=80, anchor="center")
-        
-        self.tabla.config(displaycolumns=("dni", "nombres", "telefono", "licencia", "movil", "estado"))
+        self.tabla.column("fin_contrato", width=100, anchor="center")
+        self.tabla.column("observacion", width=200, anchor="w")
+
+        self.tabla.config(displaycolumns=("dni", "nombres", "telefono", "licencia", "movil",
+                                          "fin_contrato", "estado", "observacion"))
+
+        # Colores de aviso: estado inactivo/suspendido y contrato por vencer/vencido
+        self.tabla.tag_configure("inactivo", foreground="#c0392b")
+        self.tabla.tag_configure("suspendido", foreground="#d35400")
+        self.tabla.tag_configure("contrato_por_vencer", background="#fff4e0")
+        self.tabla.tag_configure("contrato_vencido", background="#fdecea")
 
         scroll_y = ctk.CTkScrollbar(f_tabla, orientation="vertical", command=self.tabla.yview)
         self.tabla.configure(yscrollcommand=scroll_y.set)
@@ -719,6 +846,11 @@ class ChoferesApp:
         scroll_y.pack(side="right", fill="y")
         
         self.tabla.bind("<Double-1>", lambda e: self.cargar_para_edicion())
+
+        ctk.CTkLabel(f_derecho,
+                     text=("Leyenda: rojo = Inactivo / Suspendido  ·  fondo naranja = contrato por vencer "
+                           "(30 días o menos)  ·  fondo rojo suave = contrato vencido"),
+                     font=("Arial", 10), text_color="gray").pack(anchor="w", pady=(3, 0))
 
         f_acciones_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_acciones_tabla.pack(fill="x", pady=10)
@@ -737,6 +869,74 @@ class ChoferesApp:
         ctk.CTkButton(f_acciones_tabla, text="❌ Eliminar", fg_color="#e74c3c", hover_color="#c0392b", font=("Arial", 12, "bold"), command=self.eliminar_chofer).pack(side="right", padx=5)
 
         self.parent_frame.after(100, lambda: self.cargar_datos(reset_pagina=True))
+
+    # =========================================================
+    # 🚀 ESTADO LABORAL Y OBSERVACIÓN (motivo de la baja)
+    # =========================================================
+    @staticmethod
+    def _fecha_valida(texto):
+        """Devuelve la fecha si el texto es DD/MM/AAAA; None si está vacío o mal escrito."""
+        if not texto:
+            return None
+        try:
+            return datetime.strptime(texto.strip(), "%d/%m/%Y")
+        except Exception:
+            return None
+
+    def _actualizar_lbl_observacion(self):
+        """Muestra en el formulario la observación guardada del estado."""
+        lbl = getattr(self, "lbl_observacion", None)
+        if lbl is None:
+            return
+        texto = (self._observacion_estado or "").strip()
+        if not texto:
+            lbl.configure(text="Sin observación registrada.")
+        else:
+            corto = texto if len(texto) <= 180 else texto[:180] + "..."
+            lbl.configure(text=f"Observación: {corto}")
+
+    def editar_observacion(self):
+        """Abre el diálogo para escribir/editar la observación del estado."""
+        estado = self.cmb_estado.get()
+        obligatorio = (estado == "Inactivo")
+        dlg = DialogoObservacionEstado(
+            self.parent_frame.winfo_toplevel(), self._observacion_estado,
+            obligatorio=obligatorio, titulo="Observación del estado",
+            subtitulo=(f"El personal quedará en estado {estado}. Escriba el motivo."
+                       if obligatorio else
+                       "Escriba cualquier observación del conductor (opcional)."))
+        if dlg.result is not None:
+            self._observacion_estado = dlg.result
+            self._actualizar_lbl_observacion()
+
+    def _al_cambiar_estado(self, valor):
+        """Al marcar al chofer como INACTIVO se pide el motivo de la baja."""
+        if valor != "Inactivo":
+            self._estado_anterior = valor
+            return
+        # El diálogo se abre un instante después para no interferir con el
+        # desplegable del combo (evita que el menú quede "atrapado").
+        try:
+            self.parent_frame.after(60, self._pedir_motivo_baja)
+        except Exception:
+            self._pedir_motivo_baja()
+
+    def _pedir_motivo_baja(self):
+        """Diálogo obligatorio con el motivo cuando el estado pasa a INACTIVO."""
+        if self.cmb_estado.get() != "Inactivo":
+            return
+        dlg = DialogoObservacionEstado(
+            self.parent_frame.winfo_toplevel(), self._observacion_estado, obligatorio=True,
+            titulo="Motivo de la baja",
+            subtitulo=("El chofer quedará INACTIVO. Escriba el motivo "
+                       "(renuncia, cese, falta, suspensión de contrato, etc.)."))
+        if dlg.result is None:
+            # Canceló: se restaura el estado anterior sin cambios
+            self.cmb_estado.set(self._estado_anterior or "Activo")
+            return
+        self._observacion_estado = dlg.result
+        self._estado_anterior = "Inactivo"
+        self._actualizar_lbl_observacion()
 
     def pagina_anterior(self):
         if self.pagina_actual > 1:
@@ -775,7 +975,13 @@ class ChoferesApp:
         self.ent_licencia.delete(0, tk.END)
         self.ent_cat_licencia.delete(0, tk.END)
         self.ent_venc_licencia.delete(0, tk.END)
+
+        self.ent_ini_contrato.delete(0, tk.END)
+        self.ent_fin_contrato.delete(0, tk.END)
         self.cmb_estado.set("Activo")
+        self._estado_anterior = "Activo"
+        self._observacion_estado = ""
+        self._actualizar_lbl_observacion()
         
         self.rutas_documentos_temp = {}
         self.rutas_documentos_db = {}
@@ -790,6 +996,8 @@ class ChoferesApp:
             self.rutas_documentos_temp = {}
             self.rutas_documentos_db = {}
             self._img_foto_ctk = None
+            self._observacion_estado = ""
+            self._estado_anterior = "Activo"
             self.crear_interfaz()
         except Exception as e:
             print("Error recargando interfaz:", e)
@@ -817,7 +1025,7 @@ class ChoferesApp:
         if datos is not None:
             self._pintar_datos(datos)
         else:
-            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", ""))
+            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", "", "", ""))
             
             def tarea_descarga():
                 conn = conectar_db(silencioso=True)
@@ -826,13 +1034,14 @@ class ChoferesApp:
                     cursor = conn.cursor()
                     if filtro:
                         cursor.execute("""
-                            SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado 
+                            SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado,
+                                   fecha_fin_contrato, observacion_estado 
                             FROM choferes 
                             WHERE dni ILIKE %s OR nombres ILIKE %s OR licencia ILIKE %s OR movil_asignado ILIKE %s
                             ORDER BY nombres ASC LIMIT %s OFFSET %s
                         """, (f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", self.registros_por_pagina, offset))
                     else:
-                        cursor.execute("SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado FROM choferes ORDER BY nombres ASC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+                        cursor.execute("SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado, fecha_fin_contrato, observacion_estado FROM choferes ORDER BY nombres ASC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
                     
                     datos_db = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_db)
@@ -848,8 +1057,22 @@ class ChoferesApp:
         for item in self.tabla.get_children():
             self.tabla.delete(item)
 
+        hoy = datetime.now()
         for r in datos:
-            self.tabla.insert("", tk.END, values=r)
+            valores = tuple(r)
+            etiquetas = []
+            estado = str(valores[7] or "").strip().lower() if len(valores) > 7 else ""
+            if estado == "inactivo":
+                etiquetas.append("inactivo")
+            elif estado == "suspendido":
+                etiquetas.append("suspendido")
+            fin_contrato = self._fecha_valida(str(valores[8] or "")) if len(valores) > 8 else None
+            if fin_contrato:
+                if fin_contrato < hoy:
+                    etiquetas.append("contrato_vencido")
+                elif (fin_contrato - hoy).days <= 30:
+                    etiquetas.append("contrato_por_vencer")
+            self.tabla.insert("", tk.END, values=valores, tags=tuple(etiquetas))
             
         if self.pagina_actual > 1:
             self.btn_ant.configure(state="normal")
@@ -882,10 +1105,40 @@ class ChoferesApp:
         licencia = self.ent_licencia.get().strip().upper()
         cat = self.ent_cat_licencia.get().strip().upper()
         venc = self.ent_venc_licencia.get().strip()
+
+        ini_contrato = self.ent_ini_contrato.get().strip()
+        fin_contrato = self.ent_fin_contrato.get().strip()
         estado = self.cmb_estado.get()
+        observacion = (self._observacion_estado or "").strip()
 
         if not dni or not nombres:
-            return messagebox.showwarning("Atención", "El DNI y los Nombres son obligatorios.")
+            return messagebox.showwarning("Atención", "El DNI / C.E. y los Nombres son obligatorios.")
+
+        # Validación de las fechas de contrato (DD/MM/AAAA)
+        f_ini = self._fecha_valida(ini_contrato)
+        f_fin = self._fecha_valida(fin_contrato)
+        if ini_contrato and f_ini is None:
+            return messagebox.showwarning("Fecha inválida",
+                                          "La fecha de INICIO de contrato debe tener el formato DD/MM/AAAA.")
+        if fin_contrato and f_fin is None:
+            return messagebox.showwarning("Fecha inválida",
+                                          "La fecha de CULMINACIÓN de contrato debe tener el formato DD/MM/AAAA.")
+        if f_ini and f_fin and f_fin < f_ini:
+            return messagebox.showwarning("Fechas incoherentes",
+                                          "La fecha de culminación no puede ser anterior a la fecha de inicio de contrato.")
+
+        # Si queda INACTIVO es obligatorio registrar el motivo
+        if estado == "Inactivo" and not observacion:
+            dlg = DialogoObservacionEstado(
+                self.parent_frame.winfo_toplevel(), "", obligatorio=True,
+                titulo="Motivo de la baja",
+                subtitulo=("El chofer quedará INACTIVO. Escriba el motivo "
+                           "(renuncia, cese, falta, suspensión de contrato, etc.)."))
+            if dlg.result is None:
+                return
+            self._observacion_estado = dlg.result
+            observacion = dlg.result
+            self._actualizar_lbl_observacion()
 
         diccionario_final = self.rutas_documentos_db.copy()
         
@@ -928,25 +1181,33 @@ class ChoferesApp:
                     categoria_licencia=%s, vencimiento_licencia=%s, estado=%s,
                     direccion=%s, fecha_nacimiento=%s, sexo=%s, numero_hijos=%s,
                     movil_asignado=%s, seguro_salud_num=%s, seguro_salud_venc=%s, seguro_vida_num=%s, seguro_vida_venc=%s,
-                    ruta_documentos=%s
+                    ruta_documentos=%s, fecha_inicio_contrato=%s, fecha_fin_contrato=%s,
+                    observacion_estado=%s
                     WHERE id=%s
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
-                      direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc, json_rutas_finales, self.id_edicion))
-                registrar_auditoria(self.usuario_activo, "Choferes", f"Actualizó datos de {nombres}")
+                      direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
+                      json_rutas_finales, ini_contrato, fin_contrato, observacion, self.id_edicion))
+                detalle_estado = f" — marcado INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
+                registrar_auditoria(self.usuario_activo, "Choferes",
+                                    f"Actualizó datos de {nombres}{detalle_estado}"[:240])
                 messagebox.showinfo("Éxito", "Datos actualizados correctamente.")
             else:
                 cursor.execute("SELECT id FROM choferes WHERE dni = %s", (dni,))
                 if cursor.fetchone():
                     liberar_conexion(conn)
-                    return messagebox.showwarning("Duplicado", f"El DNI {dni} ya existe en el sistema.")
+                    return messagebox.showwarning("Duplicado", f"El DNI / C.E. {dni} ya existe en el sistema.")
                     
                 cursor.execute("""
                     INSERT INTO choferes (dni, nombres, ruc, telefono, correo, licencia, categoria_licencia, vencimiento_licencia, estado, 
-                    direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc, ruta_documentos) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc, ruta_documentos,
+                    fecha_inicio_contrato, fecha_fin_contrato, observacion_estado) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
-                      direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc, json_rutas_finales))
-                registrar_auditoria(self.usuario_activo, "Choferes", f"Registró nuevo conductor/personal: {nombres}")
+                      direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
+                      json_rutas_finales, ini_contrato, fin_contrato, observacion))
+                detalle_estado = f" — INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
+                registrar_auditoria(self.usuario_activo, "Choferes",
+                                    f"Registró nuevo conductor/personal: {nombres}{detalle_estado}"[:240])
                 messagebox.showinfo("Éxito", "Personal registrado correctamente.")
             
             try:
@@ -957,7 +1218,8 @@ class ChoferesApp:
                 vencimientos = [
                     (f"Venc. Licencia ({cat})", venc),
                     ("Venc. Seguro Salud (EsSalud/EPS)", salud_venc),
-                    ("Venc. Seguro Vida Ley", vida_venc)
+                    ("Venc. Seguro Vida Ley", vida_venc),
+                    ("Fin de Contrato", fin_contrato)
                 ]
                 
                 if estado == 'Activo':
@@ -994,7 +1256,7 @@ class ChoferesApp:
             cursor.execute("""
                 SELECT id, dni, nombres, ruc, telefono, correo, licencia, categoria_licencia, vencimiento_licencia, estado,
                 direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc,
-                ruta_documentos
+                ruta_documentos, fecha_inicio_contrato, fecha_fin_contrato, observacion_estado
                 FROM choferes WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -1023,6 +1285,12 @@ class ChoferesApp:
                 self.ent_salud_venc.insert(0, r[16] if r[16] else "")
                 self.ent_vida_num.insert(0, r[17] if r[17] else "")
                 self.ent_vida_venc.insert(0, r[18] if r[18] else "")
+
+                self.ent_ini_contrato.insert(0, r[20] if len(r) > 20 and r[20] else "")
+                self.ent_fin_contrato.insert(0, r[21] if len(r) > 21 and r[21] else "")
+                self._observacion_estado = (r[22] or "") if len(r) > 22 else ""
+                self._estado_anterior = self.cmb_estado.get() or "Activo"
+                self._actualizar_lbl_observacion()
                 
                 json_str = r[19] if len(r) > 19 and r[19] else "{}"
                 try:
