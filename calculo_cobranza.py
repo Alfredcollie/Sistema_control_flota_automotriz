@@ -26,10 +26,20 @@ Funcionalidades:
    - Plan Por Punto o Viaje: el precio por viaje depende de la distancia
      (tabla Distancia → Precio normal/domingo/feriado); deducción = viajes
      no realizados × precio según distancia y tipo de día.
-7. Guarda la quincena en la base de datos (con detalle por unidad) y
-   permite editar/eliminar los registros desde una ventana aparte.
-8. Genera un PDF con nombre del cliente, cuadro explicativo del cobro y
-   detalle por unidad.
+   - Las deducciones se registran como ASIENTOS: cada asiento lleva su
+     FECHA (el tipo de día se detecta solo), las horas/minutos o la
+     cantidad de viajes no realizados y un motivo. Se pueden registrar
+     varios asientos por unidad o por rango de distancia y se detallan
+     uno por uno en el PDF.
+   - Además de las deducciones, cada unidad puede registrar ASIENTOS DE
+     HORAS EXTRAS con fecha: se valorizan al precio por hora de la unidad
+     según el tipo de día (Normal / Domingo / Feriado) y SUMAN al cobro:
+     subtotal = base − deducciones + horas extras.
+7. Guarda la quincena en la base de datos (con detalle por unidad y por
+   asiento de deducción) y permite editar/eliminar los registros desde
+   una ventana aparte.
+8. Genera un PDF con nombre del cliente, cuadro explicativo del cobro,
+   detalle por unidad y el detalle de los asientos de deducción.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -64,6 +74,9 @@ CATEGORIAS = [
     ("domingo", "Domingos"),
     ("feriado", "Feriados"),
 ]
+# Etiquetas cortas para los asientos de deducción (fecha → tipo de día)
+ETIQUETAS_CORTAS = {"normal": "Normal", "domingo": "Domingo", "feriado": "Feriado"}
+ETIQUETAS_CORTAS_A_CLAVE = {v: k for k, v in ETIQUETAS_CORTAS.items()}
 NOMBRES_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -407,6 +420,65 @@ def conteos_quincena(dias):
 
 
 # =========================================================
+# 🚀 ASIENTOS DE DEDUCCIÓN (una línea con fecha y motivo)
+# =========================================================
+def nuevo_asiento_deduccion(fecha=None, categoria="normal", horas=0.0, minutos=0.0,
+                            cantidad=0.0, motivo="", desde=None, hasta=None, precio=0.0):
+    """Crea un asiento de deducción: una línea con fecha, concepto y valor.
+
+    - Plan Por Hora: 'horas' + 'minutos' de servicio no prestado.
+    - Plan Por Punto o Viaje: 'cantidad' de viajes/puntos no realizados.
+    """
+    cat = categoria if categoria in dict(CATEGORIAS) else "normal"
+    return {
+        "fecha": fecha if isinstance(fecha, date) else None,
+        "categoria": cat,
+        "horas": float(horas or 0.0),
+        "minutos": float(minutos or 0.0),
+        "cantidad": float(cantidad or 0.0),
+        "motivo": str(motivo or ""),
+        "desde": desde,
+        "hasta": hasta,
+        "precio": float(precio or 0.0),
+    }
+
+
+def horas_de_asiento(asiento):
+    """Horas totales de un asiento de deducción (horas + minutos ÷ 60)."""
+    try:
+        return float(asiento.get("horas") or 0.0) + float(asiento.get("minutos") or 0.0) / 60.0
+    except Exception:
+        return 0.0
+
+
+def ded_agrupada_desde_asientos(asientos):
+    """Agrupa los asientos por categoría → {categoría: [horas, minutos]}.
+
+    Es el formato que usa el motor de cálculo (y las columnas ded_*_h de la
+    base de datos), así los asientos con fecha siguen alimentando el mismo
+    cálculo de siempre.
+    """
+    res = {clave: [0.0, 0.0] for clave, _ in CATEGORIAS}
+    for a in asientos or []:
+        cat = a.get("categoria") if a.get("categoria") in res else "normal"
+        res[cat][0] += float(a.get("horas") or 0.0)
+        res[cat][1] += float(a.get("minutos") or 0.0)
+    # Los minutos que completan una hora pasan al contador de horas
+    for cat, (h, m) in list(res.items()):
+        if m >= 60:
+            res[cat] = [h + float(int(m // 60)), m % 60]
+    return res
+
+
+def etiqueta_fecha_hora(fecha):
+    """'dd/mm/aaaa' del asiento ('—' si el asiento no tiene fecha)."""
+    try:
+        return fecha.strftime("%d/%m/%Y")
+    except Exception:
+        return "—"
+
+
+# =========================================================
 # 🚀 CLASE PRINCIPAL: CÁLCULO DE COBRANZA
 # =========================================================
 class CalculoCobranzaApp:
@@ -427,6 +499,7 @@ class CalculoCobranzaApp:
         self.feriados = {}      # {date: nombre}
         self.unidades = []      # unidades asignadas del cliente
         self.viajes_registrados = []  # viajes agregados con el registro rápido
+        self.deducciones_registradas = []  # asientos de deducción (fecha + motivo) del plan por viajes
         self.registro_editando = None   # id de cobranza_quincenas en edición
         self._buscando_feriados = False
 
@@ -568,6 +641,29 @@ class CalculoCobranzaApp:
                     monto NUMERIC(12,2) DEFAULT 0
                 )
             ''')
+            # Asientos con fecha: deducciones (tipo DEDUCCION) y horas extras
+            # (tipo EXTRA), uno por línea (unidad o rango de distancia)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS cobranza_deducciones_detalle (
+                    id SERIAL PRIMARY KEY,
+                    id_cobranza INTEGER NOT NULL,
+                    plan VARCHAR(30) DEFAULT 'Por Hora',
+                    unidad VARCHAR(150) DEFAULT '',
+                    fecha VARCHAR(10),
+                    categoria VARCHAR(20) DEFAULT 'normal',
+                    horas NUMERIC(12,3) DEFAULT 0,
+                    minutos NUMERIC(12,3) DEFAULT 0,
+                    cantidad NUMERIC(12,2) DEFAULT 0,
+                    distancia_desde NUMERIC(10,2) DEFAULT 0,
+                    distancia_hasta NUMERIC(10,2) DEFAULT 0,
+                    precio NUMERIC(12,2) DEFAULT 0,
+                    motivo VARCHAR(200) DEFAULT '',
+                    monto NUMERIC(12,2) DEFAULT 0,
+                    tipo VARCHAR(20) DEFAULT 'DEDUCCION'
+                )
+            ''')
+            cursor.execute("ALTER TABLE cobranza_deducciones_detalle "
+                           "ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'DEDUCCION'")
             cursor.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS plan_cobro VARCHAR(30) DEFAULT 'Por Hora'")
             # Evita duplicar el mismo vehículo en las unidades de un cliente (sin romper la transacción)
             cursor.execute("""
@@ -814,6 +910,79 @@ class CalculoCobranzaApp:
                                          hover_color="#c0392b", command=self.quitar_viaje_registrado)
         btn_quitar_viaje.grid(row=4, column=0, columnspan=6, sticky="w", padx=10, pady=(0, 8))
 
+        # ---- Registro de DEDUCCIONES con fecha (viajes / puntos no realizados) ----
+        f_ded_reg = ctk.CTkFrame(self.f_via, corner_radius=8, border_width=1, border_color="#e0e0e0")
+        f_ded_reg.pack(fill="x", padx=10, pady=(0, 8))
+        f_ded_reg.columnconfigure(1, weight=1)
+        ctk.CTkLabel(f_ded_reg, text="➖ DEDUCCIONES CON FECHA (viajes / puntos no realizados)",
+                     font=(familia_fuente, 11, "bold"), text_color="#c0392b").grid(
+            row=0, column=0, columnspan=8, sticky="w", padx=10, pady=(8, 4))
+
+        ctk.CTkLabel(f_ded_reg, text="Fecha:", font=(familia_fuente, 11, "bold")).grid(
+            row=1, column=0, sticky="w", padx=(10, 5), pady=6)
+        self.ent_fecha_ded = ctk.CTkEntry(f_ded_reg, width=110, placeholder_text="dd/mm/aaaa")
+        self.ent_fecha_ded.grid(row=1, column=1, sticky="w", padx=5, pady=6)
+        btn_cal_ded = ctk.CTkButton(f_ded_reg, text="📅", width=42, font=(familia_fuente, 12),
+                                    command=self.abrir_calendario_ded)
+        btn_cal_ded.grid(row=1, column=2, sticky="w", padx=2, pady=6)
+        self.ent_fecha_ded.bind("<KeyRelease>", lambda e: self._al_seleccionar_fecha_ded())
+
+        ctk.CTkLabel(f_ded_reg, text="Tipo de viaje:", font=(familia_fuente, 11, "bold")).grid(
+            row=1, column=3, sticky="w", padx=(15, 5), pady=6)
+        self.combo_tipo_ded = ctk.CTkOptionMenu(f_ded_reg, values=["— Seleccione distancia —"], width=160,
+                                                font=(familia_fuente, 11))
+        self.combo_tipo_ded.grid(row=1, column=4, sticky="w", padx=5, pady=6)
+
+        ctk.CTkLabel(f_ded_reg, text="Cantidad:", font=(familia_fuente, 11, "bold")).grid(
+            row=1, column=5, sticky="w", padx=(15, 5), pady=6)
+        self.ent_cant_ded = ctk.CTkEntry(f_ded_reg, width=70, justify="center", placeholder_text="1")
+        self.ent_cant_ded.grid(row=1, column=6, sticky="w", padx=5, pady=6)
+
+        ctk.CTkLabel(f_ded_reg, text="Motivo:", font=(familia_fuente, 11, "bold")).grid(
+            row=2, column=0, sticky="w", padx=(10, 5), pady=6)
+        self.ent_motivo_ded = ctk.CTkEntry(f_ded_reg, placeholder_text="Ej.: unidad en mantenimiento / servicio no prestado")
+        self.ent_motivo_ded.grid(row=2, column=1, columnspan=5, sticky="ew", padx=5, pady=6)
+        btn_add_ded = ctk.CTkButton(f_ded_reg, text="➕ Agregar deducción", width=180,
+                                    font=(familia_fuente, 11, "bold"), fg_color="#e67e22",
+                                    hover_color="#d35400", command=self.agregar_deduccion_registrada)
+        btn_add_ded.grid(row=2, column=6, sticky="e", padx=10, pady=6)
+
+        self.lbl_dia_detectado_ded = ctk.CTkLabel(f_ded_reg, text="", font=(familia_fuente, 10, "bold"),
+                                                  text_color="#1f538d")
+        self.lbl_dia_detectado_ded.grid(row=3, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 4))
+
+        f_tab_ded = ctk.CTkFrame(f_ded_reg, fg_color="transparent")
+        f_tab_ded.grid(row=4, column=0, columnspan=8, sticky="ew", padx=10, pady=(4, 4))
+        f_tab_ded.columnconfigure(0, weight=1)
+
+        self.tabla_ded_reg = ttk.Treeview(f_tab_ded, columns=("fecha", "dia", "tipo", "cant", "motivo"),
+                                          show="headings", selectmode="browse", style="Treeview", height=3)
+        self.tabla_ded_reg.heading("fecha", text="Fecha", anchor="center")
+        self.tabla_ded_reg.heading("dia", text="Día", anchor="center")
+        self.tabla_ded_reg.heading("tipo", text="Tipo (distancia)", anchor="center")
+        self.tabla_ded_reg.heading("cant", text="Cant.", anchor="center")
+        self.tabla_ded_reg.heading("motivo", text="Motivo", anchor="center")
+        self.tabla_ded_reg.column("fecha", width=95, anchor="center")
+        self.tabla_ded_reg.column("dia", width=120, anchor="center")
+        self.tabla_ded_reg.column("tipo", width=150, anchor="center")
+        self.tabla_ded_reg.column("cant", width=55, anchor="center")
+        self.tabla_ded_reg.column("motivo", width=330, anchor="w")
+        self.tabla_ded_reg.grid(row=0, column=0, sticky="nsew")
+        scr_ded = ttk.Scrollbar(f_tab_ded, orient="vertical", command=self.tabla_ded_reg.yview)
+        self.tabla_ded_reg.configure(yscrollcommand=scr_ded.set)
+        scr_ded.grid(row=0, column=1, sticky="ns")
+        self.tabla_ded_reg.bind("<MouseWheel>", self._scroll_solo_tabla_ded)
+        self.tabla_ded_reg.bind("<Button-4>", self._scroll_solo_tabla_ded)
+        self.tabla_ded_reg.bind("<Button-5>", self._scroll_solo_tabla_ded)
+
+        btn_quitar_ded = ctk.CTkButton(f_ded_reg, text="➖ Quitar seleccionada", width=190,
+                                       font=(familia_fuente, 11, "bold"), fg_color="#e74c3c",
+                                       hover_color="#c0392b", command=self.quitar_deduccion_registrada)
+        btn_quitar_ded.grid(row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 8))
+        self.lbl_total_ded = ctk.CTkLabel(f_ded_reg, text="TOTAL DEDUCCIONES REGISTRADAS: S/ 0,00",
+                                          font=(familia_fuente, 12, "bold"), text_color="#c0392b")
+        self.lbl_total_ded.grid(row=5, column=4, columnspan=3, sticky="e", padx=10, pady=(0, 8))
+
         self.f_uni = ctk.CTkFrame(self.scroll, corner_radius=10, border_width=1, border_color="#e0e0e0")
         self.f_uni.pack(fill="x", padx=5, pady=5, ipady=6)
 
@@ -934,6 +1103,7 @@ class CalculoCobranzaApp:
             self.unidades = []
             self.pintar_unidades()
             self.rangos_viaje = []
+            self.deducciones_registradas = []
             self.pintar_viajes()
             self.recalcular()
             return
@@ -1011,6 +1181,8 @@ class CalculoCobranzaApp:
                     "precio_normal": float(r[3] or 0), "precio_domingo": float(r[4] or 0),
                     "precio_feriado": float(r[5] or 0), "horas_dia": float(r[6] or 0),
                     "ded": {"normal": [0.0, 0.0], "domingo": [0.0, 0.0], "feriado": [0.0, 0.0]},
+                    "ded_asientos": [],
+                    "extras_asientos": [],
                 })
             cursor.close()
         except Exception as e:
@@ -1085,6 +1257,8 @@ class CalculoCobranzaApp:
                     "precio_normal": 0.0, "precio_domingo": 0.0, "precio_feriado": 0.0,
                     "horas_dia": 8.0,
                     "ded": {"normal": [0.0, 0.0], "domingo": [0.0, 0.0], "feriado": [0.0, 0.0]},
+                    "ded_asientos": [],
+                    "extras_asientos": [],
                 })
                 agregados += 1
             self.pintar_unidades()
@@ -1100,7 +1274,7 @@ class CalculoCobranzaApp:
             return
         idx = self.tabla_unidades.index(sel[0])
         u = self.unidades[idx]
-        dlg = DialogoUnidad(self.parent, u, self.plan_cobro, con_deducciones=True)
+        dlg = DialogoUnidad(self.parent, u, self.plan_cobro, con_deducciones=True, app=self)
         if dlg.result is not None:
             self.unidades[idx] = dlg.result
             self.pintar_unidades()
@@ -1118,6 +1292,7 @@ class CalculoCobranzaApp:
         """Carga la tabla de precios por distancia del cliente."""
         self.rangos_viaje = []
         self.viajes_registrados = []
+        self.deducciones_registradas = []
         self._cargar_vehiculos_combo()
         if not self.cliente_id:
             self.pintar_viajes()
@@ -1146,6 +1321,7 @@ class CalculoCobranzaApp:
             print("[Rangos Viaje Error]", e)
         finally:
             liberar_conexion(conn)
+        self._pintar_deducciones_registradas()
         self.pintar_viajes()
         self.recalcular()
 
@@ -1159,6 +1335,9 @@ class CalculoCobranzaApp:
                 valores = [f"{rg['distancia_desde']:g} - {rg['distancia_hasta']:g} km" for rg in self.rangos_viaje]
                 self.combo_tipo_viaje.configure(values=valores or ["— Seleccione distancia —"])
                 self.combo_tipo_viaje.set("— Seleccione distancia —")
+                if hasattr(self, "combo_tipo_ded"):
+                    self.combo_tipo_ded.configure(values=valores or ["— Seleccione distancia —"])
+                    self.combo_tipo_ded.set("— Seleccione distancia —")
         except Exception:
             pass
         if not self.rangos_viaje:
@@ -1359,6 +1538,127 @@ class CalculoCobranzaApp:
         self.pintar_viajes()   # actualiza la tabla de viajes
         self.recalcular()      # recalcula en caliente los montos y el total
 
+    # ---------- DEDUCCIONES CON FECHA (plan Por Punto o Viaje) ----------
+    def abrir_calendario_ded(self):
+        """Abre el calendario de la quincena para elegir la fecha de la deducción."""
+        anio, mes, _ = self.periodo_actual()
+        dias_q = {}
+        for d in self.dias:
+            if d["fecha"].year == anio and d["fecha"].month == mes:
+                dias_q[d["fecha"].day] = d["categoria"]
+        CalendarioPopup(self.parent, self.ent_fecha_ded, self._al_seleccionar_fecha_ded,
+                        anio=anio, mes=mes, dias_resaltados=dias_q)
+
+    def _fecha_desde_entry_ded(self):
+        try:
+            return datetime.strptime(self.ent_fecha_ded.get().strip(), "%d/%m/%Y").date()
+        except Exception:
+            return None
+
+    def _al_seleccionar_fecha_ded(self):
+        fecha = self._fecha_desde_entry_ded()
+        if fecha:
+            cat = self._categoria_para_fecha(fecha)
+            self.lbl_dia_detectado_ded.configure(text=f"Día detectado: {dict(CATEGORIAS).get(cat, '')}")
+        else:
+            self.lbl_dia_detectado_ded.configure(text="")
+
+    def _pintar_deducciones_registradas(self):
+        for item in self.tabla_ded_reg.get_children():
+            self.tabla_ded_reg.delete(item)
+        total = 0.0
+        for t in self.deducciones_registradas:
+            total += float(t.get("monto") or 0)
+            self.tabla_ded_reg.insert("", tk.END, values=(
+                etiqueta_fecha_hora(t.get("fecha")),
+                dict(CATEGORIAS).get(t.get("categoria"), ""),
+                f"{float(t.get('desde') or 0):g} - {float(t.get('hasta') or 0):g} km",
+                f"{float(t.get('cantidad') or 0):g}",
+                str(t.get("motivo") or ""),
+            ))
+        try:
+            self.lbl_total_ded.configure(
+                text=f"TOTAL DEDUCCIONES REGISTRADAS: {formatear_moneda(total)}")
+        except Exception:
+            pass
+
+    def _scroll_solo_tabla_ded(self, event):
+        """Desplaza solo la lista de deducciones registradas (la rueda no mueve la ventana)."""
+        try:
+            if event.num == 4:
+                self.tabla_ded_reg.yview_scroll(-3, "units")
+            elif event.num == 5:
+                self.tabla_ded_reg.yview_scroll(3, "units")
+            else:
+                delta = int(-1 * (event.delta / 120))
+                self.tabla_ded_reg.yview_scroll(delta, "units")
+        except Exception:
+            pass
+        return "break"
+
+    def agregar_deduccion_registrada(self):
+        """Registra un asiento de deducción con fecha (viajes/puntos no realizados)."""
+        if not self.dias:
+            messagebox.showwarning("Sin quincena", "Primero busque los días de la quincena.")
+            return
+        if not self.rangos_viaje:
+            messagebox.showwarning("Sin tabla de distancias",
+                                   "Este cliente no tiene precios por distancia. Usa '📏 Precios por Distancia'.")
+            return
+        fecha = self._fecha_desde_entry_ded()
+        if not fecha:
+            messagebox.showwarning("Fecha inválida", "Ingrese una fecha válida (dd/mm/aaaa) o use el botón 📅.")
+            return
+        if not any(d["fecha"] == fecha for d in self.dias):
+            messagebox.showwarning("Fuera de la quincena",
+                                   f"La fecha {fecha.strftime('%d/%m/%Y')} no pertenece a la quincena seleccionada.")
+            return
+        tipo = self.combo_tipo_ded.get()
+        if not tipo or tipo.startswith("—"):
+            messagebox.showwarning("Falta tipo de viaje", "Seleccione el rango de distancia de la deducción.")
+            return
+        valores = list(self.combo_tipo_ded.cget("values"))
+        if tipo not in valores:
+            return
+        idx = valores.index(tipo)
+        if idx >= len(self.rangos_viaje):
+            return
+        try:
+            cant = self._leer_int_entry(self.ent_cant_ded, "Cantidad no realizada")
+        except ValueError as e:
+            messagebox.showwarning("Dato inválido", str(e))
+            return
+        if cant <= 0:
+            messagebox.showwarning("Dato inválido",
+                                   "La cantidad de viajes/puntos no realizados debe ser mayor a 0.")
+            return
+        cat = self._categoria_para_fecha(fecha)
+        rg = self.rangos_viaje[idx]
+        precio = float(rg.get(f"precio_{cat}", 0) or 0)
+        self.deducciones_registradas.append({
+            "fecha": fecha, "categoria": cat, "rango_idx": idx,
+            "cantidad": cant, "motivo": self.ent_motivo_ded.get().strip(),
+            "precio": precio, "monto": precio * cant,
+            "desde": rg["distancia_desde"], "hasta": rg["distancia_hasta"],
+        })
+        self._pintar_deducciones_registradas()
+        self.recalcular()   # recalcula en caliente los montos y el total
+        self.ent_fecha_ded.delete(0, tk.END)
+        self.ent_cant_ded.delete(0, tk.END)
+        self.ent_motivo_ded.delete(0, tk.END)
+        self.lbl_dia_detectado_ded.configure(text="")
+
+    def quitar_deduccion_registrada(self):
+        sel = self.tabla_ded_reg.selection()
+        if not sel:
+            messagebox.showinfo("Seleccione una deducción", "Seleccione una deducción de la lista para quitarla.")
+            return
+        idx = self.tabla_ded_reg.index(sel[0])
+        if 0 <= idx < len(self.deducciones_registradas):
+            self.deducciones_registradas.pop(idx)
+        self._pintar_deducciones_registradas()
+        self.recalcular()
+
     # ---------- DÍAS DE LA QUINCENA ----------
     def periodo_actual(self):
         mes = int(self.combo_mes.get().split(" - ")[0])
@@ -1483,9 +1783,13 @@ class CalculoCobranzaApp:
         unidades_calc = []
         monto_base_total = 0.0
         monto_ded_total = 0.0
+        monto_extras_total = 0.0
+        horas_extras_total = 0.0
         total_general = 0.0
         ded_global = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
         monto_cat_global = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
+        # Asientos con fecha (deducciones y horas extras) para el detalle del PDF
+        deducciones_detalle = []
 
         for u in self.unidades:
             pn = self._leer_float(u["precio_normal"], "Precio Día Normal")
@@ -1516,10 +1820,50 @@ class CalculoCobranzaApp:
                 monto_ded_cat = horas * precio  # Por Hora: horas ausentes × precio por hora
                 ded_u += monto_ded_cat
 
-            subtotal_u = base_u - ded_u
+            # Asientos de deducción con fecha de esta unidad (detalle para el PDF)
+            for a in (u.get("ded_asientos") or []):
+                horas_a = horas_de_asiento(a)
+                if horas_a <= 0:
+                    continue
+                cat_a = a.get("categoria") if a.get("categoria") in precio_cat else "normal"
+                deducciones_detalle.append({
+                    "tipo": "DEDUCCION",
+                    "plan": "Por Hora", "unidad": u["unidad"],
+                    "fecha": a.get("fecha"), "categoria": cat_a,
+                    "horas": float(a.get("horas") or 0), "minutos": float(a.get("minutos") or 0),
+                    "cantidad": 0.0, "desde": None, "hasta": None,
+                    "precio": precio_cat[cat_a], "motivo": str(a.get("motivo") or ""),
+                    "monto": horas_a * precio_cat[cat_a],
+                })
+
+            # Asientos de HORAS EXTRAS con fecha: SUMAN al cobro, valorizadas al
+            # precio por hora de la unidad según el tipo de día del asiento.
+            extras_u = 0.0
+            horas_extras_u = 0.0
+            for a in (u.get("extras_asientos") or []):
+                horas_a = horas_de_asiento(a)
+                if horas_a <= 0:
+                    continue
+                cat_a = a.get("categoria") if a.get("categoria") in precio_cat else "normal"
+                monto_a = horas_a * precio_cat[cat_a]
+                horas_extras_u += horas_a
+                extras_u += monto_a
+                deducciones_detalle.append({
+                    "tipo": "EXTRA",
+                    "plan": "Por Hora", "unidad": u["unidad"],
+                    "fecha": a.get("fecha"), "categoria": cat_a,
+                    "horas": float(a.get("horas") or 0), "minutos": float(a.get("minutos") or 0),
+                    "cantidad": 0.0, "desde": None, "hasta": None,
+                    "precio": precio_cat[cat_a], "motivo": str(a.get("motivo") or ""),
+                    "monto": monto_a,
+                })
+
+            subtotal_u = base_u - ded_u + extras_u
             if subtotal_u < 0:
                 subtotal_u = 0.0
             monto_ded_total += ded_u
+            monto_extras_total += extras_u
+            horas_extras_total += horas_extras_u
             monto_base_total += base_u
             total_general += subtotal_u
 
@@ -1534,6 +1878,8 @@ class CalculoCobranzaApp:
                 "ded_domingo_h": ded_horas_u["domingo"],
                 "ded_feriado_h": ded_horas_u["feriado"],
                 "monto_deducciones": ded_u,
+                "horas_extras": horas_extras_u,
+                "monto_extras": extras_u,
                 "subtotal": subtotal_u,
             })
 
@@ -1545,12 +1891,15 @@ class CalculoCobranzaApp:
             "unidades": unidades_calc,
             "monto_base": monto_base_total,
             "monto_deducciones": monto_ded_total,
+            "horas_extras": horas_extras_total,
+            "monto_extras": monto_extras_total,
             "monto_normal": monto_cat_global["normal"],
             "monto_domingo": monto_cat_global["domingo"],
             "monto_feriado": monto_cat_global["feriado"],
             "ded_normal_h": ded_global["normal"],
             "ded_domingo_h": ded_global["domingo"],
             "ded_feriado_h": ded_global["feriado"],
+            "deducciones_detalle": deducciones_detalle,
             "total": total_general,
         }
 
@@ -1559,43 +1908,88 @@ class CalculoCobranzaApp:
         if not self.rangos_viaje:
             raise ValueError("Este cliente no tiene tabla de precios por distancia. Usa '📏 Precios por Distancia'.")
         self._leer_viajes_desde_entradas()
+        # Asientos de deducción registrados con FECHA: se suman a los "no realizados"
+        # escritos en el cuadro, guardando su detalle aparte para el PDF.
+        ded_reg = {}
+        for t in self.deducciones_registradas:
+            idx = t.get("rango_idx")
+            if idx is None or not (0 <= idx < len(self.rangos_viaje)):
+                continue
+            cat = t.get("categoria") if t.get("categoria") in ("normal", "domingo", "feriado") else "normal"
+            ded_reg.setdefault(idx, {"normal": 0, "domingo": 0, "feriado": 0})
+            ded_reg[idx][cat] += int(t.get("cantidad") or 0)
+
         monto_base = 0.0
         monto_ded = 0.0
         total = 0.0
         monto_cat = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
         detalle = []
-        for rg in self.rangos_viaje:
+        deducciones_detalle = []
+        for i, rg in enumerate(self.rangos_viaje):
             pn = self._leer_float(rg["precio_normal"], "Precio Normal")
             pd = self._leer_float(rg["precio_domingo"], "Precio Domingo")
             pf = self._leer_float(rg["precio_feriado"], "Precio Feriado")
+            extra = ded_reg.get(i, {})
+            nr_normal = int(rg["ded"]["normal"] or 0) + int(extra.get("normal", 0))
+            nr_domingo = int(rg["ded"]["domingo"] or 0) + int(extra.get("domingo", 0))
+            nr_feriado = int(rg["ded"]["feriado"] or 0) + int(extra.get("feriado", 0))
             base_r = rg["viajes"]["normal"] * pn + rg["viajes"]["domingo"] * pd + rg["viajes"]["feriado"] * pf
-            ded_r = rg["ded"]["normal"] * pn + rg["ded"]["domingo"] * pd + rg["ded"]["feriado"] * pf
-            monto_cat["normal"] += (rg["viajes"]["normal"] - rg["ded"]["normal"]) * pn
-            monto_cat["domingo"] += (rg["viajes"]["domingo"] - rg["ded"]["domingo"]) * pd
-            monto_cat["feriado"] += (rg["viajes"]["feriado"] - rg["ded"]["feriado"]) * pf
+            ded_r = nr_normal * pn + nr_domingo * pd + nr_feriado * pf
+            monto_cat["normal"] += (rg["viajes"]["normal"] - nr_normal) * pn
+            monto_cat["domingo"] += (rg["viajes"]["domingo"] - nr_domingo) * pd
+            monto_cat["feriado"] += (rg["viajes"]["feriado"] - nr_feriado) * pf
             sub = max(0.0, base_r - ded_r)
             monto_base += base_r
             monto_ded += ded_r
             total += sub
+            # OJO: rg["ded"] conserva solo lo escrito en el cuadro; los asientos con
+            # fecha se suman aquí (no se escriben de vuelta para no duplicarlos al
+            # repintar el cuadro). En el registro guardado sí van ya sumados.
             detalle.append({
                 "desde": rg["distancia_desde"], "hasta": rg["distancia_hasta"],
                 "distancia": f"{rg['distancia_desde']:g} - {rg['distancia_hasta']:g} km",
                 "precio_normal": pn, "precio_domingo": pd, "precio_feriado": pf,
                 "viajes_normal": rg["viajes"]["normal"], "viajes_domingo": rg["viajes"]["domingo"],
                 "viajes_feriado": rg["viajes"]["feriado"],
-                "ded_normal": rg["ded"]["normal"], "ded_domingo": rg["ded"]["domingo"],
-                "ded_feriado": rg["ded"]["feriado"],
+                "ded_normal": nr_normal, "ded_domingo": nr_domingo, "ded_feriado": nr_feriado,
                 "monto_base": base_r, "monto_deducciones": ded_r, "subtotal": sub,
             })
+
+        # Detalle de los asientos de deducción con fecha (para el PDF)
+        for t in self.deducciones_registradas:
+            cant = float(t.get("cantidad") or 0)
+            if cant <= 0:
+                continue
+            cat = t.get("categoria") if t.get("categoria") in ("normal", "domingo", "feriado") else "normal"
+            precio_cat = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
+            idx = t.get("rango_idx")
+            if idx is not None and 0 <= idx < len(detalle):
+                precio_cat = {"normal": detalle[idx]["precio_normal"],
+                              "domingo": detalle[idx]["precio_domingo"],
+                              "feriado": detalle[idx]["precio_feriado"]}
+            deducciones_detalle.append({
+                "tipo": "DEDUCCION",
+                "plan": "Por Punto o Viaje",
+                "unidad": f"{float(t.get('desde') or 0):g} - {float(t.get('hasta') or 0):g} km",
+                "fecha": t.get("fecha"), "categoria": cat,
+                "horas": 0.0, "minutos": 0.0, "cantidad": cant,
+                "desde": t.get("desde"), "hasta": t.get("hasta"),
+                "precio": precio_cat[cat], "motivo": str(t.get("motivo") or ""),
+                "monto": precio_cat[cat] * cant,
+            })
+
         return {
             "conteos": c,
             "viajes": detalle,
             "monto_base": monto_base,
             "monto_deducciones": monto_ded,
+            "horas_extras": 0.0,
+            "monto_extras": 0.0,
             "monto_normal": monto_cat["normal"],
             "monto_domingo": monto_cat["domingo"],
             "monto_feriado": monto_cat["feriado"],
             "ded_normal_h": 0.0, "ded_domingo_h": 0.0, "ded_feriado_h": 0.0,
+            "deducciones_detalle": deducciones_detalle,
             "total": total,
         }
 
@@ -1640,11 +2034,18 @@ class CalculoCobranzaApp:
             for i, uc in enumerate(r["unidades"]):
                 if i < len(self.unidades):
                     self.unidades[i]["_subtotal"] = uc["subtotal"]
+                texto_extra = ""
+                if uc.get("monto_extras"):
+                    texto_extra = f" + horas extras {formatear_moneda(uc['monto_extras'])}"
                 lineas.append(
                     f"🚗 {uc['unidad']}: base {formatear_moneda(uc['monto_normal'] + uc['monto_domingo'] + uc['monto_feriado'])}"
-                    f" − deducciones {formatear_moneda(uc['monto_deducciones'])} = {formatear_moneda(uc['subtotal'])}")
+                    f" − deducciones {formatear_moneda(uc['monto_deducciones'])}{texto_extra}"
+                    f" = {formatear_moneda(uc['subtotal'])}")
             self.pintar_unidades()  # refresca la tabla con los subtotales
         lineas.append(f"SUBTOTAL (base): {formatear_moneda(r['monto_base'])}")
+        if r.get("monto_extras"):
+            lineas.append(f"HORAS EXTRAS: + {formatear_moneda(r['monto_extras'])}"
+                          f"  ({r.get('horas_extras', 0):g} h)")
         if r["monto_deducciones"] > 0:
             lineas.append(f"DEDUCCIONES: - {formatear_moneda(r['monto_deducciones'])}")
             if r["monto_deducciones"] >= r["monto_base"]:
@@ -1784,6 +2185,22 @@ class CalculoCobranzaApp:
                           t["categoria"], t.get("desde", 0), t.get("hasta", 0),
                           t.get("precio", 0), t.get("monto", 0)))
 
+            # Asientos de deducción con fecha (unidad o rango de distancia) — reemplazo
+            cursor.execute("DELETE FROM cobranza_deducciones_detalle WHERE id_cobranza=%s", (id_cob,))
+            for d in r.get("deducciones_detalle", []):
+                fecha_d = d.get("fecha")
+                cursor.execute('''
+                    INSERT INTO cobranza_deducciones_detalle
+                    (id_cobranza, plan, unidad, fecha, categoria, horas, minutos, cantidad,
+                     distancia_desde, distancia_hasta, precio, motivo, monto, tipo)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ''', (id_cob, str(d.get("plan") or self.plan_cobro), str(d.get("unidad") or "")[:150],
+                      fecha_d.strftime("%d/%m/%Y") if isinstance(fecha_d, date) else None,
+                      d.get("categoria") or "normal", d.get("horas") or 0, d.get("minutos") or 0,
+                      d.get("cantidad") or 0, d.get("desde") or 0, d.get("hasta") or 0,
+                      d.get("precio") or 0, str(d.get("motivo") or "")[:200], d.get("monto") or 0,
+                      d.get("tipo") or "DEDUCCION"))
+
             # Actualiza los precios/horas usados en la configuración de la unidad
             # (solo plan Por Hora; así se recuerdan los últimos precios al elegir al cliente).
             if es_nuevo and not es_viaje:
@@ -1888,6 +2305,26 @@ class CalculoCobranzaApp:
             ''', (id_cob,))
             viajes_pdf = cursor.fetchall()
 
+            # Asientos con fecha (deducciones y horas extras) — detalle uno por uno
+            try:
+                cursor.execute('''
+                    SELECT plan, unidad, fecha, categoria, horas, minutos, cantidad,
+                           distancia_desde, distancia_hasta, precio, motivo, monto, tipo
+                    FROM cobranza_deducciones_detalle WHERE id_cobranza=%s ORDER BY id
+                ''', (id_cob,))
+                asientos_pdf = cursor.fetchall()
+            except Exception:
+                try:
+                    # Base de datos anterior sin la columna 'tipo'
+                    cursor.execute('''
+                        SELECT plan, unidad, fecha, categoria, horas, minutos, cantidad,
+                               distancia_desde, distancia_hasta, precio, motivo, monto
+                        FROM cobranza_deducciones_detalle WHERE id_cobranza=%s ORDER BY id
+                    ''', (id_cob,))
+                    asientos_pdf = [tuple(r) + ("DEDUCCION",) for r in cursor.fetchall()]
+                except Exception:
+                    asientos_pdf = []
+
             # Datos del cliente (actualizados)
             cliente_info = {"comercial": "", "contacto": "", "telefono": "", "direccion": ""}
             try:
@@ -1906,6 +2343,25 @@ class CalculoCobranzaApp:
             return None
         finally:
             liberar_conexion(conn)
+
+        # Deducciones y horas extras por separado (cada una con su cuadro en el PDF)
+        def _es_extra(fila):
+            try:
+                return str(fila[12] or "DEDUCCION").upper() == "EXTRA"
+            except Exception:
+                return False
+
+        deducciones_pdf = [f for f in asientos_pdf if not _es_extra(f)]
+        extras_pdf = [f for f in asientos_pdf if _es_extra(f)]
+        # Horas y monto de horas extras por unidad (para el cuadro de cobro)
+        extras_por_unidad_pdf = {}
+        for fila in extras_pdf:
+            nombre_u = str(fila[1] or "")
+            horas_u, monto_u = extras_por_unidad_pdf.get(nombre_u, (0.0, 0.0))
+            extras_por_unidad_pdf[nombre_u] = (
+                horas_u + horas_de_asiento({"horas": fila[4], "minutos": fila[5]}),
+                monto_u + float(fila[11] or 0))
+        m_extras_pdf = sum(v[1] for v in extras_por_unidad_pdf.values())
 
         config = _cargar_config_local()
         ruc_empresa = config.get("ruc_empresa", "")
@@ -2181,35 +2637,44 @@ class CalculoCobranzaApp:
             if y < 90:
                 c.showPage()
                 y = 750.0
-            cols_u = [150, 55, 62, 62, 62, 100]
+            cols_u = [118, 45, 55, 58, 53, 47, 74, 82]
             xs_u = [40]
             for w in cols_u:
                 xs_u.append(xs_u[-1] + w)
             ancho_tabla = sum(cols_u)
-            c.setFillColorRGB(0.9, 0.93, 0.97)
-            c.rect(40, y - 14, ancho_tabla, 14, stroke=0, fill=1)
-            c.setFillColorRGB(0, 0, 0)
-            c.setFont("Helvetica-Bold", 8)
-            c.drawString(xs_u[0] + 4, y - 10, "UNIDAD")
-            c.drawCentredString(xs_u[1] + cols_u[1] / 2, y - 10, "HORAS/DÍA")
-            c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - 10, "P. NORMAL")
-            c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - 10, "P. DOMINGO")
-            c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - 10, "P. FERIADO")
-            c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - 10, "SUBTOTAL")
+            cab_u = ["UNIDAD", "HORAS/DÍA", "P. NORMAL", "P. DOMINGO", "P. FERIADO",
+                     "H. EXTRA", "MONTO EXTRA", "SUBTOTAL"]
+
+            def _cabecera_unidades():
+                c.setFillColorRGB(0.9, 0.93, 0.97)
+                c.rect(40, y - 14, ancho_tabla, 14, stroke=0, fill=1)
+                c.setFillColorRGB(0, 0, 0)
+                c.setFont("Helvetica-Bold", 7.5)
+                for j, (w, txt) in enumerate(zip(cols_u, cab_u)):
+                    c.drawCentredString(xs_u[j] + w / 2, y - 10, txt)
+                c.setFont("Helvetica", 8)
+
+            _cabecera_unidades()
             y -= 16.0
-            c.setFont("Helvetica", 9)
             for (uni, pn, pd, pf, hd, cn, cdom, cfer,
                  dn, dd, df, mn, md, mf, mded, sub) in unidades:
                 if y < 90:
                     c.showPage()
                     y = 750.0
+                    _cabecera_unidades()
+                    y -= 16.0
+                horas_ex, monto_ex = extras_por_unidad_pdf.get(str(uni or ""), (0.0, 0.0))
                 c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_u[0] + 4, y - 10, str(uni)[:36])
+                c.drawString(xs_u[0] + 3, y - 10, str(uni)[:30])
                 c.drawCentredString(xs_u[1] + cols_u[1] / 2, y - 10, f"{float(hd or 0):g}")
-                c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - 10, f"{simbolo} {float(pn or 0):,.2f}")
-                c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - 10, f"{simbolo} {float(pd or 0):,.2f}")
-                c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - 10, f"{simbolo} {float(pf or 0):,.2f}")
-                c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - 10, f"{simbolo} {float(sub or 0):,.2f}")
+                c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - 10, f"{float(pn or 0):,.2f}")
+                c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - 10, f"{float(pd or 0):,.2f}")
+                c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - 10, f"{float(pf or 0):,.2f}")
+                c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - 10,
+                                    f"{horas_ex:g}" if horas_ex else "-")
+                c.drawCentredString(xs_u[6] + cols_u[6] / 2, y - 10,
+                                    f"{simbolo} {monto_ex:,.2f}" if monto_ex else "-")
+                c.drawCentredString(xs_u[7] + cols_u[7] / 2, y - 10, f"{simbolo} {float(sub or 0):,.2f}")
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
                 c.line(40, y - 13, 40 + ancho_tabla, y - 13)
                 y -= 15.0
@@ -2219,7 +2684,12 @@ class CalculoCobranzaApp:
             c.setFont("Helvetica-Bold", 10)
             c.drawString(xs_u[0] + 4, y - 10, "SUBTOTAL (BASE)")
             c.drawRightString(40 + ancho_tabla, y - 10, f"{simbolo} {float(m_base or 0):,.2f}")
-            y -= 18.0
+            y -= 15.0
+            if m_extras_pdf > 0:
+                c.drawString(xs_u[0] + 4, y - 10, "+ HORAS EXTRAS")
+                c.drawRightString(40 + ancho_tabla, y - 10, f"+ {simbolo} {m_extras_pdf:,.2f}")
+                y -= 15.0
+            y -= 3.0
 
             # ---- Deducciones por unidad (en la página siguiente) ----
             c.showPage()
@@ -2267,6 +2737,90 @@ class CalculoCobranzaApp:
             c.drawString(xs_d[0] + 4, y - 10, "TOTAL DEDUCCIONES")
             c.drawRightString(40 + ancho_tabla_d, y - 10, f"- {simbolo} {float(m_ded or 0):,.2f}")
             y -= 26.0
+
+        # ---- Asientos con fecha: deducciones y horas extras (uno por uno) ----
+        es_viaje_pdf = (plan == "Por Punto o Viaje")
+
+        def _tabla_asientos(titulo, filas, etiqueta_total, signo, monto_declarado=None):
+            """Dibuja una tabla de asientos con fecha; devuelve la suma de montos."""
+            nonlocal y
+            if not filas:
+                return 0.0
+            if y < 200:
+                c.showPage()
+                y = 750.0
+            cols_dd = [62, 150, 68, 48, 120, 84]
+            xs_dd = [40]
+            for w in cols_dd:
+                xs_dd.append(xs_dd[-1] + w)
+            ancho_dd = sum(cols_dd)
+            cab_dd = ["FECHA", "UNIDAD / DISTANCIA", "TIPO",
+                      "CANT." if es_viaje_pdf else "HORAS", "MOTIVO", "MONTO"]
+
+            def _cabecera():
+                nonlocal y
+                c.setFillColorRGB(0.9, 0.93, 0.97)
+                c.rect(40, y - 14, ancho_dd, 14, stroke=0, fill=1)
+                c.setFillColorRGB(0, 0, 0)
+                c.setFont("Helvetica-Bold", 7.5)
+                for j, (w, txt) in enumerate(zip(cols_dd, cab_dd)):
+                    c.drawCentredString(xs_dd[j] + w / 2, y - 10, txt)
+                y -= 16.0
+                c.setFont("Helvetica", 8)
+
+            c.setFillColorRGB(0, 0, 0)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(40, y, titulo)
+            y -= 16.0
+            _cabecera()
+            total_asientos = 0.0
+            for (plan_d, unidad_d, fecha_d, cat_d, horas_d, min_d, cant_d,
+                 desde_d, hasta_d, precio_d, motivo_d, monto_d, tipo_d) in filas:
+                if y < 90:
+                    c.showPage()
+                    y = 750.0
+                    _cabecera()
+                try:
+                    cant_v = float(cant_d or 0) if es_viaje_pdf else horas_de_asiento(
+                        {"horas": horas_d, "minutos": min_d})
+                except Exception:
+                    cant_v = 0.0
+                monto_v = float(monto_d or 0)
+                total_asientos += monto_v
+                c.setFillColorRGB(0, 0, 0)
+                c.drawCentredString(xs_dd[0] + cols_dd[0] / 2, y - 10, str(fecha_d or "—"))
+                c.drawString(xs_dd[1] + 3, y - 10, str(unidad_d or "")[:34])
+                c.drawCentredString(xs_dd[2] + cols_dd[2] / 2, y - 10,
+                                    str(ETIQUETAS_CORTAS.get(cat_d, cat_d) or "")[:14])
+                c.drawCentredString(xs_dd[3] + cols_dd[3] / 2, y - 10, f"{cant_v:g}")
+                c.drawString(xs_dd[4] + 3, y - 10, str(motivo_d or "")[:30])
+                c.drawCentredString(xs_dd[5] + cols_dd[5] / 2, y - 10, f"{simbolo} {monto_v:,.2f}")
+                c.setStrokeColorRGB(0.85, 0.85, 0.85)
+                c.line(40, y - 13, 40 + ancho_dd, y - 13)
+                y -= 15.0
+            c.setStrokeColorRGB(0, 0, 0)
+            c.setLineWidth(1)
+            c.line(40, y + 1, 40 + ancho_dd, y + 1)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(42, y - 12, etiqueta_total)
+            c.drawRightString(40 + ancho_dd, y - 12, f"{signo}{simbolo} {total_asientos:,.2f}")
+            y -= 16.0
+            if monto_declarado is not None:
+                diferencia_ded = float(monto_declarado) - total_asientos
+                if abs(diferencia_ded) > 0.009:
+                    c.setFont("Helvetica", 8)
+                    c.setFillColorRGB(0.4, 0.4, 0.4)
+                    c.drawString(42, y - 10, "Además hay deducciones registradas sin asiento detallado: "
+                                             f"{simbolo} {diferencia_ded:,.2f}")
+                    c.setFillColorRGB(0, 0, 0)
+                    y -= 12.0
+            y -= 20.0
+            return total_asientos
+
+        _tabla_asientos("DETALLE DE DEDUCCIONES REGISTRADAS (ASIENTOS CON FECHA)",
+                        deducciones_pdf, "TOTAL ASIENTOS DE DEDUCCIÓN", "- ", float(m_ded or 0))
+        _tabla_asientos("DETALLE DE HORAS EXTRAS (ASIENTOS CON FECHA)",
+                        extras_pdf, "TOTAL HORAS EXTRAS", "+ ")
 
         # ---- Total ----
         c.setFillColorRGB(0.9, 0.97, 0.93)
@@ -2384,6 +2938,16 @@ class CalculoCobranzaApp:
                 FROM cobranza_viajes_detalle WHERE id_cobranza=%s ORDER BY id
             ''', (id_cob,))
             viajes_detalle_rows = cursor.fetchall()
+            # Asientos de deducción con fecha (horas/minutos por unidad o cantidad por rango)
+            try:
+                cursor.execute('''
+                    SELECT plan, unidad, fecha, categoria, horas, minutos, cantidad,
+                           distancia_desde, distancia_hasta, precio, motivo, monto, tipo
+                    FROM cobranza_deducciones_detalle WHERE id_cobranza=%s ORDER BY id
+                ''', (id_cob,))
+                deducciones_rows = cursor.fetchall()
+            except Exception:
+                deducciones_rows = []
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el registro:\n{e}")
             return
@@ -2448,6 +3012,7 @@ class CalculoCobranzaApp:
         self.unidades = []
         self.rangos_viaje = []
         self.viajes_registrados = []
+        self.deducciones_registradas = []
         if self.plan_cobro == "Por Punto o Viaje":
             for (desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df) in viajes_rows:
                 self.rangos_viaje.append({
@@ -2457,6 +3022,35 @@ class CalculoCobranzaApp:
                     "viajes": {"normal": int(vn or 0), "domingo": int(vd or 0), "feriado": int(vf or 0)},
                     "ded": {"normal": int(dn or 0), "domingo": int(dd or 0), "feriado": int(df or 0)},
                 })
+            # Recupera los asientos de deducción con fecha (cantidad no realizada por rango)
+            for (plan_d, unidad_d, fecha_s, cat_d, horas_d, min_d, cant_d,
+                 desde_d, hasta_d, precio_d, motivo_d, monto_d, tipo_d) in deducciones_rows:
+                if str(tipo_d or "DEDUCCION").upper() == "EXTRA":
+                    continue  # el plan por viajes no usa horas extras
+                idx = next((i for i, rg in enumerate(self.rangos_viaje)
+                            if abs(rg["distancia_desde"] - float(desde_d or 0)) < 0.001
+                            and abs(rg["distancia_hasta"] - float(hasta_d or 0)) < 0.001), None)
+                if idx is None:
+                    continue
+                try:
+                    fecha_dt = datetime.strptime(str(fecha_s), "%d/%m/%Y").date() if fecha_s else None
+                except Exception:
+                    fecha_dt = None
+                cat = cat_d if cat_d in dict(CATEGORIAS) else "normal"
+                cant = int(float(cant_d or 0))
+                asiento = nuevo_asiento_deduccion(fecha_dt, cat, 0.0, 0.0, cant, motivo_d,
+                                                  desde_d, hasta_d, precio_d)
+                # Las columnas del registro guardan cuadro + asientos: se descuentan aquí
+                # porque los asientos se vuelven a sumar al recalcular.
+                self.rangos_viaje[idx]["ded"][cat] = max(
+                    0, int(self.rangos_viaje[idx]["ded"].get(cat, 0) or 0) - cant)
+                self.deducciones_registradas.append({
+                    "fecha": fecha_dt, "categoria": cat, "rango_idx": idx,
+                    "cantidad": cant, "motivo": str(motivo_d or ""),
+                    "precio": float(precio_d or 0), "monto": float(monto_d or 0),
+                    "desde": float(desde_d or 0), "hasta": float(hasta_d or 0),
+                })
+
             # Recupera los viajes individuales registrados (fecha, vehículo, tipo)
             for (fecha_s, vehiculo, categoria, desde, hasta, precio, monto) in viajes_detalle_rows:
                 rango_idx = next((i for i, rg in enumerate(self.rangos_viaje)
@@ -2476,6 +3070,7 @@ class CalculoCobranzaApp:
                 })
             self.pintar_viajes()
             self._pintar_viajes_registrados()
+            self._pintar_deducciones_registradas()
         else:
             if unidades_rows:
                 for (uni, pn, pd, pf, hd, dn, dd, df) in unidades_rows:
@@ -2508,6 +3103,32 @@ class CalculoCobranzaApp:
                         "ded": {"normal": [float(d_normal or 0), 0.0], "domingo": [float(d_dom or 0), 0.0],
                                 "feriado": [float(d_fer or 0), 0.0]},
                     })
+            # Asientos con fecha de cada unidad: deducciones y horas extras
+            ded_por_unidad = {}
+            extras_por_unidad = {}
+            for (plan_d, unidad_d, fecha_s, cat_d, horas_d, min_d, cant_d,
+                 desde_d, hasta_d, precio_d, motivo_d, monto_d, tipo_d) in deducciones_rows:
+                try:
+                    fecha_dt = datetime.strptime(str(fecha_s), "%d/%m/%Y").date() if fecha_s else None
+                except Exception:
+                    fecha_dt = None
+                asiento = nuevo_asiento_deduccion(fecha_dt, cat_d, horas_d, min_d, 0.0, motivo_d)
+                if str(tipo_d or "DEDUCCION").upper() == "EXTRA":
+                    extras_por_unidad.setdefault(str(unidad_d or ""), []).append(asiento)
+                else:
+                    ded_por_unidad.setdefault(str(unidad_d or ""), []).append(asiento)
+            for u in self.unidades:
+                nombre_u = str(u.get("unidad") or "")
+                u.setdefault("ded_asientos", [])
+                u.setdefault("extras_asientos", [])
+                asientos_u = ded_por_unidad.get(nombre_u)
+                if asientos_u:
+                    u["ded_asientos"] = asientos_u
+                    # Las horas guardadas ya incluyen los asientos: se recalculan desde
+                    # el detalle para no contarlas dos veces.
+                    u["ded"] = ded_agrupada_desde_asientos(asientos_u)
+                if extras_por_unidad.get(nombre_u):
+                    u["extras_asientos"] = extras_por_unidad[nombre_u]
             self.pintar_unidades()
 
         self.ent_notas.delete(0, tk.END)
@@ -2525,6 +3146,7 @@ class CalculoCobranzaApp:
         self.unidades = []
         self.rangos_viaje = []
         self.viajes_registrados = []
+        self.deducciones_registradas = []
         try:
             self.combo_cliente.set("— Seleccione un cliente —")
         except Exception:
@@ -2542,10 +3164,17 @@ class CalculoCobranzaApp:
             self.tabla_unidades.delete(item)
         for item in self.tabla_viajes_reg.get_children():
             self.tabla_viajes_reg.delete(item)
+        for item in self.tabla_ded_reg.get_children():
+            self.tabla_ded_reg.delete(item)
         for w in self.frame_viajes_grid.winfo_children():
             w.destroy()
         self.ent_viajes = []
         self.ent_fecha_viaje.delete(0, tk.END)
+        self.ent_fecha_ded.delete(0, tk.END)
+        self.ent_cant_ded.delete(0, tk.END)
+        self.ent_motivo_ded.delete(0, tk.END)
+        self.lbl_dia_detectado_ded.configure(text="")
+        self.lbl_total_ded.configure(text="TOTAL DEDUCCIONES REGISTRADAS: S/ 0,00")
         try:
             self.combo_vehiculo_viaje.set("— Seleccione vehículo —")
             self.lbl_total_viajes.configure(text="TOTAL VIAJES: S/ 0,00")
@@ -2562,16 +3191,21 @@ class CalculoCobranzaApp:
 class DialogoUnidad(ctk.CTkToplevel):
     """Permite editar precios, horas/día y (opcionalmente) deducciones de una unidad."""
 
-    def __init__(self, parent, unidad, plan, con_deducciones=True):
+    def __init__(self, parent, unidad, plan, con_deducciones=True, app=None):
         super().__init__(parent)
         self.result = None
         self.plan = plan
         self.con_deducciones = con_deducciones
+        self.app = app          # aplicación principal (días de la quincena → tipo de día)
+        self.filas_ded = []     # asientos de deducción (una fila por asiento)
+        self.filas_extras = []  # asientos de horas extras (una fila por asiento)
         familia_fuente = "Helvetica" if sys.platform == "darwin" else "Arial"
+        self.familia_fuente = familia_fuente
 
         self.title("Editar Unidad" if con_deducciones else "Configurar Unidad")
-        ancho = 560 if con_deducciones else 440
-        self.geometry(f"{ancho}x{600 if con_deducciones else 380}")
+        ancho = 780 if con_deducciones else 440
+        alto = 760 if con_deducciones else 380
+        self.geometry(f"{ancho}x{alto}")
         self.resizable(False, False)
         self.transient(parent)
         try:
@@ -2581,7 +3215,7 @@ class DialogoUnidad(ctk.CTkToplevel):
         self.update_idletasks()
         try:
             x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (ancho // 2)
-            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (600 // 2)
+            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (alto // 2)
             self.geometry(f"+{x}+{y}")
         except Exception:
             pass
@@ -2628,43 +3262,75 @@ class DialogoUnidad(ctk.CTkToplevel):
         ctk.CTkLabel(f_datos, text=hint, font=(familia_fuente, 10), text_color="gray").grid(
             row=4, column=0, columnspan=2, sticky="w", padx=15, pady=(0, 8))
 
-        # ---- Deducciones ----
-        self.ent_ded = {}
+        # ---- Asientos con fecha: DEDUCCIONES y HORAS EXTRAS ----
         if con_deducciones:
-            f_ded = ctk.CTkFrame(scroll, corner_radius=10, border_width=1, border_color="#e0e0e0")
-            f_ded.pack(fill="x", pady=5, ipady=6)
-            ctk.CTkLabel(f_ded, text="➖ DEDUCCIONES DE LA QUINCENA (esta unidad)",
-                         font=(familia_fuente, 13, "bold"), text_color="#1f538d").grid(
-                row=0, column=0, columnspan=4, sticky="w", padx=15, pady=(8, 4))
-            es_viajes = plan == "Por Punto o Viaje"
-            # Encabezados de columnas: Horas / Minutos (o Viajes según el plan)
-            ctk.CTkLabel(f_ded, text="Categoría", font=(familia_fuente, 10, "bold"),
-                         text_color="#7f8c8d").grid(row=1, column=0, sticky="w", padx=(15, 5), pady=(2, 2))
-            ctk.CTkLabel(f_ded, text="Horas" if not es_viajes else "Viajes",
-                         font=(familia_fuente, 10, "bold"), text_color="#7f8c8d").grid(
-                row=1, column=1, sticky="w", padx=5, pady=(2, 2))
-            if not es_viajes:
-                ctk.CTkLabel(f_ded, text="Minutos", font=(familia_fuente, 10, "bold"),
-                             text_color="#7f8c8d").grid(row=1, column=2, sticky="w", padx=5, pady=(2, 2))
-            fila = 2
-            for clave, etiqueta in CATEGORIAS:
-                ctk.CTkLabel(f_ded, text=f"{etiqueta}:", font=(familia_fuente, 12, "bold")).grid(
-                    row=fila, column=0, sticky="w", padx=(15, 5), pady=6)
-                h, m = unidad.get("ded", {}).get(clave, [0.0, 0.0])
-                e_h = ctk.CTkEntry(f_ded, width=100, placeholder_text="Viajes" if es_viajes else "Horas")
-                e_h.grid(row=fila, column=1, sticky="w", padx=5, pady=6)
-                e_h.insert(0, f"{float(h or 0):g}")
-                e_m = ctk.CTkEntry(f_ded, width=80, placeholder_text="Minutos")
-                e_m.grid(row=fila, column=2, sticky="w", padx=5, pady=6)
-                e_m.insert(0, f"{float(m or 0):g}")
-                if es_viajes:
-                    e_m.grid_remove()
-                self.ent_ded[clave] = (e_h, e_m)
-                fila += 1
-            if es_viajes:
-                ctk.CTkLabel(f_ded, text="En plan Por Punto o Viaje ingrese la cantidad de viajes/puntos no realizados.",
-                             font=(familia_fuente, 10), text_color="gray").grid(
-                    row=fila, column=0, columnspan=4, sticky="w", padx=15, pady=(0, 8))
+            f_asi = ctk.CTkFrame(scroll, corner_radius=10, border_width=1, border_color="#e0e0e0")
+            f_asi.pack(fill="x", pady=5, ipady=6)
+
+            def _crear_seccion(titulo, ayuda, color_total, destino):
+                """Crea un cuadro de asientos (fecha, tipo de día, horas, minutos, motivo)."""
+                ctk.CTkLabel(f_asi, text=titulo, font=(familia_fuente, 13, "bold"),
+                             text_color="#1f538d").pack(anchor="w", padx=15, pady=(8, 2))
+                ctk.CTkLabel(f_asi, text=ayuda, font=(familia_fuente, 10), text_color="gray",
+                             justify="left", wraplength=700).pack(anchor="w", padx=15, pady=(0, 6))
+
+                f_cab = ctk.CTkFrame(f_asi, fg_color="transparent")
+                f_cab.pack(fill="x", padx=12)
+                for col, (txt, w) in enumerate((("Fecha", 96), ("", 34), ("Tipo de día", 118),
+                                                ("Horas", 66), ("Minutos", 66), ("Motivo", 220), ("", 32))):
+                    ctk.CTkLabel(f_cab, text=txt, width=w, anchor="w",
+                                 font=(familia_fuente, 10, "bold"),
+                                 text_color="#7f8c8d").grid(row=0, column=col, padx=3, sticky="w")
+
+                contenedor = ctk.CTkFrame(f_asi, fg_color="transparent")
+                contenedor.pack(fill="x", padx=12, pady=(2, 4))
+
+                f_acc = ctk.CTkFrame(f_asi, fg_color="transparent")
+                f_acc.pack(fill="x", padx=12, pady=(2, 4))
+                ctk.CTkButton(f_acc, text="➕ Agregar asiento", width=170,
+                              font=(familia_fuente, 11, "bold"), fg_color="#e67e22",
+                              hover_color="#d35400",
+                              command=lambda d=destino: self._agregar_fila_asiento(d)).pack(
+                    side="left", padx=(0, 8))
+                ctk.CTkButton(f_acc, text="🧹 Vaciar asientos", width=150,
+                              font=(familia_fuente, 11, "bold"), fg_color="#7f8c8d",
+                              hover_color="#606b6b",
+                              command=lambda d=destino: self._vaciar_asientos(d)).pack(side="left")
+
+                lbl = ctk.CTkLabel(f_asi, text="", font=(familia_fuente, 11, "bold"),
+                                   text_color=color_total, justify="left")
+                lbl.pack(anchor="w", padx=15, pady=(2, 8))
+                ctk.CTkFrame(f_asi, height=1, fg_color="#dcdcdc").pack(fill="x", padx=15, pady=(0, 4))
+                return contenedor, lbl
+
+            self.frame_asientos, self.lbl_total_ded = _crear_seccion(
+                "➖ DEDUCCIONES DE LA QUINCENA (asientos con fecha)",
+                ("Registre uno o varios asientos: fecha, horas y minutos no prestados y el motivo.\n"
+                 "El tipo de día (Normal / Domingo / Feriado) se detecta solo con la fecha; puede cambiarlo.\n"
+                 "Estos asientos se RESTAN del cobro y se detallan en el PDF."),
+                "#c0392b", "ded")
+
+            self.frame_extras, self.lbl_total_extras = _crear_seccion(
+                "⏱️ HORAS EXTRAS DE LA QUINCENA (asientos con fecha)",
+                ("Registre las horas trabajadas de más: fecha, horas/minutos extras y el motivo.\n"
+                 "Se valorizan al precio por hora de la unidad según el tipo de día de la fecha\n"
+                 "y SUMAN al cobro: subtotal = base − deducciones + horas extras."),
+                "#27ae60", "ext")
+
+            # Asientos guardados; si el registro es antiguo (sin detalle) se muestra el resumen.
+            asientos_ini = [dict(a) for a in (unidad.get("ded_asientos") or [])]
+            if not asientos_ini:
+                for clave, _etq in CATEGORIAS:
+                    h, m = (unidad.get("ded") or {}).get(clave, [0.0, 0.0])
+                    if float(h or 0) or float(m or 0):
+                        asientos_ini.append(nuevo_asiento_deduccion(
+                            None, clave, h, m, motivo="Sin detalle (registro anterior)"))
+            for a in asientos_ini:
+                self._agregar_fila_asiento("ded", a)
+            for a in (unidad.get("extras_asientos") or []):
+                self._agregar_fila_asiento("ext", a)
+            self._actualizar_total_asientos("ded")
+            self._actualizar_total_asientos("ext")
 
         # ---- Acciones ----
         f_acc = ctk.CTkFrame(scroll, fg_color="transparent")
@@ -2689,16 +3355,192 @@ class DialogoUnidad(ctk.CTkToplevel):
         except ValueError:
             raise ValueError(f"'{nombre}' debe ser un número válido (mayor o igual a 0).")
 
+    # ---------- Asientos con fecha (deducciones y horas extras) ----------
+    def _categoria_para_fecha(self, fecha):
+        """Tipo de día (normal/domingo/feriado) según la quincena cargada."""
+        for d in (getattr(self.app, "dias", None) or []):
+            if d.get("fecha") == fecha:
+                return d.get("categoria", "normal")
+        try:
+            return clasificar_dia(fecha, getattr(self.app, "feriados", None) or {})
+        except Exception:
+            return "normal"
+
+    def _sincronizar_tipo(self, item):
+        """Ajusta el tipo de día del asiento según la fecha escrita."""
+        try:
+            fecha = datetime.strptime(item["fecha"].get().strip(), "%d/%m/%Y").date()
+        except Exception:
+            return
+        try:
+            item["tipo"].set(ETIQUETAS_CORTAS.get(self._categoria_para_fecha(fecha), "Normal"))
+        except Exception:
+            pass
+
+    def _abrir_calendario_asiento(self, item):
+        """Calendario de la quincena para elegir la fecha del asiento."""
+        anio = mes = None
+        dias_q = {}
+        dias = getattr(self.app, "dias", None) or []
+        if dias:
+            anio, mes = dias[0]["fecha"].year, dias[0]["fecha"].month
+            for d in dias:
+                if d["fecha"].year == anio and d["fecha"].month == mes:
+                    dias_q[d["fecha"].day] = d["categoria"]
+        try:
+            CalendarioPopup(self, item["fecha"], lambda: self._sincronizar_tipo(item),
+                            anio=anio, mes=mes, dias_resaltados=dias_q)
+        except Exception as e:
+            print("[Calendario Asiento Error]", e)
+
+    def _widgets_asiento(self, destino):
+        """(contenedor, lista de filas, etiqueta de totales) del cuadro indicado."""
+        if destino == "ext":
+            return self.frame_extras, self.filas_extras, self.lbl_total_extras
+        return self.frame_asientos, self.filas_ded, self.lbl_total_ded
+
+    def _agregar_fila_asiento(self, destino="ded", asiento=None):
+        """Agrega una fila (asiento con fecha) al cuadro de deducciones o de horas extras."""
+        asiento = asiento or {}
+        contenedor, lista, _lbl = self._widgets_asiento(destino)
+        fam = self.familia_fuente
+        fila = ctk.CTkFrame(contenedor, fg_color="transparent")
+        fila.pack(fill="x", pady=1)
+        item = {"frame": fila, "destino": destino}
+
+        e_fecha = ctk.CTkEntry(fila, width=96, placeholder_text="dd/mm/aaaa")
+        e_fecha.grid(row=0, column=0, padx=3, sticky="w")
+        item["fecha"] = e_fecha
+
+        ctk.CTkButton(fila, text="📅", width=30, font=(fam, 12),
+                      command=lambda it=item: self._abrir_calendario_asiento(it)).grid(
+            row=0, column=1, padx=3)
+
+        combo = ctk.CTkOptionMenu(fila, values=list(ETIQUETAS_CORTAS.values()), width=118,
+                                  font=(fam, 11),
+                                  command=lambda _v, d=destino: self._actualizar_total_asientos(d))
+        combo.grid(row=0, column=2, padx=3, sticky="w")
+        item["tipo"] = combo
+
+        e_h = ctk.CTkEntry(fila, width=66, justify="center", placeholder_text="0")
+        e_h.grid(row=0, column=3, padx=3)
+        item["horas"] = e_h
+        e_m = ctk.CTkEntry(fila, width=66, justify="center", placeholder_text="0")
+        e_m.grid(row=0, column=4, padx=3)
+        item["min"] = e_m
+        e_mot = ctk.CTkEntry(fila, width=220, placeholder_text="Motivo / detalle")
+        e_mot.grid(row=0, column=5, padx=3)
+        item["motivo"] = e_mot
+
+        ctk.CTkButton(fila, text="🗑", width=32, font=(fam, 12), fg_color="#e74c3c",
+                      hover_color="#c0392b",
+                      command=lambda it=item: self._quitar_fila_asiento(it)).grid(row=0, column=6, padx=3)
+
+        cat = asiento.get("categoria") if asiento.get("categoria") in ETIQUETAS_CORTAS else "normal"
+        combo.set(ETIQUETAS_CORTAS.get(cat, "Normal"))
+        if asiento.get("fecha"):
+            try:
+                e_fecha.insert(0, asiento["fecha"].strftime("%d/%m/%Y"))
+            except Exception:
+                pass
+        horas_ini = float(asiento.get("horas") or 0)
+        min_ini = float(asiento.get("minutos") or 0)
+        if horas_ini:
+            e_h.insert(0, f"{horas_ini:g}")
+        if min_ini:
+            e_m.insert(0, f"{min_ini:g}")
+        e_mot.insert(0, str(asiento.get("motivo") or ""))
+
+        for w in (e_h, e_m):
+            w.bind("<KeyRelease>", lambda e, d=destino: self._actualizar_total_asientos(d))
+        e_fecha.bind("<KeyRelease>", lambda e, it=item: self._sincronizar_tipo(it))
+        e_fecha.bind("<FocusOut>", lambda e, it=item: self._sincronizar_tipo(it))
+
+        lista.append(item)
+        self._actualizar_total_asientos(destino)
+
+    def _quitar_fila_asiento(self, item):
+        destino = item.get("destino", "ded")
+        try:
+            item["frame"].destroy()
+        except Exception:
+            pass
+        _c, lista, _lbl = self._widgets_asiento(destino)
+        if item in lista:
+            lista.remove(item)
+        self._actualizar_total_asientos(destino)
+
+    def _vaciar_asientos(self, destino="ded"):
+        """Quita todas las filas del cuadro indicado ('ded' o 'ext')."""
+        _c, lista, _lbl = self._widgets_asiento(destino)
+        for item in list(lista):
+            self._quitar_fila_asiento(item)
+
+    def _leer_asientos_filas(self, destino="ded", validar=False):
+        """Lee un cuadro de asientos y devuelve la lista de asientos."""
+        _c, lista, _lbl = self._widgets_asiento(destino)
+        nombre = "Horas extras" if destino == "ext" else "Deducción"
+        asientos = []
+        for i, item in enumerate(lista, start=1):
+            texto = item["fecha"].get().strip()
+            fecha = None
+            if texto:
+                try:
+                    fecha = datetime.strptime(texto, "%d/%m/%Y").date()
+                except Exception:
+                    if validar:
+                        raise ValueError(f"{nombre} {i}: la fecha '{texto}' no es válida (use dd/mm/aaaa).")
+            cat = ETIQUETAS_CORTAS_A_CLAVE.get(item["tipo"].get(), "normal")
+            horas = self._leer_num(item["horas"], f"{nombre} {i}: horas")
+            minutos = self._leer_num(item["min"], f"{nombre} {i}: minutos")
+            asientos.append(nuevo_asiento_deduccion(fecha, cat, horas, minutos, 0.0,
+                                                    item["motivo"].get().strip()))
+        return asientos
+
+    def _actualizar_total_asientos(self, destino="ded"):
+        """Resumen de horas y monto de los asientos (deducido o a sumar por horas extras)."""
+        try:
+            asientos = self._leer_asientos_filas(destino)
+            precios = {"normal": self._leer_num(self.ent_pn, "Precio Día Normal"),
+                       "domingo": self._leer_num(self.ent_pd, "Precio Domingo"),
+                       "feriado": self._leer_num(self.ent_pf, "Precio Feriado")}
+        except Exception:
+            return
+        agrupado = ded_agrupada_desde_asientos(asientos)
+        monto = 0.0
+        partes = []
+        for clave, _etq in CATEGORIAS:
+            h, m = agrupado[clave]
+            horas_cat = h + m / 60.0
+            subtotal = horas_cat * precios[clave]
+            monto += subtotal
+            partes.append(f"{ETIQUETAS_CORTAS[clave]}: {horas_cat:g} h ({formatear_moneda(subtotal)})")
+        resumen = f"Asientos: {len(asientos)}  |  " + "  ·  ".join(partes)
+        if destino == "ext":
+            texto = resumen + f"\nMONTO A SUMAR (HORAS EXTRAS): {formatear_moneda(monto)}"
+            etiqueta = self.lbl_total_extras
+        else:
+            texto = resumen + f"\nMONTO DEDUCIDO: {formatear_moneda(monto)}"
+            etiqueta = self.lbl_total_ded
+        try:
+            etiqueta.configure(text=texto)
+        except Exception:
+            pass
+
     def _aceptar(self, unidad):
         try:
             horas_dia = self._leer_num(self.ent_horas, "Horas al día")
             pn = self._leer_num(self.ent_pn, "Precio Día Normal")
             pd = self._leer_num(self.ent_pd, "Precio Domingo")
             pf = self._leer_num(self.ent_pf, "Precio Feriado")
+            asientos = []
+            extras = []
             ded = {}
-            for clave, (e_h, e_m) in self.ent_ded.items():
-                ded[clave] = [self._leer_num(e_h, f"Deducción {clave}"),
-                              self._leer_num(e_m, f"Deducción minutos {clave}")]
+            if self.con_deducciones:
+                asientos = self._leer_asientos_filas("ded", validar=True)
+                # Las horas por categoría salen de la suma de los asientos con fecha
+                ded = ded_agrupada_desde_asientos(asientos)
+                extras = self._leer_asientos_filas("ext", validar=True)
         except ValueError as e:
             messagebox.showerror("Datos Inválidos", str(e), parent=self)
             return
@@ -2709,6 +3551,8 @@ class DialogoUnidad(ctk.CTkToplevel):
         resultado["precio_feriado"] = pf
         if self.con_deducciones:
             resultado["ded"] = ded
+            resultado["ded_asientos"] = asientos
+            resultado["extras_asientos"] = extras
         self.result = resultado
         self.destroy()
 
@@ -3590,6 +4434,9 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
                 pdf_ruta = fila[0] or ""
             cursor.execute("DELETE FROM cobranza_detalle_dias WHERE id_cobranza=%s", (id_rec,))
             cursor.execute("DELETE FROM cobranza_quincena_unidades WHERE id_cobranza=%s", (id_rec,))
+            cursor.execute("DELETE FROM cobranza_quincena_viajes WHERE id_cobranza=%s", (id_rec,))
+            cursor.execute("DELETE FROM cobranza_viajes_detalle WHERE id_cobranza=%s", (id_rec,))
+            cursor.execute("DELETE FROM cobranza_deducciones_detalle WHERE id_cobranza=%s", (id_rec,))
             cursor.execute("DELETE FROM cobranza_quincenas WHERE id=%s", (id_rec,))
             conn.commit()
             registrar_auditoria(self.app.usuario_activo, "Cobranza", f"Eliminó el cálculo de cobranza N° {id_rec}")

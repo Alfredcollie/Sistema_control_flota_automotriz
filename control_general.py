@@ -492,6 +492,88 @@ def lanzar_sync_background():
     threading.Thread(target=ejecutar_sincronizacion_silenciosa, daemon=True).start()
 
 
+def limpiar_basura_macos(ruta_drive="", borrar_nube=True):
+    """Elimina los archivos basura de macOS (.DS_Store y ._*) de la carpeta local
+    de este equipo y de la carpeta de la nube.
+
+    Devuelve (ok, mensaje).
+    """
+    config = cargar_configuracion_general()
+    local = os.path.expanduser(normalizar_ruta_local(ruta_drive or config.get("ruta_drive", "")))
+    remote = str(config.get("rclone_remote", "") or "").strip()
+    nube = str(config.get("rclone_ruta_nube", "") or "").strip()
+
+    es_basura = lambda n: n.startswith(".DS_Store") or n.startswith("._")   # noqa: E731
+
+    borrados_local = 0
+    if local and os.path.isdir(local):
+        for raiz, _carpetas, archivos in os.walk(local):
+            for nombre in archivos:
+                if es_basura(nombre):
+                    try:
+                        os.remove(os.path.join(raiz, nombre))
+                        borrados_local += 1
+                    except Exception:
+                        pass
+
+    lineas = [f"🧹 Limpieza de archivos basura de macOS (.DS_Store)",
+              f"Carpeta local: {local or '(no configurada)'}",
+              f"   Archivos eliminados en local: {borrados_local}"]
+
+    if not borrar_nube or not remote or not nube:
+        return True, "\n".join(lineas)
+
+    cmd = obtener_comando_rclone()
+    args_cfg = _argumentos_config_rclone()
+    ruta_remota = f"{remote}{nube}" if remote.endswith(":") else f"{remote}:{nube}"
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x08000000
+
+    # Si el equipo tiene filtros globales por variable de entorno (RCLONE_EXCLUDE),
+    # la limpieza debe ignorarlos: si no, los archivos basura no se verían ni borrarían.
+    entorno_limpio = {k: v for k, v in os.environ.items()
+                      if k.upper() not in ("RCLONE_EXCLUDE", "RCLONE_EXCLUDE_FROM",
+                                           "RCLONE_FILTER", "RCLONE_FILTER_FROM",
+                                           "RCLONE_INCLUDE", "RCLONE_INCLUDE_FROM")}
+
+    def _correr(args, timeout):
+        return subprocess.run([cmd, *args_cfg, *args], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout,
+                              env=entorno_limpio, **kwargs)
+
+    try:
+        previos = _correr(["lsf", ruta_remota, "--recursive", "--files-only",
+                           "--include", ".DS_Store*", "--include", "._*"], 1800)
+        cantidad = len([l for l in (previos.stdout or "").splitlines() if l.strip()])
+    except Exception:
+        cantidad = -1
+
+    try:
+        res = _correr(["delete", ruta_remota, "--include", ".DS_Store*", "--include", "._*",
+                       "--drive-use-trash=false", "--fast-list", "--quiet"], 3600)
+        if res.returncode != 0:
+            detalle = (res.stderr or "").strip()[:250]
+            return False, "\n".join(lineas + [f"Nube: no se pudo completar la limpieza.\n{detalle}"])
+    except subprocess.TimeoutExpired:
+        return False, "\n".join(lineas + ["Nube: la limpieza tardó demasiado (se puede repetir luego)."])
+    except Exception as e:
+        return False, "\n".join(lineas + [f"Nube: error al limpiar: {e}"])
+
+    try:
+        restantes = _correr(["lsf", ruta_remota, "--recursive", "--files-only",
+                             "--include", ".DS_Store*", "--include", "._*"], 1800)
+        quedan = len([l for l in (restantes.stdout or "").splitlines() if l.strip()])
+    except Exception:
+        quedan = -1
+
+    if cantidad >= 0:
+        lineas.append(f"   Archivos en la nube antes de limpiar: {cantidad}")
+    lineas.append(f"   Archivos en la nube ahora: {quedan if quedan >= 0 else 'no se pudo verificar'}")
+    lineas.append("✅ Limpieza terminada.")
+    return True, "\n".join(lineas)
+
+
 def verificar_sincronizacion_carpeta():
     """Comprueba que la carpeta local de este equipo esté REALMENTE enlazada con
     la nube del equipo principal (usando la cuenta de Rclone compartida).
@@ -2085,7 +2167,11 @@ class ControlGeneralEventos:
                 kwargs = {}
                 if sys.platform == "win32":
                     kwargs["creationflags"] = 0x08000000
-                result = subprocess.run([cmd_rclone, *args_cfg, "config", "create", remote, "drive", "scope", "drive"], capture_output=True, text=True, timeout=60, **kwargs)
+                # 300 s: el inicio de sesión de Google en el navegador puede tardar
+                # más de un minuto y antes se cortaba la vinculación a los 60 s.
+                result = subprocess.run([cmd_rclone, *args_cfg, "config", "create", remote, "drive", "scope", "drive"],
+                                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                        timeout=300, **kwargs)
                 if result.returncode == 0:
                     # Este equipo queda registrado como propietario de la
                     # sincronización (el primero que lo registra es "el de siempre").
@@ -2290,10 +2376,39 @@ class ControlGeneralEventos:
                                       command=_compartir_cuenta_principal)
         btn_compartir.pack(side="left")
 
+        def _limpiar_basura():
+            """Borra los .DS_Store de la carpeta local y de la nube."""
+            lbl_sync.configure(text="⏳ Limpiando archivos .DS_Store (local y nube)… puede tardar unos minutos",
+                               text_color="#555555")
+
+            def tarea():
+                try:
+                    ok, msg = limpiar_basura_macos()
+                except Exception as e:
+                    ok, msg = False, f"No se pudo limpiar: {e}"
+
+                def pintar():
+                    try:
+                        lbl_sync.configure(text=msg, text_color="#1e6b3a" if ok else "#c0392b")
+                    except Exception:
+                        pass
+
+                try:
+                    v_conf.after(0, pintar)
+                except Exception:
+                    pass
+
+            threading.Thread(target=tarea, daemon=True).start()
+
         btn_verificar_sync = ctk.CTkButton(f_pol_btns, text="🔍 Verificar sincronización de la carpeta",
                                            font=("Arial", 11, "bold"), fg_color="#2c3e50", hover_color="#1f2d3a",
                                            command=_verificar_sync)
         btn_verificar_sync.pack(side="left", padx=(8, 0))
+
+        btn_limpiar = ctk.CTkButton(f_pol_btns, text="🧹 Limpiar .DS_Store (local y nube)",
+                                    font=("Arial", 11, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
+                                    command=_limpiar_basura)
+        btn_limpiar.pack(side="left", padx=(8, 0))
 
         lbl_sync = ctk.CTkLabel(f_politica, text="", font=("Arial", 10), justify="left",
                                 anchor="w", wraplength=760)
