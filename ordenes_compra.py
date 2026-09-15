@@ -17,6 +17,7 @@ import threading
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE, ruta_para_guardar
+from tareas_seguras import ejecutar_en_hilo
 
 try:
     from reportlab.pdfgen import canvas
@@ -443,7 +444,7 @@ class OrdenesCompraApp:
             self.cmb_placa.set("Cargando vehículos...")
             self.cmb_proveedor.set("Cargando proveedores...")
             
-            def tarea_combos():
+            def tarea_combos(estado):
                 vehs = []
                 provs = []
                 conn = conectar_db(silencioso=True)
@@ -460,9 +461,12 @@ class OrdenesCompraApp:
                     except Exception: pass
                     finally: liberar_conexion(conn)
 
-                self.parent_frame.after(0, lambda: self._actualizar_combos(vehs, provs))
-            
-            threading.Thread(target=tarea_combos, daemon=True).start()
+                estado["vehiculos"] = vehs
+                estado["proveedores"] = provs
+
+            ejecutar_en_hilo(self.parent_frame, tarea_combos,
+                             al_terminar=lambda estado: self._actualizar_combos(estado.get("vehiculos") or [],
+                                                                                estado.get("proveedores") or []))
 
     def _actualizar_combos(self, vehiculos, proveedores):
         if vehiculos:
@@ -502,7 +506,7 @@ class OrdenesCompraApp:
         else:
             self.tree_historial.insert("", tk.END, values=("", "Cargando datos...", "", "", "", "", ""))
             
-            def tarea_historial():
+            def tarea_historial(estado):
                 datos_db = []
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -526,9 +530,10 @@ class OrdenesCompraApp:
                     finally:
                         liberar_conexion(conn)
 
-                self.parent_frame.after(0, lambda: self._pintar_historial(datos_db))
-                
-            threading.Thread(target=tarea_historial, daemon=True).start()
+                estado["datos"] = datos_db
+
+            ejecutar_en_hilo(self.parent_frame, tarea_historial,
+                             al_terminar=lambda estado: self._pintar_historial(estado.get("datos") or []))
 
     def _pintar_historial(self, datos):
         for item in self.tree_historial.get_children():

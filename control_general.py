@@ -61,6 +61,7 @@ from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo, seleccionar_carpeta_dialogo
 from app_paths import CONFIG_FILE, DATA_DIR, obtener_device_id
+from tareas_seguras import ejecutar_en_hilo
 from config_nube import (cargar_bancos, guardar_bancos, cargar_cuenta_grifo,
                          guardar_cuenta_grifo, clave_existe_en_nube,
                          cargar_rclone_sync, registrar_rclone_sync, borrar_rclone_sync,
@@ -2349,24 +2350,21 @@ class ControlGeneralEventos:
             """Comprueba con Rclone que la carpeta local vea la nube del principal."""
             lbl_sync.configure(text="⏳ Verificando con Rclone… (puede tardar unos segundos)", text_color="#555555")
 
-            def tarea():
+            def tarea(estado):
+                # Hilo secundario: solo la verificación con Rclone
                 try:
                     ok, msg = verificar_sincronizacion_carpeta()
                 except Exception as e:
                     ok, msg = False, f"No se pudo verificar: {e}"
+                estado["ok"] = ok
+                estado["msg"] = msg
 
-                def pintar():
-                    try:
-                        lbl_sync.configure(text=msg, text_color="#1e6b3a" if ok else "#c0392b")
-                    except Exception:
-                        pass
+            def pintar(estado):
+                # Hilo principal: se actualiza la etiqueta de estado
+                lbl_sync.configure(text=estado.get("msg", ""),
+                                   text_color="#1e6b3a" if estado.get("ok") else "#c0392b")
 
-                try:
-                    v_conf.after(0, pintar)
-                except Exception:
-                    pass
-
-            threading.Thread(target=tarea, daemon=True).start()
+            ejecutar_en_hilo(v_conf, tarea, al_terminar=pintar)
 
         btn_usar_principal = ctk.CTkButton(f_pol_btns, text="🔗 Usar la cuenta del equipo principal",
                                            font=("Arial", 11, "bold"), fg_color="#1f538d", hover_color="#163b65",
@@ -2383,24 +2381,21 @@ class ControlGeneralEventos:
             lbl_sync.configure(text="⏳ Limpiando archivos .DS_Store (local y nube)… puede tardar unos minutos",
                                text_color="#555555")
 
-            def tarea():
+            def tarea(estado):
+                # Hilo secundario: solo el borrado de archivos .DS_Store
                 try:
                     ok, msg = limpiar_basura_macos()
                 except Exception as e:
                     ok, msg = False, f"No se pudo limpiar: {e}"
+                estado["ok"] = ok
+                estado["msg"] = msg
 
-                def pintar():
-                    try:
-                        lbl_sync.configure(text=msg, text_color="#1e6b3a" if ok else "#c0392b")
-                    except Exception:
-                        pass
+            def pintar(estado):
+                # Hilo principal: se actualiza la etiqueta de estado
+                lbl_sync.configure(text=estado.get("msg", ""),
+                                   text_color="#1e6b3a" if estado.get("ok") else "#c0392b")
 
-                try:
-                    v_conf.after(0, pintar)
-                except Exception:
-                    pass
-
-            threading.Thread(target=tarea, daemon=True).start()
+            ejecutar_en_hilo(v_conf, tarea, al_terminar=pintar)
 
         btn_verificar_sync = ctk.CTkButton(f_pol_btns, text="🔍 Verificar sincronización de la carpeta",
                                            font=("Arial", 11, "bold"), fg_color="#2c3e50", hover_color="#1f2d3a",

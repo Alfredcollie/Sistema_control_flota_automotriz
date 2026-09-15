@@ -16,6 +16,7 @@ from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE, ruta_para_guardar
+from tareas_seguras import ejecutar_en_hilo
 
 try:
     import pdfplumber
@@ -522,7 +523,7 @@ class OrdenesCompraClienteApp:
         else:
             self.tbl_cli.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", "", ""))
             
-            def tarea_descarga():
+            def tarea_descarga(estado):
                 conn = conectar_db(silencioso=True)
                 if not conn: return
                 try:
@@ -541,13 +542,17 @@ class OrdenesCompraClienteApp:
                     
                     datos_bd = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_bd)
-                    self.parent_frame.after(0, lambda: self._pintar_datos_en_tabla(datos_bd, offset))
+                    estado["datos"] = datos_bd
                 except Exception as e:
                     print("Error OC Clientes:", e)
                 finally:
                     liberar_conexion(conn)
 
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+            def _pintar_descarga(estado):
+                if "datos" in estado:
+                    self._pintar_datos_en_tabla(estado["datos"], offset)
+
+            ejecutar_en_hilo(self.parent_frame, tarea_descarga, al_terminar=_pintar_descarga)
 
     def _pintar_datos_en_tabla(self, datos, offset):
         for item in self.tbl_cli.get_children():

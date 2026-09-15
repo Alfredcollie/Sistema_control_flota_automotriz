@@ -19,6 +19,7 @@ from datetime import datetime
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
+from tareas_seguras import ejecutar_en_hilo
 
 try:
     import fitz  
@@ -253,7 +254,8 @@ class FlotaAutomotrizApp:
         messagebox.showinfo("Procesando", "La Inteligencia Artificial está analizando el documento.\nEsto tomará unos segundos; la ventana seguirá respondiendo...")
 
         # 🚀 RENDIMIENTO: el análisis de la IA (PyMuPDF + API) corre en un hilo para
-        # no congelar la interfaz. Los campos se rellenan en el hilo principal con after(0).
+        # no congelar la interfaz. Los campos se rellenan en el hilo principal
+        # mediante 'al_terminar' de 'tareas_seguras.ejecutar_en_hilo'.
         def procesar_en_hilo():
             try:
                 if ruta_archivo.lower().endswith(".pdf"):
@@ -370,11 +372,15 @@ class FlotaAutomotrizApp:
 
             messagebox.showinfo("Lectura Exitosa", "La IA ha extraído los datos. El archivo está listo para ser guardado con el vehículo.")
 
-        def correr():
-            resultado = procesar_en_hilo()
-            self.parent_frame.after(0, lambda: aplicar_resultado(resultado))
+        def correr(estado):
+            # Hilo secundario: solo el trabajo pesado (PyMuPDF + API)
+            estado["resultado"] = procesar_en_hilo()
 
-        threading.Thread(target=correr, daemon=True).start()
+        def pintar(estado):
+            # Hilo principal: se rellenan los campos del formulario
+            aplicar_resultado(estado.get("resultado"))
+
+        ejecutar_en_hilo(self.parent_frame, correr, al_terminar=pintar)
 
     def abrir_tarjeta(self):
         from app_paths import resolver_ruta_archivo
@@ -395,7 +401,7 @@ class FlotaAutomotrizApp:
         if len(placa) < 6 or not placa.isalnum():
             return messagebox.showwarning("Placa Inválida", "Ingrese un número de placa válido (Ej: ABC123).")
 
-        def tarea_api():
+        def tarea_api(estado):
             try:
                 # Contexto SSL seguro y compatible con macOS (ver _contexto_ssl_seguro)
                 ctx = _contexto_ssl_seguro()
@@ -405,19 +411,29 @@ class FlotaAutomotrizApp:
                 
                 with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                     if response.status == 200:
-                        data = json.loads(response.read().decode())
-                        self.parent_frame.after(0, lambda: self._aplicar_datos_api(data))
+                        estado["datos"] = json.loads(response.read().decode())
                     else:
-                        self.parent_frame.after(0, lambda: messagebox.showwarning("Sin Resultados", "No se encontró la placa en la base de datos pública."))
+                        estado["aviso"] = ("warning", "Sin Resultados", "No se encontró la placa en la base de datos pública.")
             except urllib.error.HTTPError as e:
                 if e.code in [401, 403, 404]:
-                    self.parent_frame.after(0, lambda: messagebox.showinfo("API Restringida", "La consulta automática requiere API Key. Usa el botón 'Leer Tarjeta (IA)'."))
+                    estado["aviso"] = ("info", "API Restringida", "La consulta automática requiere API Key. Usa el botón 'Leer Tarjeta (IA)'.")
                 else:
-                    self.parent_frame.after(0, lambda: messagebox.showwarning("Error de API", f"No se pudo contactar al servidor ({e.code})."))
+                    estado["aviso"] = ("warning", "Error de API", f"No se pudo contactar al servidor ({e.code}).")
             except Exception:
-                self.parent_frame.after(0, lambda: messagebox.showinfo("Servicio no disponible", "La conexión a la base de datos vehicular no está disponible. Usa 'Leer Tarjeta (IA)'."))
+                estado["aviso"] = ("info", "Servicio no disponible", "La conexión a la base de datos vehicular no está disponible. Usa 'Leer Tarjeta (IA)'.")
 
-        threading.Thread(target=tarea_api, daemon=True).start()
+        def pintar_api(estado):
+            # Hilo principal: se actualizan los campos y se avisa al usuario
+            if "datos" in estado:
+                return self._aplicar_datos_api(estado["datos"])
+            if estado.get("aviso"):
+                tipo, titulo, mensaje = estado["aviso"]
+                if tipo == "info":
+                    messagebox.showinfo(titulo, mensaje)
+                else:
+                    messagebox.showwarning(titulo, mensaje)
+
+        ejecutar_en_hilo(self.parent_frame, tarea_api, al_terminar=pintar_api)
 
     def _aplicar_datos_api(self, data):
         if "marca" in data: self.ent_marca.delete(0, tk.END); self.ent_marca.insert(0, data.get("marca", ""))
@@ -668,7 +684,7 @@ class FlotaAutomotrizApp:
         else:
             self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", "", "", ""))
             
-            def tarea_descarga():
+            def tarea_descarga(estado):
                 conn = conectar_db(silencioso=True)
                 if not conn: return
                 try:
@@ -689,13 +705,19 @@ class FlotaAutomotrizApp:
                     
                     datos_db = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_db)
-                    self.parent_frame.after(0, lambda: self._pintar_vehiculos(datos_db))
+                    estado["vehiculos"] = datos_db
                 except Exception as e:
                     print(f"Error cargando tabla de flota: {e}")
                 finally:
                     liberar_conexion(conn)
 
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+            def pintar_descarga(estado):
+                # Hilo principal: si no hubo conexión o falló la consulta, la tabla queda igual
+                if "vehiculos" not in estado:
+                    return
+                self._pintar_vehiculos(estado["vehiculos"])
+
+            ejecutar_en_hilo(self.parent_frame, tarea_descarga, al_terminar=pintar_descarga)
 
     def _pintar_vehiculos(self, datos):
         for item in self.tabla.get_children():

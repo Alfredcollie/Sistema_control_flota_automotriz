@@ -24,6 +24,7 @@ from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE, eliminar_archivo, ruta_para_guardar, resolver_ruta_archivo
+from tareas_seguras import ejecutar_en_hilo
 from config_nube import cargar_bancos
 
 try:
@@ -257,14 +258,17 @@ def solicitar_otp(accion, callback_exito, parent_window):
 
     # 🚀 RENDIMIENTO: el envío (Telegram/SMTP) corre en un hilo para no congelar la
     # interfaz; la ventana OTP se muestra recién cuando el código fue enviado.
-    def _enviar_y_continuar():
+    # 🔒 macOS: el hilo NO toca la interfaz; los avisos y la ventana OTP se abren
+    #    en 'al_terminar', ya en el hilo principal.
+    def _enviar_y_continuar(estado):         # 👈 corre en el HILO SECUNDARIO
         exito_envio = False
         try:
             if "Telegram" in metodo:
                 token = config.get("tel_bot_token", "").strip()
                 chat_id = config.get("tel_chat_id", "").strip()
                 if not token or not chat_id:
-                    parent_window.after(0, lambda: messagebox.showerror("Error", "Faltan credenciales de Telegram en Configuración General.", parent=parent_window))
+                    estado["error_titulo"] = "Error"
+                    estado["error_texto"] = "Faltan credenciales de Telegram en Configuración General."
                     return
                 url = f"https://api.telegram.org/bot{token}/sendMessage"
                 data = urllib.parse.urlencode({"chat_id": chat_id, "text": mensaje}).encode("utf-8")
@@ -280,7 +284,8 @@ def solicitar_otp(accion, callback_exito, parent_window):
                 dest = config.get("email_dest", "").strip()
 
                 if not user or not password or not dest:
-                    parent_window.after(0, lambda: messagebox.showerror("Error", "Faltan credenciales de correo en Configuración General.", parent=parent_window))
+                    estado["error_titulo"] = "Error"
+                    estado["error_texto"] = "Faltan credenciales de correo en Configuración General."
                     return
 
                 msg = MIMEText(mensaje)
@@ -296,20 +301,31 @@ def solicitar_otp(accion, callback_exito, parent_window):
                 exito_envio = True
 
             elif "SMS" in metodo:
-                parent_window.after(0, lambda: messagebox.showwarning("Aviso", "El módulo SMS Twilio requiere instalación externa. Se imprimirá el código en la consola del servidor por ahora.", parent=parent_window))
+                estado["aviso_sms"] = True
                 print(f"--- [ALERTA SMS TWILIO] CÓDIGO OTP --- : {codigo_otp}")
                 exito_envio = True
         except Exception as e:
-            parent_window.after(0, lambda: messagebox.showerror("Error de Envío OTP", f"No se pudo conectar con el servicio {metodo}:\n{e}", parent=parent_window))
+            estado["error_titulo"] = "Error de Envío OTP"
+            estado["error_texto"] = f"No se pudo conectar con el servicio {metodo}:\n{e}"
             return
 
         if not exito_envio:
-            parent_window.after(0, lambda: messagebox.showerror("Error de Envío OTP", "No se pudo enviar el código de verificación. Verifique las credenciales en Configuración General.", parent=parent_window))
+            estado["error_titulo"] = "Error de Envío OTP"
+            estado["error_texto"] = "No se pudo enviar el código de verificación. Verifique las credenciales en Configuración General."
             return
 
-        parent_window.after(0, _mostrar_ventana_otp)
+        estado["mostrar_otp"] = True
 
-    threading.Thread(target=_enviar_y_continuar, daemon=True).start()
+    def _terminar_envio(estado):             # 👈 corre en el HILO PRINCIPAL
+        if estado.get("error_texto"):
+            messagebox.showerror(estado.get("error_titulo") or "Error", estado["error_texto"], parent=parent_window)
+            return
+        if estado.get("aviso_sms"):
+            messagebox.showwarning("Aviso", "El módulo SMS Twilio requiere instalación externa. Se imprimirá el código en la consola del servidor por ahora.", parent=parent_window)
+        if estado.get("mostrar_otp"):
+            _mostrar_ventana_otp()
+
+    ejecutar_en_hilo(parent_window, _enviar_y_continuar, al_terminar=_terminar_envio)
 
 # =========================================================
 # CLASE: MINI CALENDARIO COMPARTIDO
@@ -509,7 +525,7 @@ class FacturasEmitidasTab:
             if parts[1].strip().isdigit():
                 cfg_num = int(parts[1].strip())
 
-        def tarea_sugerir():
+        def tarea_sugerir(estado):               # 👈 corre en el HILO SECUNDARIO
             conn = conectar_db(silencioso=True)
             db_num = 0
             db_serie = cfg_serie
@@ -540,9 +556,13 @@ class FacturasEmitidasTab:
                 final_num = db_num + 1
 
             nuevo_doc = f"{final_serie}-{final_num}"
-            self.main_root.after(0, lambda: self._aplicar_correlativo(nuevo_doc))
+            estado["nuevo_doc"] = nuevo_doc
 
-        threading.Thread(target=tarea_sugerir, daemon=True).start()
+        def _aplicar_correlativo_hilo(estado):   # 👈 corre en el HILO PRINCIPAL
+            if estado.get("nuevo_doc"):
+                self._aplicar_correlativo(estado["nuevo_doc"])
+
+        ejecutar_en_hilo(self.main_root, tarea_sugerir, al_terminar=_aplicar_correlativo_hilo)
 
     def _aplicar_correlativo(self, nuevo_doc):
         self.ent_nro_doc.delete(0, tk.END)
@@ -1025,7 +1045,7 @@ class FacturasEmitidasTab:
                 self.combo_oc.configure(values=ocs_cache)
                 self.combo_oc.set("--- Sin Orden de Compra ---")
         else:
-            def tarea_ocs():
+            def tarea_ocs(estado):               # 👈 corre en el HILO SECUNDARIO
                 ocs = ["--- Sin Orden de Compra ---"]
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -1036,8 +1056,13 @@ class FacturasEmitidasTab:
                         cache_sistema.guardar("lista_ocs_combobox", ocs)
                     except: pass
                     finally: liberar_conexion(conn)
-                self.main_root.after(0, lambda: self._aplicar_ocs(ocs))
-            threading.Thread(target=tarea_ocs, daemon=True).start()
+                estado["ocs"] = ocs
+
+            def _aplicar_ocs_hilo(estado):       # 👈 corre en el HILO PRINCIPAL
+                if estado.get("ocs"):
+                    self._aplicar_ocs(estado["ocs"])
+
+            ejecutar_en_hilo(self.main_root, tarea_ocs, al_terminar=_aplicar_ocs_hilo)
 
     def _aplicar_ocs(self, ocs):
         if hasattr(self, 'combo_oc'):
@@ -1074,7 +1099,7 @@ class FacturasEmitidasTab:
             self.cargar_ordenes_compra()
             return
         
-        def tarea_ruc():
+        def tarea_ruc(estado):                     # 👈 corre en el HILO SECUNDARIO
             ruc_db = ""
             conn = conectar_db(silencioso=True)
             if conn:
@@ -1085,9 +1110,12 @@ class FacturasEmitidasTab:
                     if res: ruc_db = res[0]
                 except: pass
                 finally: liberar_conexion(conn)
-            self.main_root.after(0, lambda: self._aplicar_ruc(ruc_db))
-            
-        threading.Thread(target=tarea_ruc, daemon=True).start()
+            estado["ruc_db"] = ruc_db
+
+        def _aplicar_ruc_hilo(estado):           # 👈 corre en el HILO PRINCIPAL
+            self._aplicar_ruc(estado.get("ruc_db") or "")
+
+        ejecutar_en_hilo(self.main_root, tarea_ruc, al_terminar=_aplicar_ruc_hilo)
 
     def _aplicar_ruc(self, ruc_db):
         if not getattr(self, 'bloquear_autocompletado_ruc', False):
@@ -1110,7 +1138,7 @@ class FacturasEmitidasTab:
         if clis is not None:
             self._aplicar_clientes_combo(clis)
         else:
-            def tarea_clientes():
+            def tarea_clientes(estado):          # 👈 corre en el HILO SECUNDARIO
                 clis_bd = []
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -1121,8 +1149,12 @@ class FacturasEmitidasTab:
                         cache_sistema.guardar('lista_clientes_combobox', clis_bd)
                     except: pass
                     finally: liberar_conexion(conn)
-                self.main_root.after(0, lambda: self._aplicar_clientes_combo(clis_bd))
-            threading.Thread(target=tarea_clientes, daemon=True).start()
+                estado["clis_bd"] = clis_bd
+
+            def _aplicar_clientes_hilo(estado):  # 👈 corre en el HILO PRINCIPAL
+                self._aplicar_clientes_combo(estado.get("clis_bd") or [])
+
+            ejecutar_en_hilo(self.main_root, tarea_clientes, al_terminar=_aplicar_clientes_hilo)
 
     def _aplicar_clientes_combo(self, clis):
         if clis:
@@ -1140,7 +1172,7 @@ class FacturasEmitidasTab:
     # =========================================================
     def cargar_cobranzas_pendientes(self):
         """Carga en el desplegable los cálculos de cobranza aún NO facturados."""
-        def tarea_cobranzas():
+        def tarea_cobranzas(estado):             # 👈 corre en el HILO SECUNDARIO
             pend = {}
             conn = conectar_db(silencioso=True)
             if conn:
@@ -1185,8 +1217,12 @@ class FacturasEmitidasTab:
                     pass
                 finally:
                     liberar_conexion(conn)
-            self.main_root.after(0, lambda: self._aplicar_cobranzas_combo(pend))
-        threading.Thread(target=tarea_cobranzas, daemon=True).start()
+            estado["pend"] = pend
+
+        def _aplicar_cobranzas_hilo(estado):     # 👈 corre en el HILO PRINCIPAL
+            self._aplicar_cobranzas_combo(estado.get("pend") or {})
+
+        ejecutar_en_hilo(self.main_root, tarea_cobranzas, al_terminar=_aplicar_cobranzas_hilo)
 
     def _aplicar_cobranzas_combo(self, pend):
         self.cobranzas_pendientes = pend
@@ -1441,7 +1477,7 @@ class FacturasEmitidasTab:
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", "", "", "", "", "", ""))
             
-            def tarea_descarga():
+            def tarea_descarga(estado):          # 👈 corre en el HILO SECUNDARIO
                 conn = conectar_db(silencioso=True)
                 if not conn: return
                 try:
@@ -1464,13 +1500,17 @@ class FacturasEmitidasTab:
                     
                     datos_db = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_db)
-                    self.main_root.after(0, lambda: self._pintar_facturas(datos_db))
+                    estado["datos_db"] = datos_db
                 except Exception as e:
                     print(f"Error cargando tabla de facturas: {e}")
                 finally:
                     liberar_conexion(conn)
 
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+            def _pintar_facturas_hilo(estado):   # 👈 corre en el HILO PRINCIPAL
+                if estado.get("datos_db") is not None:
+                    self._pintar_facturas(estado["datos_db"])
+
+            ejecutar_en_hilo(self.main_root, tarea_descarga, al_terminar=_pintar_facturas_hilo)
 
     def _pintar_facturas(self, datos):
         for item in self.tabla.get_children():
@@ -2205,7 +2245,7 @@ class CuentasPorCobrarTab:
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", "", "", "", ""))
             
-            def tarea_descarga():
+            def tarea_descarga(estado):          # 👈 corre en el HILO SECUNDARIO
                 conn = conectar_db(silencioso=True)
                 if not conn: return
                 
@@ -2291,9 +2331,14 @@ class CuentasPorCobrarTab:
                 finally:
                     liberar_conexion(conn)
 
-                self.main_root.after(0, lambda: self._pintar_cobros(filas_procesadas, total_pendiente_global, facturas_con_cuenta))
-                
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+                estado["filas"] = filas_procesadas
+                estado["total_pendiente"] = total_pendiente_global
+                estado["facturas_con_cuenta"] = facturas_con_cuenta
+
+            def _pintar_cobros_hilo(estado):     # 👈 corre en el HILO PRINCIPAL
+                self._pintar_cobros(estado["filas"], estado["total_pendiente"], estado["facturas_con_cuenta"])
+
+            ejecutar_en_hilo(self.main_root, tarea_descarga, al_terminar=_pintar_cobros_hilo)
 
     def _pintar_cobros(self, filas, total_pendiente, facturas_con_cuenta):
         for fila in self.tabla.get_children(): self.tabla.delete(fila)
@@ -2866,7 +2911,7 @@ class NotasCreditoTab:
         txt_info = ctk.CTkTextbox(v_sire, height=100, font=("Arial", 10))
         txt_info.pack(fill="x", padx=25, pady=10)
 
-        def ejecucion_sire():
+        def ejecucion_sire(estado):              # 👈 corre en el HILO SECUNDARIO
             try:
                 url_token = "https://api-seguridad.sunat.gob.pe/v1/clienttoken"
                 headers_token = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -2889,8 +2934,9 @@ class NotasCreditoTab:
                 except Exception:
                     pass
 
-                v_sire.after(0, lambda: prog.set(0.6))
-                v_sire.after(0, lambda: lbl_status.configure(text="📥 Descargando Registro de Ventas RVIE...", text_color="#1f538d"))
+                estado["progreso"] = 0.6
+                estado["texto"] = "📥 Descargando Registro de Ventas RVIE..."
+                estado["color"] = "#1f538d"
 
                 datos_nc = []
                 if token_access:
@@ -2906,32 +2952,36 @@ class NotasCreditoTab:
                     except Exception:
                         pass
                 
-                v_sire.after(0, lambda: prog.set(1.0))
+                estado["progreso"] = 1.0
                 
-                msg_final = (
+                estado["mensaje"] = (
                     f"✅ Conexión completada con éxito.\n"
                     f"• Periodo Sincronizado: {periodo}\n"
                     f"• Notas de Crédito Encontradas: {len(datos_nc)}\n\n"
                     f"El registro ha sido actualizado con los datos oficiales de SUNAT (RVIE)."
                 )
                 
-                def finalizar():
-                    lbl_status.configure(text="✅ Sincronización SIRE Finalizada", text_color="#27ae60")
-                    txt_info.delete("1.0", tk.END)
-                    txt_info.insert("1.0", msg_final)
-                    self.cargar_datos_nc(reset_pagina=True)
-
-                v_sire.after(0, finalizar)
-
             except Exception as e:
-                def mostrar_err():
-                    lbl_status.configure(text="❌ Error en Conexión SIRE", text_color="#c0392b")
-                    txt_info.delete("1.0", tk.END)
-                    txt_info.insert("1.0", f"Fallo al conectar con SUNAT:\n{e}")
-                v_sire.after(0, mostrar_err)
+                estado["error"] = e
 
-        import threading
-        threading.Thread(target=ejecucion_sire, daemon=True).start()
+        def aplicar_sire(estado):                # 👈 corre en el HILO PRINCIPAL (cada sondeo)
+            if "progreso" in estado:
+                prog.set(estado["progreso"])
+            if "texto" in estado:
+                lbl_status.configure(text=estado["texto"], text_color=estado.get("color", "#1f538d"))
+
+        def terminar_sire(estado):               # 👈 corre en el HILO PRINCIPAL
+            if estado.get("error"):
+                lbl_status.configure(text="❌ Error en Conexión SIRE", text_color="#c0392b")
+                txt_info.delete("1.0", tk.END)
+                txt_info.insert("1.0", f"Fallo al conectar con SUNAT:\n{estado['error']}")
+                return
+            lbl_status.configure(text="✅ Sincronización SIRE Finalizada", text_color="#27ae60")
+            txt_info.delete("1.0", tk.END)
+            txt_info.insert("1.0", estado.get("mensaje", ""))
+            self.cargar_datos_nc(reset_pagina=True)
+
+        ejecutar_en_hilo(v_sire, ejecucion_sire, aplicar=aplicar_sire, al_terminar=terminar_sire)
 
     def crear_interfaz(self):
         f_top = ctk.CTkFrame(self.tab_frame, corner_radius=8, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
@@ -3048,7 +3098,7 @@ class NotasCreditoTab:
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", ""))
             
-            def tarea_descarga():
+            def tarea_descarga(estado):          # 👈 corre en el HILO SECUNDARIO
                 conn = conectar_db(silencioso=True)
                 if not conn: return
                 try:
@@ -3069,13 +3119,17 @@ class NotasCreditoTab:
                         
                     datos_db = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_db)
-                    self.main_root.after(0, lambda: self._pintar_notas_credito(datos_db))
+                    estado["datos_db"] = datos_db
                 except Exception as e:
                     print("Error cargando Notas de Crédito:", e)
                 finally:
                     liberar_conexion(conn)
 
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+            def _pintar_notas_hilo(estado):      # 👈 corre en el HILO PRINCIPAL
+                if estado.get("datos_db") is not None:
+                    self._pintar_notas_credito(estado["datos_db"])
+
+            ejecutar_en_hilo(self.main_root, tarea_descarga, al_terminar=_pintar_notas_hilo)
 
     def _pintar_notas_credito(self, registros):
         for fila in self.tabla.get_children(): self.tabla.delete(fila)

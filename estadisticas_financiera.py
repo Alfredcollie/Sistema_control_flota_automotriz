@@ -36,6 +36,7 @@ import threading
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import guardar_archivo_dialogo
+from tareas_seguras import ejecutar_en_hilo
 from app_paths import CONFIG_FILE
 from config_nube import cargar_bancos
 
@@ -582,9 +583,10 @@ class EstadisticasFinancieraApp:
         if all(v is not None for v in (cli_mem, prov_mem, cat_mem, plac_mem)):
             self._aplicar_listas(cat_mem, plac_mem, cli_mem, prov_mem)
         else:
-            threading.Thread(target=self._tarea_listas, daemon=True).start()
+            ejecutar_en_hilo(self.parent_frame, self._tarea_listas,
+                             al_terminar=self._pintar_listas)
 
-    def _tarea_listas(self):
+    def _tarea_listas(self, estado):
         conn = conectar_db(silencioso=True)
         categorias, placas, clientes, proveedores = [], [], [], []
 
@@ -724,7 +726,17 @@ class EstadisticasFinancieraApp:
         cache_sistema.guardar('lista_clientes_flota_combobox', clientes)
         cache_sistema.guardar('lista_proveedores_combobox', proveedores)
 
-        self.parent_frame.after(0, lambda: self._aplicar_listas(categorias, placas, clientes, proveedores))
+        estado["categorias"] = categorias
+        estado["placas"] = placas
+        estado["clientes"] = clientes
+        estado["proveedores"] = proveedores
+
+    def _pintar_listas(self, estado):
+        # Hilo principal: si la consulta falló se dejan los combos como estaban
+        if "categorias" not in estado:
+            return
+        self._aplicar_listas(estado["categorias"], estado["placas"],
+                             estado["clientes"], estado["proveedores"])
 
     def _aplicar_listas(self, categorias, placas, clientes, proveedores):
         if self._listas_aplicadas:
@@ -893,19 +905,26 @@ class EstadisticasFinancieraApp:
         self.card_compras.configure(text="Calculando...")
         self.card_rentabilidad.configure(text="Calculando...", text_color="gray")
 
-        def tarea_kpis():
+        def tarea_kpis(estado):
+            # Hilo secundario: solo la consulta y el cálculo de los datos
             try:
                 datos = self._recolectar_datos(filtros)
             except Exception as e:
-                self.parent_frame.after(0, lambda: self._error_calculo(e))
+                estado["error_calculo"] = e
                 return
             if datos is None:
-                self.parent_frame.after(0, lambda: self._error_calculo("No hay conexión con la base de datos."))
+                estado["error_calculo"] = "No hay conexión con la base de datos."
                 return
-            self.datos = datos
-            self.parent_frame.after(0, self._renderizar)
+            estado["datos"] = datos
 
-        threading.Thread(target=tarea_kpis, daemon=True).start()
+        def pintar_kpis(estado):
+            # Hilo principal: mensajes de error y pintado de tarjetas/gráficos
+            if estado.get("error_calculo") is not None:
+                return self._error_calculo(estado["error_calculo"])
+            self.datos = estado.get("datos")
+            self._renderizar()
+
+        ejecutar_en_hilo(self.parent_frame, tarea_kpis, al_terminar=pintar_kpis)
 
     def _error_calculo(self, error):
         self.lbl_estado.configure(text=f"❌ Error: {error}", text_color="#e74c3c")

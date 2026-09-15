@@ -25,6 +25,7 @@ from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE
+from tareas_seguras import ejecutar_en_hilo
 
 def abrir_documento(ruta):
     try:
@@ -467,7 +468,7 @@ class CalculoImpuestosApp:
         mes = self.combo_mes.get()
         anio = self.combo_anio.get()
 
-        def tarea():
+        def tarea(estado):
             resultado = None
             error = None
             tasas = cargar_configuracion_impuestos()
@@ -590,9 +591,12 @@ class CalculoImpuestosApp:
                     error = str(e)
                 finally:
                     liberar_conexion(conn)
-            self.parent_frame.after(0, lambda r=resultado, e=error: self._aplicar_calculo(r, e))
+            estado["resultado"] = resultado
+            estado["error_calculo"] = error
 
-        threading.Thread(target=tarea, daemon=True).start()
+        ejecutar_en_hilo(self.parent_frame, tarea,
+                         al_terminar=lambda estado: self._aplicar_calculo(estado.get("resultado"),
+                                                                          estado.get("error_calculo")))
 
     def _aplicar_calculo(self, d, error):
         if error:
@@ -752,7 +756,7 @@ class CalculoImpuestosApp:
         else:
             self.tabla.insert("", tk.END, values=("Cargando...", "", "", "", "", "", "", "", "", ""))
             
-            def tarea():
+            def tarea(estado):
                 rows = []
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -771,9 +775,10 @@ class CalculoImpuestosApp:
                         rows = []
                     finally:
                         liberar_conexion(conn)
-                self.parent_frame.after(0, lambda: self._pintar_historial(rows))
+                estado["filas"] = rows
 
-            threading.Thread(target=tarea, daemon=True).start()
+            ejecutar_en_hilo(self.parent_frame, tarea,
+                             al_terminar=lambda estado: self._pintar_historial(estado.get("filas") or []))
 
     def _pintar_historial(self, rows):
         for item in self.tabla.get_children():

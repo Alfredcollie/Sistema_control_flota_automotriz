@@ -30,6 +30,7 @@ from dialogos_seguros import (seleccionar_archivo_dialogo, seleccionar_archivos_
                               guardar_archivo_dialogo)
 from app_paths import CONFIG_FILE, ruta_para_guardar
 from config_nube import cargar_bancos
+from tareas_seguras import ejecutar_en_hilo
 
 try:
     import pdfplumber
@@ -845,6 +846,9 @@ class ModuloBancoApp:
                     "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS comision NUMERIC DEFAULT 0",
                     "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS interbancario BOOLEAN DEFAULT FALSE",
                     "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS es_cruzada BOOLEAN DEFAULT FALSE",
+                    # Enlace con el gasto creado en el módulo de Compras
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS id_gasto_compras INTEGER DEFAULT 0",
+                    "ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''",
                 ):
                     try:
                         c.execute(col_sql)
@@ -1461,20 +1465,30 @@ class ModuloBancoApp:
         self.lbl_resumen.configure(text="⏳ Extrayendo texto del PDF...")
         self.parent_frame.update_idletasks()
 
-        def tarea():
+        # El hilo solo lee y analiza el PDF; la pantalla se actualiza en el hilo
+        # principal (llamar a Tk desde un hilo congela la app en macOS).
+        def _leer(estado):
             texto = extraer_texto_pdf(ruta)
-            if not texto.strip():
+            estado["texto"] = texto or ""
+            if (texto or "").strip():
+                estado["movimientos"] = parsear_movimientos(texto)
+                estado["saldo_final"] = detectar_saldo_final(texto)
+
+        def _terminar(estado):
+            if estado.get("error"):
+                self.lbl_resumen.configure(text=f"❌ Error al leer el PDF: {estado['error']}")
+                return
+            if not (estado.get("texto") or "").strip():
                 self.lbl_resumen.configure(text="❌ No se pudo extraer texto del PDF. "
                                                 "Verifique que no sea un PDF escaneado (imagen).")
                 return
-            movs = parsear_movimientos(texto)
-            self.texto_pdf = texto
-            self.movimientos_pdf = movs
-            self.saldo_final_estado = detectar_saldo_final(texto)
-            self.lbl_resumen.configure(text=f"✅ PDF procesado: {len(movs)} movimientos detectados.")
+            self.texto_pdf = estado.get("texto") or ""
+            self.movimientos_pdf = estado.get("movimientos") or []
+            self.saldo_final_estado = estado.get("saldo_final")
+            self.lbl_resumen.configure(text=f"✅ PDF procesado: {len(self.movimientos_pdf)} movimientos detectados.")
             self.generar_reporte()
 
-        threading.Thread(target=tarea, daemon=True).start()
+        ejecutar_en_hilo(self.parent_frame, _leer, al_terminar=_terminar)
 
     def generar_reporte(self):
         banco = self.banco_seleccionado()
@@ -2081,6 +2095,8 @@ class ModuloBancoApp:
                             parent=v):
                         return
 
+            id_movimiento = id_edicion or 0
+            id_gasto_previo = 0
             conn = conectar_db(silencioso=True)
             if conn:
                 try:
@@ -2094,6 +2110,14 @@ class ModuloBancoApp:
                                 WHERE id=%s
                             """, (fecha, desc, monto_final, tipo, principal, sub, placa, chofer,
                                   com, bool(inter), id_edicion))
+                            try:
+                                c.execute("SELECT COALESCE(id_gasto_compras, 0) FROM conciliacion_bancaria WHERE id=%s",
+                                          (id_edicion,))
+                                fila = c.fetchone()
+                                id_gasto_previo = int(fila[0] or 0) if fila else 0
+                            except Exception:
+                                conn.rollback()
+                                id_gasto_previo = 0
                         else:
                             c.execute("""
                                 INSERT INTO conciliacion_bancaria
@@ -2101,9 +2125,14 @@ class ModuloBancoApp:
                                  categoria, subcategoria, placa, chofer, comision, interbancario, es_cruzada)
                                 VALUES (%s, %s, %s, %s, %s, %s, 'manual', 0, 'pendiente',
                                         %s, %s, %s, %s, %s, %s, %s)
+                                RETURNING id
                             """, (banco.get("banco", ""), banco.get("cuenta", ""), fecha, desc,
                                   monto_final, tipo, principal, sub, placa, chofer, com,
                                   bool(inter), es_cruzada))
+                            try:
+                                id_movimiento = c.fetchone()[0]
+                            except Exception:
+                                id_movimiento = 0
                         conn.commit()
                 except Exception as e:
                     messagebox.showerror("Error", f"No se pudo guardar:\n{e}", parent=v)
@@ -2115,6 +2144,20 @@ class ModuloBancoApp:
                                 (f"Editó el pago {formatear_monto(monto_final)} en {construir_etiqueta_banco(banco)}"
                                  if en_edicion else
                                  f"Agregó movimiento manual {formatear_monto(monto_final)} en {construir_etiqueta_banco(banco)}"))
+
+            # 🧾 El EGRESO también se registra en Compras como gasto YA PAGADO,
+            # para que se vea en las dos pestañas de ese módulo y en sus reportes.
+            if tipo == "egreso" and not es_cruzada:
+                categoria_gasto = f"{principal} - {sub}".strip(" -") if sub else principal
+                proveedor_gasto = (desc_manual or (f"Chofer {chofer}" if chofer else "")
+                                   or (f"Placa {placa}" if placa else "") or sub or principal)
+                self.registrar_egreso_en_compras({
+                    "fecha": fecha, "total": total, "descripcion": desc or desc_manual,
+                    "categoria": categoria_gasto, "proveedor": proveedor_gasto,
+                    "placa": placa, "banco": construir_etiqueta_banco(banco),
+                    "soporte": estado_cruzada.get("soporte", "") if isinstance(estado_cruzada, dict) else "",
+                    "id_gasto": id_gasto_previo,
+                }, id_movimiento=id_movimiento, parent=v)
 
             if es_cruzada:
                 ok, estado_txt = self.registrar_compra_cruzada_desde_pago({
@@ -2290,6 +2333,98 @@ class ModuloBancoApp:
                             f"Compra cruzada {nro or ''} de {proveedor} pagada a {tercero} "
                             f"(registrada desde Registrar Pago)")
         return True, ("actualizada" if actualizada else "creada")
+
+    def registrar_egreso_en_compras(self, datos, id_movimiento=None, parent=None):
+        """Registra un pago hecho desde el módulo de Banco como GASTO YA PAGADO en Compras.
+
+        Crea el gasto en 'facturas_recibidas' y su pago en 'pagos_comprobantes' por
+        el importe total, para que el egreso se vea en las dos pestañas del módulo
+        de Compras y en los reportes, SIN quedar como deuda pendiente.
+        Si ya existe (datos['id_gasto']) se actualiza en lugar de duplicarlo.
+
+        Devuelve el id del gasto en Compras (0 si no se pudo registrar).
+        """
+        if not datos:
+            return 0
+        try:
+            total = abs(float(datos.get("total") or 0))
+        except Exception:
+            total = 0.0
+        if total <= 0:
+            return 0
+
+        fecha = str(datos.get("fecha") or "").strip()
+        categoria = str(datos.get("categoria") or "").strip() or "GENERAL / NO ASIGNADO"
+        descripcion = str(datos.get("descripcion") or "").strip()
+        proveedor = str(datos.get("proveedor") or "").strip() or descripcion or categoria
+        placa = str(datos.get("placa") or "").strip()
+        banco_txt = str(datos.get("banco") or "").strip()
+        soporte = str(datos.get("soporte") or "").strip()
+        try:
+            from app_paths import ruta_para_guardar
+            soporte_bd = ruta_para_guardar(soporte) if soporte else ""
+        except Exception:
+            soporte_bd = soporte
+        id_gasto = int(datos.get("id_gasto") or 0)
+
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return 0
+        try:
+            with conn.cursor() as c:
+                if id_gasto:
+                    # El gasto ya estaba registrado en Compras: se actualiza
+                    c.execute("""
+                        UPDATE facturas_recibidas
+                        SET fecha=%s, total=%s, subtotal=%s, categoria=%s, descripcion=%s,
+                            proveedor=%s, evento_asociado=%s
+                        WHERE id=%s
+                    """, (fecha, total, total, categoria, descripcion, proveedor, placa, id_gasto))
+                    c.execute("""
+                        UPDATE pagos_comprobantes
+                        SET monto_pagado=%s, fecha_pago=%s, cuenta_origen=%s, categoria_suministro=%s,
+                            proveedor_nombre=%s
+                        WHERE id_factura=%s
+                    """, (total, fecha, banco_txt, categoria, proveedor, id_gasto))
+                else:
+                    c.execute("""
+                        INSERT INTO facturas_recibidas
+                        (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado,
+                         subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto,
+                         categoria, ruc, es_compra_cruzada, pagado_por_tercero, soporte_pago_tercero)
+                        VALUES ('PAGO BANCO', '', %s, %s, %s, %s, %s, 0, %s, %s, 0, 0, 0, %s, '', FALSE, '', %s)
+                        RETURNING id
+                    """, (fecha, proveedor, descripcion, placa, total, total, soporte_bd,
+                          categoria, soporte_bd))
+                    id_gasto = c.fetchone()[0]
+                    # El pago por el importe total: así no queda saldo pendiente
+                    c.execute("""
+                        INSERT INTO pagos_comprobantes
+                        (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago,
+                         categoria_suministro, codigo_cotizacion, cuenta_origen)
+                        VALUES (%s, %s, %s, %s, %s, %s, '', %s)
+                    """, (id_gasto, total, soporte_bd, proveedor, fecha, categoria, banco_txt))
+                    if id_movimiento:
+                        c.execute("UPDATE conciliacion_bancaria SET id_gasto_compras=%s WHERE id=%s",
+                                  (id_gasto, id_movimiento))
+                conn.commit()
+        except Exception as e:
+            print("[Banco -> Compras]", e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return 0
+        finally:
+            liberar_conexion(conn)
+
+        # El módulo de Compras trabaja con caché: se limpia para que aparezca de inmediato
+        try:
+            from buffer_memoria import cache_sistema
+            cache_sistema.invalidar()
+        except Exception:
+            pass
+        return id_gasto
 
     def gestionar_categorias(self):
         cats = cargar_categorias_gastos()

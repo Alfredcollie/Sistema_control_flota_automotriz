@@ -35,6 +35,9 @@ from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE, eliminar_archivo, ruta_para_guardar, resolver_ruta_archivo
 from config_nube import cargar_bancos
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
+# Tareas en segundo plano seguras: la interfaz SIEMPRE se actualiza desde el hilo principal
+# (llamar a Tk desde un hilo secundario congela la aplicación en macOS)
+from tareas_seguras import ejecutar_en_hilo
 
 try:
     import pdfplumber
@@ -298,9 +301,30 @@ def aplicar_estilo_treeview():
     style.map("Treeview", background=[("selected", "#1f538d")], foreground=[("selected", "#ffffff")])
     style.configure("Treeview.Heading", background="#f0f0f0", foreground="#000000", relief="flat", font=("Arial", 10, "bold"), bordercolor="#e0e0e0", borderwidth=1)
 
+
 # =========================================================
 # 🔍 BÚSQUEDA POR CUALQUIER COLUMNA (MÓDULO DE COMPRAS)
 # =========================================================
+def agregar_condicion_ocultar_app(condiciones, params, ocultar):
+    """Agrega la condición que OCULTA las facturas enviadas por la App (App Grifo).
+
+    Se reconocen porque llegaron desde la aplicación móvil:
+      - quedaron como 'PENDIENTE_DESCARGA' (todavía sin descargar), o
+      - su archivo es un ticket del móvil (nombre 'Ticket_Movil...'), o
+      - conservan la imagen en la nube (imagen_base64).
+    Las compras cruzadas registradas a mano desde el módulo de Banco NUNCA se
+    ocultan: siempre deben verse con toda su información.
+    """
+    if not ocultar:
+        return
+    condiciones.append(
+        "(COALESCE(es_compra_cruzada, FALSE) OR NOT ("
+        "archivo_ruta = 'PENDIENTE_DESCARGA' OR archivo_ruta LIKE %s "
+        "OR imagen_base64 IS NOT NULL))"
+    )
+    params.append("%Ticket_Movil%")
+
+
 def construir_condicion_busqueda_compras(filtro):
     """Genera cláusula SQL + parámetros para que la búsqueda del módulo de
     Compras funcione contra CUALQUIER columna de la fila (no solo N° doc,
@@ -455,7 +479,11 @@ class FacturasRecibidasTab:
         
         # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
         self.mes_filtro = mes_en_curso()
-        
+
+        # 🚫 Check para OCULTAR las facturas enviadas por la App (App Grifo).
+        # Por estándar viene desmarcado: se ven todas.
+        self.var_ocultar_app = tk.BooleanVar(value=False)
+
         self.inicializar_bd()
         self.crear_interfaz()
 
@@ -484,6 +512,15 @@ class FacturasRecibidasTab:
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS cantidad_combustible VARCHAR(50);"); conn.commit()
                 except: conn.rollback()
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ruc VARCHAR(50);"); conn.commit()
+                except: conn.rollback()
+                # Columnas usadas para distinguir las facturas de la App y las compras cruzadas
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS imagen_base64 TEXT;"); conn.commit()
+                except: conn.rollback()
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS es_compra_cruzada BOOLEAN DEFAULT FALSE;"); conn.commit()
+                except: conn.rollback()
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS pagado_por_tercero VARCHAR(255) DEFAULT '';"); conn.commit()
+                except: conn.rollback()
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS soporte_pago_tercero TEXT DEFAULT '';"); conn.commit()
                 except: conn.rollback()
                 _SCHEMA_COMPRAS_OK = True
             except Exception: pass
@@ -706,8 +743,11 @@ class FacturasRecibidasTab:
         txt_info = ctk.CTkTextbox(v_sire, height=100, font=("Arial", 10))
         txt_info.pack(fill="x", padx=25, pady=10)
 
-        def ejecucion_sire():
-            try:
+        # El hilo solo hace las llamadas a SUNAT; la ventana se actualiza por sondeo
+        def ejecucion_sire(estado):
+            estado["progreso"] = 0.35
+            estado["texto"] = "🔐 Conectando con SUNAT..."
+            if True:
                 url_token = "https://api-seguridad.sunat.gob.pe/v1/clienttoken"
                 headers_token = {"Content-Type": "application/x-www-form-urlencoded"}
                 payload_token = urllib.parse.urlencode({
@@ -728,8 +768,8 @@ class FacturasRecibidasTab:
                 except Exception:
                     token_access = None
 
-                v_sire.after(0, lambda: prog.set(0.6))
-                v_sire.after(0, lambda: lbl_status.configure(text="📥 Descargando Registro de Compras RCE...", text_color="#1f538d"))
+                estado["progreso"] = 0.6
+                estado["texto"] = "📥 Descargando Registro de Compras RCE..."
 
                 if token_access:
                     url_compras = f"https://api-sire.sunat.gob.pe/v1/contribuyente/mrc/cpe/comprobantes/periodo/{periodo}"
@@ -742,31 +782,34 @@ class FacturasRecibidasTab:
                 else:
                     datos_compras = []
 
-                v_sire.after(0, lambda: prog.set(1.0))
-                msg_final = (
+                estado["progreso"] = 1.0
+                estado["texto"] = "✅ Sincronización SIRE Finalizada"
+                estado["color"] = "#27ae60"
+                estado["mensaje"] = (
                     f"✅ Conexión completada con éxito.\n"
                     f"• Periodo Sincronizado: {periodo}\n"
                     f"• RUC Conectado: {ruc}\n"
                     f"• Comprobantes Obtenidos: {len(datos_compras)}\n\n"
                     f"El Registro de Compras se encuentra 100% actualizado con la propuesta de SUNAT."
                 )
-                
-                def finalizar():
-                    lbl_status.configure(text="✅ Sincronización SIRE Finalizada", text_color="#27ae60")
-                    txt_info.delete("1.0", tk.END)
-                    txt_info.insert("1.0", msg_final)
-                    self.cargar_datos_tabla(reset_pagina=True)
 
-                v_sire.after(0, finalizar)
+        def avanzar_sire(estado):
+            if "progreso" in estado:
+                prog.set(estado["progreso"])
+            if "texto" in estado:
+                lbl_status.configure(text=estado["texto"], text_color=estado.get("color", "#1f538d"))
 
-            except Exception as e:
-                def mostrar_err():
-                    lbl_status.configure(text="❌ Error en Conexión SIRE", text_color="#c0392b")
-                    txt_info.delete("1.0", tk.END)
-                    txt_info.insert("1.0", f"Fallo al conectar con SUNAT:\n{e}")
-                v_sire.after(0, mostrar_err)
+        def terminar_sire(estado):
+            if estado.get("error"):
+                lbl_status.configure(text="❌ Error en Conexión SIRE", text_color="#c0392b")
+                txt_info.delete("1.0", tk.END)
+                txt_info.insert("1.0", f"Fallo al conectar con SUNAT:\n{estado['error']}")
+                return
+            txt_info.delete("1.0", tk.END)
+            txt_info.insert("1.0", estado.get("mensaje", ""))
+            self.cargar_datos_tabla(reset_pagina=True)
 
-        threading.Thread(target=ejecucion_sire, daemon=True).start()
+        ejecutar_en_hilo(v_sire, ejecucion_sire, aplicar=avanzar_sire, al_terminar=terminar_sire)
 
     def agregar_nueva_categoria(self):
         nueva = simpledialog.askstring("Nueva Categoría", "Ingrese el nombre de la nueva categoría de gasto:", parent=self.main_root.winfo_toplevel())
@@ -907,7 +950,14 @@ class FacturasRecibidasTab:
         self.combo_mes = ctk.CTkComboBox(f_busqueda, values=construir_valores_mes(), width=150, state="readonly", command=self.on_cambiar_mes)
         self.combo_mes.pack(side="left", padx=(0, 5))
         self.combo_mes.set(self.mes_filtro)
-        
+
+        # 🚫 Casilla para ocultar las facturas que llegan desde la App (App Grifo)
+        self.chk_ocultar_app = ctk.CTkCheckBox(
+            f_busqueda, text="🚫 Ocultar facturas de la App", variable=self.var_ocultar_app,
+            font=("Arial", 11, "bold"), checkbox_width=18, checkbox_height=18,
+            command=lambda: self.cargar_datos_tabla(reset_pagina=True))
+        self.chk_ocultar_app.pack(side="left", padx=(10, 0))
+
         self.ent_buscar_facturas.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_facturas.bind("<Return>", lambda e: self.cargar_datos_tabla(reset_pagina=True))
 
@@ -993,7 +1043,12 @@ class FacturasRecibidasTab:
         btn_gestionar = ctk.CTkButton(f_gestion, text="⚙️ Modificar o Eliminar Registro Seleccionado", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50", height=36)
         btn_gestionar.pack(fill="x")
 
-        threading.Thread(target=self.sincronizar_tickets_pendientes_automatico, daemon=True).start()
+        # Descarga de tickets al abrir el módulo (en segundo plano, aviso en el hilo principal)
+        ejecutar_en_hilo(
+            self.main_root,
+            lambda estado: estado.update(n=self.sincronizar_tickets_pendientes_automatico()),
+            al_terminar=lambda estado: (self.cargar_datos_tabla(reset_pagina=True)
+                                        if estado.get("n") else None))
         self.main_root.after(100, lambda: self.cargar_datos_tabla(reset_pagina=True))
 
     def on_cambiar_mes(self, choice):
@@ -1017,27 +1072,43 @@ class FacturasRecibidasTab:
         self._busqueda_job = self.main_root.after(350, lambda: self.cargar_datos_tabla(reset_pagina=True))
 
     def ejecutar_sincronizacion_manual(self):
-        def tarea():
-            n = self.sincronizar_tickets_pendientes_automatico()
-            self.main_root.after(0, lambda: self.cargar_datos_tabla(reset_pagina=True))
+        """Descarga los tickets de la App en segundo plano y avisa en el hilo principal."""
+
+        def _trabajo(estado):
+            estado["n"] = self.sincronizar_tickets_pendientes_automatico()
+
+        def _terminar(estado):
+            if estado.get("error"):
+                messagebox.showerror("Error al sincronizar", f"No se pudieron descargar los tickets:\n{estado['error']}",
+                                     parent=self.main_root)
+                return
+            n = estado.get("n") or 0
+            self.cargar_datos_tabla(reset_pagina=True)
             if n:
-                self.main_root.after(0, lambda: messagebox.showinfo("Actualización Exitosa", f"Se descargaron {n} ticket(s) de la aplicación móvil."))
-            else:
-                # Si no se descargó nada por el bloqueo de almacenamiento, se avisa
-                # de eso (los tickets quedan en la nube para un equipo autorizado).
-                try:
-                    from politica_almacenamiento import estado_almacenamiento, advertir, mensaje_bloqueo
-                    if not estado_almacenamiento().get("autorizado"):
-                        self.main_root.after(0, lambda: messagebox.showwarning(
-                            "Descarga bloqueada",
-                            mensaje_bloqueo() + "\n\nLos tickets del App Grifo NO se borraron de la nube: "
-                            "quedan disponibles para un equipo configurado con la cuenta del principal.",
-                            parent=self.main_root))
-                        return
-                except Exception:
-                    pass
-                self.main_root.after(0, lambda: messagebox.showinfo("Sin tickets nuevos", "No hay tickets de la aplicación móvil pendientes de descargar.\n\nSi acabas de enviar uno, revisa en el celular si fue rechazado (RUC de la empresa no encontrado)."))
-        threading.Thread(target=tarea, daemon=True).start()
+                messagebox.showinfo("Actualización Exitosa",
+                                    f"Se descargaron {n} ticket(s) de la aplicación móvil.",
+                                    parent=self.main_root)
+                return
+            # Si no se descargó nada por el bloqueo de almacenamiento, se avisa de eso
+            # (los tickets quedan en la nube para un equipo autorizado).
+            try:
+                from politica_almacenamiento import estado_almacenamiento, mensaje_bloqueo
+                if not estado_almacenamiento().get("autorizado"):
+                    messagebox.showwarning(
+                        "Descarga bloqueada",
+                        mensaje_bloqueo() + "\n\nLos tickets del App Grifo NO se borraron de la nube: "
+                        "quedan disponibles para un equipo configurado con la cuenta del principal.",
+                        parent=self.main_root)
+                    return
+            except Exception:
+                pass
+            messagebox.showinfo(
+                "Sin tickets nuevos",
+                "No hay tickets de la aplicación móvil pendientes de descargar.\n\n"
+                "Si acabas de enviar uno, revisa en el celular si fue rechazado (RUC de la empresa no encontrado).",
+                parent=self.main_root)
+
+        ejecutar_en_hilo(self.main_root, _trabajo, al_terminar=_terminar)
 
     def sincronizar_tickets_pendientes_automatico(self):
         ruta_base = obtener_ruta_base_drive()
@@ -1091,7 +1162,8 @@ class FacturasRecibidasTab:
                 
             if descargados > 0:
                 print(f"🧹 Sincronización automática: Se descargaron {descargados} ticket(s).")
-                self.main_root.after(0, lambda: self.cargar_datos_tabla(reset_pagina=False))
+                # OJO: esta función corre en un hilo, así que AQUÍ no se toca la
+                # interfaz; el refresco lo hace quien la llama (hilo principal).
         except Exception as e_sync: 
             print(f"Error sincronizando: {e_sync}")
         finally: liberar_conexion(conn)
@@ -1205,21 +1277,28 @@ class FacturasRecibidasTab:
         provs = cache_sistema.obtener("lista_proveedores_combobox")
         if provs is not None:
             self._aplicar_provs(provs)
-        else:
-            self.combo_proveedor.set("Cargando proveedores...")
-            def tarea_provs():
-                p_lista = []
-                conn = conectar_db(silencioso=True)
-                if conn:
-                    try:
-                        c = conn.cursor()
-                        c.execute("SELECT nombre FROM proveedores ORDER BY nombre ASC")
-                        p_lista = [str(r[0]) for r in c.fetchall()]
-                        cache_sistema.guardar("lista_proveedores_combobox", p_lista)
-                    except: pass
-                    finally: liberar_conexion(conn)
-                self.main_root.after(0, lambda: self._aplicar_provs(p_lista))
-            threading.Thread(target=tarea_provs, daemon=True).start()
+            return
+
+        self.combo_proveedor.set("Cargando proveedores...")
+
+        def _leer_proveedores(estado):
+            p_lista = []
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("SELECT nombre FROM proveedores ORDER BY nombre ASC")
+                    p_lista = [str(r[0]) for r in c.fetchall()]
+                    cache_sistema.guardar("lista_proveedores_combobox", p_lista)
+                except Exception:
+                    pass
+                finally:
+                    liberar_conexion(conn)
+            estado["valor"] = p_lista
+
+        # El hilo solo consulta; el combo se llena desde el hilo principal
+        ejecutar_en_hilo(self.main_root, _leer_proveedores,
+                         al_terminar=lambda e: self._aplicar_provs(e.get("valor") or []))
             
     def _aplicar_provs(self, provs):
         if provs:
@@ -1233,21 +1312,27 @@ class FacturasRecibidasTab:
         vehiculos = cache_sistema.obtener("lista_placas_combobox")
         if vehiculos is not None:
             self._aplicar_vehs(vehiculos)
-        else:
-            self.combo_evento.set("Cargando vehículos...")
-            def tarea_vehs():
-                v_lista = []
-                conn = conectar_db(silencioso=True)
-                if conn:
-                    try:
-                        c = conn.cursor()
-                        c.execute("SELECT placa FROM flota_vehiculos ORDER BY placa ASC")
-                        v_lista = [str(r[0]) for r in c.fetchall()]
-                        cache_sistema.guardar("lista_placas_combobox", v_lista)
-                    except: pass
-                    finally: liberar_conexion(conn)
-                self.main_root.after(0, lambda: self._aplicar_vehs(v_lista))
-            threading.Thread(target=tarea_vehs, daemon=True).start()
+            return
+
+        self.combo_evento.set("Cargando vehículos...")
+
+        def _leer_vehiculos(estado):
+            v_lista = []
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("SELECT placa FROM flota_vehiculos ORDER BY placa ASC")
+                    v_lista = [str(r[0]) for r in c.fetchall()]
+                    cache_sistema.guardar("lista_placas_combobox", v_lista)
+                except Exception:
+                    pass
+                finally:
+                    liberar_conexion(conn)
+            estado["valor"] = v_lista
+
+        ejecutar_en_hilo(self.main_root, _leer_vehiculos,
+                         al_terminar=lambda e: self._aplicar_vehs(e.get("valor") or []))
 
     def _aplicar_vehs(self, vehiculos):
         lista_vehiculos = ["GENERAL / OFICINA"] + vehiculos
@@ -1395,7 +1480,8 @@ class FacturasRecibidasTab:
             
         # 🔃 Se cargan TODOS los registros del filtro/mes para poder ordenar por
         # cualquier columna afectando a todas las páginas (la paginación se hace al pintar)
-        clave_cache = f"compras_recibidas_v2_{filtro}_mes_{self.mes_filtro}"
+        ocultar_app = bool(self.var_ocultar_app.get())
+        clave_cache = f"compras_recibidas_v3_{filtro}_mes_{self.mes_filtro}_app_{int(ocultar_app)}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1403,12 +1489,19 @@ class FacturasRecibidasTab:
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", "", "", "", ""))
             
-            def tarea_descarga():
+            # El hilo solo descarga datos; la tabla se pinta desde el hilo principal
+            self._carga_actual = getattr(self, "_carga_actual", 0) + 1
+            carga_id = self._carga_actual
+
+            def tarea_descarga(estado):
                 conn = conectar_db(silencioso=True)
-                if not conn: return
+                if not conn:
+                    estado["filas"] = []
+                    estado["cuentas"] = {}
+                    return
                 try:
                     cursor = conn.cursor()
-                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc FROM facturas_recibidas"
+                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, '') FROM facturas_recibidas"
                     
                     condiciones = []
                     params = []
@@ -1420,6 +1513,8 @@ class FacturasRecibidasTab:
                     if patron_mes:
                         condiciones.append("fecha LIKE %s")
                         params.append(patron_mes)
+                    # 🚫 Facturas de la App (App Grifo): se ocultan si el check está marcado
+                    agregar_condicion_ocultar_app(condiciones, params, ocultar_app)
                     where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
                     cursor.execute(f"{query_base}{where_sql} ORDER BY id DESC", tuple(params))
                         
@@ -1440,14 +1535,25 @@ class FacturasRecibidasTab:
 
                     datos_cache = {"filas": datos_db, "cuentas": cuentas_por_factura}
                     cache_sistema.guardar(clave_cache, datos_cache)
-                    
-                    self.main_root.after(0, lambda: self._pintar_datos_tabla(datos_db, cuentas_por_factura))
+                    estado["filas"] = datos_db
+                    estado["cuentas"] = cuentas_por_factura
                 except Exception as e:
                     print(f"Error cargando tabla de compras: {e}")
+                    estado["filas"] = []
+                    estado["cuentas"] = {}
                 finally:
                     liberar_conexion(conn)
 
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+            ejecutar_en_hilo(self.main_root, tarea_descarga,
+                             al_terminar=lambda e: self._pintar_si_vigente(carga_id, e))
+
+    def _pintar_si_vigente(self, carga_id, estado):
+        """Pinta la tabla solo si esta carga sigue siendo la última solicitada."""
+        if carga_id != getattr(self, "_carga_actual", 0):
+            return                      # ya hay una búsqueda más nueva en curso
+        if estado.get("error"):
+            print("[Compras] Error al cargar la tabla:", estado["error"])
+        self._pintar_datos_tabla(estado.get("filas") or [], estado.get("cuentas") or {})
 
     def _pintar_datos_tabla(self, registros, cuentas_por_factura):
         """Construye TODAS las filas, las ordena por la columna activa (todas las
@@ -1459,7 +1565,14 @@ class FacturasRecibidasTab:
         for r in registros:
             id_factura = r[0]
             archivo_bd = r[12]
-            tiene_arch = "❌ No" if (not archivo_bd or archivo_bd == "PENDIENTE_DESCARGA") else "✅ Ver"
+            # Datos de las compras cruzadas (creadas a mano desde el módulo de Banco)
+            tercero = str(r[17]) if len(r) > 17 and r[17] else ""
+            es_cruzada = bool(r[18]) if len(r) > 18 else False
+            soporte_cruzada = str(r[19]) if len(r) > 19 and r[19] else ""
+            tiene_archivo = bool(archivo_bd) and str(archivo_bd).strip() != "PENDIENTE_DESCARGA"
+            if not tiene_archivo and soporte_cruzada:
+                tiene_archivo = True          # solo tiene el soporte del pago a tercero
+            tiene_arch = "✅ Ver" if tiene_archivo else "❌ No"
                 
             tipo_doc = r[4]; impuesto = r[9]; tot_bruto = r[10]; det_monto = r[11]; cat = r[13] if r[13] else "GENERAL"
             km_val = r[14] if r[14] else "-"
@@ -1478,6 +1591,9 @@ class FacturasRecibidasTab:
                         hora_consumo = parte.replace("Hora: ", "").strip()
 
             metodo_pago = " + ".join(cuentas_por_factura.get(id_factura, []))
+            if es_cruzada:
+                # Compra cruzada: la factura la pagó un tercero (dato del módulo de Banco)
+                metodo_pago = "🔁 Compra cruzada" + (f" · pagó: {tercero}" if tercero else "")
 
             if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
             else: neto = tot_bruto - det_monto
@@ -1748,6 +1864,10 @@ class CuentasPorPagarTab:
         # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
         self.mes_filtro = mes_en_curso()
 
+        # 🚫 Check para OCULTAR las facturas enviadas por la App (App Grifo).
+        # Por estándar viene desmarcado: se ven todas.
+        self.var_ocultar_app = tk.BooleanVar(value=False)
+
         # 🔃 Ordenamiento por cualquier columna aplicado a TODAS las páginas
         self.columna_orden = "id_factura"
         self.orden_ascendente = False
@@ -1805,7 +1925,14 @@ class CuentasPorPagarTab:
         self.combo_mes = ctk.CTkComboBox(f_busqueda, values=construir_valores_mes(), width=150, state="readonly", command=self.on_cambiar_mes)
         self.combo_mes.pack(side="left", padx=(0, 5))
         self.combo_mes.set(self.mes_filtro)
-        
+
+        # 🚫 Casilla para ocultar las facturas que llegan desde la App (App Grifo)
+        self.chk_ocultar_app = ctk.CTkCheckBox(
+            f_busqueda, text="🚫 Ocultar facturas de la App", variable=self.var_ocultar_app,
+            font=("Arial", 11, "bold"), checkbox_width=18, checkbox_height=18,
+            command=lambda: self.cargar_datos_pagar(reset_pagina=True))
+        self.chk_ocultar_app.pack(side="left", padx=(10, 0))
+
         self.ent_buscar_pagos.bind("<KeyRelease>", lambda e: self.buscar_con_retraso())
         self.ent_buscar_pagos.bind("<Return>", lambda e: self.cargar_datos_pagar(reset_pagina=True))
 
@@ -1978,7 +2105,8 @@ class CuentasPorPagarTab:
 
         # 🔃 Se cargan TODOS los registros del filtro/mes para ordenar por cualquier
         # columna afectando a todas las páginas (la paginación se hace al pintar)
-        clave_cache = f"pagos_compras_v2_{filtro}_mes_{self.mes_filtro}"
+        ocultar_app = bool(self.var_ocultar_app.get())
+        clave_cache = f"pagos_compras_v3_{filtro}_mes_{self.mes_filtro}_app_{int(ocultar_app)}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -1986,9 +2114,16 @@ class CuentasPorPagarTab:
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "", "", "", "", "Cargando datos...", "", "", "", "", "", "", "", "", "", "", ""))
             
-            def tarea_descarga():
+            # El hilo solo descarga y calcula; la tabla se pinta desde el hilo principal
+            self._carga_actual = getattr(self, "_carga_actual", 0) + 1
+            carga_id = self._carga_actual
+
+            def tarea_descarga(estado):
                 conn = conectar_db(silencioso=True)
-                if not conn: return
+                if not conn:
+                    estado["filas"] = []
+                    estado["total"] = 0.0
+                    return
                 
                 filas_procesadas = []
                 total_pendiente_global = 0.0
@@ -2006,11 +2141,13 @@ class CuentasPorPagarTab:
                     if patron_mes:
                         condiciones.append("fecha LIKE %s")
                         params.append(patron_mes)
+                    # 🚫 Facturas de la App (App Grifo): se ocultan si el check está marcado
+                    agregar_condicion_ocultar_app(condiciones, params, ocultar_app)
                     where_sql = (" WHERE " + " AND ".join(condiciones)) if condiciones else ""
 
                     # Se traen TODOS los comprobantes del filtro/mes (sin LIMIT) para
                     # poder ordenar por cualquier columna en todas las páginas
-                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
+                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, '') FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
                     registros = cursor.fetchall()
                     
                     ids_actuales = [r[0] for r in registros]
@@ -2026,7 +2163,12 @@ class CuentasPorPagarTab:
                             mapa_detalle_pagos[id_f].append((m_pag, arch, cta))
 
                     for reg in registros:
-                        id_factura, fecha, nro_doc, proveedor, evento, concepto, subtotal, impuesto, tot_bruto, det_monto, tipo_doc, km_val, cant_val, ruc_db = reg
+                        (id_factura, fecha, nro_doc, proveedor, evento, concepto, subtotal, impuesto,
+                         tot_bruto, det_monto, tipo_doc, km_val, cant_val, ruc_db,
+                         tercero, es_cruzada, soporte_cruzada) = reg
+                        tercero = str(tercero or "")
+                        es_cruzada = bool(es_cruzada)
+                        soporte_cruzada = str(soporte_cruzada or "")
                         sub_val = float(subtotal or 0.0)
                         imp_val = float(impuesto or 0.0)
                         tot_bruto_val = float(tot_bruto or 0.0)
@@ -2051,12 +2193,18 @@ class CuentasPorPagarTab:
                                 if p[2] not in cuentas_lista: cuentas_lista.append(p[2])
                         
                         saldo_pendiente = max(0.0, neto_facturado - monto_pagado)
+                        if es_cruzada:
+                            # Compra cruzada (creada desde el módulo de Banco): la factura
+                            # la pagó un TERCERO, así que no queda saldo por pagar.
+                            monto_pagado = neto_facturado
+                            saldo_pendiente = 0.0
                         
                         filas_procesadas.append({
                             "id_factura": id_factura, "fecha": fecha, "nro_doc": nro_doc, "proveedor": proveedor, "ruc_db": ruc_db,
                             "evento": evento, "km_val": km_val, "cant_val": cant_val, "concepto": concepto, "cuentas_lista": cuentas_lista,
                             "sub_val": sub_val, "imp_val": imp_val, "det_monto_val": det_monto_val, "neto_facturado": neto_facturado,
-                            "monto_pagado": monto_pagado, "saldo_pendiente": saldo_pendiente, "cant_archivos": cant_archivos, "tiene_cuenta": tiene_cuenta
+                            "monto_pagado": monto_pagado, "saldo_pendiente": saldo_pendiente, "cant_archivos": cant_archivos, "tiene_cuenta": tiene_cuenta,
+                            "es_cruzada": es_cruzada, "tercero": tercero, "soporte_cruzada": soporte_cruzada
                         })
                         
                     # Total pendiente global (mismo criterio que antes) calculado
@@ -2067,15 +2215,25 @@ class CuentasPorPagarTab:
 
                     datos_cache = {"filas": filas_procesadas, "total_pendiente": total_pendiente_global}
                     cache_sistema.guardar(clave_cache, datos_cache)
-                    
+                    estado["filas"] = filas_procesadas
+                    estado["total"] = total_pendiente_global
                 except Exception as e:
                     print("Error cargando pagos:", e)
+                    estado["filas"] = []
+                    estado["total"] = 0.0
                 finally:
                     liberar_conexion(conn)
 
-                self.main_root.after(0, lambda: self._pintar_pagos(filas_procesadas, total_pendiente_global))
-                
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+            ejecutar_en_hilo(self.main_root, tarea_descarga,
+                             al_terminar=lambda e: self._pintar_pagos_si_vigente(carga_id, e))
+
+    def _pintar_pagos_si_vigente(self, carga_id, estado):
+        """Pinta la tabla de pagos solo si esta carga sigue siendo la última solicitada."""
+        if carga_id != getattr(self, "_carga_actual", 0):
+            return
+        if estado.get("error"):
+            print("[Compras] Error al cargar cuentas por pagar:", estado["error"])
+        self._pintar_pagos(estado.get("filas") or [], estado.get("total") or 0.0)
 
     def _pintar_pagos(self, filas, total_pendiente):
         """Construye TODAS las filas, las ordena por la columna activa (todas las
@@ -2088,7 +2246,12 @@ class CuentasPorPagarTab:
             cant_str = f['cant_val'] if f['cant_val'] else "-"
             ruc_str = f['ruc_db'] if f['ruc_db'] else "-"
             metodo_pago = " + ".join(f['cuentas_lista']) if f['cuentas_lista'] else ""
+            if f.get('es_cruzada'):
+                # Compra cruzada registrada desde el módulo de Banco
+                metodo_pago = "🔁 Compra cruzada" + (f" · pagó: {f['tercero']}" if f.get('tercero') else "")
             txt_adjuntos = f"📁 {f['cant_archivos']} archivo(s)" if f['cant_archivos'] > 0 else "❌ Sin adjuntos"
+            if f.get('es_cruzada') and f['cant_archivos'] == 0:
+                txt_adjuntos = "🔁 Ver factura / soporte"
             
             desc_bruta = str(f['concepto']) if f['concepto'] else "-"
             concepto_limpio = desc_bruta
@@ -2269,21 +2432,29 @@ class CuentasPorPagarTab:
             conn = conectar_db()
             cursor = conn.cursor()
             cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id_factura = %s AND archivo_ruta != ''", (id_factura,))
-            rutas = cursor.fetchall()
+            rutas = [r[0] for r in cursor.fetchall()]
+            if not rutas:
+                # Compras cruzadas (módulo de Banco) o facturas sin pagos registrados:
+                # se abren los documentos de la propia factura (y su soporte del pago a tercero).
+                cursor.execute("""SELECT COALESCE(archivo_ruta, ''), COALESCE(soporte_pago_tercero, '')
+                                  FROM facturas_recibidas WHERE id = %s""", (id_factura,))
+                extra = cursor.fetchone()
+                if extra:
+                    rutas = [x for x in extra if x]
             liberar_conexion(conn)
             if rutas:
-                from app_paths import resolver_ruta_archivo
                 abiertos = 0
-                for r in rutas:
+                for ruta in rutas:
                     # 🔎 Resuelve rutas guardadas por otro equipo/sistema (Mac/Windows)
-                    ruta_norm = resolver_ruta_archivo(r[0])
+                    ruta_norm = resolver_ruta_archivo(ruta)
                     if ruta_norm:
                         abrir_documento(ruta_norm)
                         abiertos += 1
                 if not abiertos:
-                    messagebox.showwarning("Aviso", "Los soportes están registrados pero los archivos no se encuentran en este equipo.")
-            else: messagebox.showinfo("Aviso", "No hay soportes cargados.")
-        except Exception: pass
+                    messagebox.showwarning("Aviso", "Los documentos están registrados pero los archivos no se encuentran en este equipo.")
+            else: messagebox.showinfo("Aviso", "No hay documentos cargados para esta factura.")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudieron abrir los documentos: {e}")
 
     def abrir_ventana_edicion(self):
         sel = self.tabla.selection()
@@ -2598,9 +2769,12 @@ class CuentasPorPagarTab:
             for f in t_resumen.get_children():
                 t_resumen.delete(f)
 
-            def tarea_calculo():
+            def tarea_calculo(estado):
+                """Calcula los totales en segundo plano; la ventana se pinta en el hilo principal."""
                 conn = conectar_db()
-                if not conn: return
+                if not conn:
+                    estado["resumen"] = {}
+                    return
                 try:
                     c = conn.cursor()
                     c.execute("SELECT id_factura, COALESCE(SUM(monto_pagado), 0) FROM pagos_comprobantes GROUP BY id_factura")
@@ -2665,30 +2839,38 @@ class CuentasPorPagarTab:
                         proveedores_desglose[nombre_prov]["saldo"] += saldo
                         proveedores_desglose[nombre_prov]["docs"] += 1
 
-                    def actualizar_interfaz():
-                        lbl_bruto.configure(text=formatear_moneda(tot_bruto))
-                        lbl_igv.configure(text=formatear_moneda(tot_igv))
-                        lbl_det.configure(text=formatear_moneda(tot_det))
-                        lbl_pagado.configure(text=formatear_moneda(tot_pagado))
-                        lbl_por_pagar.configure(text=formatear_moneda(tot_deuda))
-
-                        for p, data in sorted(proveedores_desglose.items(), key=lambda x: x[1]["saldo"], reverse=True):
-                            t_resumen.insert("", tk.END, values=(
-                                p, 
-                                formatear_moneda(data["neto"]), 
-                                formatear_moneda(data["pagado"]), 
-                                formatear_moneda(data["saldo"]), 
-                                data["docs"]
-                            ))
-
-                    v_rep.after(0, actualizar_interfaz)
-
+                    estado["resumen"] = {
+                        "bruto": tot_bruto, "igv": tot_igv, "det": tot_det,
+                        "pagado": tot_pagado, "deuda": tot_deuda,
+                        "proveedores": proveedores_desglose,
+                    }
                 except Exception as e:
-                    v_rep.after(0, lambda: messagebox.showerror("Error", f"Fallo al calcular:\n{e}", parent=v_rep))
+                    print("[Compras] Error en el reporte:", e)
+                    estado["resumen"] = {}
                 finally:
                     liberar_conexion(conn)
 
-            threading.Thread(target=tarea_calculo, daemon=True).start()
+            def pintar_reporte(estado):
+                if estado.get("error"):
+                    messagebox.showerror("Error", f"Fallo al calcular:\n{estado['error']}", parent=v_rep)
+                    return
+                resumen = estado.get("resumen") or {}
+                lbl_bruto.configure(text=formatear_moneda(resumen.get("bruto", 0)))
+                lbl_igv.configure(text=formatear_moneda(resumen.get("igv", 0)))
+                lbl_det.configure(text=formatear_moneda(resumen.get("det", 0)))
+                lbl_pagado.configure(text=formatear_moneda(resumen.get("pagado", 0)))
+                lbl_por_pagar.configure(text=formatear_moneda(resumen.get("deuda", 0)))
+                for p, data in sorted((resumen.get("proveedores") or {}).items(),
+                                      key=lambda x: x[1]["saldo"], reverse=True):
+                    t_resumen.insert("", tk.END, values=(
+                        p,
+                        formatear_moneda(data["neto"]),
+                        formatear_moneda(data["pagado"]),
+                        formatear_moneda(data["saldo"]),
+                        data["docs"]
+                    ))
+
+            ejecutar_en_hilo(self.main_root, tarea_calculo, al_terminar=pintar_reporte)
 
         calcular_totales()
 

@@ -14,6 +14,7 @@ import shutil
 
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from app_paths import CONFIG_FILE
+from tareas_seguras import ejecutar_en_hilo
 
 def obtener_configuracion_fe():
     config = {
@@ -252,13 +253,20 @@ def abrir_ventana_emision_sunat(parent_window, datos_factura, usuario_activo="De
             txt_resultado.delete("1.0", tk.END)
             txt_resultado.insert("1.0", respuesta)
 
-    def proceso_envio_hilo():
-        resultado = enviar_factura_sunat(datos_factura)
-        v_sunat.after(0, actualizar_ui_y_abrir, resultado[0], resultado[1], resultado[2], resultado[3])
+    def proceso_envio_hilo(estado):
+        estado["resultado"] = enviar_factura_sunat(datos_factura)
+
+    def cerrar_envio(estado):
+        # 👈 Corre en el hilo PRINCIPAL (una sola vez)
+        if estado.get("error"):
+            actualizar_ui_y_abrir(False, str(estado["error"]), None, None)
+            return
+        resultado = estado.get("resultado")
+        actualizar_ui_y_abrir(resultado[0], resultado[1], resultado[2], resultado[3])
 
     def iniciar_transmision():
         btn_enviar.configure(state="disabled", text="⏳ Transmitiendo...")
         lbl_estado.configure(text=f"Procesando en servidores de {proveedor_actual}...", text_color="#d35400")
-        threading.Thread(target=proceso_envio_hilo, daemon=True).start()
+        ejecutar_en_hilo(v_sunat, proceso_envio_hilo, al_terminar=cerrar_envio)
 
     btn_enviar.configure(command=iniciar_transmision)

@@ -56,6 +56,7 @@ from datetime import datetime, date, timedelta
 # 🚀 HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from app_paths import CONFIG_FILE, ruta_para_guardar
+from tareas_seguras import ejecutar_en_hilo
 
 try:
     from reportlab.pdfgen import canvas
@@ -1798,9 +1799,10 @@ class CalculoCobranzaApp:
         self.construir_dias()
         if not self._buscando_feriados:
             self._buscando_feriados = True
-            threading.Thread(target=self._hilo_feriados, args=(anio,), daemon=True).start()
+            ejecutar_en_hilo(self.parent, lambda estado: self._hilo_feriados(estado, anio),
+                             al_terminar=lambda estado: self._aplicar_feriados_remotos(anio, estado.get("feriados") or {}))
 
-    def _hilo_feriados(self, anio):
+    def _hilo_feriados(self, estado, anio):
         try:
             fer = _descargar_feriados_internet(anio)
             if fer:
@@ -1809,10 +1811,7 @@ class CalculoCobranzaApp:
             fer = {}
         finally:
             self._buscando_feriados = False
-        try:
-            self.parent.after(0, lambda: self._aplicar_feriados_remotos(anio, fer))
-        except Exception:
-            pass
+        estado["feriados"] = fer
 
     def _aplicar_feriados_remotos(self, anio, fer):
         if not fer:
@@ -1875,7 +1874,8 @@ class CalculoCobranzaApp:
         self.construir_dias()
         if not self._buscando_feriados:
             self._buscando_feriados = True
-            threading.Thread(target=self._hilo_feriados, args=(anio,), daemon=True).start()
+            ejecutar_en_hilo(self.parent, lambda estado: self._hilo_feriados(estado, anio),
+                             al_terminar=lambda estado: self._aplicar_feriados_remotos(anio, estado.get("feriados") or {}))
 
     # ---------- CÁLCULO ----------
     def _leer_float(self, valor, nombre):

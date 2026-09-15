@@ -18,6 +18,7 @@ import json
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE
+from tareas_seguras import ejecutar_en_hilo
 
 # =========================================================
 # 🚀 LECTURA DE CONFIGURACIÓN GLOBAL
@@ -234,7 +235,9 @@ class CalendarioDashboard(ctk.CTkToplevel):
             self.combo_filtro_secundario.configure(state="normal")
             self.combo_filtro_secundario.set("Cargando...")
             
-            def tarea_filtro():
+            # El hilo solo consulta la base de datos; el combo se rellena en el
+            # hilo principal (tocar Tk desde un hilo congela la app en macOS).
+            def _leer_filtros(estado):
                 opciones = ["Sin registros"]
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -252,9 +255,15 @@ class CalendarioDashboard(ctk.CTkToplevel):
                         print("Error cargando filtros:", e)
                     finally:
                         liberar_conexion(conn)
-                self.after(0, lambda: self._aplicar_opciones_filtro(opciones))
+                estado["opciones"] = opciones
 
-            threading.Thread(target=tarea_filtro, daemon=True).start()
+            def _pintar_filtros(estado):
+                if estado.get("error"):
+                    print("Error cargando filtros:", estado["error"])
+                    return
+                self._aplicar_opciones_filtro(estado.get("opciones") or ["Sin registros"])
+
+            ejecutar_en_hilo(self, _leer_filtros, al_terminar=_pintar_filtros)
 
     def _aplicar_opciones_filtro(self, opciones):
         self.combo_filtro_secundario.configure(values=opciones, state="readonly")
@@ -278,7 +287,10 @@ class CalendarioDashboard(ctk.CTkToplevel):
             self._procesar_y_dibujar(datos_calendario)
         else:
             self.lbl_mes_anio.configure(text="Cargando...")
-            def tarea_dash():
+            # El hilo solo consulta la base de datos; el calendario se dibuja
+            # después en el hilo principal (tocar Tk desde un hilo congela la
+            # app en macOS).
+            def _leer_calendario(estado):
                 datos_db = []
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -420,9 +432,15 @@ class CalendarioDashboard(ctk.CTkToplevel):
                     finally:
                         liberar_conexion(conn)
                 
-                self.after(0, lambda: self._procesar_y_dibujar(datos_db))
+                estado["datos"] = datos_db
 
-            threading.Thread(target=tarea_dash, daemon=True).start()
+            def _pintar_calendario(estado):
+                if estado.get("error"):
+                    print("Error SQL Calendario:", estado["error"])
+                    return
+                self._procesar_y_dibujar(estado.get("datos") or [])
+
+            ejecutar_en_hilo(self, _leer_calendario, al_terminar=_pintar_calendario)
             
     def _procesar_y_dibujar(self, datos_calendario):
         self.tareas_db.clear()
@@ -873,7 +891,9 @@ class CronogramaApp:
             self.pantalla_expandida = True
 
     def cargar_tipos_combos(self, combobox, valor_default=None):
-        def tarea():
+        # El hilo solo consulta la base de datos; el combo se rellena en el hilo
+        # principal (tocar Tk desde un hilo congela la app en macOS).
+        def _leer_tipos(estado):
             conn = conectar_db(silencioso=True)
             tipos = ["Tarea", "Mantenimiento", "Renovación Documento"] 
             if conn:
@@ -886,9 +906,15 @@ class CronogramaApp:
                 except Exception: pass
                 finally: liberar_conexion(conn)
             
-            if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
-                self.parent_frame.after(0, lambda: self._actualizar_combo_tipos(combobox, tipos, valor_default))
-        threading.Thread(target=tarea, daemon=True).start()
+            estado["tipos"] = tipos
+
+        def _pintar_tipos(estado):
+            if not hasattr(self, 'parent_frame') or not self.parent_frame.winfo_exists():
+                return
+            tipos = estado.get("tipos") or ["Tarea", "Mantenimiento", "Renovación Documento"]
+            self._actualizar_combo_tipos(combobox, tipos, valor_default)
+
+        ejecutar_en_hilo(self.parent_frame, _leer_tipos, al_terminar=_pintar_tipos)
 
     def _actualizar_combo_tipos(self, combobox, tipos, valor_default):
         if combobox.winfo_exists():
@@ -1336,7 +1362,9 @@ class CronogramaApp:
         for item in self.tabla_proy.get_children(): self.tabla_proy.delete(item)
         self.tabla_proy.insert("", tk.END, values=("", "", "", "Analizando historial de compras...", "", "", ""))
         
-        def tarea_math():
+        # El hilo solo consulta la base de datos; la tabla se pinta luego en el
+        # hilo principal (tocar Tk desde un hilo congela la app en macOS).
+        def _leer_proyecciones(estado):
             datos_calculados = []
             conn = conectar_db(silencioso=True)
             if conn:
@@ -1470,10 +1498,15 @@ class CronogramaApp:
                 finally:
                     liberar_conexion(conn)
 
-            if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
-                self.parent_frame.after(0, lambda: self._dibujar_proyecciones(datos_calculados))
+            estado["datos"] = datos_calculados
 
-        threading.Thread(target=tarea_math, daemon=True).start()
+        def _pintar_proyecciones(estado):
+            if estado.get("error"):
+                print("Error Proyecciones general:", estado["error"])
+                return
+            self._dibujar_proyecciones(estado.get("datos") or [])
+
+        ejecutar_en_hilo(self.parent_frame, _leer_proyecciones, al_terminar=_pintar_proyecciones)
 
     def _dibujar_proyecciones(self, datos):
         if not hasattr(self, 'tabla_proy') or not self.tabla_proy.winfo_exists(): return
@@ -1644,7 +1677,9 @@ class CronogramaApp:
             self._pintar_eventos(eventos)
         else:
             self.combo_evento_global.set("Cargando vehículos...")
-            def tarea_eventos():
+            # El hilo solo consulta la base de datos; el combo se rellena en el
+            # hilo principal (tocar Tk desde un hilo congela la app en macOS).
+            def _leer_flota(estado):
                 evts = ["OFICINA | Trabajos Internos"]
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -1660,10 +1695,15 @@ class CronogramaApp:
                     finally:
                         liberar_conexion(conn)
                         
-                if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
-                    self.parent_frame.after(0, lambda: self._pintar_eventos(evts))
+                estado["eventos"] = evts
 
-            threading.Thread(target=tarea_eventos, daemon=True).start()
+            def _pintar_flota(estado):
+                if estado.get("error"):
+                    print("Error descargando flota activa:", estado["error"])
+                    return
+                self._pintar_eventos(estado.get("eventos") or [])
+
+            ejecutar_en_hilo(self.parent_frame, _leer_flota, al_terminar=_pintar_flota)
 
     def _pintar_eventos(self, eventos):
         if eventos and hasattr(self, 'combo_evento_global') and self.combo_evento_global.winfo_exists():
@@ -1825,7 +1865,9 @@ class CronogramaApp:
             self._pintar_tareas_tabla(datos)
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", ""))
-            def tarea_descarga():
+            # El hilo solo consulta la base de datos; la tabla se pinta luego en
+            # el hilo principal (tocar Tk desde un hilo congela la app en macOS).
+            def _leer_tareas(estado):
                 datos_db = []
                 conn = conectar_db(silencioso=True)
                 if conn:
@@ -1844,10 +1886,17 @@ class CronogramaApp:
                         print("Error leyendo tareas:", e)
                     finally:
                         liberar_conexion(conn)
-                if hasattr(self, 'parent_frame') and self.parent_frame.winfo_exists():
-                    self.parent_frame.after(0, lambda: self._pintar_tareas_tabla(datos_db))
+                estado["datos"] = datos_db
                 
-            threading.Thread(target=tarea_descarga, daemon=True).start()
+            def _pintar_tareas_estado(estado):
+                if not hasattr(self, 'parent_frame') or not self.parent_frame.winfo_exists():
+                    return
+                if estado.get("error"):
+                    print("Error leyendo tareas:", estado["error"])
+                    return
+                self._pintar_tareas_tabla(estado.get("datos") or [])
+
+            ejecutar_en_hilo(self.parent_frame, _leer_tareas, al_terminar=_pintar_tareas_estado)
 
     def _pintar_tareas_tabla(self, datos):
         if not hasattr(self, 'tabla') or not self.tabla.winfo_exists(): return
