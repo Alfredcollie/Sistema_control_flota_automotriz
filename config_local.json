@@ -1,5 +1,5 @@
 {
-    "ruta_drive": "C:\\Users\\Alberto\\BlackCube_Archivos",
+    "ruta_drive": "C:/Users/Alberto/BlackRider_Archivos",
     "rclone_remote": "gdrive:",
     "rclone_ruta_nube": "BLACK RIDERS - SISTEMA",
     "impresora": "",
@@ -12,7 +12,7 @@
     "detraccion_porcentaje": "12",
     "renta_mensual_porcentaje": "1.5",
     "renta_anual_porcentaje": "0",
-    "regimen_empresa": "Régimen General",
+    "regimen_empresa": "R\u00e9gimen General",
     "proveedor_fe": "Nubefact",
     "url_api_fe": "",
     "token_api_fe": "",
@@ -96,7 +96,7 @@
             "Planilla / Sueldos",
             "Servicios (Luz, Agua, Internet)",
             "Seguros",
-            "Préstamos / Cuotas"
+            "Pr\u00e9stamos / Cuotas"
         ],
         "Gastos Operativos": [
             "Combustible",
