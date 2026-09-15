@@ -20,6 +20,56 @@ from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from tareas_seguras import ejecutar_en_hilo
+from app_paths import CONFIG_FILE
+
+
+# =========================================================
+# 🚀 CONFIGURACIÓN GENERAL (límite de km para el cambio de aceite)
+# =========================================================
+def cargar_configuracion_regional():
+    config = {"alerta_aceite_km": "5000", "alerta_cambio_aceite_km": "5000"}
+    try:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
+                config.update(json.load(f))
+    except Exception:
+        pass
+    return config
+
+
+CONFIG_REGIONAL = cargar_configuracion_regional()
+
+
+def limite_km_aceite():
+    """Cada cuántos kilómetros toca el cambio de aceite (Configuración General)."""
+    for clave in ("alerta_aceite_km", "alerta_cambio_aceite_km"):
+        try:
+            v = str(CONFIG_REGIONAL.get(clave, "") or "").replace(",", ".").strip()
+            if v:
+                n = float(v)
+                if n > 0:
+                    return n
+        except Exception:
+            continue
+    return 5000.0
+
+
+def a_numero(valor):
+    """Convierte '45000', '45,000', '45.000 km' o '' a número (0.0 si no se puede)."""
+    txt = re.sub(r"[^0-9.,]", "", str(valor or ""))
+    if not txt:
+        return 0.0
+    try:
+        if "," in txt and "." in txt:
+            txt = (txt.replace(".", "").replace(",", ".") if txt.rfind(",") > txt.rfind(".")
+                   else txt.replace(",", ""))
+        elif "," in txt:
+            txt = txt.replace(",", ".") if len(txt.split(",")[-1]) <= 2 else txt.replace(",", "")
+        elif "." in txt:
+            txt = txt if len(txt.split(".")[-1]) <= 2 else txt.replace(".", "")
+        return float(txt)
+    except Exception:
+        return 0.0
 
 try:
     import fitz  
@@ -208,7 +258,11 @@ class FlotaAutomotrizApp:
                     "ALTER TABLE flota_vehiculos ADD COLUMN fec_venc_bat VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE flota_vehiculos ADD COLUMN extintor_num VARCHAR(100) DEFAULT ''",
                     "ALTER TABLE flota_vehiculos ADD COLUMN fec_venc_extintor VARCHAR(20) DEFAULT ''",
-                    "ALTER TABLE flota_vehiculos ADD COLUMN km_prox_correa VARCHAR(50) DEFAULT ''" 
+                    "ALTER TABLE flota_vehiculos ADD COLUMN km_prox_correa VARCHAR(50) DEFAULT ''",
+                    # 🛢️ Kilometraje del último cambio de aceite (para calcular el próximo).
+                    # Son las mismas columnas que usa el Cronograma para sus proyecciones.
+                    "ALTER TABLE flota_vehiculos ADD COLUMN km_ultimo_aceite NUMERIC DEFAULT 0",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fecha_ultimo_aceite VARCHAR(20) DEFAULT ''" 
                 ]
                 
                 for query in columnas_nuevas:
@@ -512,6 +566,15 @@ class FlotaAutomotrizApp:
         # 3. Mantenimientos (Nuevos campos)
         ctk.CTkLabel(self.f_form, text="--- Fechas de Mantenimiento ---", font=("Arial", 11, "bold"), text_color="#e67e22").pack(anchor="w", padx=10, pady=(10,5))
         self.ent_fec_aceite = crear_campo_fecha("Último Cambio de Aceite:")
+        # 🛢️ Kilometraje al que se hizo ese cambio: sirve para calcular el próximo
+        self.ent_km_aceite = crear_campo("Km del Último Cambio de Aceite:", "Ej: 45000")
+        self.lbl_prox_aceite = ctk.CTkLabel(self.f_form, text="", font=("Arial", 11),
+                                            text_color="#e67e22", justify="left", anchor="w",
+                                            wraplength=330)
+        self.lbl_prox_aceite.pack(fill="x", padx=10, pady=(0, 8))
+        # El cálculo del próximo cambio se actualiza mientras se escriben los km
+        self.ent_km_aceite.bind("<KeyRelease>", lambda e: self.actualizar_proximo_aceite())
+        self.ent_kilometraje.bind("<KeyRelease>", lambda e: self.actualizar_proximo_aceite())
         self.ent_fec_correa = crear_campo_fecha("Cambio Correa/Cadena Distribución:")
         self.ent_km_prox_correa = crear_campo("KM Próx. Cambio Correa:", "Ej: 100000")
         self.ent_fec_compra_bat = crear_campo_fecha("Compra de Batería:")
@@ -564,7 +627,7 @@ class FlotaAutomotrizApp:
         f_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
 
-        columnas = ("id", "placa", "vehiculo", "categoria", "color", "combustible", "kilometraje", "estado", "titulo", "fecha_titulo")
+        columnas = ("id", "placa", "vehiculo", "categoria", "color", "combustible", "kilometraje", "km_aceite", "estado", "titulo", "fecha_titulo")
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
         self.tabla.heading("id", text="ID")
         self.tabla.heading("placa", text="Placa")
@@ -573,6 +636,7 @@ class FlotaAutomotrizApp:
         self.tabla.heading("color", text="Color")
         self.tabla.heading("combustible", text="Combustible")
         self.tabla.heading("kilometraje", text="Kilometraje")
+        self.tabla.heading("km_aceite", text="Km Últ. Aceite")
         self.tabla.heading("estado", text="Estado")
         self.tabla.heading("titulo", text="N° Título")
         self.tabla.heading("fecha_titulo", text="Fecha Título")
@@ -584,11 +648,12 @@ class FlotaAutomotrizApp:
         self.tabla.column("color", width=80, anchor="center")
         self.tabla.column("combustible", width=130, anchor="center")
         self.tabla.column("kilometraje", width=90, anchor="center")
+        self.tabla.column("km_aceite", width=100, anchor="center")
         self.tabla.column("estado", width=100, anchor="center")
         self.tabla.column("titulo", width=0, stretch=tk.NO)
         self.tabla.column("fecha_titulo", width=0, stretch=tk.NO)
         
-        self.tabla.config(displaycolumns=("placa", "vehiculo", "categoria", "color", "combustible", "kilometraje", "estado"))
+        self.tabla.config(displaycolumns=("placa", "vehiculo", "categoria", "color", "combustible", "kilometraje", "km_aceite", "estado"))
 
         scroll_y = ctk.CTkScrollbar(f_tabla, orientation="vertical", command=self.tabla.yview)
         self.tabla.configure(yscrollcommand=scroll_y.set)
@@ -645,6 +710,11 @@ class FlotaAutomotrizApp:
         self.ent_anio.delete(0, tk.END)
         self.ent_color.delete(0, tk.END)
         self.ent_kilometraje.delete(0, tk.END)
+        try:
+            self.ent_km_aceite.delete(0, tk.END)
+            self.lbl_prox_aceite.configure(text="")
+        except Exception:
+            pass
         self.ent_motor.delete(0, tk.END)
         self.ent_carroceria.delete(0, tk.END)
         self.cmb_combustible.set("Gasolina")
@@ -682,7 +752,7 @@ class FlotaAutomotrizApp:
         if datos is not None:
             self._pintar_vehiculos(datos)
         else:
-            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", "", "", ""))
+            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", "", "", "", ""))
             
             def tarea_descarga(estado):
                 conn = conectar_db(silencioso=True)
@@ -691,14 +761,14 @@ class FlotaAutomotrizApp:
                     cursor = conn.cursor()
                     if filtro:
                         cursor.execute("""
-                            SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo
+                            SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo, COALESCE(km_ultimo_aceite, 0)
                             FROM flota_vehiculos 
                             WHERE placa ILIKE %s OR marca ILIKE %s OR modelo ILIKE %s 
                             ORDER BY id DESC LIMIT %s OFFSET %s
                         """, (f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", self.registros_por_pagina, offset))
                     else:
                         cursor.execute("""
-                            SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo 
+                            SELECT id, placa, marca, modelo, anio, color, tipo_combustible, kilometraje, estado, categoria, nro_titulo, fecha_titulo, COALESCE(km_ultimo_aceite, 0)
                             FROM flota_vehiculos 
                             ORDER BY id DESC LIMIT %s OFFSET %s
                         """, (self.registros_por_pagina, offset))
@@ -724,12 +794,21 @@ class FlotaAutomotrizApp:
             self.tabla.delete(item)
 
         for r in datos:
-            v_id, placa, marca, modelo, anio, color, comb, km, est, categoria, nro_titulo, fecha_titulo = r
+            if len(r) < 13:                      # caché de una versión anterior
+                r = tuple(r) + (0,) * (13 - len(r))
+            v_id, placa, marca, modelo, anio, color, comb, km, est, categoria, nro_titulo, fecha_titulo, km_aceite = r
             vehiculo_nom = f"{marca} {modelo} ({anio})"
             km_mostrar = km if km else "0"
             cat_mostrar = categoria if categoria else "-"
+            # 🛢️ Km del último cambio de aceite (y aviso si ya toca el próximo)
+            km_aceite_num = a_numero(km_aceite)
+            if km_aceite_num > 0:
+                prox = km_aceite_num + limite_km_aceite()
+                km_aceite_txt = f"{km_aceite_num:,.0f}" + (" ⚠️" if a_numero(km) >= prox else "")
+            else:
+                km_aceite_txt = "-"
             
-            self.tabla.insert("", tk.END, values=(v_id, placa, vehiculo_nom, cat_mostrar, color, comb, km_mostrar, est, nro_titulo, fecha_titulo))
+            self.tabla.insert("", tk.END, values=(v_id, placa, vehiculo_nom, cat_mostrar, color, comb, km_mostrar, km_aceite_txt, est, nro_titulo, fecha_titulo))
             
         if self.pagina_actual > 1:
             self.btn_ant.configure(state="normal")
@@ -740,6 +819,35 @@ class FlotaAutomotrizApp:
             self.btn_sig.configure(state="normal")
         else:
             self.btn_sig.configure(state="disabled")
+
+    def actualizar_proximo_aceite(self):
+        """Muestra cuándo toca el próximo cambio de aceite, según los km.
+
+        Se calcula con el kilometraje del ÚLTIMO cambio + el límite configurado
+        en Configuración General ('alerta_aceite_km', por defecto 5.000 km).
+        """
+        try:
+            limite = limite_km_aceite()
+            km_actual = a_numero(self.ent_kilometraje.get())
+            km_aceite = a_numero(self.ent_km_aceite.get())
+
+            if km_aceite <= 0:
+                txt = (f"🛢️ Indique los km del último cambio para calcular el próximo "
+                       f"(cada {limite:,.0f} km).")
+            else:
+                prox = km_aceite + limite
+                txt = f"🛢️ Próximo cambio de aceite: a los {prox:,.0f} km"
+                if km_actual <= 0:
+                    txt += " (registre el kilometraje actual para ver cuánto falta)."
+                else:
+                    faltan = prox - km_actual
+                    if faltan <= 0:
+                        txt += f" · ⚠️ ¡VENCIDO! Ya pasó por {abs(faltan):,.0f} km."
+                    else:
+                        txt += f" · Faltan {faltan:,.0f} km."
+            self.lbl_prox_aceite.configure(text=txt)
+        except Exception:
+            pass
 
     def guardar_vehiculo(self):
         placa = self.ent_placa.get().strip().upper()
@@ -759,6 +867,7 @@ class FlotaAutomotrizApp:
         combustible = self.cmb_combustible.get()
         
         fec_aceite = self.ent_fec_aceite.get().strip()
+        km_aceite = a_numero(self.ent_km_aceite.get())   # 🛢️ km del último cambio de aceite
         fec_correa = self.ent_fec_correa.get().strip()
         km_prox_correa = self.ent_km_prox_correa.get().strip()
         fec_gas = self.ent_fec_rev_gas.get().strip()
@@ -808,12 +917,12 @@ class FlotaAutomotrizApp:
                     emision_seguro=%s, vencimiento_seguro=%s, vencimiento_rt=%s, estado=%s,
                     categoria=%s, nro_titulo=%s, fecha_titulo=%s, ruta_tarjeta=%s,
                     fec_aceite=%s, fec_correa=%s, km_prox_correa=%s, fec_rev_gas=%s, fec_compra_bat=%s, fec_venc_bat=%s, 
-                    extintor_num=%s, fec_venc_extintor=%s
+                    extintor_num=%s, fec_venc_extintor=%s, km_ultimo_aceite=%s, fecha_ultimo_aceite=%s
                     WHERE id=%s
                 """, (placa, marca, modelo, anio, color, kilometraje, motor, carroceria, combustible, 
                       emi_soat, venc_soat, emi_seguro, venc_seguro, rt, estado, categoria, titulo, 
                       fecha_titulo, ruta_final_archivo, fec_aceite, fec_correa, km_prox_correa, fec_gas, fec_compra_bat, 
-                      fec_venc_bat, num_extintor, fec_venc_ext, self.id_edicion))
+                      fec_venc_bat, num_extintor, fec_venc_ext, km_aceite, fec_aceite, self.id_edicion))
                 registrar_auditoria(self.usuario_activo, "Flota", f"Actualizó datos del vehículo placa {placa}")
                 messagebox.showinfo("Éxito", "Vehículo actualizado correctamente.")
             else:
@@ -826,12 +935,12 @@ class FlotaAutomotrizApp:
                     INSERT INTO flota_vehiculos (placa, marca, modelo, anio, color, kilometraje, serial_motor, serial_carroceria, 
                     tipo_combustible, emision_soat, vencimiento_soat, emision_seguro, vencimiento_seguro, vencimiento_rt, estado, 
                     categoria, nro_titulo, fecha_titulo, ruta_tarjeta, fec_aceite, fec_correa, km_prox_correa, fec_rev_gas, fec_compra_bat, 
-                    fec_venc_bat, extintor_num, fec_venc_extintor) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    fec_venc_bat, extintor_num, fec_venc_extintor, km_ultimo_aceite, fecha_ultimo_aceite) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (placa, marca, modelo, anio, color, kilometraje, motor, carroceria, combustible, 
                       emi_soat, venc_soat, emi_seguro, venc_seguro, rt, estado, categoria, titulo, 
                       fecha_titulo, ruta_final_archivo, fec_aceite, fec_correa, km_prox_correa, fec_gas, fec_compra_bat, 
-                      fec_venc_bat, num_extintor, fec_venc_ext))
+                      fec_venc_bat, num_extintor, fec_venc_ext, km_aceite, fec_aceite))
                 registrar_auditoria(self.usuario_activo, "Flota", f"Registró nuevo vehículo placa {placa}")
                 messagebox.showinfo("Éxito", "Vehículo registrado correctamente.")
             
@@ -887,7 +996,7 @@ class FlotaAutomotrizApp:
                 emision_seguro, vencimiento_seguro, vencimiento_rt, estado,
                 categoria, nro_titulo, fecha_titulo, ruta_tarjeta,
                 fec_aceite, fec_correa, fec_rev_gas, fec_compra_bat, fec_venc_bat, extintor_num, fec_venc_extintor,
-                km_prox_correa
+                km_prox_correa, COALESCE(km_ultimo_aceite, 0), COALESCE(fecha_ultimo_aceite, '')
                 FROM flota_vehiculos WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -926,6 +1035,12 @@ class FlotaAutomotrizApp:
                 self.ent_extintor_num.insert(0, r[25] if r[25] else "")
                 self.ent_fec_venc_ext.insert(0, r[26] if r[26] else "")
                 self.ent_km_prox_correa.insert(0, r[27] if r[27] else "")
+                # 🛢️ Km del último cambio de aceite (y su fecha, si no estaba en el campo antiguo)
+                if r[28]:
+                    self.ent_km_aceite.insert(0, f"{float(r[28]):,.0f}")
+                if not self.ent_fec_aceite.get().strip() and r[29]:
+                    self.ent_fec_aceite.insert(0, r[29])
+                self.actualizar_proximo_aceite()
 
                 if self.ruta_tarjeta_db and os.path.exists(self.ruta_tarjeta_db):
                     self.btn_ver_tarjeta.configure(state="normal", fg_color="#27ae60")

@@ -407,6 +407,10 @@ class ChoferesApp:
         self.rutas_documentos_db = {}
         self._observacion_estado = ""      # motivo/observación del estado (baja, suspensión, etc.)
         self._estado_anterior = "Activo"   # para restaurar el estado si se cancela el diálogo
+        self._img_foto_ctk = None
+        # 🔧 Imágenes anteriores de la foto carnet: se conservan VIVAS a propósito
+        # (ver _conservar_foto_anterior)
+        self._fotos_previas = []
         
         # 🚀 VARIABLES DE PAGINACIÓN (LAZY LOADING)
         self.pagina_actual = 1
@@ -460,7 +464,8 @@ class ChoferesApp:
                     "ALTER TABLE choferes ADD COLUMN carnet_sanidad_venc VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN licencia2 VARCHAR(50) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN vencimiento_licencia2 VARCHAR(20) DEFAULT ''",
-                    "ALTER TABLE choferes ADD COLUMN categoria_licencia2 VARCHAR(50) DEFAULT ''"
+                    "ALTER TABLE choferes ADD COLUMN categoria_licencia2 VARCHAR(50) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN telefono_emergencia VARCHAR(50) DEFAULT ''"
                 ]
                 
                 for query in columnas_nuevas:
@@ -697,6 +702,45 @@ class ChoferesApp:
     # =========================================================
     # 🚀 FOTO CARNET DEL CHOFER (carga en la parte superior)
     # =========================================================
+    @staticmethod
+    def _quitar_imagen_label(lbl):
+        """Quita la imagen que muestra una CTkLabel.
+
+        ⚠️ customtkinter NO limpia la imagen al recibir image=None (su
+        _update_image() solo actúa cuando HAY imagen), así que al abrir un chofer
+        sin foto se quedaba a la vista la foto del chofer anterior. Hay que
+        limpiar la etiqueta Tk interna.
+        """
+        interior = getattr(lbl, "_label", None)
+        if interior is not None:
+            try:
+                interior.configure(image="")
+                return
+            except Exception:
+                pass
+        try:
+            lbl.configure(image="")
+        except Exception:
+            pass
+
+    def _conservar_foto_anterior(self):
+        """Guarda la imagen anterior para que Tk NO la destruya.
+
+        🔧 FIX macOS/Windows: al reemplazar la foto, si el CTkImage anterior se
+        liberaba, Tk eliminaba la imagen y la etiqueta quedaba apuntando a algo
+        que ya no existe ("image pyimageN doesn't exist"): por eso la foto solo
+        se veía la PRIMERA vez que se abría un chofer y después salía
+        "FOTO NO VÁLIDA" hasta salir y volver a entrar al módulo.
+        """
+        anterior = getattr(self, "_img_foto_ctk", None)
+        if anterior is not None:
+            lista = getattr(self, "_fotos_previas", None)
+            if lista is None:
+                lista = self._fotos_previas = []
+            lista.append(anterior)
+            del lista[:-10]          # se guardan solo las últimas 10 (memoria)
+        self._img_foto_ctk = None
+
     def _ruta_foto_carnet(self):
         """Devuelve la ruta REAL de la foto carnet en este equipo (temp -> base de datos).
 
@@ -731,14 +775,21 @@ class ChoferesApp:
         lbl = getattr(self, "lbl_foto", None)
         if lbl is None:
             return
+        # La imagen que estaba puesta pasa a la lista de "no destruir"
+        self._conservar_foto_anterior()
+
         ruta = self._ruta_foto_carnet()
         if not ruta or not os.path.exists(os.path.normpath(ruta)):          # foto no encontrada en este equipo
-            self._img_foto_ctk = None
-            lbl.configure(image=None, text="SIN FOTO\nCarga la foto carnet del chofer")
+            self._quitar_imagen_label(lbl)      # se borra la foto del chofer anterior
+            try:
+                lbl.configure(image=None, text="SIN FOTO\nCarga la foto carnet del chofer")
+            except Exception:
+                pass
             return
         try:
             from PIL import Image as PILImage
             img = PILImage.open(ruta)
+            img.load()                       # se lee a memoria (no deja el archivo abierto)
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGBA")
             ancho_max, alto_max = 195, 120
@@ -749,7 +800,12 @@ class ChoferesApp:
             lbl.configure(image=self._img_foto_ctk, text="")
         except Exception as e:
             print("Error mostrando foto carnet:", e)
-            lbl.configure(image=None, text="FOTO NO VÁLIDA")
+            self._img_foto_ctk = None
+            self._quitar_imagen_label(lbl)
+            try:
+                lbl.configure(image=None, text="FOTO NO VÁLIDA")
+            except Exception:
+                pass
 
     # =========================================================
     # 🚀 FICHA PDF DE CHOFERES (LLENADO MASIVO) - sin logística ni seguros
@@ -875,7 +931,7 @@ class ChoferesApp:
                                      corner_radius=8, fg_color="#e9ecef", text_color="#6c757d",
                                      font=("Arial", 10, "bold"), justify="center")
         self.lbl_foto.pack(fill="x")
-        self._img_foto_ctk = None
+        self._conservar_foto_anterior()
         f_foto_btns = ctk.CTkFrame(self.f_form, fg_color="transparent")
         f_foto_btns.pack(fill="x", padx=10, pady=(0, 10))
         ctk.CTkButton(f_foto_btns, text="📷 Cargar Foto", font=("Arial", 11, "bold"), fg_color="#1f538d", hover_color="#163b65", command=self.cargar_foto_carnet).pack(side="left", expand=True, fill="x", padx=(0, 5))
@@ -900,6 +956,7 @@ class ChoferesApp:
         
         self.ent_hijos = crear_campo("Número de Hijos:", "Ej: 0")
         self.ent_telefono = crear_campo("Teléfono / WhatsApp:", "Ej: 999888777")
+        self.ent_emergencia = crear_campo("Teléfono de Contacto de Emergencia:", "Ej: 987654321 (familiar)")
         self.ent_correo = crear_campo("Correo Electrónico:", "Ej: correo@gmail.com")
 
         # --- Asignación y Seguros ---
@@ -1005,39 +1062,36 @@ class ChoferesApp:
         f_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
 
-        columnas = ("id", "dni", "nombres", "telefono", "licencia", "vencimiento", "movil",
-                    "estado", "fin_contrato", "observacion")
+        # 📋 Columnas del padrón: DNI/C.E., Nombre y Apellido, Teléfono,
+        # Fin de Contrato, Vencimiento del Carné de Salud y Estado.
+        # ("id" se mantiene oculto porque se usa internamente para editar/eliminar)
+        columnas = ("id", "dni", "nombres", "telefono", "fin_contrato", "sanidad_venc", "estado")
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
         self.tabla.heading("id", text="ID")
         self.tabla.heading("dni", text="DNI / C.E.")
         self.tabla.heading("nombres", text="Nombres y Apellidos")
         self.tabla.heading("telefono", text="Teléfono")
-        self.tabla.heading("licencia", text="N° Licencia")
-        self.tabla.heading("vencimiento", text="Venc. Licencia")
-        self.tabla.heading("movil", text="Móvil Asignado")
-        self.tabla.heading("estado", text="Estado")
         self.tabla.heading("fin_contrato", text="Fin de Contrato")
-        self.tabla.heading("observacion", text="Observación / Motivo")
+        self.tabla.heading("sanidad_venc", text="Venc. Carné de Salud")
+        self.tabla.heading("estado", text="Estado")
 
         self.tabla.column("id", width=0, stretch=tk.NO)
-        self.tabla.column("dni", width=95, anchor="center")
-        self.tabla.column("nombres", width=190, anchor="w")
-        self.tabla.column("telefono", width=85, anchor="center")
-        self.tabla.column("licencia", width=85, anchor="center")
-        self.tabla.column("vencimiento", width=95, anchor="center")
-        self.tabla.column("movil", width=115, anchor="center")
-        self.tabla.column("estado", width=80, anchor="center")
-        self.tabla.column("fin_contrato", width=100, anchor="center")
-        self.tabla.column("observacion", width=200, anchor="w")
+        self.tabla.column("dni", width=105, anchor="center")
+        self.tabla.column("nombres", width=240, anchor="w")
+        self.tabla.column("telefono", width=105, anchor="center")
+        self.tabla.column("fin_contrato", width=110, anchor="center")
+        self.tabla.column("sanidad_venc", width=140, anchor="center")
+        self.tabla.column("estado", width=90, anchor="center")
 
-        self.tabla.config(displaycolumns=("dni", "nombres", "telefono", "licencia", "movil",
-                                          "fin_contrato", "estado", "observacion"))
+        self.tabla.config(displaycolumns=("dni", "nombres", "telefono", "fin_contrato",
+                                          "sanidad_venc", "estado"))
 
         # Colores de aviso: estado inactivo/suspendido y contrato por vencer/vencido
         self.tabla.tag_configure("inactivo", foreground="#c0392b")
         self.tabla.tag_configure("suspendido", foreground="#d35400")
         self.tabla.tag_configure("contrato_por_vencer", background="#fff4e0")
         self.tabla.tag_configure("contrato_vencido", background="#fdecea")
+        self.tabla.tag_configure("sanidad_vencida", foreground="#7d3c98")   # carné de salud vencido
 
         scroll_y = ctk.CTkScrollbar(f_tabla, orientation="vertical", command=self.tabla.yview)
         self.tabla.configure(yscrollcommand=scroll_y.set)
@@ -1048,7 +1102,8 @@ class ChoferesApp:
 
         ctk.CTkLabel(f_derecho,
                      text=("Leyenda: rojo = Inactivo / Suspendido  ·  fondo naranja = contrato por vencer "
-                           "(30 días o menos)  ·  fondo rojo suave = contrato vencido"),
+                           "(30 días o menos)  ·  fondo rojo suave = contrato vencido  ·  "
+                           "morado = carné de salud vencido"),
                      font=("Arial", 10), text_color="gray").pack(anchor="w", pady=(3, 0))
 
         f_acciones_tabla = ctk.CTkFrame(f_derecho, fg_color="transparent")
@@ -1163,6 +1218,7 @@ class ChoferesApp:
         self.cmb_sexo.set("Masculino")
         self.ent_hijos.delete(0, tk.END)
         self.ent_telefono.delete(0, tk.END)
+        self.ent_emergencia.delete(0, tk.END)
         self.ent_correo.delete(0, tk.END)
         
         self.cargar_moviles_disponibles()
@@ -1199,7 +1255,7 @@ class ChoferesApp:
             self.id_edicion = None
             self.rutas_documentos_temp = {}
             self.rutas_documentos_db = {}
-            self._img_foto_ctk = None
+            self._conservar_foto_anterior()
             self._observacion_estado = ""
             self._estado_anterior = "Activo"
             _carpeta_expedientes()          # asegura que la carpeta exista
@@ -1224,13 +1280,13 @@ class ChoferesApp:
         filtro = self.ent_buscar.get().strip().lower()
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
         
-        clave_cache = f"choferes_{filtro}_pag_{self.pagina_actual}"
+        clave_cache = f"choferes_v2_{filtro}_pag_{self.pagina_actual}"
         datos = cache_sistema.obtener(clave_cache)
         
         if datos is not None:
             self._pintar_datos(datos)
         else:
-            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", "", "", "", ""))
+            self.tabla.insert("", tk.END, values=("", "", "Cargando datos...", "", "", "", ""))
 
             # El hilo solo consulta la base de datos: el pintado se hace desde el
             # hilo principal (en macOS, tocar Tk desde otro hilo congela la app).
@@ -1245,14 +1301,14 @@ class ChoferesApp:
                     cursor = conn.cursor()
                     if filtro:
                         cursor.execute("""
-                            SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado,
-                                   fecha_fin_contrato, observacion_estado 
+                            SELECT id, dni, nombres, telefono, fecha_fin_contrato,
+                                   COALESCE(carnet_sanidad_venc, ''), estado
                             FROM choferes 
                             WHERE dni ILIKE %s OR nombres ILIKE %s OR licencia ILIKE %s OR movil_asignado ILIKE %s
                             ORDER BY nombres ASC LIMIT %s OFFSET %s
                         """, (f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", f"%{filtro}%", self.registros_por_pagina, offset))
                     else:
-                        cursor.execute("SELECT id, dni, nombres, telefono, licencia, vencimiento_licencia, movil_asignado, estado, fecha_fin_contrato, observacion_estado FROM choferes ORDER BY nombres ASC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+                        cursor.execute("SELECT id, dni, nombres, telefono, fecha_fin_contrato, COALESCE(carnet_sanidad_venc, ''), estado FROM choferes ORDER BY nombres ASC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
                     
                     datos_db = cursor.fetchall()
                     cache_sistema.guardar(clave_cache, datos_db)
@@ -1290,18 +1346,24 @@ class ChoferesApp:
         hoy = datetime.now()
         for r in datos:
             valores = tuple(r)
+            if len(valores) < 7:                     # por si llega una fila antigua
+                valores = valores + ("",) * (7 - len(valores))
             etiquetas = []
-            estado = str(valores[7] or "").strip().lower() if len(valores) > 7 else ""
+            # 0=id  1=dni  2=nombres  3=telefono  4=fin de contrato  5=venc. carné de salud  6=estado
+            estado = str(valores[6] or "").strip().lower()
             if estado == "inactivo":
                 etiquetas.append("inactivo")
             elif estado == "suspendido":
                 etiquetas.append("suspendido")
-            fin_contrato = self._fecha_valida(str(valores[8] or "")) if len(valores) > 8 else None
+            fin_contrato = self._fecha_valida(str(valores[4] or ""))
             if fin_contrato:
                 if fin_contrato < hoy:
                     etiquetas.append("contrato_vencido")
                 elif (fin_contrato - hoy).days <= 30:
                     etiquetas.append("contrato_por_vencer")
+            sanidad = self._fecha_valida(str(valores[5] or ""))
+            if sanidad and sanidad < hoy:
+                etiquetas.append("sanidad_vencida")
             self.tabla.insert("", tk.END, values=valores, tags=tuple(etiquetas))
             
         if self.pagina_actual > 1:
@@ -1324,6 +1386,7 @@ class ChoferesApp:
         hijos = self.ent_hijos.get().strip() or "0"
         
         tel = self.ent_telefono.get().strip()
+        tel_emergencia = self.ent_emergencia.get().strip()   # 📞 contacto de emergencia
         correo = self.ent_correo.get().strip()
         
         movil = self.cmb_movil.get()
@@ -1431,12 +1494,13 @@ class ChoferesApp:
                     movil_asignado=%s, seguro_salud_num=%s, seguro_salud_venc=%s, seguro_vida_num=%s, seguro_vida_venc=%s,
                     ruta_documentos=%s, fecha_inicio_contrato=%s, fecha_fin_contrato=%s,
                     observacion_estado=%s, carnet_sanidad_num=%s, carnet_sanidad_venc=%s,
-                    licencia2=%s, categoria_licencia2=%s, vencimiento_licencia2=%s
+                    licencia2=%s, categoria_licencia2=%s, vencimiento_licencia2=%s,
+                    telefono_emergencia=%s
                     WHERE id=%s
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
-                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, self.id_edicion))
+                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia, self.id_edicion))
                 detalle_estado = f" — marcado INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Actualizó datos de {nombres}{detalle_estado}"[:240])
@@ -1452,12 +1516,12 @@ class ChoferesApp:
                     direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc, ruta_documentos,
                     fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
                     carnet_sanidad_num, carnet_sanidad_venc, licencia2, categoria_licencia2,
-                    vencimiento_licencia2) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    vencimiento_licencia2, telefono_emergencia) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
-                      sanidad_num, sanidad_venc, licencia2, cat2, venc2))
+                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia))
                 detalle_estado = f" — INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Registró nuevo conductor/personal: {nombres}{detalle_estado}"[:240])
@@ -1513,7 +1577,7 @@ class ChoferesApp:
                 direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc,
                 ruta_documentos, fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
                 carnet_sanidad_num, carnet_sanidad_venc, licencia2, categoria_licencia2,
-                vencimiento_licencia2
+                vencimiento_licencia2, telefono_emergencia
                 FROM choferes WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -1548,6 +1612,7 @@ class ChoferesApp:
                 self.ent_licencia2.insert(0, r[25] if len(r) > 25 and r[25] else "")
                 self.ent_cat_licencia2.insert(0, r[26] if len(r) > 26 and r[26] else "")
                 self.ent_venc_licencia2.insert(0, r[27] if len(r) > 27 and r[27] else "")
+                self.ent_emergencia.insert(0, r[28] if len(r) > 28 and r[28] else "")
                 self.ent_ini_contrato.insert(0, r[20] if len(r) > 20 and r[20] else "")
                 self.ent_fin_contrato.insert(0, r[21] if len(r) > 21 and r[21] else "")
                 self._observacion_estado = (r[22] or "") if len(r) > 22 else ""

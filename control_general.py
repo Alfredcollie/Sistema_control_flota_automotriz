@@ -98,6 +98,27 @@ if sys.platform == "win32":
         pass
 
 
+def _quitar_imagen_label(lbl):
+    """Quita la imagen que muestra una CTkLabel.
+
+    ⚠️ customtkinter NO limpia la imagen cuando recibe image=None (su
+    _update_image() solo actúa si HAY imagen), así que al quitar un logo la
+    vista previa seguía mostrando el anterior. Hay que limpiar la etiqueta Tk
+    interna además de pasar image=None.
+    """
+    interior = getattr(lbl, "_label", None)
+    if interior is not None:
+        try:
+            interior.configure(image="")
+            return
+        except Exception:
+            pass
+    try:
+        lbl.configure(image="")
+    except Exception:
+        pass
+
+
 def maximizar_ventana(ventana):
     """Maximiza la ventana de forma nativa según el sistema operativo."""
     try:
@@ -1937,8 +1958,10 @@ class ControlGeneralEventos:
                     lbl_logo_preview.configure(image=ctk_img, text="", width=ancho, height=alto)
                     lbl_logo_preview._img = ctk_img
                 else:
+                    _quitar_imagen_label(lbl_logo_preview)
                     lbl_logo_preview.configure(image=None, text="Sin vista previa", width=150, height=40)
             except Exception:
+                _quitar_imagen_label(lbl_logo_preview)
                 lbl_logo_preview.configure(image=None, text="No se pudo cargar", width=150, height=40)
 
         _actualizar_vista_previa(config_actual.get("ruta_logo_cotizacion", ""))

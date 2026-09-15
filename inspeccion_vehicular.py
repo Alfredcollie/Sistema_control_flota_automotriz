@@ -374,16 +374,31 @@ class InspeccionVehicularApp:
             return
 
         errores = []
-
-        # 1) Borrar la copia local del escritorio (si la inspección está descargada)
+        avisos = []
         carpeta = reg.get("_carpeta") or ""
+
+        # 1) 🗑️ PRIMERO se borra en la carpeta SINCRONIZADA (nube).
+        #    La sincronización del programa es bilateral con 'rclone copy', que
+        #    NUNCA borra: si solo se borrara el disco, la copia de la nube volvería
+        #    a traer la inspección en el siguiente ciclo (cada 10 minutos) y el
+        #    registro "reaparecería" aunque ya no esté en la base de datos.
+        if carpeta:
+            try:
+                from nube_archivos import borrar_en_nube
+                ok_nube, msg_nube = borrar_en_nube(carpeta)
+                if not ok_nube:
+                    avisos.append("copia en la nube: " + msg_nube)
+            except Exception as e:
+                avisos.append("copia en la nube: " + str(e))
+
+        # 2) Borrar la copia local del escritorio (si la inspección está descargada)
         if carpeta and os.path.isdir(carpeta):
             try:
                 shutil.rmtree(carpeta)
             except Exception as e:
                 errores.append("copia local: " + str(e))
 
-        # 2) Borrar también de la base de datos de Supabase (si el registro existe)
+        # 3) Borrar también de la base de datos de Supabase (si el registro existe)
         id_reg = reg.get("id")
         if id_reg not in (None, ""):
             conn = conectar_db()
@@ -405,7 +420,14 @@ class InspeccionVehicularApp:
         else:
             registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
                                 "Eliminó la inspección " + str(id_reg))
-            messagebox.showinfo("Listo", "Inspección eliminada.")
+            if avisos:
+                messagebox.showwarning(
+                    "Eliminada con aviso",
+                    "Inspección eliminada del programa y de la base de datos, pero NO se pudo "
+                    "borrar su copia en la carpeta sincronizada:\n" + "\n".join(avisos) +
+                    "\n\nPuede volver a aparecer cuando el programa sincronice con la nube.")
+            else:
+                messagebox.showinfo("Listo", "Inspección eliminada.")
         self.cargar_inspecciones()
 
     def _btn_pdf(self):
