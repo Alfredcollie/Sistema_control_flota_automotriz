@@ -188,6 +188,11 @@ CATEGORIAS_GASTOS_DEFAULT = {
 
 COMISION_INTERBANCARIA_DEFAULT = "4.80"
 
+# Marca local: indica que las tablas/columnas del Banco ya se verificaron en este
+# equipo. Cada sentencia DDL es un viaje a Supabase (~0,3 s) y son ~24 seguidas,
+# así que sólo se ejecutan la primera vez (o cuando cambie esta clave).
+CLAVE_ESQUEMA_BANCO = "banco_esquema_ok_v2"
+
 
 def leer_config_disco():
     cfg = {}
@@ -812,7 +817,7 @@ class ModuloBancoApp:
         self.parent_frame = parent_frame
         self.usuario_activo = usuario_activo or "Desconocido"
         self.config = cargar_config()
-        self.bancos = cargar_bancos()
+        self.bancos = []               # se cargan enseguida, en segundo plano
         self.movimientos_pdf = []
         self.texto_pdf = ""
         self.filas_conciliacion = []
@@ -820,7 +825,6 @@ class ModuloBancoApp:
         self.banco_conciliado = None
         self.id_tx_edicion = None      # transferencia que se está editando (None = nueva)
         aplicar_estilo_treeview()
-        self.inicializar_db()
 
         self.frame_main = ctk.CTkFrame(self.parent_frame, fg_color="transparent")
         self.frame_main.pack(fill="both", expand=True, padx=15, pady=15)
@@ -840,13 +844,31 @@ class ModuloBancoApp:
         self.construir_tab_conciliacion()
         self.construir_tab_transferencias()
 
+        # Los datos (varias consultas a Supabase) se traen aparte, en un hilo,
+        # para que el módulo abra al instante y no se congele.
+        self._cargar_datos_iniciales()
+
     # -----------------------------------------------------
     # BASE DE DATOS DE CONCILIACION
     # -----------------------------------------------------
-    def inicializar_db(self):
+    def inicializar_db(self, forzar=False):
+        """Crea/actualiza las tablas y columnas que usa el módulo de Banco.
+
+        Es idempotente, pero son ~24 sentencias y cada una es un viaje a
+        Supabase (~0,3 s): por eso se ejecuta UNA vez por equipo y versión y
+        después se salta (marca en la configuración local). Con 'forzar=True'
+        se vuelve a ejecutar (se usa si alguna consulta falla por esquema).
+        """
+        if not forzar:
+            try:
+                if leer_config_disco().get(CLAVE_ESQUEMA_BANCO) == "ok":
+                    return
+            except Exception:
+                pass
         conn = conectar_db(silencioso=True)
         if not conn:
             return
+        todo_ok = True
         try:
             with conn.cursor() as c:
                 c.execute("""
@@ -862,6 +884,19 @@ class ModuloBancoApp:
                         id_movimiento INTEGER DEFAULT 0,
                         estado VARCHAR(20) DEFAULT 'pendiente',
                         fecha_conciliacion VARCHAR(20) DEFAULT ''
+                    )
+                """)
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS conciliacion_ignorados (
+                        id SERIAL PRIMARY KEY,
+                        banco VARCHAR(255),
+                        origen VARCHAR(30),
+                        tabla VARCHAR(60),
+                        id_movimiento INTEGER DEFAULT 0,
+                        fecha VARCHAR(20) DEFAULT '',
+                        descripcion TEXT,
+                        monto NUMERIC DEFAULT 0,
+                        creado VARCHAR(20) DEFAULT ''
                     )
                 """)
                 c.execute("""
@@ -909,10 +944,87 @@ class ModuloBancoApp:
                         conn.commit()
                     except Exception:
                         conn.rollback()
+                        todo_ok = False
         except Exception:
-            pass
+            todo_ok = False
         finally:
             liberar_conexion(conn)
+
+        # Sólo se marca como verificada si TODO salió bien
+        if todo_ok:
+            try:
+                cfg = leer_config_disco()
+                cfg[CLAVE_ESQUEMA_BANCO] = "ok"
+                guardar_config_disco(cfg)
+            except Exception:
+                pass
+
+    # -----------------------------------------------------
+    # CARGA EN SEGUNDO PLANO (cada consulta a Supabase tarda ~0,3 s)
+    # -----------------------------------------------------
+    def _mostrar_cargando(self, texto="⏳ Cargando datos del banco..."):
+        """Aviso mientras se traen los datos (la ventana ya está visible)."""
+        try:
+            for w in self.scroll_saldos.winfo_children():
+                w.destroy()
+            ctk.CTkLabel(self.scroll_saldos, text=texto, font=("Arial", 13),
+                         text_color="#7f8c8d").pack(pady=30)
+        except Exception:
+            pass
+
+    def _actualizar_combos_bancos(self):
+        """Vuelca la lista de bancos (ya cargada) en los combos de las pestañas."""
+        etiquetas = [construir_etiqueta_banco(b) for b in self.bancos]
+        if not etiquetas:
+            etiquetas = ["(Sin bancos configurados)"]
+        for nombre, indice in (("cmb_banco", 0), ("cmb_tx_origen", 0), ("cmb_tx_destino", 1)):
+            combo = getattr(self, nombre, None)
+            if combo is None:
+                continue
+            try:
+                actual = combo.get()
+                combo.configure(values=etiquetas)
+                if actual in etiquetas:
+                    combo.set(actual)
+                else:
+                    combo.set(etiquetas[min(indice, len(etiquetas) - 1)])
+            except Exception:
+                pass
+
+    def _cargar_datos_iniciales(self):
+        """Trae de Supabase lo pesado SIN congelar la ventana."""
+        self._mostrar_cargando()
+
+        def _trabajo(estado):
+            self.inicializar_db()                      # sólo la primera vez por equipo
+            bancos = cargar_bancos()
+            datos = self._cargar_movimientos_crudos()  # 3 consultas para TODOS los bancos
+            estado["bancos"] = bancos
+            estado["resumenes"] = [self.calcular_resumen(b, datos) for b in bancos]
+            estado["transferencias"] = self.cargar_transferencias()
+
+        ejecutar_en_hilo(self.parent_frame, _trabajo, al_terminar=self._aplicar_datos_iniciales)
+
+    def _aplicar_datos_iniciales(self, estado):
+        """Se ejecuta en el hilo principal cuando terminó la carga."""
+        self.bancos = estado.get("bancos") or []
+        self._actualizar_combos_bancos()
+        self.refrescar_saldos(estado.get("resumenes"))
+        self._pintar_transferencias(estado.get("transferencias") or [])
+
+    def actualizar_saldos_boton(self):
+        """Botón 🔄 Actualizar: recalcula sin congelar la ventana."""
+        if not self.bancos:
+            self.refrescar_saldos()
+            return
+        self._mostrar_cargando("⏳ Actualizando saldos...")
+
+        def _trabajo(estado):
+            datos = self._cargar_movimientos_crudos()
+            estado["resumenes"] = [self.calcular_resumen(b, datos) for b in self.bancos]
+
+        ejecutar_en_hilo(self.parent_frame, _trabajo,
+                         al_terminar=lambda e: self.refrescar_saldos(e.get("resumenes")))
 
     # -----------------------------------------------------
     # TAB: SALDO DE BANCOS
@@ -924,13 +1036,20 @@ class ModuloBancoApp:
                      font=("Arial", 12, "italic"), text_color="gray").pack(side="left")
         ctk.CTkButton(f_top, text="🔄 Actualizar", width=130, font=("Arial", 12, "bold"),
                       fg_color="#1f538d", hover_color="#163b65",
-                      command=self.refrescar_saldos).pack(side="right")
+                      command=self.actualizar_saldos_boton).pack(side="right")
 
         self.scroll_saldos = ctk.CTkScrollableFrame(self.tab_saldos, fg_color="transparent")
         self.scroll_saldos.pack(fill="both", expand=True)
-        self.refrescar_saldos()
+        # La ventana aparece de inmediato; los saldos se calculan aparte para no
+        # congelarla (cada consulta a Supabase tarda ~0,3 s).
+        self._mostrar_cargando()
 
-    def refrescar_saldos(self):
+    def refrescar_saldos(self, resumenes=None):
+        """Dibuja las tarjetas de saldo.
+
+        'resumenes' es opcional: si ya vienen calculados (carga en segundo
+        plano) no se vuelve a consultar la base de datos.
+        """
         for w in self.scroll_saldos.winfo_children():
             w.destroy()
 
@@ -943,9 +1062,15 @@ class ModuloBancoApp:
                          font=("Arial", 13), text_color="#856404", justify="left").pack(padx=15, pady=15)
             return
 
+        datos = None
+        if resumenes is None:
+            datos = self._cargar_movimientos_crudos()
         total_general = 0.0
         for idx, banco in enumerate(self.bancos):
-            resumen = self.calcular_resumen(banco)
+            if resumenes is not None and idx < len(resumenes):
+                resumen = resumenes[idx]
+            else:
+                resumen = self.calcular_resumen(banco, datos)
             total_general += resumen["saldo_actual"]
             self._crear_tarjeta_banco(banco, resumen, idx)
 
@@ -989,8 +1114,10 @@ class ModuloBancoApp:
                       fg_color="#1f538d", hover_color="#163b65",
                       command=lambda b=banco: self.ir_a_conciliacion(b)).pack(side="left")
 
-    def calcular_resumen(self, banco):
-        movs = self.cargar_movimientos_sistema(banco)
+    def calcular_resumen(self, banco, datos=None):
+        """Saldo del banco. Si se pasa 'datos' (movimientos crudos ya leídos de
+        la base) no se vuelve a consultar Supabase."""
+        movs = self._movimientos_de_banco(banco, datos)
         ingresos = sum(m["monto"] for m in movs if m["monto"] > 0)
         egresos = sum(-m["monto"] for m in movs if m["monto"] < 0)
         saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
@@ -1005,13 +1132,17 @@ class ModuloBancoApp:
             "movimientos": movs,
         }
 
-    def cargar_movimientos_sistema(self, banco, mes=None):
-        """Cobros (ingresos), pagos (egresos) y transferencias registrados para
-        este banco. Si se pasa 'mes' (formato 'YYYY-MM'), filtra solo ese mes."""
+    def _cargar_movimientos_crudos(self):
+        """Trae de una sola vez los cobros, los pagos y las transferencias.
+
+        Antes se consultaba por CADA banco (con 2 cuentas eran 6-9 viajes a
+        Supabase de ~0,3 s cada uno); ahora son 3 consultas en total y el
+        reparto por banco se hace en memoria.
+        """
+        datos = {"cobros": [], "pagos": [], "transferencias": []}
         conn = conectar_db(silencioso=True)
         if not conn:
-            return []
-        movs = []
+            return datos
         try:
             with conn.cursor() as c:
                 try:
@@ -1022,15 +1153,7 @@ class ModuloBancoApp:
                         FROM pagos_clientes p
                         LEFT JOIN facturas_emitidas f ON p.id_factura = f.id
                     """)
-                    for idp, fecha, nombre, monto, cuenta, idf, num_doc, ref in c.fetchall():
-                        if banco_matchea(banco, cuenta):
-                            doc = (num_doc or ref or "").strip()
-                            desc = f"Cobro {nombre or ''}".replace("  ", " ").strip()
-                            movs.append({
-                                "id": idp, "fecha": fecha or "", "descripcion": desc,
-                                "monto": float(monto or 0), "tipo": "ingreso",
-                                "origen": "sistema", "tabla": "pagos_clientes", "documento": doc,
-                            })
+                    datos["cobros"] = c.fetchall()
                 except Exception:
                     conn.rollback()
                 try:
@@ -1041,15 +1164,7 @@ class ModuloBancoApp:
                         FROM pagos_comprobantes p
                         LEFT JOIN facturas_recibidas f ON p.id_factura = f.id
                     """)
-                    for idp, fecha, nombre, monto, cuenta, idf, num_doc, ref in c.fetchall():
-                        if banco_matchea(banco, cuenta):
-                            doc = (num_doc or ref or "").strip()
-                            desc = f"Pago {nombre or ''}".replace("  ", " ").strip()
-                            movs.append({
-                                "id": idp, "fecha": fecha or "", "descripcion": desc,
-                                "monto": -float(monto or 0), "tipo": "egreso",
-                                "origen": "sistema", "tabla": "pagos_comprobantes", "documento": doc,
-                            })
+                    datos["pagos"] = c.fetchall()
                 except Exception:
                     conn.rollback()
                 try:
@@ -1058,38 +1173,73 @@ class ModuloBancoApp:
                                fecha, descripcion, monto
                         FROM transferencias_bancarias
                     """)
-                    for idt, bo, co, bd, cd, fecha, desc, monto in c.fetchall():
-                        monto_v = float(monto or 0)
-                        et_origen = construir_etiqueta_banco({"banco": bo, "cuenta": co})
-                        et_destino = construir_etiqueta_banco({"banco": bd, "cuenta": cd})
-                        if banco_matchea(banco, et_origen):
-                            desc_eg = f"Transferencia a {bd or 'otra cuenta'}"
-                            if desc:
-                                desc_eg += f" ({desc})"
-                            movs.append({
-                                "id": idt, "fecha": fecha or "", "descripcion": desc_eg,
-                                "monto": -monto_v, "tipo": "transferencia",
-                                "origen": "sistema", "tabla": "transferencias_bancarias", "documento": "",
-                            })
-                        if banco_matchea(banco, et_destino):
-                            desc_in = f"Transferencia de {bo or 'otra cuenta'}"
-                            if desc:
-                                desc_in += f" ({desc})"
-                            movs.append({
-                                "id": idt, "fecha": fecha or "", "descripcion": desc_in,
-                                "monto": monto_v, "tipo": "transferencia",
-                                "origen": "sistema", "tabla": "transferencias_bancarias", "documento": "",
-                            })
+                    datos["transferencias"] = c.fetchall()
                 except Exception:
                     conn.rollback()
         except Exception:
             pass
         finally:
             liberar_conexion(conn)
+        return datos
+
+    def _movimientos_de_banco(self, banco, datos=None, mes=None):
+        """Cobros (ingresos), pagos (egresos) y transferencias de ESTE banco.
+
+        Si se recibe 'datos' (lo que devuelve _cargar_movimientos_crudos) NO se
+        vuelve a consultar la base de datos. Si se recibe 'mes' (formato
+        'YYYY-MM'), filtra solo ese mes.
+        """
+        if datos is None:
+            datos = self._cargar_movimientos_crudos()
+        movs = []
+        for idp, fecha, nombre, monto, cuenta, idf, num_doc, ref in (datos.get("cobros") or []):
+            if banco_matchea(banco, cuenta):
+                doc = (num_doc or ref or "").strip()
+                desc = f"Cobro {nombre or ''}".replace("  ", " ").strip()
+                movs.append({
+                    "id": idp, "fecha": fecha or "", "descripcion": desc,
+                    "monto": float(monto or 0), "tipo": "ingreso",
+                    "origen": "sistema", "tabla": "pagos_clientes", "documento": doc,
+                })
+        for idp, fecha, nombre, monto, cuenta, idf, num_doc, ref in (datos.get("pagos") or []):
+            if banco_matchea(banco, cuenta):
+                doc = (num_doc or ref or "").strip()
+                desc = f"Pago {nombre or ''}".replace("  ", " ").strip()
+                movs.append({
+                    "id": idp, "fecha": fecha or "", "descripcion": desc,
+                    "monto": -float(monto or 0), "tipo": "egreso",
+                    "origen": "sistema", "tabla": "pagos_comprobantes", "documento": doc,
+                })
+        for idt, bo, co, bd, cd, fecha, desc, monto in (datos.get("transferencias") or []):
+            monto_v = float(monto or 0)
+            et_origen = construir_etiqueta_banco({"banco": bo, "cuenta": co})
+            et_destino = construir_etiqueta_banco({"banco": bd, "cuenta": cd})
+            if banco_matchea(banco, et_origen):
+                desc_eg = f"Transferencia a {bd or 'otra cuenta'}"
+                if desc:
+                    desc_eg += f" ({desc})"
+                movs.append({
+                    "id": idt, "fecha": fecha or "", "descripcion": desc_eg,
+                    "monto": -monto_v, "tipo": "transferencia",
+                    "origen": "sistema", "tabla": "transferencias_bancarias", "documento": "",
+                })
+            if banco_matchea(banco, et_destino):
+                desc_in = f"Transferencia de {bo or 'otra cuenta'}"
+                if desc:
+                    desc_in += f" ({desc})"
+                movs.append({
+                    "id": idt, "fecha": fecha or "", "descripcion": desc_in,
+                    "monto": monto_v, "tipo": "transferencia",
+                    "origen": "sistema", "tabla": "transferencias_bancarias", "documento": "",
+                })
         if mes:
             movs = [m for m in movs if normalizar_fecha(m["fecha"]).startswith(mes)]
         movs.sort(key=lambda m: normalizar_fecha(m["fecha"]))
         return movs
+
+    def cargar_movimientos_sistema(self, banco, mes=None):
+        """Compatibilidad: movimientos de un banco (consulta la base de datos)."""
+        return self._movimientos_de_banco(banco, mes=mes)
 
     def ver_movimientos(self, banco):
         resumen = self.calcular_resumen(banco)
@@ -1216,7 +1366,7 @@ class ModuloBancoApp:
         self.tabla_tx.bind("<Double-1>", lambda _e: (
             self.editar_transferencia() if self.tabla_tx.selection() else None))
         vsb.pack(side="right", fill="y")
-        self.refrescar_transferencias()
+        # El historial lo rellena la carga inicial en segundo plano
 
     def _preparar_form_transferencia(self, tx=None):
         """Deja el formulario de transferencias listo: en blanco (nueva) o con los datos de 'tx'.
@@ -1374,12 +1524,19 @@ class ModuloBancoApp:
             liberar_conexion(conn)
         return rows
 
-    def refrescar_transferencias(self):
-        self.tabla_tx.delete(*self.tabla_tx.get_children())
-        for t in self.cargar_transferencias():
+    def _pintar_transferencias(self, filas):
+        """Dibuja el historial ya cargado (no consulta la base)."""
+        try:
+            self.tabla_tx.delete(*self.tabla_tx.get_children())
+        except Exception:
+            return
+        for t in filas:
             self.tabla_tx.insert("", tk.END, iid=str(t["id"]),
                                  values=(t["fecha"], t["origen"], t["destino"],
                                          t["descripcion"], formatear_monto(t["monto"])))
+
+    def refrescar_transferencias(self):
+        self._pintar_transferencias(self.cargar_transferencias())
 
     def eliminar_transferencia(self):
         sel = self.tabla_tx.selection()
@@ -1450,6 +1607,9 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns, text="🗑️ Eliminar", font=("Arial", 12, "bold"),
                       fg_color="#c0392b", hover_color="#96281b",
                       command=self.eliminar_movimiento_conciliacion).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns, text="♻️ Restaurar Eliminados", font=("Arial", 12, "bold"),
+                      fg_color="#16a085", hover_color="#117a65",
+                      command=self.restaurar_ignorados).pack(side="left", padx=4)
         ctk.CTkButton(f_btns, text="💾 Exportar", font=("Arial", 12, "bold"),
                       fg_color="#7f8c8d", hover_color="#606b6b",
                       command=self.exportar_reporte).pack(side="left", padx=4)
@@ -1544,6 +1704,98 @@ class ModuloBancoApp:
 
         ejecutar_en_hilo(self.parent_frame, _leer, al_terminar=_terminar)
 
+    @staticmethod
+    def _clave_ignorado(origen, tabla, id_movimiento, fecha, monto, descripcion):
+        """Firma para reconocer un movimiento eliminado de la conciliación.
+
+        Los movimientos del sistema tienen id propio (tabla + id); las líneas
+        leídas del PDF no, así que se identifican por fecha + monto + descripción.
+        """
+        try:
+            idm = int(id_movimiento or 0)
+        except Exception:
+            idm = 0
+        if idm:
+            return f"{tabla or ''}|{idm}"
+        return "pdf|%s|%.2f|%s" % (normalizar_fecha(fecha), float(monto or 0),
+                                   _norm_texto(descripcion))
+
+    def cargar_ignorados(self, banco):
+        """Movimientos que el usuario eliminó en la conciliación de este banco.
+
+        Se guardan en la base de datos para que NO vuelvan a aparecer al pulsar
+        '🔄 Cargar Movimientos del Sistema' (antes reaparecían siempre).
+        """
+        ignorados = {"sistema": set(), "estado_cuenta": set()}
+        if not banco:
+            return ignorados
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return ignorados
+        try:
+            with conn.cursor() as c:
+                c.execute("""
+                    SELECT origen, COALESCE(tabla, ''), COALESCE(id_movimiento, 0),
+                           COALESCE(fecha, ''), COALESCE(monto, 0), COALESCE(descripcion, '')
+                    FROM conciliacion_ignorados
+                    WHERE banco = %s
+                """, (banco.get("banco", ""),))
+                for origen, tabla, idm, fecha, monto, desc in c.fetchall():
+                    ignorados.setdefault(origen or "", set()).add(
+                        self._clave_ignorado(origen, tabla, idm, fecha, monto, desc))
+        except Exception:
+            pass
+        finally:
+            liberar_conexion(conn)
+        return ignorados
+
+    @staticmethod
+    def _registrar_ignorado(cursor, banco, f):
+        """Anota en la base que este movimiento fue eliminado de la conciliación."""
+        try:
+            idm = int(f.get("id", 0) or 0)
+        except Exception:
+            idm = 0
+        cursor.execute("""
+            INSERT INTO conciliacion_ignorados
+            (banco, origen, tabla, id_movimiento, fecha, descripcion, monto, creado)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (banco.get("banco", "") if banco else "",
+              f.get("origen", ""), f.get("tabla", "") or "", idm,
+              str(f.get("fecha", "") or ""), str(f.get("descripcion", "") or ""),
+              float(f.get("monto", 0) or 0), datetime.now().strftime("%Y-%m-%d %H:%M")))
+
+    def restaurar_ignorados(self):
+        """Vuelve a mostrar los movimientos que se habían eliminado de la lista."""
+        banco = self.banco_seleccionado()
+        if not banco:
+            return
+        if not messagebox.askyesno(
+                "Restaurar movimientos",
+                f"¿Volver a mostrar en la conciliación los movimientos que eliminó "
+                f"en {construir_etiqueta_banco(banco)}?\n\n"
+                "Se quitarán de la lista de descartados (no se vuelve a crear nada: "
+                "los movimientos del sistema y del estado de cuenta siguen intactos).",
+                parent=self.parent_frame):
+            return
+        conn = conectar_db(silencioso=True)
+        try:
+            if conn:
+                with conn.cursor() as c:
+                    c.execute("DELETE FROM conciliacion_ignorados WHERE banco = %s",
+                              (banco.get("banco", ""),))
+                conn.commit()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo restaurar:\n{e}", parent=self.parent_frame)
+            return
+        finally:
+            if conn:
+                liberar_conexion(conn)
+        registrar_auditoria(self.usuario_activo, "Banco",
+                            f"Restauró los movimientos eliminados de la conciliación en "
+                            f"{construir_etiqueta_banco(banco)}")
+        self.generar_reporte()
+
     def generar_reporte(self):
         banco = self.banco_seleccionado()
         if not banco:
@@ -1551,10 +1803,30 @@ class ModuloBancoApp:
             return
 
         mes_key = mes_etiqueta_a_key(self.cmb_mes.get())
-        sys_movs = self.cargar_movimientos_sistema(banco, mes=mes_key)
+
+        # 🚫 Movimientos que el usuario eliminó de esta conciliación: no se vuelven a cargar
+        ignorados = self.cargar_ignorados(banco)
+        ign_sistema = ignorados.get("sistema", set())
+        ign_pdf = ignorados.get("estado_cuenta", set())
+
+        sys_movs = []
+        for m in self.cargar_movimientos_sistema(banco, mes=mes_key):
+            clave = self._clave_ignorado(m.get("origen", "sistema"), m.get("tabla", ""),
+                                         m.get("id", 0), m.get("fecha"), m.get("monto"),
+                                         m.get("descripcion"))
+            if clave not in ign_sistema:
+                sys_movs.append(m)
+
         manuales = self.cargar_manuales(banco)
-        bank_movs = [b for b in self.movimientos_pdf
-                     if not mes_key or normalizar_fecha(b["fecha"]).startswith(mes_key)]
+
+        bank_movs = []
+        for b in self.movimientos_pdf:
+            if mes_key and not normalizar_fecha(b["fecha"]).startswith(mes_key):
+                continue
+            clave = self._clave_ignorado("estado_cuenta", "", 0, b.get("fecha"),
+                                         b.get("monto"), b.get("descripcion"))
+            if clave not in ign_pdf:
+                bank_movs.append(b)
 
         filas = []
         usados = set()
@@ -2707,9 +2979,10 @@ class ModuloBancoApp:
                 "Confirmar eliminación",
                 f"¿Eliminar {len(filas)} movimiento(s) de la conciliación?\n\n"
                 "• Los movimientos manuales se borran de la base de datos.\n"
-                "• Los movimientos del sistema / estado de cuenta pierden su marca de conciliado "
-                "y vuelven a quedar pendientes.\n"
-                "• Las líneas leídas del PDF desaparecen de la vista hasta que vuelva a cargar el PDF.\n"
+                "• Los movimientos del sistema (cobros/pagos/transferencias) y las líneas del "
+                "estado de cuenta NO se borran de sus tablas: quedan descartados y ya no vuelven "
+                "a aparecer al pulsar «Cargar Movimientos del Sistema».\n"
+                "• Para volver a verlos use el botón «♻️ Restaurar Eliminados».\n"
                 "• 🔗 Si un movimiento manual creó su egreso en COMPRAS, ese gasto (factura + "
                 "pago) también se eliminará: los dos módulos quedan sincronizados.",
                 parent=self.parent_frame):
@@ -2719,6 +2992,7 @@ class ModuloBancoApp:
         nombre_banco = banco.get("banco", "") if banco else ""
         borrados_db = 0
         gastos_borrados = 0
+        ignorados_nuevos = 0
         soportes_a_revisar = []
         errores = []
 
@@ -2761,6 +3035,9 @@ class ModuloBancoApp:
                                              WHERE origen = 'sistema' AND id_movimiento = %s AND banco = %s""",
                                           (idp, nombre_banco))
                                 borrados_db += max(c.rowcount, 0)
+                                # 🚫 Queda descartado: no vuelve a aparecer al recargar la lista
+                                self._registrar_ignorado(c, banco, f)
+                                ignorados_nuevos += 1
                             elif origen == "estado_cuenta":
                                 c.execute("""DELETE FROM conciliacion_bancaria
                                              WHERE origen = 'estado_cuenta' AND banco = %s
@@ -2768,6 +3045,9 @@ class ModuloBancoApp:
                                           (nombre_banco, f.get("fecha", ""),
                                            f.get("monto", 0), f.get("descripcion", "")))
                                 borrados_db += max(c.rowcount, 0)
+                                # 🚫 Queda descartado: no vuelve a aparecer (ni releyendo el PDF)
+                                self._registrar_ignorado(c, banco, f)
+                                ignorados_nuevos += 1
                         except Exception as e:
                             errores.append(str(e))
                     conn.commit()
@@ -2805,6 +3085,9 @@ class ModuloBancoApp:
         if gastos_borrados:
             msg += (f"\n🔗 También se eliminó/eliminaron {gastos_borrados} gasto(s) en el módulo de "
                     f"COMPRAS (factura + pago). Los dos módulos quedan sincronizados.")
+        if ignorados_nuevos:
+            msg += (f"\n🚫 {ignorados_nuevos} movimiento(s) del sistema / estado de cuenta quedaron "
+                    f"descartados: no volverán a aparecer al pulsar «Cargar Movimientos del Sistema».")
         if errores:
             msg += f"\n⚠️ Algunos registros no se pudieron borrar: {errores[0]}"
         messagebox.showinfo("Eliminar", msg, parent=self.parent_frame)

@@ -16,11 +16,23 @@ CLAVE_RCLONE = "rclone_sync"
 CLAVE_RCLONE_TOKEN = "rclone_token"
 
 
+_TABLA_ASEGURADA = False
+
+
 def _asegurar_tabla(cursor):
+    """Crea la tabla si no existe (una sola vez por sesión).
+
+    Cada sentencia a Supabase tarda ~0,3 s; antes este CREATE se repetía en
+    CADA lectura de configuración y hacía lenta la apertura de los módulos.
+    """
+    global _TABLA_ASEGURADA
+    if _TABLA_ASEGURADA:
+        return
     cursor.execute(
         "CREATE TABLE IF NOT EXISTS config_general "
         "(clave VARCHAR(255) PRIMARY KEY, valor TEXT)"
     )
+    _TABLA_ASEGURADA = True
 
 
 def _cargar_clave(clave, default=""):
