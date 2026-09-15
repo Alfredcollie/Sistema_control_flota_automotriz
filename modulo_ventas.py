@@ -60,14 +60,36 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+def resolver_archivo_local(ruta):
+    """Devuelve la ruta REAL del archivo en ESTE equipo (o "" si no se encuentra).
+
+    Las rutas de los PDFs se guardan relativas a la carpeta sincronizada (o
+    absolutas de otro equipo/SO), así que hay que resolverlas antes de
+    comprobar si el archivo existe: un os.path.exists directo fallaría y el
+    programa respondería "no hay PDF asociado" aunque el archivo sí exista.
+    """
+    if not ruta:
+        return ""
+    texto = str(ruta).strip()
+    try:
+        encontrada = resolver_ruta_archivo(texto)
+        if encontrada:
+            return encontrada
+    except Exception:
+        pass
+    try:
+        candidata = os.path.normpath(texto)
+        if os.path.exists(candidata):
+            return candidata
+    except Exception:
+        pass
+    return ""
+
+
 def abrir_documento(ruta):
     try:
         # Resuelve rutas guardadas en otro equipo/SO (Mac <-> Windows)
-        try:
-            from app_paths import resolver_ruta_archivo
-            ruta = resolver_ruta_archivo(ruta) or ruta
-        except Exception:
-            pass
+        ruta = resolver_archivo_local(ruta) or ruta
         ruta_abs = os.path.abspath(ruta)
         if sys.platform == "win32": os.startfile(ruta_abs)
         elif sys.platform == "darwin": subprocess.call(["open", ruta_abs])
@@ -1498,13 +1520,26 @@ class FacturasEmitidasTab:
             if res:
                 enlace_pdf = res[0]
                 ruta_local = res[1]
-                if enlace_pdf and str(enlace_pdf).startswith("http"):
-                    webbrowser.open(enlace_pdf)
-                elif ruta_local and os.path.exists(ruta_local):
-                    abrir_documento(ruta_local)
+                # Se resuelve la ruta: puede estar guardada como relativa a la
+                # carpeta sincronizada o pertenecer a otro equipo (Mac/Windows).
+                ruta_real = resolver_archivo_local(ruta_local)
+                if ruta_real:
+                    abrir_documento(ruta_real)
+                elif enlace_pdf and str(enlace_pdf).strip():
+                    webbrowser.open(str(enlace_pdf).strip())
+                elif ruta_local:
+                    messagebox.showwarning(
+                        "PDF no encontrado",
+                        "La factura tiene un PDF asociado, pero el archivo no se encuentra en este equipo." + chr(10) + chr(10) +
+                        "Ruta registrada: " + str(ruta_local) + chr(10) + chr(10) +
+                        "Verifique que la carpeta sincronizada esté actualizada (Rclone).",
+                        parent=self.main_root)
                 else:
-                    messagebox.showinfo("Aviso", "No hay PDF asociado a esta factura.")
-        except Exception: pass
+                    messagebox.showinfo("Aviso", "No hay PDF asociado a esta factura.",
+                                        parent=self.main_root)
+        except Exception as e:
+            messagebox.showerror("Error", "No se pudo abrir el PDF de la factura: " + str(e),
+                                 parent=self.main_root)
         finally: liberar_conexion(conn)
 
     def abrir_ventana_edicion(self):
@@ -1581,10 +1616,17 @@ class FacturasEmitidasTab:
                 res = cursor.fetchone()
                 if res:
                     link_pdf, ruta_local = res[0], res[1]
-                    if ruta_local and os.path.exists(ruta_local):
-                        abrir_documento(ruta_local)
-                    elif link_pdf and str(link_pdf).startswith("http"):
-                        webbrowser.open(link_pdf)
+                    ruta_real = resolver_archivo_local(ruta_local)
+                    if ruta_real:
+                        abrir_documento(ruta_real)
+                    elif link_pdf and str(link_pdf).strip():
+                        webbrowser.open(str(link_pdf).strip())
+                    elif ruta_local:
+                        messagebox.showwarning(
+                            "PDF no encontrado",
+                            "El comprobante tiene un PDF asociado, pero el archivo no se encuentra en este equipo." + chr(10) + chr(10) +
+                            "Ruta registrada: " + str(ruta_local),
+                            parent=v_edit)
                     else:
                         messagebox.showinfo("Aviso", "Este comprobante aún no tiene PDF asociado.", parent=v_edit)
             except Exception as e: messagebox.showerror("Error", str(e), parent=v_edit)
