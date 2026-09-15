@@ -1823,7 +1823,34 @@ class FacturasRecibidasTab:
                         liberar_conexion(conn_u)
 
         def eliminar_registro():
-            if messagebox.askyesno("Confirmar Eliminación", "⚠️ ¿Desea eliminar completamente este registro?", parent=v_edit):
+            # 🔗 Se averigua si este registro se creó desde el módulo de BANCO: si es así,
+            # al eliminarlo aquí también se elimina el movimiento bancario (módulos sincronizados).
+            mov_banco = None
+            try:
+                conn_b = conectar_db(silencioso=True)
+                if conn_b:
+                    try:
+                        with conn_b.cursor() as cb:
+                            cb.execute("""SELECT id, COALESCE(banco, ''), COALESCE(cuenta, ''),
+                                                 COALESCE(fecha, ''), COALESCE(monto, 0)
+                                          FROM conciliacion_bancaria
+                                          WHERE id_gasto_compras = %s
+                                          ORDER BY id""", (id_doc,))
+                            mov_banco = cb.fetchone()
+                    finally:
+                        liberar_conexion(conn_b)
+            except Exception:
+                mov_banco = None
+
+            aviso = "⚠️ ¿Desea eliminar completamente este registro?"
+            if mov_banco:
+                etiqueta_b = " - ".join(str(x) for x in (mov_banco[1], mov_banco[2]) if x).strip(" -")
+                aviso += (f"\n\n🔗 Este registro se creó desde el módulo de BANCO:\n"
+                          f"     {etiqueta_b} | {mov_banco[3]} | {formatear_moneda(mov_banco[4])}"
+                          f"\n\nEl movimiento bancario y el pago se eliminarán también, "
+                          f"para que los dos módulos queden sincronizados.")
+
+            if messagebox.askyesno("Confirmar Eliminación", aviso, parent=v_edit):
                 try:
                     conn = conectar_db()
                     cursor = conn.cursor()
@@ -1832,14 +1859,29 @@ class FacturasRecibidasTab:
                     ruta_archivo = os.path.normpath(row[0]) if row and row[0] else None
                     eliminar_archivo(ruta_archivo)   # resuelve rutas de otros equipos/SO
 
+                    # 🗑️ Se borran también los pagos de esta factura (incluido el que creó el Banco)
+                    cursor.execute("DELETE FROM pagos_comprobantes WHERE id_factura = %s", (id_doc,))
                     cursor.execute("DELETE FROM facturas_recibidas WHERE id = %s", (id_doc,))
+
+                    # 🔗 Y el movimiento del Banco que la originó
+                    mov_borrados = 0
+                    if mov_banco:
+                        cursor.execute("DELETE FROM conciliacion_bancaria WHERE id_gasto_compras = %s", (id_doc,))
+                        mov_borrados = max(cursor.rowcount, 0)
+
                     conn.commit()
                     liberar_conexion(conn)
                     
                     cache_sistema.invalidar()
-                    registrar_auditoria(self.app_padre.usuario_activo, "Facturas Recibidas", f"Eliminó factura ID {id_doc}")
+                    registrar_auditoria(self.app_padre.usuario_activo, "Facturas Recibidas",
+                                        f"Eliminó factura ID {id_doc}"
+                                        + (" y su movimiento bancario en Banco" if mov_borrados else ""))
 
-                    messagebox.showinfo("Éxito", "Registro eliminado.", parent=v_edit)
+                    mensaje = "Registro eliminado."
+                    if mov_borrados:
+                        mensaje += ("\n🔗 También se eliminó el movimiento en el módulo de BANCO."
+                                    "\nLos dos módulos quedan sincronizados.")
+                    messagebox.showinfo("Éxito", mensaje, parent=v_edit)
                     v_edit.destroy()
                     self.cargar_datos_tabla(reset_pagina=True)
                     if hasattr(self.app_padre, 'app_pagos'): self.app_padre.app_pagos.cargar_datos_pagar(reset_pagina=True)

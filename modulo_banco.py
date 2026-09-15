@@ -28,7 +28,7 @@ from datetime import datetime
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from dialogos_seguros import (seleccionar_archivo_dialogo, seleccionar_archivos_dialogo,
                               guardar_archivo_dialogo)
-from app_paths import CONFIG_FILE, ruta_para_guardar
+from app_paths import CONFIG_FILE, ruta_para_guardar, eliminar_archivo
 from config_nube import cargar_bancos
 from tareas_seguras import ejecutar_en_hilo
 
@@ -104,6 +104,60 @@ def obtener_ruta_base():
     except Exception:
         pass
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def eliminar_gasto_vinculado(cursor, id_gasto):
+    """🔗 Borra en Compras el gasto creado por un movimiento del Banco.
+
+    Los egresos registrados en el Banco generan su registro espejo en Compras
+    (factura + pago, enlazados por 'conciliacion_bancaria.id_gasto_compras'). Al
+    eliminar el movimiento bancario hay que borrar también ese gasto para que los
+    dos módulos queden sincronizados. Devuelve la ruta del soporte digital, para
+    borrarla después (sólo si ya no la usa ningún otro registro).
+
+    Devuelve la tupla (ruta_del_soporte, se_borro_el_gasto).
+    """
+    if not id_gasto:
+        return None, False
+    ruta = None
+    try:
+        cursor.execute("SELECT archivo_ruta FROM facturas_recibidas WHERE id = %s", (id_gasto,))
+        fila = cursor.fetchone()
+        if fila and fila[0]:
+            ruta = os.path.normpath(str(fila[0]))
+    except Exception:
+        ruta = None
+    cursor.execute("DELETE FROM pagos_comprobantes WHERE id_factura = %s", (id_gasto,))
+    cursor.execute("DELETE FROM facturas_recibidas WHERE id = %s", (id_gasto,))
+    return ruta, bool(max(cursor.rowcount, 0))
+
+
+def borrar_soporte_si_huerfano(ruta):
+    """🗑️ Borra el archivo del soporte SÓLO si ya no lo referencia ningún registro."""
+    if not ruta:
+        return
+    try:
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return
+        usos = 0
+        try:
+            with conn.cursor() as c:
+                try:
+                    c.execute("""SELECT COUNT(*) FROM facturas_recibidas
+                                 WHERE archivo_ruta = %s OR soporte_pago_tercero = %s""", (ruta, ruta))
+                except Exception:
+                    conn.rollback()
+                    c.execute("SELECT COUNT(*) FROM facturas_recibidas WHERE archivo_ruta = %s", (ruta,))
+                usos += int(c.fetchone()[0] or 0)
+                c.execute("SELECT COUNT(*) FROM pagos_comprobantes WHERE archivo_ruta = %s", (ruta,))
+                usos += int(c.fetchone()[0] or 0)
+        finally:
+            liberar_conexion(conn)
+        if not usos:
+            eliminar_archivo(ruta)
+    except Exception as e:
+        print("[Banco] No se pudo borrar el soporte digital:", e)
 
 
 def abrir_documento(ruta):
@@ -2655,19 +2709,38 @@ class ModuloBancoApp:
                 "• Los movimientos manuales se borran de la base de datos.\n"
                 "• Los movimientos del sistema / estado de cuenta pierden su marca de conciliado "
                 "y vuelven a quedar pendientes.\n"
-                "• Las líneas leídas del PDF desaparecen de la vista hasta que vuelva a cargar el PDF.",
+                "• Las líneas leídas del PDF desaparecen de la vista hasta que vuelva a cargar el PDF.\n"
+                "• 🔗 Si un movimiento manual creó su egreso en COMPRAS, ese gasto (factura + "
+                "pago) también se eliminará: los dos módulos quedan sincronizados.",
                 parent=self.parent_frame):
             return
 
         banco = self.banco_seleccionado()
         nombre_banco = banco.get("banco", "") if banco else ""
         borrados_db = 0
+        gastos_borrados = 0
+        soportes_a_revisar = []
         errores = []
 
         conn = conectar_db(silencioso=True)
         try:
             if conn:
                 with conn.cursor() as c:
+                    # 🔗 Egresos del banco que tienen su gasto espejo en Compras
+                    gastos_vinculados = {}
+                    ids_manuales = [int(f.get("id", 0) or 0) for f in filas
+                                    if f.get("origen", "") == "manual" and int(f.get("id", 0) or 0)]
+                    if ids_manuales:
+                        try:
+                            c.execute("""SELECT id, COALESCE(id_gasto_compras, 0)
+                                         FROM conciliacion_bancaria WHERE id = ANY(%s)""", (ids_manuales,))
+                            for id_mov, id_gasto_bd in c.fetchall():
+                                if int(id_gasto_bd or 0):
+                                    gastos_vinculados[int(id_mov)] = int(id_gasto_bd)
+                        except Exception:
+                            conn.rollback()
+                            gastos_vinculados = {}
+
                     for f in filas:
                         origen = f.get("origen", "")
                         idp = f.get("id", 0) or 0
@@ -2675,6 +2748,14 @@ class ModuloBancoApp:
                             if origen == "manual" and idp:
                                 c.execute("DELETE FROM conciliacion_bancaria WHERE id = %s", (idp,))
                                 borrados_db += max(c.rowcount, 0)
+                                # 🔗 Se elimina también el gasto que este movimiento creó en Compras
+                                id_gasto = gastos_vinculados.get(int(idp), 0)
+                                if id_gasto:
+                                    ruta_soporte, borrado = eliminar_gasto_vinculado(c, id_gasto)
+                                    if ruta_soporte:
+                                        soportes_a_revisar.append(ruta_soporte)
+                                    if borrado:
+                                        gastos_borrados += 1
                             elif origen == "sistema" and idp:
                                 c.execute("""DELETE FROM conciliacion_bancaria
                                              WHERE origen = 'sistema' AND id_movimiento = %s AND banco = %s""",
@@ -2696,6 +2777,18 @@ class ModuloBancoApp:
             if conn:
                 liberar_conexion(conn)
 
+        # 🗑️ Soportes digitales de los gastos borrados: se eliminan sólo si ya no los usa nadie
+        for ruta_soporte in soportes_a_revisar:
+            borrar_soporte_si_huerfano(ruta_soporte)
+
+        # El módulo de Compras trabaja con caché: se limpia para que el cambio se vea al instante
+        if gastos_borrados:
+            try:
+                from buffer_memoria import cache_sistema
+                cache_sistema.invalidar()
+            except Exception:
+                pass
+
         excluir = set(indices)
         self.filas_conciliacion = [f for i, f in enumerate(self.filas_conciliacion)
                                    if i not in excluir]
@@ -2703,11 +2796,15 @@ class ModuloBancoApp:
 
         registrar_auditoria(self.usuario_activo, "Banco",
                             f"Eliminó {len(filas)} movimiento(s) de la conciliación "
-                            f"en {construir_etiqueta_banco(banco) if banco else 'banco'}")
+                            f"en {construir_etiqueta_banco(banco) if banco else 'banco'}"
+                            + (f" (y {gastos_borrados} gasto(s) de Compras)" if gastos_borrados else ""))
 
         msg = f"{len(filas)} movimiento(s) eliminado(s) de la conciliación."
         if borrados_db:
             msg += f"\n{borrados_db} registro(s) eliminado(s) de la base de datos."
+        if gastos_borrados:
+            msg += (f"\n🔗 También se eliminó/eliminaron {gastos_borrados} gasto(s) en el módulo de "
+                    f"COMPRAS (factura + pago). Los dos módulos quedan sincronizados.")
         if errores:
             msg += f"\n⚠️ Algunos registros no se pudieron borrar: {errores[0]}"
         messagebox.showinfo("Eliminar", msg, parent=self.parent_frame)
