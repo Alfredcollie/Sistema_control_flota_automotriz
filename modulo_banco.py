@@ -1160,7 +1160,9 @@ class ModuloBancoApp:
                     c.execute("""
                         SELECT p.id, p.fecha_pago, p.proveedor_nombre, p.monto_pagado,
                                COALESCE(p.cuenta_origen, ''), p.id_factura,
-                               COALESCE(f.numero_documento, ''), COALESCE(p.codigo_cotizacion, '')
+                               COALESCE(f.numero_documento, ''), COALESCE(p.codigo_cotizacion, ''),
+                               (COALESCE(f.tipo_documento, '') = 'PAGO BANCO'
+                                OR COALESCE(f.es_compra_cruzada, FALSE)) AS espejo_banco
                         FROM pagos_comprobantes p
                         LEFT JOIN facturas_recibidas f ON p.id_factura = f.id
                     """)
@@ -1201,7 +1203,12 @@ class ModuloBancoApp:
                     "monto": float(monto or 0), "tipo": "ingreso",
                     "origen": "sistema", "tabla": "pagos_clientes", "documento": doc,
                 })
-        for idp, fecha, nombre, monto, cuenta, idf, num_doc, ref in (datos.get("pagos") or []):
+        for fila in (datos.get("pagos") or []):
+            idp, fecha, nombre, monto, cuenta, idf, num_doc, ref = fila[:8]
+            # 'espejo_banco': el propio módulo de Banco creó este pago en Compras
+            # (un egreso registrado aquí, o una compra cruzada). Ese movimiento ya se
+            # ve como MANUAL en la conciliación, así que no se lista dos veces.
+            espejo = bool(fila[8]) if len(fila) > 8 else False
             if banco_matchea(banco, cuenta):
                 doc = (num_doc or ref or "").strip()
                 desc = f"Pago {nombre or ''}".replace("  ", " ").strip()
@@ -1209,6 +1216,7 @@ class ModuloBancoApp:
                     "id": idp, "fecha": fecha or "", "descripcion": desc,
                     "monto": -float(monto or 0), "tipo": "egreso",
                     "origen": "sistema", "tabla": "pagos_comprobantes", "documento": doc,
+                    "espejo_banco": espejo,
                 })
         for idt, bo, co, bd, cd, fecha, desc, monto in (datos.get("transferencias") or []):
             monto_v = float(monto or 0)
@@ -1809,13 +1817,19 @@ class ModuloBancoApp:
         ign_sistema = ignorados.get("sistema", set())
         ign_pdf = ignorados.get("estado_cuenta", set())
 
-        sys_movs = []
+        movs_sistema = []
         for m in self.cargar_movimientos_sistema(banco, mes=mes_key):
             clave = self._clave_ignorado(m.get("origen", "sistema"), m.get("tabla", ""),
                                          m.get("id", 0), m.get("fecha"), m.get("monto"),
                                          m.get("descripcion"))
             if clave not in ign_sistema:
-                sys_movs.append(m)
+                movs_sistema.append(m)
+
+        # 🚫 Los pagos y compras cruzadas registrados DESDE el Banco generan su
+        # movimiento espejo en Compras (para que el gasto figure pagado), pero en la
+        # conciliación ya se ven como movimiento MANUAL: no se listan dos veces.
+        # (Sí se usan para los totales: son los que dan el saldo del sistema.)
+        sys_movs = [m for m in movs_sistema if not m.get("espejo_banco")]
 
         manuales = self.cargar_manuales(banco)
 
@@ -1831,44 +1845,54 @@ class ModuloBancoApp:
         filas = []
         usados = set()
 
-        for s in sys_movs:
-            s_fecha = normalizar_fecha(s["fecha"])
-            idx_match = None
+        def emparejar(mov):
+            """Busca la línea del estado de cuenta que corresponde a 'mov'."""
+            s_fecha = normalizar_fecha(mov["fecha"])
             for i, b in enumerate(bank_movs):
                 if i in usados:
                     continue
-                if s_fecha and normalizar_fecha(b["fecha"]) == s_fecha and abs(b["monto"] - s["monto"]) <= 0.02:
-                    idx_match = i
-                    break
-            if idx_match is None:
-                cands = [i for i, b in enumerate(bank_movs)
-                         if i not in usados and abs(b["monto"] - s["monto"]) <= 0.02]
-                if len(cands) == 1:
-                    idx_match = cands[0]
+                if s_fecha and normalizar_fecha(b["fecha"]) == s_fecha and abs(b["monto"] - mov["monto"]) <= 0.02:
+                    return i
+            cands = [i for i, b in enumerate(bank_movs)
+                     if i not in usados and abs(b["monto"] - mov["monto"]) <= 0.02]
+            return cands[0] if len(cands) == 1 else None
+
+        def linea_estado_cuenta(b):
+            return {**b, "id": 0, "tipo": "ingreso" if b["monto"] > 0 else "egreso",
+                    "origen": "estado_cuenta", "tabla": "", "estado": "conciliado"}
+
+        for s in sys_movs:
+            idx_match = emparejar(s)
             if idx_match is not None:
                 usados.add(idx_match)
-                b = bank_movs[idx_match]
                 filas.append({**s, "estado": "conciliado"})
-                filas.append({**b, "id": 0, "tipo": "ingreso" if b["monto"] > 0 else "egreso",
-                              "origen": "estado_cuenta", "tabla": "", "estado": "conciliado"})
+                filas.append(linea_estado_cuenta(bank_movs[idx_match]))
             else:
                 filas.append({**s, "estado": "diferencia"})
+
+        # Los movimientos MANUALES también se emparejan con el estado de cuenta: así la
+        # línea del banco no queda como "sin conciliar" por ocultarse su espejo.
+        for m in manuales:
+            idx_match = emparejar(m)
+            if idx_match is not None:
+                usados.add(idx_match)
+                filas.append({**m, "estado": "conciliado", "origen": "manual"})
+                filas.append(linea_estado_cuenta(bank_movs[idx_match]))
+            else:
+                filas.append({**m, "estado": m.get("estado", "pendiente"), "origen": "manual"})
 
         for i, b in enumerate(bank_movs):
             if i not in usados:
                 filas.append({**b, "id": 0, "tipo": "ingreso" if b["monto"] > 0 else "egreso",
                               "origen": "estado_cuenta", "tabla": "", "estado": "diferencia"})
 
-        for m in manuales:
-            filas.append({**m, "estado": m.get("estado", "pendiente"), "origen": "manual"})
-
         filas.sort(key=lambda f: (normalizar_fecha(f["fecha"]), f["monto"]))
         self.filas_conciliacion = filas
         self.refrescar_tree()
 
         saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
-        ingresos = sum(m["monto"] for m in sys_movs if m["monto"] > 0)
-        egresos = sum(-m["monto"] for m in sys_movs if m["monto"] < 0)
+        ingresos = sum(m["monto"] for m in movs_sistema if m["monto"] > 0)
+        egresos = sum(-m["monto"] for m in movs_sistema if m["monto"] < 0)
         neto_sistema = ingresos - egresos
         neto_pdf = sum(b["monto"] for b in bank_movs)
         diferencia_mes = neto_sistema - neto_pdf
