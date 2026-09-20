@@ -22,8 +22,9 @@ import os
 import re
 import sys
 import json
-import subprocess
 import calendar
+import functools
+import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, date, timedelta
@@ -316,6 +317,168 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.destroy()
 
 
+# =========================================================
+# LETRERO CENTRADO: "LEYENDO BASE DE DATOS / CALCULANDO"
+# =========================================================
+_LETRERO_PROFUNDIDAD = 0
+
+
+class LetreroCarga:
+    """Aviso centrado en la pantalla mientras el sistema trabaja.
+
+    Es el mismo letrero del módulo de Cálculo de Cobranza: un recuadro blanco con el
+    icono de reloj, el mensaje y una barra de progreso indefinida, colocado en el
+    centro de la ventana mientras se lee la base de datos o se hacen cálculos.
+
+    Uso:
+        letrero = LetreroCarga(self.frame_main, "Leyendo base de datos...")
+        try:
+            ...trabajo pesado...
+        finally:
+            letrero.cerrar()
+
+    También se puede usar el decorador @con_letrero("mensaje") sobre un método.
+    """
+
+    def __init__(self, widget, mensaje="Procesando...", detalle=""):
+        global _LETRERO_PROFUNDIDAD
+        self._raiz = None
+        self._frame = None
+        self._barra = None
+        self._lbl = None
+        self._activo = False
+        # Si ya hay un letrero visible (llamada anidada) no se duplica
+        self._contado = True
+        self._anidado = _LETRERO_PROFUNDIDAD > 0
+        _LETRERO_PROFUNDIDAD += 1
+        if self._anidado:
+            return
+        try:
+            self._raiz = widget.winfo_toplevel()
+        except Exception:
+            try:
+                self._raiz = widget
+            except Exception:
+                self._raiz = None
+        if self._raiz is None:
+            return
+        try:
+            familia = "Helvetica" if sys.platform == "darwin" else "Arial"
+            self._frame = ctk.CTkFrame(self._raiz, corner_radius=14, border_width=2,
+                                       border_color=COLOR_PRIMARIO, fg_color="#ffffff")
+            ctk.CTkLabel(self._frame, text="⏳", font=(familia, 26)).pack(pady=(16, 0))
+            self._lbl = ctk.CTkLabel(self._frame, text=mensaje, font=(familia, 14, "bold"),
+                                     text_color=COLOR_PRIMARIO, wraplength=320, justify="center")
+            self._lbl.pack(padx=34, pady=(4, 2))
+            self._detalle = ctk.CTkLabel(self._frame, text=detalle, font=(familia, 10),
+                                         text_color=COLOR_GRIS, wraplength=320, justify="center")
+            if detalle:
+                self._detalle.pack(padx=34, pady=(0, 4))
+            self._barra = ctk.CTkProgressBar(self._frame, mode="indeterminate", width=250, height=8,
+                                             progress_color=COLOR_PRIMARIO)
+            self._barra.pack(padx=34, pady=(6, 16))
+            self._barra.start()
+            self._frame.place(relx=0.5, rely=0.5, anchor="center")
+            self._frame.lift()
+            self._activo = True
+            self._pintar()
+        except Exception:
+            self._activo = False
+
+    def _pintar(self):
+        """Fuerza el dibujado inmediato (para que se vea antes del trabajo pesado)."""
+        try:
+            self._raiz.update_idletasks()
+        except Exception:
+            pass
+
+    def cambiar(self, mensaje, detalle=None):
+        """Cambia el texto del letrero mientras sigue visible."""
+        try:
+            self._lbl.configure(text=mensaje)
+            if detalle is not None:
+                self._detalle.configure(text=detalle)
+                if detalle and not self._detalle.winfo_ismapped():
+                    self._detalle.pack(padx=34, pady=(0, 4), before=self._barra)
+            self._pintar()
+        except Exception:
+            pass
+
+    def cerrar(self):
+        """Quita el letrero de la pantalla."""
+        global _LETRERO_PROFUNDIDAD
+        if getattr(self, "_contado", False):
+            self._contado = False
+            # Se descuenta SIEMPRE: cada instancia crea (suma) y cierra (resta) una sola vez.
+            # Antes había un tope en cero y, si un letrero anidado cerraba después que el
+            # principal, su resta se perdía y el letrero dejaba de aparecer para siempre.
+            _LETRERO_PROFUNDIDAD -= 1
+        if not self._activo:
+            return
+        try:
+            if self._barra is not None:
+                self._barra.stop()
+        except Exception:
+            pass
+        try:
+            if self._frame is not None:
+                self._frame.destroy()
+        except Exception:
+            pass
+        self._activo = False
+        try:
+            self._raiz.update_idletasks()
+        except Exception:
+            pass
+
+
+def _padre_para_letrero(objeto):
+    """Marco donde colocar el letrero: el del módulo, o la propia ventana si es un diálogo."""
+    try:
+        if hasattr(objeto, "winfo_toplevel") and objeto.winfo_exists():
+            return objeto
+    except Exception:
+        pass
+    for atributo in ("frame_main", "parent_frame", "parent"):
+        try:
+            valor = getattr(objeto, atributo, None)
+            if valor is not None:
+                return valor
+        except Exception:
+            pass
+    try:
+        app = getattr(objeto, "app", None)
+        if app is not None:
+            return getattr(app, "frame_main", None)
+    except Exception:
+        pass
+    return None
+
+
+def con_letrero(mensaje, detalle=""):
+    """Decorador: muestra el letrero centrado mientras el método trabaja."""
+    def decorador(func):
+        @functools.wraps(func)
+        def envoltura(self, *args, **kwargs):
+            letrero = None
+            try:
+                padre = _padre_para_letrero(self)
+                if padre is not None:
+                    letrero = LetreroCarga(padre, mensaje, detalle)
+            except Exception:
+                letrero = None
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                if letrero is not None:
+                    try:
+                        letrero.cerrar()
+                    except Exception:
+                        pass
+        return envoltura
+    return decorador
+
+
 class AsistenteNomina(ctk.CTkToplevel):
     """Asistente paso a paso: revisa el estado del módulo y guía al operario.
 
@@ -595,6 +758,9 @@ class ModuloNominaApp:
 
         self.frame_main = ctk.CTkFrame(self.parent_frame, fg_color="transparent")
         self.frame_main.pack(fill="both", expand=True, padx=10, pady=10)
+        # Armar la pantalla toma unos segundos: se avisa con el mismo letrero centrado
+        letrero_arranque = LetreroCarga(self.frame_main, "Preparando la pantalla...",
+                                        "Armando las pestañas del módulo")
 
         cabecera = ctk.CTkFrame(self.frame_main, fg_color="transparent")
         cabecera.pack(fill="x")
@@ -626,13 +792,19 @@ class ModuloNominaApp:
         self.tab_planilla = self.tabview.add(" 💵 Planilla ")
         self.tab_reportes = self.tabview.add(" 📈 Reportes ")
 
-        self.construir_tab_panel()
-        self.construir_tab_personal()
-        self.construir_tab_configuracion()
-        self.construir_tab_marcaciones()
-        self.construir_tab_asistencia()
-        self.construir_tab_planilla()
-        self.construir_tab_reportes()
+        try:
+            for nombre, constructor in (
+                    ("Panel", self.construir_tab_panel),
+                    ("Personal: empleados, turnos y horarios", self.construir_tab_personal),
+                    ("Configuración: parámetros y feriados", self.construir_tab_configuracion),
+                    ("Marcaciones del reloj", self.construir_tab_marcaciones),
+                    ("Asistencia", self.construir_tab_asistencia),
+                    ("Planilla", self.construir_tab_planilla),
+                    ("Reportes", self.construir_tab_reportes)):
+                letrero_arranque.cambiar("Preparando la pantalla...", nombre)
+                constructor()
+        finally:
+            letrero_arranque.cerrar()
 
         self.actualizar_boton_pantalla()
         self.cargar_datos_iniciales()
@@ -838,6 +1010,8 @@ class ModuloNominaApp:
     def cargar_datos_iniciales(self):
         """Carga catálogos en segundo plano para que el módulo abra al instante."""
         self.aviso("⏳ Cargando catálogos...", COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Leyendo la base de datos...",
+                               "Preparando el módulo de nómina")
 
         def tarea(estado):
             estado["esquema"] = nc.inicializar_esquema_nomina()
@@ -847,25 +1021,31 @@ class ModuloNominaApp:
             estado["parametros"] = nc.obtener_parametros()
 
         def terminar(estado):
-            if estado.get("error"):
-                self.aviso("❌ Error cargando catálogos: %s" % estado["error"], COLOR_ERROR)
-                messagebox.showerror("Error", "No se pudo inicializar el módulo de nómina:\n%s"
-                                     % estado["error"])
-                return
-            self.empleados = estado.get("empleados") or []
-            self.turnos = estado.get("turnos") or []
-            self.horarios = estado.get("horarios") or []
-            self.parametros = estado.get("parametros") or self.parametros
-            self.refrescar_combos_globales()
-            self.cargar_panel()
-            self.cargar_historial_importaciones()
-            self.cargar_personas_reloj()
-            self.cargar_mapeos()
-            self.cargar_turnos()
-            self.cargar_horarios()
-            self.cargar_parametros()
-            self.cargar_feriados()
-            self.aviso("✅ Módulo listo. Empleados: %d" % len(self.empleados), COLOR_OK)
+            # El letrero se cierra en el bloque finally: así nunca queda pegado en pantalla,
+            # ni siquiera si alguna lectura falla. Mientras está visible, las lecturas
+            # internas (turnos, horarios, feriados...) no abren otro letrero ni parpadean.
+            try:
+                if estado.get("error"):
+                    self.aviso("❌ Error cargando catálogos: %s" % estado["error"], COLOR_ERROR)
+                    messagebox.showerror("Error", "No se pudo inicializar el módulo de nómina:\n%s"
+                                         % estado["error"])
+                    return
+                self.empleados = estado.get("empleados") or []
+                self.turnos = estado.get("turnos") or []
+                self.horarios = estado.get("horarios") or []
+                self.parametros = estado.get("parametros") or self.parametros
+                self.refrescar_combos_globales()
+                self.cargar_panel()
+                self.cargar_historial_importaciones()
+                self.cargar_personas_reloj()
+                self.cargar_mapeos()
+                self.cargar_turnos()
+                self.cargar_horarios()
+                self.cargar_parametros()
+                self.cargar_feriados()
+                self.aviso("✅ Módulo listo. Empleados: %d" % len(self.empleados), COLOR_OK)
+            finally:
+                letrero.cerrar()
 
         ejecutar_en_hilo(self.parent_frame, tarea, al_terminar=terminar)
 
@@ -984,14 +1164,43 @@ class ModuloNominaApp:
         ], alto=8)
 
     def cargar_panel(self):
-        """Actualiza los indicadores del panel."""
+        """Lee los indicadores en segundo plano y luego pinta el panel.
+
+        El panel hace varias consultas a la base de datos (cada una tarda unas décimas por
+        la conexión a la nube). Antes se hacía en el hilo principal y la ventana se congelaba
+        unos segundos; ahora se lee aparte, con el letrero centrado, y la ventana sigue viva.
+        """
+        if getattr(self, "_panel_cargando", False):
+            return
+        self._panel_cargando = True
+        letrero = LetreroCarga(self.frame_main, "Leyendo la base de datos...",
+                               "Indicadores de %s" % nc.nombre_mes(self.periodo_actual))
+        periodo = self.periodo_actual
+
+        def tarea(estado):
+            estado["indicadores"] = nc.kpis_dashboard(periodo)
+            try:
+                estado["asistente"] = nc.estado_configuracion(periodo)
+            except Exception as e:
+                print("[Nómina] No se pudo evaluar el asistente:", e)
+                estado["asistente"] = None
+            estado["importaciones"] = nc.listar_importaciones(limite=10)
+
+        def terminar(estado):
+            self._panel_cargando = False
+            letrero.cerrar()
+            if estado.get("error"):
+                print("[Nómina] Error cargando el panel:", estado["error"])
+                return
+            self.pintar_panel(estado.get("indicadores") or {}, estado.get("asistente"),
+                              estado.get("importaciones") or [])
+
+        ejecutar_en_hilo(self.parent_frame, tarea, al_terminar=terminar)
+
+    def pintar_panel(self, indicadores, estado_asistente, importaciones):
+        """Dibuja los indicadores, los avisos y las últimas importaciones del panel."""
         for widget in self.frame_kpis.winfo_children():
             widget.destroy()
-        try:
-            indicadores = nc.kpis_dashboard(self.periodo_actual)
-        except Exception as e:
-            print("[Nómina] Error en indicadores:", e)
-            indicadores = {}
 
         tarjetas = [
             ("👥 Empleados activos", str(indicadores.get("empleados_activos", 0)), COLOR_PRIMARIO),
@@ -1041,7 +1250,7 @@ class ModuloNominaApp:
                            % (ultima["archivo"], ultima["fecha"], ultima["nuevas"]))
         # Resumen del asistente: indica cuántos pasos faltan y cuál toca ahora
         try:
-            self.estado_asistente = nc.estado_configuracion(self.periodo_actual)
+            self.estado_asistente = estado_asistente or {}
             pendientes = (self.estado_asistente.get("pendientes") or [])
             atenciones = (self.estado_asistente.get("atenciones") or [])
             if pendientes:
@@ -1060,7 +1269,7 @@ class ModuloNominaApp:
                                    "✅ Todo en orden: padrón, turnos y marcaciones sincronizados.")
 
         limpiar_tabla(self.tabla_panel_import)
-        for importacion in nc.listar_importaciones(limite=10):
+        for importacion in importaciones:
             self.tabla_panel_import.insert("", tk.END, values=(
                 importacion["archivo"], importacion["formato"], importacion["total_filas"],
                 importacion["nuevas"], importacion["duplicadas"], importacion["sin_empleado"],
@@ -1249,11 +1458,14 @@ class ModuloNominaApp:
         if not ruta or not os.path.exists(ruta):
             return messagebox.showwarning("Atención", "Seleccione primero un archivo válido.")
         self.aviso("⏳ Analizando archivo...", COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Leyendo el archivo del reloj...",
+                               os.path.basename(ruta))
 
         def tarea(estado):
             estado["lectura"] = nc.leer_archivo_marcaciones(ruta)
 
         def terminar(estado):
+            letrero.cerrar()
             if estado.get("error"):
                 self.aviso("❌ %s" % estado["error"], COLOR_ERROR)
                 return messagebox.showerror("Error", "No se pudo leer el archivo:\n%s" % estado["error"])
@@ -1333,12 +1545,15 @@ class ModuloNominaApp:
         archivo = self.archivo_actual
         self.btn_importar.configure(state="disabled", text="⏳ IMPORTANDO...")
         self.aviso("⏳ Importando marcaciones...", COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Importando las marcaciones...",
+                               os.path.basename(archivo))
 
         def progreso(actual, total):
             try:
                 self.lbl_progreso.configure(text="Procesando %d de %d..." % (actual, total))
             except Exception:
                 pass
+            letrero.cambiar("Importando las marcaciones...", "Fila %d de %d" % (actual, total))
 
         def tarea(estado):
             resultado, _ = nc.importar_marcaciones(
@@ -1347,6 +1562,7 @@ class ModuloNominaApp:
             estado["resultado"] = resultado
 
         def terminar(estado):
+            letrero.cerrar()
             self.btn_importar.configure(state="normal", text="✅ IMPORTAR MARCACIONES A LA BASE DE DATOS")
             self.lbl_progreso.configure(text="")
             if estado.get("error"):
@@ -1404,11 +1620,15 @@ class ModuloNominaApp:
             messagebox.showerror("Error", mensaje)
 
     def cargar_personas_reloj(self):
+        letrero = LetreroCarga(self.frame_main, "Leyendo la base de datos...",
+                               "Personas detectadas en el reloj")
+
         def tarea(estado):
             estado["personas"] = nc.personas_del_reloj()
             estado["mapeos"] = nc.listar_mapeos()
 
         def terminar(estado):
+            letrero.cerrar()
             if estado.get("error"):
                 return
             personas = estado.get("personas") or []
@@ -1501,6 +1721,7 @@ class ModuloNominaApp:
                             "Se vincularon %d persona(s) del reloj con su DNI.\n\n"
                             "Revise las que quedaron pendientes y vincúlelas manualmente." % vinculados)
 
+    @con_letrero("Leyendo el historial de importaciones...", "")
     def cargar_historial_importaciones(self):
         limpiar_tabla(self.tabla_historial)
         for importacion in nc.listar_importaciones(limite=200):
@@ -1759,12 +1980,15 @@ class ModuloNominaApp:
             return
         self.periodo_actual = periodo
         self.aviso("⏳ Cargando asistencia de %s..." % nc.nombre_mes(periodo), COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Leyendo la base de datos...",
+                               "Asistencia de %s" % nc.nombre_mes(periodo))
 
         def tarea(estado):
             estado["matriz"] = nc.matriz_asistencia(periodo)
             estado["resumen"] = nc.resumen_asistencia(*self._extremos(periodo))
 
         def terminar(estado):
+            letrero.cerrar()
             if estado.get("error"):
                 return self.aviso("❌ Error cargando asistencia: %s" % estado["error"], COLOR_ERROR)
             self.matriz_actual = estado.get("matriz") or {"dias": [], "filas": []}
@@ -1889,6 +2113,8 @@ class ModuloNominaApp:
                 "¿Continuar?" % (nc.nombre_mes(periodo), aviso_rango)):
             return
         self.aviso("⏳ Calculando asistencia de %s..." % nc.nombre_mes(periodo), COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Calculando la asistencia...",
+                               "Cruzando las marcaciones con los turnos de %s" % nc.nombre_mes(periodo))
         dias = nc.dias_del_periodo(periodo)
 
         def progreso(actual, total):
@@ -1896,12 +2122,14 @@ class ModuloNominaApp:
                 self.lbl_resumen_asistencia.configure(text="Calculando %d de %d..." % (actual, total))
             except Exception:
                 pass
+            letrero.cambiar("Calculando la asistencia...", "Avance: %d de %d" % (actual, total))
 
         def tarea(estado):
             estado["resultado"] = nc.recalcular_asistencia(dias[0], dias[-1], usuario=self.usuario_activo,
                                                           progreso=progreso)
 
         def terminar(estado):
+            letrero.cerrar()
             if estado.get("error"):
                 self.aviso("❌ Error al calcular: %s" % estado["error"], COLOR_ERROR)
                 return messagebox.showerror("Error", "No se pudo calcular la asistencia:\n%s"
@@ -2054,6 +2282,7 @@ class ModuloNominaApp:
         ctk.CTkButton(ventana, text="💾 Guardar corrección", width=220, height=36, fg_color=COLOR_OK,
                       hover_color="#1e8449", command=guardar).pack(pady=16)
 
+    @con_letrero("Leyendo las incidencias...", "")
     def cargar_incidencias(self):
         dias = nc.dias_del_periodo(self.periodo_actual)
         incidencias = nc.listar_incidencias(desde=dias[0] if dias else None,
@@ -2131,6 +2360,7 @@ class ModuloNominaApp:
         self.limpiar_formulario_incidencia()
         self.cargar_incidencias()
 
+    @con_letrero("Leyendo las horas extra...", "")
     def cargar_horas_extra(self):
         dias = nc.dias_del_periodo(self.periodo_actual)
         registros = nc.listar_horas_extra(desde=dias[0] if dias else None, hasta=dias[-1] if dias else None)
@@ -2378,6 +2608,7 @@ class ModuloNominaApp:
         formulario.pack(side="bottom", fill="x", pady=6)
         contenedor.pack(side="top", fill="both", expand=True)
 
+    @con_letrero("Leyendo la base de datos...", "Padrón de empleados")
     def cargar_empleados(self):
         limpiar_tabla(self.tabla_empleados)
         horarios = {int(h["id"]): h["nombre"] for h in self.horarios}
@@ -2632,6 +2863,7 @@ class ModuloNominaApp:
         self.ent_turno_salida.insert(0, "17:00")
         self.ent_turno_observacion.delete(0, tk.END)
 
+    @con_letrero("Leyendo los turnos...", "")
     def cargar_turnos(self):
         limpiar_tabla(self.tabla_turnos)
         for turno in self.turnos:
@@ -2785,6 +3017,7 @@ class ModuloNominaApp:
         for combo in self.combos_dias_horario.values():
             combo.set("(Descanso)")
 
+    @con_letrero("Leyendo los horarios...", "")
     def cargar_horarios(self):
         limpiar_tabla(self.tabla_horarios)
         turnos = {int(t["id"]): t for t in self.turnos}
@@ -2922,6 +3155,7 @@ class ModuloNominaApp:
             ("observacion", "Observación", 280, "w"),
         ], alto=10)
 
+    @con_letrero("Leyendo las asignaciones...", "")
     def cargar_asignaciones(self):
         limpiar_tabla(self.tabla_asignaciones)
         horarios = {int(h["id"]): h["nombre"] for h in self.horarios}
@@ -3019,15 +3253,20 @@ class ModuloNominaApp:
     def _construir_planilla_resumen(self, padre):
         contenedor_totales = ctk.CTkFrame(padre, fg_color="transparent")
         contenedor_totales.pack(fill="x", pady=(2, 4))
+        # Las etiquetas de totales se envuelven y los botones van en su propia fila:
+        # el texto de totales es largo (~900 px) y antes aplastaba los botones de exportar.
         self.lbl_totales_planilla = ctk.CTkLabel(contenedor_totales, text="", font=("Arial", 13, "bold"),
-                                                 text_color=COLOR_PRIMARIO)
-        self.lbl_totales_planilla.pack(side="left")
-        ctk.CTkButton(contenedor_totales, text="📊 Exportar planilla a Excel", width=230,
+                                                 text_color=COLOR_PRIMARIO, justify="left", anchor="w",
+                                                 wraplength=740)
+        self.lbl_totales_planilla.pack(anchor="w", fill="x")
+        fila_exportar = ctk.CTkFrame(padre, fg_color="transparent")
+        fila_exportar.pack(fill="x", pady=(0, 4))
+        ctk.CTkButton(fila_exportar, text="📊 Exportar planilla a Excel", width=230,
                       fg_color=COLOR_OK, hover_color="#1e8449",
-                      command=self.exportar_planilla).pack(side="right", padx=4)
-        ctk.CTkButton(contenedor_totales, text="📄 Exportar todas las boletas", width=230,
+                      command=self.exportar_planilla).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(fila_exportar, text="📄 Exportar todas las boletas", width=230,
                       fg_color="#8e44ad", hover_color="#6c3483",
-                      command=self.exportar_boletas).pack(side="right", padx=4)
+                      command=self.exportar_boletas).pack(side="left", padx=0)
         self.tabla_planilla = crear_tabla(padre, [
             ("dni", "DNI", 100, "w"),
             ("empleado", "Empleado", 260, "w"),
@@ -3102,6 +3341,7 @@ class ModuloNominaApp:
         self.ent_periodo_planilla.insert(0, periodo_para_entry(nuevo))
         self.cargar_planilla()
 
+    @con_letrero("Leyendo la planilla del período...", "Calculando los totales")
     def cargar_planilla(self):
         periodo = periodo_desde_entry(self.ent_periodo_planilla.get())
         if not periodo:
@@ -3151,12 +3391,15 @@ class ModuloNominaApp:
                 "¿Desea continuar?" % nc.nombre_mes(periodo)):
             return
         self.aviso("⏳ Calculando planilla de %s..." % nc.nombre_mes(periodo), COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Calculando la planilla...",
+                               "Haberes, descuentos y aportes de %s" % nc.nombre_mes(periodo))
         self._cache_resumen_asistencia = {}
 
         def tarea(estado):
             estado["resultado"] = npl.calcular_planilla(periodo, usuario=self.usuario_activo)
 
         def terminar(estado):
+            letrero.cerrar()
             if estado.get("error"):
                 self.aviso("❌ Error al calcular la planilla", COLOR_ERROR)
                 return messagebox.showerror("Error", "No se pudo calcular la planilla:\n%s" % estado["error"])
@@ -3209,6 +3452,7 @@ class ModuloNominaApp:
         self.cargar_planilla()
         self.cargar_historial_planillas()
 
+    @con_letrero("Leyendo el historial de planillas...", "")
     def cargar_historial_planillas(self):
         limpiar_tabla(self.tabla_historial_planilla)
         for periodo in npl.listar_periodos():
@@ -3235,6 +3479,7 @@ class ModuloNominaApp:
         """El combo de empleados ya está sincronizado; se refresca por si cambió el padrón."""
         self.refrescar_combos_globales()
 
+    @con_letrero("Leyendo la boleta del empleado...", "")
     def mostrar_boleta(self):
         periodo = periodo_desde_entry(self.ent_periodo_planilla.get())
         dni = self.dni_de_opcion(self.cmb_boleta_empleado.get())
@@ -3432,6 +3677,8 @@ class ModuloNominaApp:
         periodo = periodo_desde_entry(self.ent_periodo_reporte.get())
         dias = nc.dias_del_periodo(periodo) if periodo else []
         self.aviso("⏳ Generando reporte de %s..." % nombre, COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Leyendo la base de datos...",
+                               "Preparando el reporte de %s" % nombre.lower())
 
         def tarea(estado):
             if nombre == "Puntualidad":
@@ -3450,6 +3697,7 @@ class ModuloNominaApp:
                 estado["datos"] = npl.reporte_marcaciones(desde, hasta) if desde and hasta else []
 
         def terminar(estado):
+            letrero.cerrar()
             if estado.get("error"):
                 self.aviso("❌ Error generando el reporte", COLOR_ERROR)
                 return
@@ -3671,6 +3919,7 @@ class ModuloNominaApp:
             ("descripcion", "Descripción", 420, "w"),
         ], alto=14)
 
+    @con_letrero("Leyendo el calendario de feriados...", "")
     def cargar_feriados(self):
         limpiar_tabla(self.tabla_feriados)
         for dia in nc.listar_calendario():
@@ -3766,6 +4015,8 @@ class ModuloNominaApp:
                                                 % (len(periodos), ", ".join(nc.nombre_mes(p) for p in periodos))):
             return
         self.aviso("⏳ Recalculando %d períodos..." % len(periodos), COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Calculando la asistencia...",
+                               "Recalculando %d período(s)" % len(periodos))
 
         def tarea(estado):
             resultados = []
@@ -3776,6 +4027,7 @@ class ModuloNominaApp:
             estado["resultados"] = resultados
 
         def terminar(estado):
+            letrero.cerrar()
             if estado.get("error"):
                 self.aviso("❌ Error en el recálculo", COLOR_ERROR)
                 return messagebox.showerror("Error", str(estado["error"]))
@@ -3793,6 +4045,8 @@ class ModuloNominaApp:
     def recargar_catalogos(self):
         """Vuelve a leer los catálogos y refresca todas las vistas dependientes."""
         self.aviso("⏳ Actualizando...", COLOR_ALERTA)
+        letrero = LetreroCarga(self.frame_main, "Leyendo la base de datos...",
+                               "Actualizando el padrón, turnos y horarios")
 
         def tarea(estado):
             estado["empleados"] = nc.listar_empleados()
@@ -3801,21 +4055,24 @@ class ModuloNominaApp:
             estado["parametros"] = nc.obtener_parametros()
 
         def terminar(estado):
-            if estado.get("error"):
-                self.aviso("❌ Error al actualizar: %s" % estado["error"], COLOR_ERROR)
-                return
-            self.empleados = estado.get("empleados") or []
-            self.turnos = estado.get("turnos") or []
-            self.horarios = estado.get("horarios") or []
-            self.parametros = estado.get("parametros") or self.parametros
-            self.refrescar_combos_globales()
-            self.cargar_empleados()
-            self.cargar_turnos()
-            self.cargar_horarios()
-            self.cargar_asignaciones()
-            self.cargar_feriados()
-            self.cargar_panel()
-            self.aviso("✅ Datos actualizados", COLOR_OK)
+            try:
+                if estado.get("error"):
+                    self.aviso("❌ Error al actualizar: %s" % estado["error"], COLOR_ERROR)
+                    return
+                self.empleados = estado.get("empleados") or []
+                self.turnos = estado.get("turnos") or []
+                self.horarios = estado.get("horarios") or []
+                self.parametros = estado.get("parametros") or self.parametros
+                self.refrescar_combos_globales()
+                self.cargar_empleados()
+                self.cargar_turnos()
+                self.cargar_horarios()
+                self.cargar_asignaciones()
+                self.cargar_feriados()
+                self.cargar_panel()
+                self.aviso("✅ Datos actualizados", COLOR_OK)
+            finally:
+                letrero.cerrar()
 
         ejecutar_en_hilo(self.parent_frame, tarea, al_terminar=terminar)
 
