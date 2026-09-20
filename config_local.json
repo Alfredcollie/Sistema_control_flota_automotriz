@@ -61,7 +61,8 @@
         "libro_mayor",
         "impuestos",
         "dashboard",
-        "banco"
+        "banco",
+        "nomina"
     ],
     "orden_ajustes": [
         "configuracion",

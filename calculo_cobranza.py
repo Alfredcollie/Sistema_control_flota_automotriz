@@ -51,6 +51,7 @@ import json
 import ssl
 import urllib.request
 import threading
+import functools
 from datetime import datetime, date, timedelta
 
 # 🚀 HERRAMIENTAS CORPORATIVAS
@@ -596,6 +597,158 @@ def etiqueta_fecha_hora(fecha):
 
 
 # =========================================================
+# 🚀 LETRERO CENTRADO: "CALCULANDO / LEYENDO BASE DE DATOS"
+# =========================================================
+_LETRERO_PROFUNDIDAD = 0
+
+
+class LetreroCarga:
+    """Aviso centrado en la pantalla mientras el sistema trabaja.
+
+    Uso:
+        let = LetreroCarga(self.parent, "Leyendo base de datos…")
+        try:
+            ...trabajo pesado...
+        finally:
+            let.cerrar()
+
+    También se puede usar el decorador @con_letrero("mensaje") sobre un método.
+    """
+
+    def __init__(self, widget, mensaje="Procesando…", detalle=""):
+        global _LETRERO_PROFUNDIDAD
+        self._raiz = None
+        self._frame = None
+        self._barra = None
+        self._lbl = None
+        self._activo = False
+        # Si ya hay un letrero visible (llamada anidada) no se duplica
+        self._contado = True
+        self._anidado = _LETRERO_PROFUNDIDAD > 0
+        _LETRERO_PROFUNDIDAD += 1
+        if self._anidado:
+            return
+        try:
+            self._raiz = widget.winfo_toplevel()
+        except Exception:
+            try:
+                self._raiz = widget
+            except Exception:
+                self._raiz = None
+        if self._raiz is None:
+            return
+        try:
+            fam = "Helvetica" if sys.platform == "darwin" else "Arial"
+            self._frame = ctk.CTkFrame(self._raiz, corner_radius=14, border_width=2,
+                                       border_color="#1f538d", fg_color="#ffffff")
+            ctk.CTkLabel(self._frame, text="⏳", font=(fam, 26)).pack(pady=(16, 0))
+            self._lbl = ctk.CTkLabel(self._frame, text=mensaje, font=(fam, 14, "bold"),
+                                     text_color="#1f538d", wraplength=320, justify="center")
+            self._lbl.pack(padx=34, pady=(4, 2))
+            if detalle:
+                ctk.CTkLabel(self._frame, text=detalle, font=(fam, 10),
+                             text_color="#7f8c8d", wraplength=320,
+                             justify="center").pack(padx=34, pady=(0, 4))
+            self._barra = ctk.CTkProgressBar(self._frame, mode="indeterminate", width=250,
+                                             height=8, progress_color="#1f538d")
+            self._barra.pack(padx=34, pady=(6, 16))
+            self._barra.start()
+            self._frame.place(relx=0.5, rely=0.5, anchor="center")
+            self._frame.lift()
+            self._activo = True
+            self._pintar()
+        except Exception:
+            self._activo = False
+
+    def _pintar(self):
+        """Fuerza el dibujado inmediato (para que se vea antes del trabajo pesado)."""
+        try:
+            self._raiz.update_idletasks()
+        except Exception:
+            pass
+
+    def cambiar(self, mensaje, detalle=None):
+        """Cambia el texto del letrero mientras sigue visible."""
+        try:
+            self._lbl.configure(text=mensaje)
+            self._pintar()
+        except Exception:
+            pass
+
+    def cerrar(self):
+        """Quita el letrero de la pantalla."""
+        global _LETRERO_PROFUNDIDAD
+        if getattr(self, "_contado", False):
+            self._contado = False
+            if _LETRERO_PROFUNDIDAD > 0:
+                _LETRERO_PROFUNDIDAD -= 1
+        if not self._activo:
+            return
+        try:
+            if self._barra is not None:
+                self._barra.stop()
+        except Exception:
+            pass
+        try:
+            if self._frame is not None:
+                self._frame.destroy()
+        except Exception:
+            pass
+        self._activo = False
+        try:
+            self._raiz.update_idletasks()
+        except Exception:
+            pass
+
+
+def _padre_para_letrero(objeto):
+    """Ventana donde colocar el letrero: la propia si es una ventana/diálogo,
+    o la ventana principal del módulo si el objeto es la clase de la app."""
+    try:
+        if hasattr(objeto, "winfo_toplevel") and objeto.winfo_exists():
+            return objeto
+    except Exception:
+        pass
+    try:
+        padre = getattr(objeto, "parent", None)
+        if padre is not None:
+            return padre
+    except Exception:
+        pass
+    try:
+        app = getattr(objeto, "app", None)
+        if app is not None:
+            return getattr(app, "parent", None)
+    except Exception:
+        pass
+    return None
+
+
+def con_letrero(mensaje, detalle=""):
+    """Decorador: muestra el letrero centrado mientras el método trabaja."""
+    def decorador(func):
+        @functools.wraps(func)
+        def envoltura(self, *args, **kwargs):
+            let = None
+            try:
+                padre = _padre_para_letrero(self)
+                if padre is not None:
+                    let = LetreroCarga(padre, mensaje, detalle)
+            except Exception:
+                let = None
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                if let is not None:
+                    try:
+                        let.cerrar()
+                    except Exception:
+                        pass
+        return envoltura
+    return decorador
+
+
+# =========================================================
 # 🚀 CLASE PRINCIPAL: CÁLCULO DE COBRANZA
 # =========================================================
 class CalculoCobranzaApp:
@@ -821,6 +974,10 @@ class CalculoCobranzaApp:
                                       fg_color="#34495e", hover_color="#2c3e50",
                                       font=(familia_fuente, 12, "bold"), command=self.abrir_registros)
         btn_registros.pack(side="right")
+        btn_asistente = ctk.CTkButton(f_header, text="🧭 Asistente paso a paso", width=200,
+                                      fg_color="#27ae60", hover_color="#1e8449",
+                                      font=(familia_fuente, 12, "bold"), command=self.abrir_asistente)
+        btn_asistente.pack(side="right", padx=(0, 8))
 
         # ---- 1. Cliente ----
         f_cli = ctk.CTkFrame(self.scroll, corner_radius=10, border_width=1, border_color="#e0e0e0")
@@ -1177,6 +1334,7 @@ class CalculoCobranzaApp:
         self.aplicar_plan(self.plan_cobro)
 
     # ---------- CLIENTES ----------
+    @con_letrero("Leyendo clientes de la base de datos…")
     def cargar_clientes(self):
         self.clientes_lista = []
         valores = ["— Seleccione un cliente —"]
@@ -1212,6 +1370,29 @@ class CalculoCobranzaApp:
         except Exception:
             pass
 
+    def _subir_pantalla_inicio(self):
+        """Sube el desplazamiento de la pantalla principal al inicio."""
+        try:
+            self.scroll._parent_canvas.yview_moveto(0.0)
+        except Exception:
+            try:
+                self.scroll.yview_moveto(0.0)
+            except Exception:
+                pass
+
+    def _subir_pantalla(self):
+        """Vuelve al inicio del formulario (se repite por si el alto cambia después)."""
+        try:
+            self.scroll.update_idletasks()
+        except Exception:
+            pass
+        self._subir_pantalla_inicio()
+        for ms in (60, 200, 400):
+            try:
+                self.parent.after(ms, self._subir_pantalla_inicio)
+            except Exception:
+                pass
+
     def on_cliente_seleccionado(self, seleccion):
         if not seleccion or seleccion.startswith("—"):
             self.cliente_id = None
@@ -1240,6 +1421,7 @@ class CalculoCobranzaApp:
                 # Carga unidades y tabla de distancias del cliente según su plan
                 self.cargar_rangos_viaje()
                 self.cargar_unidades_cliente()
+                self._subir_pantalla()   # el formulario se muestra desde el inicio
                 return
 
     def aplicar_plan(self, plan):
@@ -1273,6 +1455,7 @@ class CalculoCobranzaApp:
             pass
 
     # ---------- UNIDADES DEL CLIENTE ----------
+    @con_letrero("Leyendo las unidades del cliente…")
     def cargar_unidades_cliente(self):
         """Carga las unidades asignadas del cliente desde clientes_unidades."""
         self.unidades = []
@@ -1407,6 +1590,7 @@ class CalculoCobranzaApp:
             return
         VentanaPreciosDistancia(self.parent, self, self.cliente_id, self.cliente_nombre)
 
+    @con_letrero("Leyendo los precios por distancia…")
     def cargar_rangos_viaje(self):
         """Carga la tabla de precios por distancia del cliente."""
         self.rangos_viaje = []
@@ -1785,6 +1969,7 @@ class CalculoCobranzaApp:
         quincena = 1 if self.combo_quincena.get().startswith("Primera") else 2
         return anio, mes, quincena
 
+    @con_letrero("Buscando los días de la quincena…")
     def buscar_dias_quincena(self):
         if not self.cliente_id:
             messagebox.showwarning("Falta Cliente", "Primero seleccione un cliente de la base de datos.")
@@ -2172,6 +2357,7 @@ class CalculoCobranzaApp:
         self.lbl_total.configure(text=f"TOTAL A COBRAR: {formatear_moneda(r['total'])}")
 
     # ---------- GUARDAR ----------
+    @con_letrero("Guardando en la base de datos…")
     def guardar_quincena(self):
         if not self.cliente_id:
             messagebox.showwarning("Falta Cliente", "Primero seleccione un cliente.")
@@ -2380,6 +2566,7 @@ class CalculoCobranzaApp:
         if ruta:
             abrir_documento(ruta)
 
+    @con_letrero("Generando el PDF del cálculo…")
     def _generar_pdf_desde_registro(self, id_cob):
         conn = conectar_db(silencioso=True)
         if not conn:
@@ -2910,10 +3097,19 @@ class CalculoCobranzaApp:
                 liberar_conexion(conn2)
         return nombre_archivo
 
+    # ---------- ASISTENTE PASO A PASO ----------
+    def abrir_asistente(self):
+        """Abre el asistente paso a paso para hacer un cálculo de cobranza."""
+        try:
+            AsistenteCobranza(self.parent, self)
+        except Exception as e:
+            messagebox.showerror("No se pudo abrir el asistente", str(e))
+
     # ---------- REGISTROS ----------
     def abrir_registros(self):
         VentanaRegistrosCobranza(self.parent, self)
 
+    @con_letrero("Leyendo el registro de cobranza…")
     def cargar_registro(self, id_cob):
         """Carga un registro guardado de vuelta en el formulario (editar)."""
         conn = conectar_db(silencioso=True)
@@ -3153,6 +3349,7 @@ class CalculoCobranzaApp:
 
         self.registro_editando = id_rec
         self.recalcular()
+        self._subir_pantalla()
 
     # ---------- LIMPIAR ----------
     def limpiar_formulario(self):
@@ -3200,6 +3397,7 @@ class CalculoCobranzaApp:
         self.ent_notas.delete(0, tk.END)
         self.aplicar_plan("Por Hora")
         self.recalcular()
+        self._subir_pantalla()
 
 
 # =========================================================
@@ -3237,8 +3435,13 @@ class DialogoUnidad(ctk.CTkToplevel):
         except Exception:
             pass
 
+        # Barra de botones FIJA al pie (queda fuera del área con desplazamiento,
+        # así siempre está visible aunque el contenido sea largo).
+        f_acciones = ctk.CTkFrame(self, fg_color="transparent")
+        f_acciones.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+
         scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        scroll.pack(fill="both", expand=True, padx=10, pady=(10, 4))
 
         ctk.CTkLabel(scroll, text=f"🚗 {unidad['unidad']}", font=(familia_fuente, 15, "bold"),
                      text_color="#1f538d").pack(anchor="w", pady=(0, 10))
@@ -3349,17 +3552,15 @@ class DialogoUnidad(ctk.CTkToplevel):
             self._actualizar_total_asientos("ded")
             self._actualizar_total_asientos("ext")
 
-        # ---- Acciones ----
-        f_acc = ctk.CTkFrame(scroll, fg_color="transparent")
-        f_acc.pack(fill="x", pady=10)
-        btn_ok = ctk.CTkButton(f_acc, text="💾 Guardar", width=150, height=38,
+        # ---- Acciones (en la barra fija del pie) ----
+        btn_ok = ctk.CTkButton(f_acciones, text="💾 Guardar", width=150, height=38,
                                font=(familia_fuente, 13, "bold"), fg_color="#27ae60",
                                hover_color="#1e8449", command=lambda: self._aceptar(unidad))
         btn_ok.pack(side="left", padx=5)
-        btn_cancel = ctk.CTkButton(f_acc, text="✖ Cancelar", width=120, height=38,
+        btn_cancel = ctk.CTkButton(f_acciones, text="✖ Cancelar", width=120, height=38,
                                    font=(familia_fuente, 13, "bold"), fg_color="#7f8c8d",
                                    hover_color="#606b6b", command=self.destroy)
-        btn_cancel.pack(side="left", padx=5)
+        btn_cancel.pack(side="right", padx=5)
 
         self.wait_window()
 
@@ -3810,6 +4011,7 @@ class VentanaUnidadesCliente(ctk.CTkToplevel):
 
         self.cargar_filas()
 
+    @con_letrero("Leyendo la base de datos…")
     def cargar_filas(self):
         self.filas = []
         conn = conectar_db(silencioso=True)
@@ -3884,6 +4086,7 @@ class VentanaUnidadesCliente(ctk.CTkToplevel):
             self.filas.pop(idx)
             self.pintar()
 
+    @con_letrero("Guardando en la base de datos…")
     def guardar(self):
         conn = conectar_db()
         if not conn:
@@ -4098,6 +4301,7 @@ class VentanaPreciosDistancia(ctk.CTkToplevel):
 
         self.cargar_filas()
 
+    @con_letrero("Leyendo la base de datos…")
     def cargar_filas(self):
         self.filas = []
         conn = conectar_db(silencioso=True)
@@ -4157,6 +4361,7 @@ class VentanaPreciosDistancia(ctk.CTkToplevel):
             self.filas.pop(idx)
             self.pintar()
 
+    @con_letrero("Guardando en la base de datos…")
     def guardar(self):
         conn = conectar_db()
         if not conn:
@@ -4402,6 +4607,7 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
 
         self.cargar_registros()
 
+    @con_letrero("Leyendo los registros guardados…")
     def cargar_registros(self):
         for item in self.tabla.get_children():
             self.tabla.delete(item)
@@ -4443,6 +4649,7 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
         self.destroy()
         self.app.cargar_registro(id_rec)
 
+    @con_letrero("Eliminando el registro…")
     def eliminar_registro(self):
         id_rec = self._id_seleccionado()
         if id_rec is None:
@@ -4499,6 +4706,1137 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
             return
         if ruta:
             abrir_documento(ruta)
+
+
+# =========================================================
+# 🧭 ASISTENTE PASO A PASO: CÁLCULO DE COBRANZA
+# =========================================================
+class AsistenteCobranza(ctk.CTkToplevel):
+    """Guía paso a paso para generar un cálculo de cobranza.
+
+    Reutiliza la lógica existente del módulo (clientes, unidades, días de la
+    quincena, viajes, deducciones, guardado y PDF) para no duplicar cálculos.
+    """
+
+    PASOS = ("1. Cliente", "2. Configuración", "3. Periodo",
+             "4. Registro", "5. Resumen", "6. Guardar y PDF")
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.familia = "Helvetica" if sys.platform == "darwin" else "Arial"
+        self.paso = 0
+
+        self.title("Asistente de Cálculo de Cobranza — paso a paso")
+        self.geometry("980x690")
+        self.minsize(860, 580)
+        self.transient(parent)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        self.update_idletasks()
+        try:
+            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 490
+            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 345
+            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        # ---- Encabezado ----
+        f_top = ctk.CTkFrame(self, fg_color="#1f538d", corner_radius=0)
+        f_top.pack(fill="x")
+        ctk.CTkLabel(f_top, text="🧭 ASISTENTE DE CÁLCULO DE COBRANZA",
+                     font=(self.familia, 16, "bold"),
+                     text_color="white").pack(anchor="w", padx=18, pady=(12, 2))
+        ctk.CTkLabel(f_top, text="Sigue los 6 pasos y el sistema calculará y generará el PDF por ti.",
+                     font=(self.familia, 11),
+                     text_color="#d6e4f5").pack(anchor="w", padx=18, pady=(0, 10))
+
+        # ---- Indicador de pasos ----
+        self.f_pasos = ctk.CTkFrame(self, fg_color="#ececec", corner_radius=0)
+        self.f_pasos.pack(fill="x")
+        self.chips = []
+        for i, nombre in enumerate(self.PASOS):
+            chip = ctk.CTkLabel(self.f_pasos, text=nombre, font=(self.familia, 11, "bold"),
+                                corner_radius=8, width=145, height=26)
+            chip.pack(side="left", padx=(8 if i == 0 else 3, 3), pady=8)
+            self.chips.append(chip)
+
+        # ---- Cuerpo ----
+        self.cuerpo = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.cuerpo.pack(fill="both", expand=True, padx=10, pady=8)
+
+        # ---- Pie de navegación ----
+        f_pie = ctk.CTkFrame(self, fg_color="transparent")
+        f_pie.pack(fill="x", padx=14, pady=(0, 12))
+        self.btn_atras = ctk.CTkButton(f_pie, text="◀ Anterior", width=130,
+                                       font=(self.familia, 12, "bold"), fg_color="#7f8c8d",
+                                       hover_color="#606b6b", command=self._atras)
+        self.btn_atras.pack(side="left")
+        ctk.CTkButton(f_pie, text="↺ Reiniciar", width=120,
+                      font=(self.familia, 12, "bold"), fg_color="#e67e22",
+                      hover_color="#d35400", command=self._reiniciar).pack(side="left", padx=8)
+        ctk.CTkButton(f_pie, text="✖ Cerrar", width=110,
+                      font=(self.familia, 12, "bold"), fg_color="#34495e",
+                      hover_color="#2c3e50", command=self.destroy).pack(side="right")
+        self.btn_siguiente = ctk.CTkButton(f_pie, text="Siguiente ▶", width=180,
+                                           font=(self.familia, 12, "bold"), fg_color="#27ae60",
+                                           hover_color="#1e8449", command=self._siguiente)
+        self.btn_siguiente.pack(side="right", padx=8)
+
+        self._vivo = True
+        self._ir_a(0)
+        self._programar(1200, self._mantener_grab)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    # ---------------- Ciclo de vida ----------------
+    def _programar(self, ms, funcion):
+        """Programa una tarea solo si el asistente sigue abierto (evita errores al cerrar)."""
+        try:
+            if getattr(self, "_vivo", False) and self.winfo_exists():
+                self.after(ms, funcion)
+        except Exception:
+            pass
+
+    def destroy(self):
+        self._vivo = False
+        try:
+            super().destroy()
+        except Exception:
+            pass
+
+    # ---------------- Navegación ----------------
+    def _mantener_grab(self):
+        """Mantiene el asistente al frente sin robar el foco a sus diálogos hijos."""
+        if not getattr(self, "_vivo", False):
+            return
+        try:
+            if not self.winfo_exists():
+                return
+            if self.grab_current() is None:
+                self.grab_set()
+        except Exception:
+            return
+        self._programar(1200, self._mantener_grab)
+
+    def _pintar_chips(self):
+        for i, chip in enumerate(self.chips):
+            if i == self.paso:
+                chip.configure(fg_color="#1f538d", text_color="white")
+            elif i < self.paso:
+                chip.configure(fg_color="#27ae60", text_color="white")
+            else:
+                chip.configure(fg_color="#dcdcdc", text_color="#555555")
+
+    def _limpiar(self):
+        for w in self.cuerpo.winfo_children():
+            w.destroy()
+
+    def _scroll_arriba(self):
+        """Sube el desplazamiento al inicio del paso actual.
+
+        Sin esto, al pasar de un paso largo (p. ej. Registro) a otro más corto
+        (Resumen), el marco quedaba desplazado abajo y el paso nuevo se veía en blanco.
+        """
+        try:
+            self.cuerpo.update_idletasks()
+        except Exception:
+            pass
+        self._scroll_inicio()
+        self._programar(30, self._scroll_inicio)
+        self._programar(120, self._scroll_inicio)
+
+    def _scroll_inicio(self):
+        try:
+            self.cuerpo._parent_canvas.yview_moveto(0.0)
+        except Exception:
+            try:
+                self.cuerpo.yview_moveto(0.0)
+            except Exception:
+                pass
+        try:
+            if getattr(self.cuerpo, "_scrollbar", None) is not None:
+                self.cuerpo._scrollbar.set(0.0, 1.0)
+        except Exception:
+            pass
+
+    def _ir_a(self, idx):
+        self.paso = max(0, min(idx, len(self.PASOS) - 1))
+        self._limpiar()
+        [self._paso_cliente, self._paso_config, self._paso_periodo,
+         self._paso_registro, self._paso_resumen, self._paso_guardar][self.paso]()
+        self._pintar_chips()
+        self.btn_atras.configure(state=("normal" if self.paso > 0 else "disabled"))
+        if self.paso == len(self.PASOS) - 1:
+            self.btn_siguiente.configure(text="✅ Finalizar", fg_color="#c0392b", hover_color="#922b21")
+        else:
+            self.btn_siguiente.configure(text="Siguiente ▶", fg_color="#27ae60", hover_color="#1e8449")
+        # Cada paso se muestra desde el inicio (si no, el paso nuevo sale en blanco
+        # cuando el anterior estaba desplazado hacia abajo).
+        self._scroll_arriba()
+
+    def _atras(self):
+        self._ir_a(self.paso - 1)
+
+    def _siguiente(self):
+        if self.paso == len(self.PASOS) - 1:
+            self.destroy()
+            return
+        if not self._validar_paso():
+            return
+        self._ir_a(self.paso + 1)
+
+    def _validar_paso(self):
+        if self.paso == 0 and not self.app.cliente_id:
+            messagebox.showwarning("Falta el cliente",
+                                   "Selecciona un cliente para continuar.", parent=self)
+            return False
+        if self.paso == 1:
+            if self.app.plan_cobro == "Por Hora" and not self.app.unidades:
+                return messagebox.askyesno(
+                    "Sin unidades asignadas",
+                    "Este cliente todavía no tiene unidades asignadas.\n\n¿Deseas continuar de todos modos?",
+                    parent=self)
+            if self.app.plan_cobro == "Por Punto o Viaje" and not getattr(self.app, "rangos_viaje", []):
+                return messagebox.askyesno(
+                    "Sin precios por distancia",
+                    "Este cliente todavía no tiene tabla de precios por distancia.\n\n¿Deseas continuar de todos modos?",
+                    parent=self)
+        if self.paso == 2 and not self.app.dias:
+            messagebox.showwarning("Falta la quincena",
+                                   "Presiona «🔎 Buscar días de la quincena» para continuar.", parent=self)
+            return False
+        return True
+
+    def _reiniciar(self):
+        if messagebox.askyesno("Reiniciar asistente", "¿Empezar de nuevo desde el paso 1?", parent=self):
+            try:
+                self.app.limpiar_formulario()
+            except Exception:
+                pass
+            self._ir_a(0)
+
+    # ---------------- Utilidades de UI ----------------
+    def _titulo(self, titulo, ayuda=""):
+        ctk.CTkLabel(self.cuerpo, text=titulo, font=(self.familia, 15, "bold"),
+                     text_color="#1f538d").pack(anchor="w", padx=8, pady=(10, 2))
+        if ayuda:
+            ctk.CTkLabel(self.cuerpo, text=ayuda, font=(self.familia, 11), text_color="#555555",
+                         wraplength=880, justify="left").pack(anchor="w", padx=8, pady=(0, 4))
+
+    def _tarjeta(self, titulo=""):
+        f = ctk.CTkFrame(self.cuerpo, corner_radius=10, border_width=1, border_color="#e0e0e0")
+        f.pack(fill="x", padx=6, pady=8)
+        if titulo:
+            ctk.CTkLabel(f, text=titulo, font=(self.familia, 12, "bold"),
+                         text_color="#1f538d").pack(anchor="w", padx=15, pady=(12, 2))
+        return f
+
+    # ---------------- PASO 1: Cliente ----------------
+    def _paso_cliente(self):
+        self._titulo("Paso 1 de 6 — Elige el cliente",
+                     "Selecciona el cliente al que le vas a calcular la cobranza.")
+        f = self._tarjeta()
+        ctk.CTkLabel(f, text="👤 Cliente:", font=(self.familia, 12, "bold")).pack(
+            anchor="w", padx=15, pady=(10, 4))
+        try:
+            valores = list(self.app.combo_cliente.cget("values"))
+        except Exception:
+            valores = ["— Seleccione un cliente —"]
+        self.combo_cli = ctk.CTkComboBox(f, values=valores, width=680, font=(self.familia, 12),
+                                         state="readonly", command=self._elegir_cliente)
+        self.combo_cli.pack(anchor="w", padx=15, pady=(0, 6))
+        try:
+            self.combo_cli.set(self.app.combo_cliente.get())
+        except Exception:
+            pass
+        self.lbl_cli = ctk.CTkLabel(f, text="", font=(self.familia, 11), justify="left",
+                                    text_color="#333333", wraplength=880)
+        self.lbl_cli.pack(anchor="w", padx=15, pady=(4, 12))
+        self._refrescar_cliente()
+
+    def _elegir_cliente(self, valor):
+        try:
+            self.app.combo_cliente.set(valor)
+            self.app.on_cliente_seleccionado(valor)
+        except Exception as e:
+            messagebox.showerror("Error al cargar el cliente", str(e), parent=self)
+        self._refrescar_cliente()
+
+    def _refrescar_cliente(self):
+        try:
+            if not self.app.cliente_id:
+                self.lbl_cli.configure(text="Aún no has elegido un cliente.")
+                return
+            datos = [f"Cliente: {self.app.cliente_nombre}", f"RUC: {self.app.cliente_ruc}",
+                     f"Plan de cobro: {self.app.plan_cobro}"]
+            if getattr(self.app, "cliente_direccion", ""):
+                datos.append(f"Dirección: {self.app.cliente_direccion}")
+            self.lbl_cli.configure(text="      ".join(datos))
+        except Exception:
+            pass
+
+    # ---------------- PASO 2: Configuración ----------------
+    def _paso_config(self):
+        if self.app.plan_cobro == "Por Hora":
+            self._titulo("Paso 2 de 6 — Unidades, precios y horas al día",
+                         "Cada unidad del cliente maneja sus propios precios (normal, domingo, feriado) "
+                         "y su cantidad de horas al día.")
+        else:
+            self._titulo("Paso 2 de 6 — Precios por distancia",
+                         "Define la tabla Distancia → Precio (normal, domingo, feriado) que se aplicará a cada viaje.")
+        f = self._tarjeta()
+        fx = ctk.CTkFrame(f, fg_color="transparent")
+        fx.pack(fill="x", padx=15, pady=(12, 4))
+        if self.app.plan_cobro == "Por Hora":
+            ctk.CTkButton(fx, text="🚗 Configurar unidades, precios y deducciones", width=420, height=38,
+                          font=(self.familia, 12, "bold"), fg_color="#e67e22", hover_color="#d35400",
+                          command=self._abrir_unidades).pack(side="left")
+        else:
+            ctk.CTkButton(fx, text="📏 Configurar precios por distancia", width=420, height=38,
+                          font=(self.familia, 12, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
+                          command=self._abrir_precios).pack(side="left")
+        ctk.CTkButton(fx, text="🔄 Actualizar resumen", width=190, height=38,
+                      font=(self.familia, 11, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=self._refrescar_config).pack(side="left", padx=10)
+        self.lbl_cfg = ctk.CTkLabel(f, text="", font=(self.familia, 11), justify="left",
+                                    text_color="#333333", wraplength=880)
+        self.lbl_cfg.pack(anchor="w", padx=15, pady=(6, 12))
+        self._refrescar_config()
+
+    def _abrir_unidades(self):
+        if not self.app.cliente_id:
+            messagebox.showwarning("Falta el cliente", "Primero elige un cliente (paso 1).", parent=self)
+            return
+        try:
+            VentanaUnidadesCliente(self, self.app, self.app.cliente_id, self.app.cliente_nombre)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
+        self._programar(1200, self._refrescar_config)
+
+    def _abrir_precios(self):
+        if not self.app.cliente_id:
+            messagebox.showwarning("Falta el cliente", "Primero elige un cliente (paso 1).", parent=self)
+            return
+        try:
+            VentanaPreciosDistancia(self, self.app, self.app.cliente_id, self.app.cliente_nombre)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self)
+        self._programar(1200, self._refrescar_config)
+
+    @con_letrero("Leyendo la configuración del cliente…")
+    def _refrescar_config(self):
+        if not getattr(self, "_vivo", False):
+            return
+        try:
+            self.app.cargar_unidades_cliente()
+            if self.app.plan_cobro == "Por Punto o Viaje":
+                self.app.cargar_rangos_viaje()
+        except Exception:
+            pass
+        lineas = []
+        if self.app.plan_cobro == "Por Hora":
+            if not self.app.unidades:
+                lineas.append("⚠️ Este cliente todavía NO tiene unidades asignadas.")
+                lineas.append("    Usa el botón «🚗 Configurar unidades, precios y deducciones».")
+            else:
+                lineas.append(f"✔ {len(self.app.unidades)} unidad(es) asignada(s):")
+                for u in self.app.unidades:
+                    lineas.append(
+                        "    • " + str(u["unidad"]) + "  —  " + f"{float(u['horas_dia'] or 0):g} h/día  —  "
+                        + "normal " + formatear_moneda(u["precio_normal"])
+                        + ", domingo " + formatear_moneda(u["precio_domingo"])
+                        + ", feriado " + formatear_moneda(u["precio_feriado"]))
+        else:
+            rangos = getattr(self.app, "rangos_viaje", [])
+            if not rangos:
+                lineas.append("⚠️ Este cliente todavía NO tiene precios por distancia.")
+                lineas.append("    Usa el botón «📏 Configurar precios por distancia».")
+            else:
+                lineas.append(f"✔ {len(rangos)} rango(s) de distancia configurado(s):")
+                for rg in rangos:
+                    lineas.append(
+                        "    • " + f"{float(rg['distancia_desde']):g} - {float(rg['distancia_hasta']):g} km"
+                        + "  —  normal " + formatear_moneda(rg["precio_normal"])
+                        + ", domingo " + formatear_moneda(rg["precio_domingo"])
+                        + ", feriado " + formatear_moneda(rg["precio_feriado"]))
+        try:
+            self.lbl_cfg.configure(text="\n".join(lineas))
+        except Exception:
+            pass
+
+    # ---------------- PASO 3: Periodo ----------------
+    def _paso_periodo(self):
+        self._titulo("Paso 3 de 6 — Elige el periodo y los feriados",
+                     "Selecciona mes, año y quincena, busca los días y marca o quita los feriados "
+                     "que necesites. Puedes seleccionar varios días a la vez (Ctrl o Shift).")
+        f = self._tarjeta()
+        fila = ctk.CTkFrame(f, fg_color="transparent")
+        fila.pack(fill="x", padx=15, pady=(12, 6))
+        ctk.CTkLabel(fila, text="📅 Mes:", font=(self.familia, 12, "bold")).pack(side="left", padx=(0, 4))
+        self.cmb_mes = ctk.CTkOptionMenu(fila, values=list(self.app.combo_mes.cget("values")),
+                                         width=180, font=(self.familia, 12))
+        self.cmb_mes.set(self.app.combo_mes.get())
+        self.cmb_mes.pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(fila, text="Año:", font=(self.familia, 12, "bold")).pack(side="left", padx=(0, 4))
+        self.cmb_anio = ctk.CTkOptionMenu(fila, values=list(self.app.combo_anio.cget("values")),
+                                          width=100, font=(self.familia, 12))
+        self.cmb_anio.set(self.app.combo_anio.get())
+        self.cmb_anio.pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(fila, text="Quincena:", font=(self.familia, 12, "bold")).pack(side="left", padx=(0, 4))
+        self.cmb_quin = ctk.CTkOptionMenu(fila, values=list(self.app.combo_quincena.cget("values")),
+                                          width=200, font=(self.familia, 12))
+        self.cmb_quin.set(self.app.combo_quincena.get())
+        self.cmb_quin.pack(side="left")
+        ctk.CTkButton(f, text="🔎 Buscar días de la quincena (internet)", width=360, height=38,
+                      font=(self.familia, 12, "bold"), fg_color="#1f538d", hover_color="#163b65",
+                      command=self._buscar_dias).pack(anchor="w", padx=15, pady=(8, 4))
+
+        # ---- Tabla de días: marcar/quitar feriados a mano ----
+        ctk.CTkLabel(f, text="📆 Días de la quincena — selecciona uno o varios para marcar como feriado:",
+                     font=(self.familia, 11, "bold"), text_color="#1f538d").pack(
+            anchor="w", padx=15, pady=(8, 2))
+        f_t = ctk.CTkFrame(f, fg_color="transparent")
+        f_t.pack(fill="x", padx=15, pady=(0, 4))
+        f_t.columnconfigure(0, weight=1)
+        cols_dias = ("fecha", "dia", "categoria", "feriado")
+        self.tabla_dias_asist = ttk.Treeview(f_t, columns=cols_dias, show="headings",
+                                             selectmode="extended", style="Treeview", height=7)
+        for col, txt, w, anc in (("fecha", "Fecha", 100, "center"), ("dia", "Día", 110, "center"),
+                                 ("categoria", "Categoría", 190, "center"),
+                                 ("feriado", "Feriado", 300, "w")):
+            self.tabla_dias_asist.heading(col, text=txt, anchor="center")
+            self.tabla_dias_asist.column(col, width=w, anchor=anc)
+        self.tabla_dias_asist.grid(row=0, column=0, sticky="nsew")
+        scr_dias = ttk.Scrollbar(f_t, orient="vertical", command=self.tabla_dias_asist.yview)
+        self.tabla_dias_asist.configure(yscrollcommand=scr_dias.set)
+        scr_dias.grid(row=0, column=1, sticky="ns")
+        self.tabla_dias_asist.bind("<MouseWheel>", self._scroll_solo_tabla_dias_asist)
+        self.tabla_dias_asist.bind("<Button-4>", self._scroll_solo_tabla_dias_asist)
+        self.tabla_dias_asist.bind("<Button-5>", self._scroll_solo_tabla_dias_asist)
+
+        # ---- Acciones de feriados ----
+        f_f = ctk.CTkFrame(f, fg_color="transparent")
+        f_f.pack(fill="x", padx=15, pady=(4, 4))
+        ctk.CTkLabel(f_f, text="Nombre del feriado (opcional):",
+                     font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.ent_nombre_feriado = ctk.CTkEntry(f_f, width=250,
+                                               placeholder_text="Ej.: Aniversario de la empresa")
+        self.ent_nombre_feriado.pack(side="left", padx=(0, 12))
+        ctk.CTkButton(f_f, text="🎌 Marcar como feriado", width=190, height=32,
+                      font=(self.familia, 11, "bold"), fg_color="#e67e22", hover_color="#d35400",
+                      command=self._marcar_feriado_asist).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(f_f, text="↩️ Quitar feriado", width=160, height=32,
+                      font=(self.familia, 11, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=self._quitar_feriado_asist).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(f_f, text="♻️ Restablecer (internet)", width=200, height=32,
+                      font=(self.familia, 11, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
+                      command=self._restablecer_feriados_asist).pack(side="left")
+
+        self.lbl_dias = ctk.CTkLabel(f, text="", font=(self.familia, 11), justify="left",
+                                     text_color="#333333", wraplength=880)
+        self.lbl_dias.pack(anchor="w", padx=15, pady=(8, 12))
+        self._refrescar_dias()
+
+    def _scroll_solo_tabla_dias_asist(self, event):
+        """Desplaza solo la tabla de días del asistente (la rueda no mueve la ventana)."""
+        try:
+            if event.num == 4:
+                self.tabla_dias_asist.yview_scroll(-3, "units")
+            elif event.num == 5:
+                self.tabla_dias_asist.yview_scroll(3, "units")
+            else:
+                delta = int(-1 * (event.delta / 120))
+                self.tabla_dias_asist.yview_scroll(delta, "units")
+        except Exception:
+            pass
+        return "break"
+
+    def _refrescar_tabla_dias_asist(self):
+        """Repinta la tabla de días del paso 3 conservando la selección."""
+        if not hasattr(self, "tabla_dias_asist") or not getattr(self, "_vivo", False):
+            return
+        previas = set()
+        try:
+            for it in self.tabla_dias_asist.selection():
+                previas.add(int(it))
+        except Exception:
+            previas = set()
+        try:
+            for it in self.tabla_dias_asist.get_children():
+                self.tabla_dias_asist.delete(it)
+            for i, d in enumerate(self.app.dias):
+                self.tabla_dias_asist.insert("", tk.END, iid=str(i), values=(
+                    d["fecha"].strftime("%d/%m/%Y"),
+                    DIAS_SEMANA[d["fecha"].weekday()],
+                    str(dict(CATEGORIAS).get(d["categoria"], "")),
+                    str(d["feriado_nombre"] or "")))
+            for i in previas:
+                try:
+                    self.tabla_dias_asist.selection_add(str(i))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _cambiar_feriado_asist(self, marcar):
+        """Marca o quita el feriado de los días seleccionados en el paso 3."""
+        if not hasattr(self, "tabla_dias_asist"):
+            return
+        sel = self.tabla_dias_asist.selection()
+        if not sel:
+            messagebox.showinfo(
+                "Selecciona días",
+                "Selecciona uno o varios días de la lista (con Ctrl o Shift eliges varios) "
+                "y vuelve a presionar el botón.", parent=self)
+            return
+        try:
+            nombre = self.ent_nombre_feriado.get().strip()
+        except Exception:
+            nombre = ""
+        try:
+            for it in sel:
+                idx = int(it)
+                if idx < 0 or idx >= len(self.app.dias):
+                    continue
+                d = self.app.dias[idx]
+                if marcar:
+                    d["categoria"] = "feriado"
+                    d["feriado_nombre"] = nombre or "Marcado manualmente"
+                else:
+                    d["categoria"] = clasificar_dia(d["fecha"], {})
+                    d["feriado_nombre"] = ""
+            self.app.pintar_dias()
+        except Exception as e:
+            messagebox.showerror("Error", "No se pudo cambiar el feriado: " + str(e), parent=self)
+        self._refrescar_tabla_dias_asist()
+        self._refrescar_dias()
+
+    def _marcar_feriado_asist(self):
+        self._cambiar_feriado_asist(True)
+
+    def _quitar_feriado_asist(self):
+        self._cambiar_feriado_asist(False)
+
+    def _restablecer_feriados_asist(self):
+        """Vuelve a traer los feriados oficiales de Perú (borra las marcas manuales)."""
+        if not self.app.dias:
+            messagebox.showinfo("Sin quincena", "Primero busca los días de la quincena.", parent=self)
+            return
+        try:
+            self.app.restablecer_feriados()
+        except Exception as e:
+            messagebox.showerror("Error", "No se pudieron restablecer los feriados: " + str(e),
+                                 parent=self)
+        self._programar(700, self._refrescar_tabla_dias_asist)
+        self._programar(700, self._refrescar_dias)
+        self._programar(3000, self._refrescar_tabla_dias_asist)
+        self._programar(3000, self._refrescar_dias)
+
+    @con_letrero("Buscando los días de la quincena…")
+    def _buscar_dias(self):
+        try:
+            self.app.combo_mes.set(self.cmb_mes.get())
+            self.app.combo_anio.set(self.cmb_anio.get())
+            self.app.combo_quincena.set(self.cmb_quin.get())
+            self.app.buscar_dias_quincena()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudieron buscar los días:\n{e}", parent=self)
+        self._programar(700, self._refrescar_dias)
+        self._programar(3000, self._refrescar_dias)
+
+    def _refrescar_dias(self):
+        if not getattr(self, "_vivo", False):
+            return
+        self._refrescar_tabla_dias_asist()
+        try:
+            dias = self.app.dias
+            if not dias:
+                self.lbl_dias.configure(text="Todavía no se han cargado los días de la quincena.")
+                return
+            conteo = {"normal": 0, "domingo": 0, "feriado": 0}
+            for d in dias:
+                conteo[d["categoria"]] = conteo.get(d["categoria"], 0) + 1
+            primero = dias[0]["fecha"].strftime("%d/%m/%Y")
+            ultimo = dias[-1]["fecha"].strftime("%d/%m/%Y")
+            texto = ("✔ Quincena cargada: del " + primero + " al " + ultimo
+                     + "  —  " + str(len(dias)) + " días" + "\n"
+                     + "    Días normales (Lun–Sáb): " + str(conteo["normal"])
+                     + "   |   Domingos: " + str(conteo["domingo"])
+                     + "   |   Feriados: " + str(conteo["feriado"]))
+            feriados = [d["fecha"].strftime("%d/%m") + " (" + str(d["feriado_nombre"]) + ")"
+                        for d in dias if d["categoria"] == "feriado"]
+            if feriados:
+                texto += "\n    Feriados: " + ", ".join(feriados)
+            self.lbl_dias.configure(text=texto)
+        except Exception:
+            pass
+
+    # ---------------- PASO 4: Registro ----------------
+    def _paso_registro(self):
+        if self.app.plan_cobro == "Por Hora":
+            self._paso_registro_hora()
+        else:
+            self._paso_registro_viaje()
+
+    def _paso_registro_hora(self):
+        self._titulo("Paso 4 de 6 — Deducciones y horas extras por unidad",
+                     "Registra las horas o minutos NO prestados (se descuentan) o las HORAS EXTRAS "
+                     "(se suman al cobro). Puedes registrar un solo día o un rango de días de una vez.")
+
+        # ---- Resumen de unidades ----
+        f_res = self._tarjeta("🚗 Unidades del cliente")
+        if not self.app.unidades:
+            ctk.CTkLabel(f_res, text="⚠️ No hay unidades asignadas. Vuelve al paso 2 para configurarlas.",
+                         font=(self.familia, 11, "bold"),
+                         text_color="#c0392b").pack(anchor="w", padx=15, pady=(6, 10))
+        else:
+            for u in self.app.unidades:
+                ded = u.get("ded") or {}
+                total_h = 0.0
+                for k in ("normal", "domingo", "feriado"):
+                    par = ded.get(k) or [0, 0]
+                    total_h += float(par[0] or 0) + float(par[1] or 0) / 60.0
+                ext_h = 0.0
+                for a in (u.get("extras_asientos") or []):
+                    ext_h += horas_de_asiento(a)
+                ctk.CTkLabel(f_res, text=("• " + str(u["unidad"]) + "  —  "
+                                          + f"{float(u['horas_dia'] or 0):g} h/día  —  deducción: "
+                                          + f"{total_h:g} h  |  extras: {ext_h:g} h"),
+                             font=(self.familia, 11), justify="left").pack(anchor="w", padx=15, pady=1)
+        ctk.CTkButton(f_res, text="✏️ Editar precios y horas por unidad", width=320, height=34,
+                      font=(self.familia, 11, "bold"), fg_color="#34495e", hover_color="#2c3e50",
+                      command=self._abrir_unidades).pack(anchor="w", padx=15, pady=(8, 12))
+
+        # ---- Registrar movimiento (deducción u horas extras) ----
+        g = self._tarjeta("✍️ Registrar movimiento")
+        fila = ctk.CTkFrame(g, fg_color="transparent")
+        fila.pack(fill="x", padx=15, pady=(8, 4))
+        ctk.CTkLabel(fila, text="Tipo:", font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.cmb_tipo_reg = ctk.CTkOptionMenu(fila, values=["➖ Deducción", "➕ Horas extras"],
+                                              width=170, font=(self.familia, 11),
+                                              command=lambda _v: self._refrescar_ded_uni())
+        self.cmb_tipo_reg.set("➖ Deducción")
+        self.cmb_tipo_reg.pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(fila, text="Unidad:", font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        nombres = [str(u["unidad"]) for u in self.app.unidades] or ["— Sin unidades —"]
+        self.cmb_unidad_ded = ctk.CTkOptionMenu(fila, values=nombres, width=330,
+                                                font=(self.familia, 11))
+        previa = getattr(self, "_ultima_unidad_ded", None)
+        self.cmb_unidad_ded.set(previa if previa in nombres else nombres[0])
+        self.cmb_unidad_ded.pack(side="left")
+
+        fila1 = ctk.CTkFrame(g, fg_color="transparent")
+        fila1.pack(fill="x", padx=15, pady=(0, 4))
+        ctk.CTkLabel(fila1, text="Desde:", font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.ent_fecha_ud = ctk.CTkEntry(fila1, width=110, placeholder_text="dd/mm/aaaa")
+        self.ent_fecha_ud.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(fila1, text="📅", width=42, font=(self.familia, 12),
+                      command=lambda: self._calendario_ded_unidad("desde")).pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(fila1, text="Hasta (opcional, para varios días):",
+                     font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.ent_fecha_hasta = ctk.CTkEntry(fila1, width=110, placeholder_text="dd/mm/aaaa")
+        self.ent_fecha_hasta.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(fila1, text="📅", width=42, font=(self.familia, 12),
+                      command=lambda: self._calendario_ded_unidad("hasta")).pack(side="left")
+
+        fila2 = ctk.CTkFrame(g, fg_color="transparent")
+        fila2.pack(fill="x", padx=15, pady=(0, 4))
+        ctk.CTkLabel(fila2, text="Tipo de día:", font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.cmb_tipo_ud = ctk.CTkOptionMenu(fila2, values=list(ETIQUETAS_CORTAS.values()),
+                                             width=130, font=(self.familia, 11))
+        self.cmb_tipo_ud.set(ETIQUETAS_CORTAS["normal"])
+        self.cmb_tipo_ud.pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(fila2, text="Horas:", font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.ent_horas_ud = ctk.CTkEntry(fila2, width=70, justify="center", placeholder_text="0")
+        self.ent_horas_ud.pack(side="left", padx=(0, 12))
+        ctk.CTkLabel(fila2, text="Minutos:", font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.ent_min_ud = ctk.CTkEntry(fila2, width=70, justify="center", placeholder_text="0")
+        self.ent_min_ud.pack(side="left", padx=(0, 12))
+        ctk.CTkLabel(fila2, text="Motivo:", font=(self.familia, 11, "bold")).pack(side="left", padx=(0, 4))
+        self.ent_motivo_ud = ctk.CTkEntry(fila2, width=330,
+                                          placeholder_text="Ej.: unidad en mantenimiento / servicio no prestado")
+        self.ent_motivo_ud.pack(side="left")
+
+        fila3 = ctk.CTkFrame(g, fg_color="transparent")
+        fila3.pack(fill="x", padx=15, pady=(0, 4))
+        ctk.CTkButton(fila3, text="➕ Agregar", width=200, height=34,
+                      font=(self.familia, 11, "bold"), fg_color="#e67e22", hover_color="#d35400",
+                      command=self._agregar_deduccion_unidad).pack(side="left")
+        ctk.CTkButton(fila3, text="🧹 Limpiar campos", width=150, height=34,
+                      font=(self.familia, 11, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=self._limpiar_campos_mov).pack(side="left", padx=8)
+        self.lbl_dia_ud = ctk.CTkLabel(fila3, text="", font=(self.familia, 10, "bold"),
+                                       text_color="#1f538d")
+        self.lbl_dia_ud.pack(side="left", padx=12)
+
+        # ---- Tabla: deducciones ----
+        ctk.CTkLabel(g, text="➖ DEDUCCIONES REGISTRADAS (se descuentan del cobro)",
+                     font=(self.familia, 11, "bold"), text_color="#c0392b").pack(
+            anchor="w", padx=15, pady=(8, 2))
+        cols = ("unidad", "fecha", "dia", "horas", "min", "motivo", "monto")
+        self.tabla_du = ttk.Treeview(g, columns=cols, show="headings", height=4, style="Treeview")
+        for col, txt, w, anc in (("unidad", "Unidad", 220, "w"), ("fecha", "Fecha", 90, "center"),
+                                 ("dia", "Día", 85, "center"), ("horas", "Horas", 55, "center"),
+                                 ("min", "Min", 50, "center"), ("motivo", "Motivo", 240, "w"),
+                                 ("monto", "Monto", 100, "center")):
+            self.tabla_du.heading(col, text=txt, anchor="center")
+            self.tabla_du.column(col, width=w, anchor=anc)
+        self.tabla_du.pack(fill="x", padx=15, pady=(0, 4))
+        f_d = ctk.CTkFrame(g, fg_color="transparent")
+        f_d.pack(fill="x", padx=15, pady=(0, 6))
+        ctk.CTkButton(f_d, text="➖ Quitar deducción seleccionada", width=250,
+                      font=(self.familia, 11, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
+                      command=self._quitar_deduccion_unidad).pack(side="left")
+        self.lbl_tot_du = ctk.CTkLabel(f_d, text="", font=(self.familia, 12, "bold"),
+                                       text_color="#c0392b")
+        self.lbl_tot_du.pack(side="left", padx=15)
+
+        # ---- Tabla: horas extras ----
+        ctk.CTkLabel(g, text="➕ HORAS EXTRAS REGISTRADAS (se suman al cobro)",
+                     font=(self.familia, 11, "bold"), text_color="#27ae60").pack(
+            anchor="w", padx=15, pady=(6, 2))
+        self.tabla_ex = ttk.Treeview(g, columns=cols, show="headings", height=4, style="Treeview")
+        for col, txt, w, anc in (("unidad", "Unidad", 220, "w"), ("fecha", "Fecha", 90, "center"),
+                                 ("dia", "Día", 85, "center"), ("horas", "Horas", 55, "center"),
+                                 ("min", "Min", 50, "center"), ("motivo", "Motivo", 240, "w"),
+                                 ("monto", "Monto", 100, "center")):
+            self.tabla_ex.heading(col, text=txt, anchor="center")
+            self.tabla_ex.column(col, width=w, anchor=anc)
+        self.tabla_ex.pack(fill="x", padx=15, pady=(0, 4))
+        f_e = ctk.CTkFrame(g, fg_color="transparent")
+        f_e.pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkButton(f_e, text="➖ Quitar horas extras seleccionadas", width=270,
+                      font=(self.familia, 11, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
+                      command=self._quitar_extra_unidad).pack(side="left")
+        self.lbl_tot_ex = ctk.CTkLabel(f_e, text="", font=(self.familia, 12, "bold"),
+                                       text_color="#27ae60")
+        self.lbl_tot_ex.pack(side="left", padx=15)
+
+        # ---- Resumen día por día (todas las unidades) ----
+        self._tarjeta_resumen_dias()
+
+        self.ent_fecha_ud.bind("<KeyRelease>", lambda e: self._detectar_dia_ud())
+        self.ent_fecha_hasta.bind("<KeyRelease>", lambda e: self._detectar_dia_ud())
+        self._mapa_du = []
+        self._mapa_ex = []
+        self._refrescar_ded_uni()
+
+    def _tarjeta_resumen_dias(self):
+        """Crea la tabla de resumen día por día (deducciones y horas extras)."""
+        f_rd = self._tarjeta("📅 RESUMEN DÍA POR DÍA — deducciones y horas extras (todas las unidades)")
+        f_td = ctk.CTkFrame(f_rd, fg_color="transparent")
+        f_td.pack(fill="x", padx=15, pady=(4, 10))
+        f_td.columnconfigure(0, weight=1)
+        cols_dia = ("fecha", "dia", "cat", "h_ded", "m_ded", "h_ex", "m_ex", "neto")
+        self.tabla_dia = ttk.Treeview(f_td, columns=cols_dia, show="headings", height=7,
+                                      style="Treeview")
+        for col, txt, w, anc in (("fecha", "Fecha", 95, "center"), ("dia", "Día", 95, "center"),
+                                 ("cat", "Categoría", 150, "center"),
+                                 ("h_ded", "H. deducidas", 95, "center"),
+                                 ("m_ded", "Monto deducido", 115, "center"),
+                                 ("h_ex", "H. extras", 85, "center"),
+                                 ("m_ex", "Monto extras", 110, "center"),
+                                 ("neto", "Neto del día", 110, "center")):
+            self.tabla_dia.heading(col, text=txt, anchor="center")
+            self.tabla_dia.column(col, width=w, anchor=anc)
+        self.tabla_dia.grid(row=0, column=0, sticky="nsew")
+        scr_dia = ttk.Scrollbar(f_td, orient="vertical", command=self.tabla_dia.yview)
+        self.tabla_dia.configure(yscrollcommand=scr_dia.set)
+        scr_dia.grid(row=0, column=1, sticky="ns")
+        self.tabla_dia.bind("<MouseWheel>", self._scroll_solo_tabla_dia)
+        self.tabla_dia.bind("<Button-4>", self._scroll_solo_tabla_dia)
+        self.tabla_dia.bind("<Button-5>", self._scroll_solo_tabla_dia)
+        ctk.CTkLabel(f_rd, text="Neto del día = horas extras − deducciones. Los totales ya están "
+                                "aplicados al total a cobrar del paso 5.",
+                     font=(self.familia, 10), text_color="#7f8c8d").pack(
+            anchor="w", padx=15, pady=(0, 10))
+
+    def _scroll_solo_tabla_dia(self, event):
+        """Desplaza solo el resumen día por día (la rueda no mueve la ventana)."""
+        try:
+            if event.num == 4:
+                self.tabla_dia.yview_scroll(-3, "units")
+            elif event.num == 5:
+                self.tabla_dia.yview_scroll(3, "units")
+            else:
+                delta = int(-1 * (event.delta / 120))
+                self.tabla_dia.yview_scroll(delta, "units")
+        except Exception:
+            pass
+        return "break"
+
+    def _limpiar_campos_mov(self):
+        for e in (self.ent_fecha_ud, self.ent_fecha_hasta, self.ent_horas_ud,
+                  self.ent_min_ud, self.ent_motivo_ud):
+            try:
+                e.delete(0, tk.END)
+            except Exception:
+                pass
+        try:
+            self.lbl_dia_ud.configure(text="")
+        except Exception:
+            pass
+
+    def _detectar_dia_ud(self):
+        """Muestra el tipo de día según la fecha escrita (o el rango)."""
+        try:
+            texto = self.ent_fecha_ud.get().strip()
+            fecha = datetime.strptime(texto, "%d/%m/%Y").date()
+            cat = self.app._categoria_para_fecha(fecha)
+            self.cmb_tipo_ud.set(ETIQUETAS_CORTAS.get(cat, "Normal"))
+            aviso = "Día detectado: " + str(dict(CATEGORIAS).get(cat, ""))
+            try:
+                hasta = datetime.strptime(self.ent_fecha_hasta.get().strip(), "%d/%m/%Y").date()
+                if hasta >= fecha:
+                    aviso += "  |  Rango: " + str((hasta - fecha).days + 1) + " día(s)"
+            except Exception:
+                pass
+            self.lbl_dia_ud.configure(text=aviso)
+        except Exception:
+            self.lbl_dia_ud.configure(text="")
+
+    def _calendario_ded_unidad(self, cual="desde"):
+        try:
+            anio, mes, _ = self.app.periodo_actual()
+            dias_q = {}
+            for d in self.app.dias:
+                if d["fecha"].year == anio and d["fecha"].month == mes:
+                    dias_q[d["fecha"].day] = d["categoria"]
+            entry = self.ent_fecha_hasta if cual == "hasta" else self.ent_fecha_ud
+            CalendarioPopup(self, entry, self._detectar_dia_ud,
+                            anio=anio, mes=mes, dias_resaltados=dias_q)
+        except Exception as e:
+            messagebox.showerror("Error", "No se pudo abrir el calendario: " + str(e), parent=self)
+
+    def _unidad_actual_ded(self):
+        nombre = self.cmb_unidad_ded.get()
+        for u in self.app.unidades:
+            if str(u["unidad"]) == nombre:
+                return u
+        return None
+
+    def _precios_unidad(self, u):
+        return {"normal": float(u.get("precio_normal") or 0),
+                "domingo": float(u.get("precio_domingo") or 0),
+                "feriado": float(u.get("precio_feriado") or 0)}
+
+    def _agregar_deduccion_unidad(self):
+        u = self._unidad_actual_ded()
+        if not u:
+            messagebox.showwarning("Sin unidad", "Selecciona la unidad del movimiento.", parent=self)
+            return
+        es_extra = str(self.cmb_tipo_reg.get()).startswith("➕")
+        try:
+            horas = float((self.ent_horas_ud.get() or "0").replace(",", ".").strip() or 0)
+            minutos = float((self.ent_min_ud.get() or "0").replace(",", ".").strip() or 0)
+        except Exception:
+            messagebox.showerror("Datos inválidos", "Revisa las horas y los minutos (usa números).",
+                                 parent=self)
+            return
+        if horas <= 0 and minutos <= 0:
+            messagebox.showwarning("Falta la cantidad",
+                                   "Ingresa las horas o los minutos.", parent=self)
+            return
+
+        # --- Fechas: un solo día, o un rango de días de la quincena ---
+        fechas = []
+        texto_d = self.ent_fecha_ud.get().strip()
+        texto_h = self.ent_fecha_hasta.get().strip()
+        if texto_d:
+            try:
+                f1 = datetime.strptime(texto_d, "%d/%m/%Y").date()
+            except Exception:
+                messagebox.showwarning("Fecha inválida",
+                                       "Usa el formato dd/mm/aaaa o el botón 📅 en «Desde».",
+                                       parent=self)
+                return
+            f2 = f1
+            if texto_h:
+                try:
+                    f2 = datetime.strptime(texto_h, "%d/%m/%Y").date()
+                except Exception:
+                    messagebox.showwarning("Fecha inválida",
+                                           "Usa el formato dd/mm/aaaa o el botón 📅 en «Hasta».",
+                                           parent=self)
+                    return
+            if f2 < f1:
+                f1, f2 = f2, f1
+            dias_q = [d["fecha"] for d in self.app.dias] if self.app.dias else []
+            cursor = f1
+            while cursor <= f2 and len(fechas) < 62:
+                if not dias_q or cursor in dias_q:
+                    fechas.append(cursor)
+                cursor = cursor + timedelta(days=1)
+            if not fechas:
+                messagebox.showwarning("Fuera de la quincena",
+                                       "Ningún día del rango pertenece a la quincena seleccionada.",
+                                       parent=self)
+                return
+        else:
+            fechas = [None]
+
+        motivo = self.ent_motivo_ud.get().strip()
+        destino = "extras_asientos" if es_extra else "ded_asientos"
+        self._ultima_unidad_ded = str(u["unidad"])
+        u.setdefault(destino, [])
+        for f in fechas:
+            if f is not None:
+                cat = self.app._categoria_para_fecha(f)
+            else:
+                cat = ETIQUETAS_CORTAS_A_CLAVE.get(self.cmb_tipo_ud.get(), "normal")
+            u[destino].append(nuevo_asiento_deduccion(f, cat, horas, minutos, 0.0, motivo))
+        if not es_extra:
+            u["ded"] = ded_agrupada_desde_asientos(u["ded_asientos"])
+        try:
+            self.app.pintar_unidades()
+            self.app.recalcular()
+        except Exception:
+            pass
+        self._limpiar_campos_mov()
+        self._refrescar_ded_uni()
+
+    def _quitar_deduccion_unidad(self):
+        self._quitar_asiento_tabla("ded")
+
+    def _quitar_extra_unidad(self):
+        self._quitar_asiento_tabla("ext")
+
+    def _quitar_asiento_tabla(self, cual):
+        tabla = self.tabla_ex if cual == "ext" else self.tabla_du
+        mapa = self._mapa_ex if cual == "ext" else self._mapa_du
+        sel = tabla.selection()
+        if not sel:
+            messagebox.showinfo("Selecciona un registro",
+                                "Selecciona una fila de la lista para quitarla.", parent=self)
+            return
+        idx = tabla.index(sel[0])
+        try:
+            u, pos = mapa[idx]
+            lista = u.get("extras_asientos" if cual == "ext" else "ded_asientos") or []
+            if 0 <= pos < len(lista):
+                lista.pop(pos)
+            if cual != "ext":
+                u["ded"] = ded_agrupada_desde_asientos(u.get("ded_asientos") or [])
+            self.app.pintar_unidades()
+            self.app.recalcular()
+        except Exception as e:
+            messagebox.showerror("Error", "No se pudo quitar el registro: " + str(e), parent=self)
+        self._refrescar_ded_uni()
+
+    def _refrescar_ded_uni(self):
+        if not getattr(self, "_vivo", False):
+            return
+        if not hasattr(self, "tabla_du") or not hasattr(self, "tabla_ex"):
+            return
+        for it in self.tabla_du.get_children():
+            self.tabla_du.delete(it)
+        for it in self.tabla_ex.get_children():
+            self.tabla_ex.delete(it)
+        self._mapa_du = []
+        self._mapa_ex = []
+        total_ded = 0.0
+        total_ex = 0.0
+        for u in self.app.unidades:
+            precios = self._precios_unidad(u)
+            for pos, a in enumerate(u.get("ded_asientos") or []):
+                horas_a = horas_de_asiento(a)
+                if horas_a <= 0:
+                    continue
+                cat = a.get("categoria") if a.get("categoria") in precios else "normal"
+                monto = horas_a * precios[cat]
+                total_ded += monto
+                self.tabla_du.insert("", tk.END, values=(
+                    str(u["unidad"]), etiqueta_fecha_hora(a.get("fecha")),
+                    ETIQUETAS_CORTAS.get(cat, cat), f"{float(a.get('horas') or 0):g}",
+                    f"{float(a.get('minutos') or 0):g}", str(a.get("motivo") or ""),
+                    formatear_moneda(monto)))
+                self._mapa_du.append((u, pos))
+            for pos, a in enumerate(u.get("extras_asientos") or []):
+                horas_a = horas_de_asiento(a)
+                if horas_a <= 0:
+                    continue
+                cat = a.get("categoria") if a.get("categoria") in precios else "normal"
+                monto = horas_a * precios[cat]
+                total_ex += monto
+                self.tabla_ex.insert("", tk.END, values=(
+                    str(u["unidad"]), etiqueta_fecha_hora(a.get("fecha")),
+                    ETIQUETAS_CORTAS.get(cat, cat), f"{float(a.get('horas') or 0):g}",
+                    f"{float(a.get('minutos') or 0):g}", str(a.get("motivo") or ""),
+                    formatear_moneda(monto)))
+                self._mapa_ex.append((u, pos))
+        try:
+            self.lbl_tot_du.configure(
+                text="TOTAL DEDUCCIONES: " + formatear_moneda(total_ded))
+            self.lbl_tot_ex.configure(
+                text="TOTAL HORAS EXTRAS: " + formatear_moneda(total_ex))
+        except Exception:
+            pass
+        self._pintar_resumen_dias()
+
+    def _pintar_resumen_dias(self):
+        """Llena la tabla de resumen día por día (deducciones y horas extras)."""
+        if not hasattr(self, "tabla_dia"):
+            return
+        for it in self.tabla_dia.get_children():
+            self.tabla_dia.delete(it)
+
+        vacio = {"h_ded": 0.0, "m_ded": 0.0, "h_ex": 0.0, "m_ex": 0.0}
+        acum = {}
+        sin_fecha = dict(vacio)
+
+        for u in self.app.unidades:
+            precios = self._precios_unidad(u)
+            for a in (u.get("ded_asientos") or []):
+                h = horas_de_asiento(a)
+                if h <= 0:
+                    continue
+                cat = a.get("categoria") if a.get("categoria") in precios else "normal"
+                h, m, es_ex = h, h * precios[cat], False
+                f = a.get("fecha")
+                if f is None:
+                    sin_fecha["h_ded"] += h
+                    sin_fecha["m_ded"] += m
+                else:
+                    d = acum.get(f)
+                    if d is None:
+                        d = dict(vacio)
+                        acum[f] = d
+                    d["h_ded"] += h
+                    d["m_ded"] += m
+            for a in (u.get("extras_asientos") or []):
+                h = horas_de_asiento(a)
+                if h <= 0:
+                    continue
+                cat = a.get("categoria") if a.get("categoria") in precios else "normal"
+                h, m = h, h * precios[cat]
+                f = a.get("fecha")
+                if f is None:
+                    sin_fecha["h_ex"] += h
+                    sin_fecha["m_ex"] += m
+                else:
+                    d = acum.get(f)
+                    if d is None:
+                        d = dict(vacio)
+                        acum[f] = d
+                    d["h_ex"] += h
+                    d["m_ex"] += m
+
+        tot = dict(vacio)
+        for dia in self.app.dias:
+            f = dia["fecha"]
+            d = acum.get(f) or dict(vacio)
+            for k in tot:
+                tot[k] += d[k]
+            self.tabla_dia.insert("", tk.END, values=(
+                f.strftime("%d/%m/%Y"), DIAS_SEMANA[f.weekday()],
+                str(dict(CATEGORIAS).get(dia["categoria"], "")),
+                f'{d["h_ded"]:g}', formatear_moneda(d["m_ded"]),
+                f'{d["h_ex"]:g}', formatear_moneda(d["m_ex"]),
+                formatear_moneda(d["m_ex"] - d["m_ded"])))
+        if sin_fecha["h_ded"] or sin_fecha["h_ex"]:
+            for k in tot:
+                tot[k] += sin_fecha[k]
+            self.tabla_dia.insert("", tk.END, values=(
+                "(sin fecha)", "—", "—",
+                f'{sin_fecha["h_ded"]:g}', formatear_moneda(sin_fecha["m_ded"]),
+                f'{sin_fecha["h_ex"]:g}', formatear_moneda(sin_fecha["m_ex"]),
+                formatear_moneda(sin_fecha["m_ex"] - sin_fecha["m_ded"])))
+        self.tabla_dia.insert("", tk.END, values=(
+            "TOTAL", "", "",
+            f'{tot["h_ded"]:g}', formatear_moneda(tot["m_ded"]),
+            f'{tot["h_ex"]:g}', formatear_moneda(tot["m_ex"]),
+            formatear_moneda(tot["m_ex"] - tot["m_ded"])))
+
+    # ---------------- PASO 5: Resumen ----------------
+    def _paso_resumen(self):
+        self._titulo("Paso 5 de 6 — Revisa el resumen",
+                     "Este es el resultado del cálculo. Si algo no cuadra, puedes volver atrás.")
+        self._recalcular_mostrando()
+        f = self._tarjeta("📊 Resumen del cálculo")
+        detalle = ""
+        try:
+            detalle = self.app.lbl_resumen.cget("text") or ""
+        except Exception:
+            pass
+        ctk.CTkLabel(f, text=detalle or "Aún no hay datos para mostrar.", font=(self.familia, 11),
+                     justify="left", wraplength=880, text_color="#333333").pack(
+            anchor="w", padx=15, pady=(8, 4))
+        try:
+            total = self.app.lbl_total.cget("text") or ""
+        except Exception:
+            total = ""
+        ctk.CTkLabel(f, text=total or "TOTAL A COBRAR: —", font=(self.familia, 18, "bold"),
+                     text_color="#27ae60").pack(anchor="w", padx=15, pady=(6, 12))
+        ctk.CTkButton(f, text="🔄 Recalcular", width=190, height=36, font=(self.familia, 11, "bold"),
+                      fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=self._ir_a_resumen).pack(anchor="w", padx=15, pady=(0, 12))
+
+    def _ir_a_resumen(self):
+        self._ir_a(self.paso)
+
+    @con_letrero("Calculando el cobro de la quincena…")
+    def _recalcular_mostrando(self):
+        """Recalcula mostrando el letrero centrado."""
+        self.app.recalcular()
+
+    # ---------------- PASO 6: Guardar y PDF ----------------
+    def _paso_guardar(self):
+        self._titulo("Paso 6 de 6 — Guarda y genera el PDF",
+                     "Agrega una nota si lo deseas y guarda la quincena. "
+                     "El PDF se guarda en la carpeta configurada en «Configuración del Sistema».")
+        f = self._tarjeta("📝 Notas y acciones")
+        fila = ctk.CTkFrame(f, fg_color="transparent")
+        fila.pack(fill="x", padx=15, pady=(10, 6))
+        ctk.CTkLabel(fila, text="📝 Notas:", font=(self.familia, 12, "bold")).pack(side="left", padx=(0, 6))
+        self.ent_notas_a = ctk.CTkEntry(fila, width=620,
+                                        placeholder_text="Comentarios adicionales del cobro...")
+        self.ent_notas_a.pack(side="left")
+        try:
+            self.ent_notas_a.insert(0, self.app.ent_notas.get())
+        except Exception:
+            pass
+        btns = ctk.CTkFrame(f, fg_color="transparent")
+        btns.pack(fill="x", padx=15, pady=(8, 14))
+        ctk.CTkButton(btns, text="💾 Guardar quincena", width=220, height=40,
+                      font=(self.familia, 13, "bold"), fg_color="#27ae60", hover_color="#1e8449",
+                      command=self._guardar).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btns, text="📄 Guardar y generar PDF", width=270, height=40,
+                      font=(self.familia, 13, "bold"), fg_color="#c0392b", hover_color="#922b21",
+                      command=self._guardar_y_pdf).pack(side="left")
+        ctk.CTkLabel(f, text="Sugerencia: si el PDF no se abre, ciérralo en tu visor y vuelve a generarlo.",
+                     font=(self.familia, 10), text_color="#7f8c8d").pack(anchor="w", padx=15, pady=(0, 12))
+
+    def _sincronizar_notas(self):
+        try:
+            self.app.ent_notas.delete(0, tk.END)
+            self.app.ent_notas.insert(0, self.ent_notas_a.get().strip())
+        except Exception:
+            pass
+
+    def _guardar(self):
+        self._sincronizar_notas()
+        try:
+            if self.app.guardar_quincena():
+                messagebox.showinfo("Listo", "La quincena se guardó correctamente.", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error al guardar", str(e), parent=self)
+
+    def _guardar_y_pdf(self):
+        self._sincronizar_notas()
+        try:
+            if not self.app.guardar_quincena():
+                return
+        except Exception as e:
+            messagebox.showerror("Error al guardar", str(e), parent=self)
+            return
+        try:
+            ruta = self.app._generar_pdf_desde_registro(self.app.registro_editando)
+            if ruta:
+                abrir_documento(ruta)
+        except Exception as e:
+            messagebox.showerror("Error al generar el PDF", str(e), parent=self)
 
 
 if __name__ == "__main__":

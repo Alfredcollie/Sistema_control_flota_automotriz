@@ -119,6 +119,93 @@ def _quitar_imagen_label(lbl):
         pass
 
 
+def sincronizar_botones_pantalla_completa(ventana, activa=None):
+    """Pone el mismo texto y color a TODOS los botones de pantalla completa.
+
+    Recorre la ventana y actualiza cualquier widget marcado con
+    '_boton_pantalla_completa = True' (el de la barra lateral y el del módulo
+    de Nómina), así los dos botones nunca quedan desfasados.
+    """
+    if activa is None:
+        activa = bool(getattr(ventana, "_pantalla_completa_activa", False))
+    texto = "🗗 Salir de pantalla completa" if activa else "⛶ Pantalla completa"
+    color = "#e67e22" if activa else "#34495e"
+    hover = "#b9640f" if activa else "#2c3e50"
+    pendientes = [ventana]
+    while pendientes:
+        widget = pendientes.pop()
+        try:
+            if getattr(widget, "_boton_pantalla_completa", False):
+                widget.configure(text=texto, fg_color=color, hover_color=hover)
+            pendientes.extend(widget.winfo_children())
+        except Exception:
+            pass
+    return activa
+
+
+def alternar_pantalla_completa(ventana, boton=None):
+    """Alterna la ventana entre pantalla completa y su tamaño normal.
+
+    El estado se guarda en la propia ventana ('_pantalla_completa_activa') para
+    que la barra lateral y los módulos (por ejemplo Nómina) compartan el mismo
+    estado y no se desincronicen. Devuelve True si quedó en pantalla completa.
+    """
+    activa = bool(getattr(ventana, "_pantalla_completa_activa", False))
+    try:
+        if activa:
+            try:
+                ventana.attributes("-fullscreen", False)
+            except Exception:
+                pass
+            geometria = getattr(ventana, "_geometria_previa", "")
+            if geometria:
+                try:
+                    ventana.geometry(geometria)
+                except Exception:
+                    pass
+            # El sistema siempre trabaja con la ventana maximizada
+            maximizar_ventana(ventana)
+            ventana._pantalla_completa_activa = False
+            accion_barra = getattr(ventana, "_alternar_barra_lateral", None)
+            if callable(accion_barra):
+                try:
+                    accion_barra(False)
+                except Exception as e:
+                    print("Aviso - barra lateral:", e)
+        else:
+            try:
+                ventana._geometria_previa = ventana.geometry()
+            except Exception:
+                ventana._geometria_previa = ""
+            try:
+                ventana.attributes("-fullscreen", True)
+            except Exception:
+                # macOS / Linux: respaldo por geometría si -fullscreen no está soportado
+                ancho = ventana.winfo_screenwidth()
+                alto = ventana.winfo_screenheight()
+                ventana.geometry("%dx%d+0+0" % (ancho, alto))
+            ventana._pantalla_completa_activa = True
+        # Los botones del sistema se ocultan en pantalla completa para ganar espacio
+        accion_barra = getattr(ventana, "_alternar_barra_lateral", None)
+        if callable(accion_barra):
+            try:
+                accion_barra(bool(getattr(ventana, "_pantalla_completa_activa", False)))
+            except Exception as e:
+                print("Aviso - barra lateral:", e)
+    except Exception as e:
+        print("Aviso - Pantalla completa:", e)
+
+    activa = bool(getattr(ventana, "_pantalla_completa_activa", False))
+    if boton is not None and not getattr(boton, "_boton_pantalla_completa", False):
+        try:
+            boton.configure(text="🗗 Salir de pantalla completa" if activa else "⛶ Pantalla completa",
+                            fg_color="#e67e22" if activa else "#34495e",
+                            hover_color="#b9640f" if activa else "#2c3e50")
+        except Exception:
+            pass
+    return sincronizar_botones_pantalla_completa(ventana, activa)
+
+
 def maximizar_ventana(ventana):
     """Maximiza la ventana de forma nativa según el sistema operativo."""
     try:
@@ -443,7 +530,7 @@ def cargar_configuracion_general():
         "color_menu_hover": "#163b65",
         "color_menu_texto": "white",
         "orden_operativos": ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"],
-        "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard", "banco"],
+        "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard", "banco", "nomina"],
         "orden_ajustes": ["configuracion", "usuarios", "bitacora"]
     }
     try:
@@ -843,6 +930,7 @@ class ControlGeneralEventos:
             "cobranza": "💰 Cálculo de Cobranza",
             "dashboard": "📈 Dashboard Gerencial",
             "banco": "🏦 Banco (Saldos y Conciliación)",
+            "nomina": "🧾 Nómina y Asistencia",
             "configuracion": "⚙️ Configuración General",
             "usuarios": "🛠️ Configurar Usuarios",
             "bitacora": "📜 Bitácora de Auditoría",
@@ -864,6 +952,7 @@ class ControlGeneralEventos:
             "cobranza": self.abrir_modulo_cobranza,
             "dashboard": self.abrir_estadisticas_financiera,
             "banco": self.abrir_modulo_banco,
+            "nomina": self.abrir_modulo_nomina,
             "configuracion": self.abrir_configuracion_general,
             "usuarios": self.abrir_gestion_usuarios,
             "bitacora": self.abrir_modulo_bitacora,
@@ -1112,10 +1201,11 @@ class ControlGeneralEventos:
         orden_ops = config.get("orden_operativos", ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"])
         orden_fin = config.get("orden_finanzas", ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard", "banco"])
         orden_aju = config.get("orden_ajustes", ["configuracion", "usuarios", "bitacora"])
-        # El módulo Banco siempre se ubica en Finanzas y Reportes
-        orden_ops = [m for m in orden_ops if m != "banco"]
-        if "banco" not in orden_fin:
-            orden_fin.append("banco")
+        # Los módulos Banco y Nómina siempre se ubican en Finanzas y Reportes
+        orden_ops = [m for m in orden_ops if m not in ("banco", "nomina")]
+        for modulo_fin in ("banco", "nomina"):
+            if modulo_fin not in orden_fin:
+                orden_fin.append(modulo_fin)
         todas = orden_ops + orden_fin + orden_aju
         for k in self.modulos_sistema:
             if k not in todas:
@@ -1181,6 +1271,32 @@ class ControlGeneralEventos:
         btn_salir.pack(side="bottom", pady=(2, 5))
         btn_cambio = ctk.CTkButton(frame_bottom_sidebar, text="🔄 Cambiar Usuario", command=cambiar_usuario, width=240, height=30, font=("Arial", 11, "bold"), fg_color="#555555", hover_color="#333333")
         btn_cambio.pack(side="bottom", pady=(2, 5))
+
+        # Pantalla completa: útil para las tablas anchas (matriz de asistencia, libros, etc.)
+        self.btn_pantalla_completa = ctk.CTkButton(frame_bottom_sidebar, text="⛶ Pantalla completa", command=lambda: alternar_pantalla_completa(self.root, self.btn_pantalla_completa), width=240, height=30, font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50")
+        # La marca permite que los demás botones de pantalla completa se sincronicen solos
+        self.btn_pantalla_completa._boton_pantalla_completa = True
+        self.btn_pantalla_completa.pack(side="bottom", pady=(2, 5))
+
+        # Botón flotante de escape: aparece solo cuando la barra lateral está oculta
+        # (pantalla completa), para no dejar al usuario sin forma visible de volver.
+        self.btn_flotante_salir = ctk.CTkButton(
+            self.root, text="🗗 Salir de pantalla completa", width=215, height=28,
+            font=("Arial", 10, "bold"), fg_color="#e67e22", hover_color="#b9640f",
+            command=lambda: alternar_pantalla_completa(self.root, self.btn_pantalla_completa))
+
+        # Ganchos en la ventana: cualquier módulo puede pedir ocultar la barra lateral
+        self.root._alternar_barra_lateral = self.alternar_barra_lateral
+        self.root._boton_flotante_salir = self.btn_flotante_salir
+        self.root._barra_lateral = self.sidebar
+
+        # Los atajos viven en la ventana principal (siguen funcionando con cualquier
+        # módulo abierto y no dejan enlaces huérfanos al cerrarlos).
+        try:
+            self.root.bind("<F11>", lambda _e: alternar_pantalla_completa(self.root, self.btn_pantalla_completa))
+            self.root.bind("<Escape>", self.salir_pantalla_completa)
+        except Exception:
+            pass
         
         linea_separadora = ctk.CTkFrame(frame_bottom_sidebar, height=2, fg_color="#34495e")
         linea_separadora.pack(side="bottom", fill="x", padx=20, pady=(5, 5))
@@ -1208,6 +1324,38 @@ class ControlGeneralEventos:
                         crear_btn_menu(self.modulos_sistema[key], self.funciones_modulos[key])
                         
         self.mostrar_pantalla_bienvenida()
+
+    def alternar_barra_lateral(self, ocultar):
+        """Oculta o vuelve a mostrar el menú lateral (se usa en pantalla completa).
+
+        En pantalla completa se quitan los botones del sistema para que el módulo
+        aproveche todo el ancho; queda un botón flotante para poder salir.
+        """
+        try:
+            if ocultar:
+                self.sidebar.pack_forget()
+                try:
+                    self.btn_flotante_salir.place(relx=1.0, rely=1.0, x=-16, y=-16, anchor="se")
+                    self.btn_flotante_salir.lift()
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.btn_flotante_salir.place_forget()
+                except Exception:
+                    pass
+                # Se vuelven a empaquetar ambos en el orden original para que la barra
+                # lateral recupere su ancho y el contenido el resto de la ventana.
+                self.contenedor_central.pack_forget()
+                self.sidebar.pack(side="left", fill="y")
+                self.contenedor_central.pack(side="right", fill="both", expand=True)
+        except Exception as e:
+            print("Aviso - barra lateral en pantalla completa:", e)
+
+    def salir_pantalla_completa(self, evento=None):
+        """Sale de pantalla completa con la tecla Esc (si estaba activa)."""
+        if getattr(self.root, "_pantalla_completa_activa", False):
+            alternar_pantalla_completa(self.root, getattr(self, "btn_pantalla_completa", None))
 
     def ciclo_sincronizacion_nube(self):
         lanzar_sync_background()
@@ -1509,6 +1657,15 @@ class ControlGeneralEventos:
             importlib.reload(modulo_banco)
             app = modulo_banco.ModuloBancoApp(self.contenedor_central, self.usuario_activo)
         except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Banco:\n{e}")
+
+    def abrir_modulo_nomina(self):
+        if not self.tiene_permiso("nomina"): return messagebox.showerror("Denegado", "No tiene permisos.")
+        self.limpiar_contenedor()
+        try:
+            import modulo_nomina
+            importlib.reload(modulo_nomina)
+            app = modulo_nomina.ModuloNominaApp(self.contenedor_central, self.usuario_activo)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Nómina:\n{e}")
 
     def abrir_calculo_impuestos(self):
         if not self.tiene_permiso("impuestos"): return messagebox.showerror("Denegado", "No tiene permisos.")
@@ -2528,15 +2685,16 @@ class ControlGeneralEventos:
             return lb
             
         default_ops = ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"]
-        default_fin = ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard", "banco"]
+        default_fin = ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard", "banco", "nomina"]
         default_aju = ["configuracion", "usuarios", "bitacora"]
         ops = config_actual.get("orden_operativos", default_ops)
         fin = config_actual.get("orden_finanzas", default_fin)
         aju = config_actual.get("orden_ajustes", default_aju)
-        # El módulo Banco siempre se ubica en Finanzas y Reportes
-        ops = [m for m in ops if m != "banco"]
-        if "banco" not in fin:
-            fin.append("banco")
+        # Los módulos Banco y Nómina siempre se ubican en Finanzas y Reportes
+        ops = [m for m in ops if m not in ("banco", "nomina")]
+        for modulo_fin in ("banco", "nomina"):
+            if modulo_fin not in fin:
+                fin.append(modulo_fin)
         todas = ops + fin + aju
         for k in self.modulos_sistema:
             if k not in todas:
