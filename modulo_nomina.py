@@ -317,6 +317,331 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.destroy()
 
 
+def ruta_instructivo():
+    """Ubica el instructivo en PDF (funciona en desarrollo y en la app compilada)."""
+    nombre = "INSTRUCTIVO_MODULO_NOMINA.pdf"
+    candidatas = []
+    try:
+        candidatas.append(os.path.join(sys._MEIPASS, nombre))
+    except Exception:
+        pass
+    candidatas.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), nombre))
+    try:
+        candidatas.append(os.path.join(os.path.dirname(sys.executable), nombre))
+    except Exception:
+        pass
+    try:
+        candidatas.append(os.path.join(os.getcwd(), nombre))
+    except Exception:
+        pass
+    for candidata in candidatas:
+        try:
+            if os.path.exists(candidata):
+                return candidata
+        except Exception:
+            pass
+    return ""
+
+
+class VisorInstructivo(ctk.CTkToplevel):
+    """Muestra el instructivo en PDF dentro del sistema, página por página.
+
+    Si el sistema no puede dibujar el PDF (falta la librería), el módulo abre el
+    archivo con el visor de PDF de Windows/Mac, que es el comportamiento de respaldo.
+    """
+
+    def __init__(self, ventana, ruta):
+        super().__init__(ventana)
+        import fitz  # PyMuPDF: si no está, el módulo abre el PDF por fuera
+        from PIL import Image
+        self._fitz = fitz
+        self._Image = Image
+        self.ruta = ruta
+        self.documento = fitz.open(ruta)
+        self.total = self.documento.page_count
+        self.numero = 0
+        self.zoom = 0.0          # 0 = ajustar al ancho de la ventana
+        self._imagen = None
+        # Búsqueda rápida dentro del instructivo
+        self.consulta = ""
+        self.coincidencias = []  # [(numero_de_pagina, rectangulo), ...]
+        self.indice = 0
+
+        self.title("❓ Ayuda — Instructivo del Módulo de Nómina y Asistencia")
+        ancho, alto = 980, 780
+        try:
+            x = ventana.winfo_rootx() + max(0, (ventana.winfo_width() - ancho) // 2)
+            y = ventana.winfo_rooty() + max(0, (ventana.winfo_height() - alto) // 3)
+            self.geometry("%dx%d+%d+%d" % (ancho, alto, x, y))
+        except Exception:
+            self.geometry("%dx%d" % (ancho, alto))
+        self.minsize(700, 520)
+
+        cabecera = ctk.CTkFrame(self, fg_color=COLOR_PRIMARIO, corner_radius=0)
+        cabecera.pack(fill="x")
+        ctk.CTkLabel(cabecera, text="❓ INSTRUCTIVO DEL MÓDULO DE NÓMINA Y ASISTENCIA",
+                     font=("Arial", 15, "bold"), text_color="white").pack(side="left", padx=16, pady=10)
+        ctk.CTkButton(cabecera, text="🔍 Abrir con el visor del sistema", width=230, height=28,
+                      font=("Arial", 11), fg_color="#16a085", hover_color="#11806a",
+                      command=lambda: abrir_documento(self.ruta)).pack(side="right", padx=10, pady=8)
+
+        barra = ctk.CTkFrame(self, fg_color="transparent")
+        barra.pack(fill="x", padx=12, pady=(8, 4))
+        ctk.CTkButton(barra, text="◀ Anterior", width=110, fg_color="#34495e", hover_color="#2c3e50",
+                      command=lambda: self.mostrar_pagina(self.numero - 1)).pack(side="left")
+        ctk.CTkButton(barra, text="Siguiente ▶", width=110, fg_color="#34495e", hover_color="#2c3e50",
+                      command=lambda: self.mostrar_pagina(self.numero + 1)).pack(side="left", padx=6)
+        ctk.CTkLabel(barra, text="Ir a la página:", font=("Arial", 11, "bold")).pack(side="left", padx=(14, 4))
+        self.ent_pagina = ctk.CTkEntry(barra, width=60, justify="center")
+        self.ent_pagina.pack(side="left")
+        self.ent_pagina.bind("<Return>", lambda _e: self.ir_a_pagina())
+        ctk.CTkButton(barra, text="Ir", width=50, fg_color=COLOR_PRIMARIO, hover_color=COLOR_HOVER,
+                      command=self.ir_a_pagina).pack(side="left", padx=4)
+        ctk.CTkButton(barra, text="➖", width=40, fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=lambda: self.cambiar_zoom(-0.2)).pack(side="right", padx=2)
+        self.lbl_zoom = ctk.CTkLabel(barra, text="100%", font=("Arial", 11, "bold"), width=60)
+        self.lbl_zoom.pack(side="right")
+        ctk.CTkButton(barra, text="➕", width=40, fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=lambda: self.cambiar_zoom(0.2)).pack(side="right", padx=2)
+        ctk.CTkButton(barra, text="Ajustar al ancho", width=140, fg_color="#7f8c8d",
+                      hover_color="#606b6b", command=self.ajustar_ancho).pack(side="right", padx=8)
+
+        # Barra de búsqueda rápida
+        busqueda = ctk.CTkFrame(self, fg_color="#f4f7fa", corner_radius=8, border_width=1,
+                                border_color="#dbe3ea")
+        busqueda.pack(fill="x", padx=12, pady=(0, 4))
+        ctk.CTkLabel(busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left",
+                                                                                  padx=(10, 4), pady=7)
+        self.ent_buscar = ctk.CTkEntry(busqueda, width=240,
+                                       placeholder_text="turno, tardanza, horas extra, sueldo...")
+        self.ent_buscar.pack(side="left", pady=7)
+        self.ent_buscar.bind("<Return>", lambda _e: self.buscar())
+        ctk.CTkButton(busqueda, text="Buscar", width=80, height=26, fg_color=COLOR_PRIMARIO,
+                      hover_color=COLOR_HOVER, command=self.buscar).pack(side="left", padx=6)
+        ctk.CTkButton(busqueda, text="◀", width=38, height=26, fg_color="#34495e",
+                      hover_color="#2c3e50", command=lambda: self.ir_a_coincidencia(-1)).pack(side="left")
+        ctk.CTkButton(busqueda, text="▶", width=38, height=26, fg_color="#34495e",
+                      hover_color="#2c3e50", command=lambda: self.ir_a_coincidencia(1)).pack(side="left", padx=(2, 6))
+        ctk.CTkButton(busqueda, text="Limpiar", width=80, height=26, fg_color=COLOR_GRIS,
+                      hover_color="#606b6b", command=self.limpiar_busqueda).pack(side="left")
+        self.lbl_busqueda = ctk.CTkLabel(busqueda, text="Escriba una palabra y pulse Buscar (o Enter)",
+                                         font=("Arial", 11, "bold"), text_color=COLOR_PRIMARIO)
+        self.lbl_busqueda.pack(side="left", padx=10)
+
+        self.area = ctk.CTkScrollableFrame(self, fg_color="#e9edf2", corner_radius=8)
+        self.area.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        self.lbl_pagina = ctk.CTkLabel(self.area, text="Cargando...", font=("Arial", 12))
+        self.lbl_pagina.pack(padx=10, pady=10)
+
+        pie = ctk.CTkFrame(self, fg_color="transparent")
+        pie.pack(fill="x", padx=12, pady=(0, 10))
+        self.lbl_estado = ctk.CTkLabel(pie, text="", font=("Arial", 11, "bold"), text_color=COLOR_PRIMARIO)
+        self.lbl_estado.pack(side="left")
+        ctk.CTkLabel(pie, text="También puede usar las flechas del teclado (← →) y Esc para cerrar",
+                     font=("Arial", 10), text_color=COLOR_GRIS).pack(side="right")
+
+        # Atajos del visor (Esc cierra la ayuda sin afectar al resto del sistema)
+        try:
+            self.bind("<Left>", lambda _e: self.mostrar_pagina(self.numero - 1))
+            self.bind("<Right>", lambda _e: self.mostrar_pagina(self.numero + 1))
+            self.bind("<Prior>", lambda _e: self.mostrar_pagina(self.numero - 1))
+            self.bind("<Next>", lambda _e: self.mostrar_pagina(self.numero + 1))
+            self.bind("<Home>", lambda _e: self.mostrar_pagina(0))
+            self.bind("<End>", lambda _e: self.mostrar_pagina(self.total - 1))
+            self.bind("<plus>", lambda _e: self.cambiar_zoom(0.2))
+            self.bind("<minus>", lambda _e: self.cambiar_zoom(-0.2))
+            self.bind("<Escape>", lambda _e: self.destroy())
+            self.bind("<Control-f>", lambda _e: self.ent_buscar.focus_set())
+            self.bind("<Control-F>", lambda _e: self.ent_buscar.focus_set())
+        except Exception:
+            pass
+        self.lift()
+        self.focus_force()
+        # La primera página se dibuja cuando la ventana ya tomó su tamaño definitivo
+        # (así el "ajustar al ancho" usa el ancho real y no el inicial de 1 píxel).
+        self.after(120, lambda: self.mostrar_pagina(0))
+
+    # ---------- BÚSQUEDA RÁPIDA ----------
+    def coincidencias_en_pagina(self, numero):
+        """Rectángulos donde aparece la palabra buscada en una página.
+
+        Compara sin distinguir mayúsculas ni acentos (escribir "nomina" encuentra "nómina").
+        Si la búsqueda tiene varias palabras, deben aparecer juntas en ese orden.
+        """
+        if not self.consulta:
+            return []
+        try:
+            palabras = self.documento.load_page(numero).get_text("words")
+        except Exception:
+            return []
+        if not palabras:
+            return []
+        partes = nc.normalizar_texto(self.consulta).lower().split()
+        if not partes:
+            return []
+        encontrados = []
+        for inicio in range(len(palabras) - len(partes) + 1):
+            ventana = [nc.normalizar_texto(palabras[inicio + salto][4]).lower()
+                       for salto in range(len(partes))]
+            if all(partes[salto] in ventana[salto] for salto in range(len(partes))):
+                union = None
+                for salto in range(len(partes)):
+                    caja = self._fitz.Rect(palabras[inicio + salto][:4])
+                    union = caja if union is None else (union | caja)
+                encontrados.append(union)
+        return encontrados
+
+    def buscar(self):
+        """Busca el texto en todo el instructivo y salta a la primera coincidencia."""
+        termino = self.ent_buscar.get().strip()
+        self.consulta = termino
+        self.coincidencias = []
+        self.indice = 0
+        if not termino:
+            self.lbl_busqueda.configure(text="Escriba una palabra para buscar", text_color=COLOR_ALERTA)
+            self.mostrar_pagina(self.numero)
+            return
+        # La búsqueda recorre todo el instructivo: se avisa para que no parezca colgado
+        try:
+            self.lbl_busqueda.configure(text="⏳ Buscando «%s» en %d páginas..." % (termino, self.total),
+                                        text_color=COLOR_ALERTA)
+            self.update_idletasks()
+        except Exception:
+            pass
+        for numero in range(self.total):
+            for caja in self.coincidencias_en_pagina(numero):
+                self.coincidencias.append((numero, caja))
+        if not self.coincidencias:
+            self.lbl_busqueda.configure(text="Sin coincidencias para «%s»" % termino,
+                                        text_color=COLOR_ERROR)
+            self.mostrar_pagina(self.numero)
+            return
+        self.mostrar_pagina(self.coincidencias[0][0])
+        self.avisar_coincidencias()
+
+    def avisar_coincidencias(self):
+        """Muestra en qué coincidencia va el usuario."""
+        if not self.coincidencias:
+            return
+        pagina = self.coincidencias[self.indice][0]
+        en_pagina = [i for i, (numero, _caja) in enumerate(self.coincidencias) if numero == pagina]
+        self.lbl_busqueda.configure(
+            text="«%s»: coincidencia %d de %d  ·  página %d  ·  %d en esta página"
+                 % (self.consulta, self.indice + 1, len(self.coincidencias), pagina + 1, len(en_pagina)),
+            text_color=COLOR_PRIMARIO)
+
+    def ir_a_coincidencia(self, paso):
+        """Pasa a la coincidencia anterior o siguiente (recorre todo el instructivo)."""
+        if not self.coincidencias:
+            return self.buscar()
+        self.indice = (self.indice + paso) % len(self.coincidencias)
+        self.mostrar_pagina(self.coincidencias[self.indice][0])
+        self.avisar_coincidencias()
+
+    def limpiar_busqueda(self):
+        """Quita el resaltado y limpia el buscador."""
+        self.consulta = ""
+        self.coincidencias = []
+        self.indice = 0
+        try:
+            self.ent_buscar.delete(0, tk.END)
+        except Exception:
+            pass
+        self.lbl_busqueda.configure(text="Escriba una palabra y pulse Buscar (o Enter)",
+                                    text_color=COLOR_PRIMARIO)
+        self.mostrar_pagina(self.numero)
+
+    def ancho_visible(self):
+        try:
+            return max(420, self.area.winfo_width() - 24)
+        except Exception:
+            return 800
+
+    def escala(self):
+        if self.zoom:
+            return self.zoom
+        try:
+            pagina = self.documento.load_page(self.numero)
+            return max(0.4, min(3.0, self.ancho_visible() / float(pagina.rect.width)))
+        except Exception:
+            return 1.0
+
+    def resaltar_coincidencias(self, imagen, escala):
+        """Pinta de amarillo las coincidencias de la búsqueda (la actual, en naranja)."""
+        try:
+            cajas = self.coincidencias_en_pagina(self.numero)
+        except Exception:
+            return imagen
+        if not cajas:
+            return imagen
+        actual = None
+        if 0 <= self.indice < len(self.coincidencias):
+            pagina_actual, caja_actual = self.coincidencias[self.indice]
+            if pagina_actual == self.numero:
+                actual = caja_actual
+        try:
+            from PIL import ImageDraw
+            base = imagen.convert("RGBA")
+            capa = self._Image.new("RGBA", base.size, (0, 0, 0, 0))
+            dibujo = ImageDraw.Draw(capa)
+            for caja in cajas:
+                es_actual = (actual is not None and abs(caja.x0 - actual.x0) < 0.5
+                             and abs(caja.y0 - actual.y0) < 0.5)
+                relleno = (255, 165, 0, 115) if es_actual else (255, 214, 0, 90)
+                borde = (200, 110, 0, 255) if es_actual else (225, 170, 0, 255)
+                dibujo.rectangle([caja.x0 * escala, caja.y0 * escala,
+                                  caja.x1 * escala, caja.y1 * escala],
+                                 fill=relleno, outline=borde, width=2)
+            return self._Image.alpha_composite(base, capa).convert("RGB")
+        except Exception as e:
+            print("[Nómina] No se pudo resaltar la búsqueda:", e)
+            return imagen
+
+    def mostrar_pagina(self, numero):
+        """Dibuja la página indicada del instructivo."""
+        if not self.documento or self.total == 0:
+            return
+        self.numero = max(0, min(self.total - 1, int(numero)))
+        try:
+            pagina = self.documento.load_page(self.numero)
+            escala = self.escala()
+            mapa = pagina.get_pixmap(matrix=self._fitz.Matrix(escala, escala), alpha=False)
+            imagen = self._Image.frombytes("RGB", (mapa.width, mapa.height), mapa.samples)
+            if self.consulta:
+                imagen = self.resaltar_coincidencias(imagen, escala)
+            self._imagen = ctk.CTkImage(light_image=imagen, dark_image=imagen,
+                                        size=(mapa.width, mapa.height))
+            self.lbl_pagina.configure(image=self._imagen, text="")
+        except Exception as e:
+            self.lbl_pagina.configure(image=None, text="No se pudo dibujar la página: %s" % e)
+        try:
+            self.ent_pagina.delete(0, tk.END)
+            self.ent_pagina.insert(0, str(self.numero + 1))
+            self.lbl_estado.configure(text="Página %d de %d" % (self.numero + 1, self.total))
+            self.lbl_zoom.configure(text="%d%%" % int(round(self.escala() * 100)))
+        except Exception:
+            pass
+        try:
+            self.area._parent_canvas.yview_moveto(0.0)
+        except Exception:
+            pass
+
+    def ir_a_pagina(self):
+        try:
+            self.mostrar_pagina(int(self.ent_pagina.get()) - 1)
+        except Exception:
+            self.mostrar_pagina(self.numero)
+
+    def cambiar_zoom(self, delta):
+        actual = self.escala() + delta
+        self.zoom = max(0.4, min(3.0, actual))
+        self.mostrar_pagina(self.numero)
+
+    def ajustar_ancho(self):
+        self.zoom = 0.0
+        self.mostrar_pagina(self.numero)
+
+
 # =========================================================
 # LETRERO CENTRADO: "LEYENDO BASE DE DATOS / CALCULANDO"
 # =========================================================
@@ -773,6 +1098,11 @@ class ModuloNominaApp:
         # La marca permite que la barra lateral y este botón se sincronicen entre sí
         self.btn_pantalla._boton_pantalla_completa = True
         self.btn_pantalla.pack(side="right", padx=(10, 0))
+        # Ayuda: abre el instructivo del módulo en PDF
+        self.btn_ayuda = ctk.CTkButton(cabecera, text="❓ Ayuda", width=110, height=30,
+                                       font=("Arial", 11, "bold"), fg_color="#16a085",
+                                       hover_color="#11806a", command=self.abrir_ayuda)
+        self.btn_ayuda.pack(side="right", padx=(8, 0))
         self.lbl_estado = ctk.CTkLabel(cabecera, text="Iniciando...", font=("Arial", 11),
                                        text_color=COLOR_GRIS)
         self.lbl_estado.pack(side="right")
@@ -913,6 +1243,35 @@ class ModuloNominaApp:
                 accion(bool(ocultar))
         except Exception as e:
             print("[Nómina] No se pudo cambiar la barra lateral:", e)
+
+    # ---------- AYUDA (INSTRUCTIVO EN PDF) ----------
+    def abrir_ayuda(self):
+        """Abre el instructivo del módulo (INSTRUCTIVO_MODULO_NOMINA.pdf).
+
+        Si el sistema puede dibujar PDF se muestra dentro del propio sistema; si no,
+        se abre con el visor de PDF de Windows o Mac.
+        """
+        ruta = ruta_instructivo()
+        if not ruta:
+            return messagebox.showwarning(
+                "Instructivo no encontrado",
+                "No se encontró el archivo INSTRUCTIVO_MODULO_NOMINA.pdf.\n\n"
+                "Debe estar en la misma carpeta del sistema.\n"
+                "Si hace falta, genérelo con:   python generar_instructivo_pdf.py")
+        # Si la ayuda ya está abierta, se trae al frente en lugar de duplicarla
+        try:
+            if getattr(self, "_visor", None) is not None and self._visor.winfo_exists():
+                self._visor.lift()
+                self._visor.focus_force()
+                return
+        except Exception:
+            pass
+        try:
+            import fitz  # noqa: F401  (PyMuPDF: permite dibujar el PDF dentro del sistema)
+            self._visor = VisorInstructivo(self.parent_frame.winfo_toplevel(), ruta)
+        except Exception as e:
+            print("[Nómina] El instructivo se abrirá con el visor del sistema:", e)
+            abrir_documento(ruta)
 
     # ---------- ASISTENTE PASO A PASO ----------
     def abrir_asistente(self):

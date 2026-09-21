@@ -4990,7 +4990,7 @@ class AsistenteCobranza(ctk.CTkToplevel):
         fx = ctk.CTkFrame(f, fg_color="transparent")
         fx.pack(fill="x", padx=15, pady=(12, 4))
         if self.app.plan_cobro == "Por Hora":
-            ctk.CTkButton(fx, text="🚗 Configurar unidades, precios y deducciones", width=420, height=38,
+            ctk.CTkButton(fx, text="🚗 Configurar unidades y precios", width=420, height=38,
                           font=(self.familia, 12, "bold"), fg_color="#e67e22", hover_color="#d35400",
                           command=self._abrir_unidades).pack(side="left")
         else:
@@ -5039,7 +5039,7 @@ class AsistenteCobranza(ctk.CTkToplevel):
         if self.app.plan_cobro == "Por Hora":
             if not self.app.unidades:
                 lineas.append("⚠️ Este cliente todavía NO tiene unidades asignadas.")
-                lineas.append("    Usa el botón «🚗 Configurar unidades, precios y deducciones».")
+                lineas.append("    Usa el botón «🚗 Configurar unidades y precios».")
             else:
                 lineas.append(f"✔ {len(self.app.unidades)} unidad(es) asignada(s):")
                 for u in self.app.unidades:
