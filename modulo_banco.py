@@ -844,6 +844,10 @@ class ModuloBancoApp:
         self.construir_tab_conciliacion()
         self.construir_tab_transferencias()
 
+        # 🔄 Al entrar a "Saldo de Bancos" se recalcula: en otros módulos pueden
+        # haberse eliminado facturas emitidas/recibidas o sus cobros/pagos.
+        self.tabview.configure(command=self._al_cambiar_pestana)
+
         # Los datos (varias consultas a Supabase) se traen aparte, en un hilo,
         # para que el módulo abra al instante y no se congele.
         self._cargar_datos_iniciales()
@@ -1012,6 +1016,26 @@ class ModuloBancoApp:
         self.refrescar_saldos(estado.get("resumenes"))
         self._pintar_transferencias(estado.get("transferencias") or [])
 
+    def _al_cambiar_pestana(self, nombre=None):
+        """Recalcula los saldos cada vez que se entra a la pestaña de saldos.
+
+        Así el saldo no se queda con datos viejos cuando en otro módulo se
+        elimina una factura emitida (con sus cobros) o una factura de compra
+        (con sus pagos)."""
+        # Esta versión de customtkinter llama al comando SIN argumentos, por eso
+        # se consulta la pestaña activa directamente.
+        if not nombre:
+            try:
+                nombre = self.tabview.get()
+            except Exception:
+                nombre = ""
+        if "Saldo de Bancos" not in (nombre or ""):
+            return
+        try:
+            self.actualizar_saldos_boton()
+        except Exception:
+            pass
+
     def actualizar_saldos_boton(self):
         """Botón 🔄 Actualizar: recalcula sin congelar la ventana."""
         if not self.bancos:
@@ -1146,17 +1170,23 @@ class ModuloBancoApp:
         try:
             with conn.cursor() as c:
                 try:
+                    # 🛡️ Solo se cuentan los cobros que APUNTAN A UNA FACTURA EXISTENTE:
+                    # si una factura emitida se elimina y su cobro queda huérfano, ese
+                    # cobro ya no debe sumar como ingreso en el saldo del banco.
                     c.execute("""
                         SELECT p.id, p.fecha_pago, p.cliente_nombre, p.monto_pagado,
                                COALESCE(p.cuenta_destino, ''), p.id_factura,
                                COALESCE(f.numero_documento, ''), COALESCE(p.codigo_cotizacion, '')
                         FROM pagos_clientes p
                         LEFT JOIN facturas_emitidas f ON p.id_factura = f.id
+                        WHERE COALESCE(p.id_factura, 0) = 0 OR f.id IS NOT NULL
                     """)
                     datos["cobros"] = c.fetchall()
                 except Exception:
                     conn.rollback()
                 try:
+                    # 🛡️ Igual que los cobros: un pago cuya factura de compra ya no
+                    # existe (huérfano) no debe seguir restando en el saldo.
                     c.execute("""
                         SELECT p.id, p.fecha_pago, p.proveedor_nombre, p.monto_pagado,
                                COALESCE(p.cuenta_origen, ''), p.id_factura,
@@ -1165,6 +1195,7 @@ class ModuloBancoApp:
                                 OR COALESCE(f.es_compra_cruzada, FALSE)) AS espejo_banco
                         FROM pagos_comprobantes p
                         LEFT JOIN facturas_recibidas f ON p.id_factura = f.id
+                        WHERE COALESCE(p.id_factura, 0) = 0 OR f.id IS NOT NULL
                     """)
                     datos["pagos"] = c.fetchall()
                 except Exception:

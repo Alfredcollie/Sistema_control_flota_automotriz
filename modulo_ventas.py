@@ -1931,7 +1931,30 @@ class FacturasEmitidasTab:
             ctk.CTkButton(f_cont, text="💾 Guardar Cambios", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=guardar_cambios).pack(fill="x", pady=20)
 
         def eliminar_registro():
-            if messagebox.askyesno("Confirmar Eliminación", "⚠️ ¿Desea eliminar completamente este registro?\n\nSe borrará de la base de datos y el archivo físico asociado.", parent=v_edit):
+            # 🔗 Los cobros (pagos_clientes) de esta factura se consultan ANTES de borrar:
+            # si quedaran huérfanos seguirían sumando como ingreso en el saldo de bancos.
+            cobros = []
+            try:
+                conn_c = conectar_db(silencioso=True)
+                if conn_c:
+                    try:
+                        with conn_c.cursor() as cc:
+                            cc.execute("""SELECT monto_pagado, COALESCE(archivo_ruta, '')
+                                          FROM pagos_clientes WHERE id_factura = %s""", (id_doc,))
+                            cobros = cc.fetchall()
+                    finally:
+                        liberar_conexion(conn_c)
+            except Exception:
+                cobros = []
+
+            aviso = ("⚠️ ¿Desea eliminar completamente este registro?\n\n"
+                     "Se borrará de la base de datos y el archivo físico asociado.")
+            if cobros:
+                total_cobrado = sum(float(cc[0] or 0) for cc in cobros)
+                aviso += (f"\n\n💰 También se eliminarán {len(cobros)} cobro(s) registrado(s) de esta "
+                          f"factura (total {formatear_moneda(total_cobrado)}) junto con sus comprobantes.\n"
+                          f"Si no se borraran, seguirían contando como ingreso en el saldo de bancos.")
+            if messagebox.askyesno("Confirmar Eliminación", aviso, parent=v_edit):
                 try:
                     conn = conectar_db()
                     cursor = conn.cursor()
@@ -1940,12 +1963,23 @@ class FacturasEmitidasTab:
                     ruta_archivo = row[0]
                     eliminar_archivo(ruta_archivo)   # resuelve rutas de otros equipos/SO
 
+                    # 🗑️ Se borran también los cobros de esta factura (y sus comprobantes físicos)
+                    for _monto_c, ruta_c in cobros:
+                        try:
+                            eliminar_archivo(os.path.normpath(ruta_c) if ruta_c else None)
+                        except Exception:
+                            pass
+                    cursor.execute("DELETE FROM pagos_clientes WHERE id_factura = %s", (id_doc,))
+                    cobros_borrados = max(cursor.rowcount, 0)
+
                     cursor.execute("DELETE FROM facturas_emitidas WHERE id = %s", (id_doc,))
                     conn.commit()
                     liberar_conexion(conn)
                     
                     cache_sistema.invalidar()
-                    registrar_auditoria(self.app_padre.usuario_activo, "Facturas Emitidas", f"Eliminó completamente la factura ID {id_doc}")
+                    registrar_auditoria(self.app_padre.usuario_activo, "Facturas Emitidas",
+                                        f"Eliminó completamente la factura ID {id_doc} "
+                                        f"({cobros_borrados} cobro(s) asociado(s))")
                     messagebox.showinfo("Éxito", "Registro eliminado.", parent=v_edit)
                     v_edit.destroy()
                     self.cargar_datos_tabla(reset_pagina=True)
