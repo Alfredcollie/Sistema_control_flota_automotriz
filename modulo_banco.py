@@ -1002,9 +1002,10 @@ class ModuloBancoApp:
         def _trabajo(estado):
             self.inicializar_db()                      # sólo la primera vez por equipo
             bancos = cargar_bancos()
-            datos = self._cargar_movimientos_crudos()  # 3 consultas para TODOS los bancos
             estado["bancos"] = bancos
-            estado["resumenes"] = [self.calcular_resumen(b, datos) for b in bancos]
+            # 3 consultas para TODOS los bancos; el reparto por banco y el filtro
+            # del periodo elegido se aplican después, al dibujar las tarjetas.
+            estado["datos"] = self._cargar_movimientos_crudos()
             estado["transferencias"] = self.cargar_transferencias()
 
         ejecutar_en_hilo(self.parent_frame, _trabajo, al_terminar=self._aplicar_datos_iniciales)
@@ -1013,7 +1014,7 @@ class ModuloBancoApp:
         """Se ejecuta en el hilo principal cuando terminó la carga."""
         self.bancos = estado.get("bancos") or []
         self._actualizar_combos_bancos()
-        self.refrescar_saldos(estado.get("resumenes"))
+        self.refrescar_saldos(estado.get("datos"))
         self._pintar_transferencias(estado.get("transferencias") or [])
 
     def _al_cambiar_pestana(self, nombre=None):
@@ -1044,11 +1045,10 @@ class ModuloBancoApp:
         self._mostrar_cargando("⏳ Actualizando saldos...")
 
         def _trabajo(estado):
-            datos = self._cargar_movimientos_crudos()
-            estado["resumenes"] = [self.calcular_resumen(b, datos) for b in self.bancos]
+            estado["datos"] = self._cargar_movimientos_crudos()
 
         ejecutar_en_hilo(self.parent_frame, _trabajo,
-                         al_terminar=lambda e: self.refrescar_saldos(e.get("resumenes")))
+                         al_terminar=lambda e: self.refrescar_saldos(e.get("datos")))
 
     # -----------------------------------------------------
     # TAB: SALDO DE BANCOS
@@ -1062,17 +1062,46 @@ class ModuloBancoApp:
                       fg_color="#1f538d", hover_color="#163b65",
                       command=self.actualizar_saldos_boton).pack(side="right")
 
+        # 🗓️ Selector de periodo: un mes concreto o todos los meses
+        # (se empaqueta primero el combo y después la etiqueta para que se lea
+        #  "Periodo: [Mes] 🔄 Actualizar")
+        self.cmb_mes_saldos = ctk.CTkComboBox(f_top, values=construir_valores_mes(), width=170,
+                                              state="readonly", command=self._cambiar_mes_saldos)
+        self.cmb_mes_saldos.pack(side="right", padx=(10, 12))
+        ctk.CTkLabel(f_top, text="Periodo:", font=("Arial", 12, "bold")).pack(side="right", padx=(0, 6))
+        self.mes_saldos = None
+        self.mes_saldos_etiqueta = ""
+        self.cmb_mes_saldos.set("Todos los meses")
+
         self.scroll_saldos = ctk.CTkScrollableFrame(self.tab_saldos, fg_color="transparent")
         self.scroll_saldos.pack(fill="both", expand=True)
         # La ventana aparece de inmediato; los saldos se calculan aparte para no
         # congelarla (cada consulta a Supabase tarda ~0,3 s).
         self._mostrar_cargando()
 
-    def refrescar_saldos(self, resumenes=None):
+    def _cambiar_mes_saldos(self, etiqueta=None):
+        """Cambia el periodo visible (un mes o todos) y redibuja las tarjetas.
+
+        No vuelve a consultar la base de datos: reutiliza los movimientos ya
+        traídos (_datos_saldos), así el cambio es instantáneo."""
+        try:
+            etiqueta = etiqueta or self.cmb_mes_saldos.get()
+        except Exception:
+            etiqueta = etiqueta or ""
+        self.mes_saldos = mes_etiqueta_a_key(etiqueta)
+        self.mes_saldos_etiqueta = "" if not self.mes_saldos else etiqueta
+        if getattr(self, "_datos_saldos", None) is not None:
+            self.refrescar_saldos(self._datos_saldos)
+        else:
+            self.actualizar_saldos_boton()
+
+    def refrescar_saldos(self, datos=None):
         """Dibuja las tarjetas de saldo.
 
-        'resumenes' es opcional: si ya vienen calculados (carga en segundo
-        plano) no se vuelve a consultar la base de datos.
+        'datos' es opcional: si ya vienen los movimientos crudos (carga en
+        segundo plano, o el cambio de periodo) no se vuelve a consultar la
+        base de datos. El saldo de cada banco se calcula aquí, aplicando el
+        periodo elegido en el desplegable de meses.
         """
         for w in self.scroll_saldos.winfo_children():
             w.destroy()
@@ -1086,21 +1115,22 @@ class ModuloBancoApp:
                          font=("Arial", 13), text_color="#856404", justify="left").pack(padx=15, pady=15)
             return
 
-        datos = None
-        if resumenes is None:
+        if datos is None:
             datos = self._cargar_movimientos_crudos()
+        self._datos_saldos = datos
         total_general = 0.0
         for idx, banco in enumerate(self.bancos):
-            if resumenes is not None and idx < len(resumenes):
-                resumen = resumenes[idx]
-            else:
-                resumen = self.calcular_resumen(banco, datos)
+            resumen = self.calcular_resumen(banco, datos)
             total_general += resumen["saldo_actual"]
             self._crear_tarjeta_banco(banco, resumen, idx)
 
+        mes_txt = getattr(self, "mes_saldos_etiqueta", "") or ""
         f_total = ctk.CTkFrame(self.scroll_saldos, corner_radius=10, fg_color="#1f538d")
         f_total.pack(fill="x", pady=(15, 5), padx=5)
-        ctk.CTkLabel(f_total, text="TOTAL DISPONIBLE EN BANCOS", font=("Arial", 14, "bold"),
+        ctk.CTkLabel(f_total,
+                     text=("TOTAL DISPONIBLE EN BANCOS" if not mes_txt
+                           else f"TOTAL AL CIERRE DE {mes_txt.upper()}"),
+                     font=("Arial", 14, "bold"),
                      text_color="white").pack(side="left", padx=15, pady=12)
         ctk.CTkLabel(f_total, text=formatear_monto(total_general), font=("Arial", 16, "bold"),
                      text_color="white").pack(side="right", padx=15, pady=12)
@@ -1113,8 +1143,14 @@ class ModuloBancoApp:
 
         fila_titulo = ctk.CTkFrame(card, fg_color="transparent")
         fila_titulo.pack(fill="x", padx=12, pady=(10, 4))
-        ctk.CTkLabel(fila_titulo, text=f"🏦 {etiqueta}", font=("Arial", 15, "bold"),
+        es_mes = bool(resumen.get("es_mes"))
+        etiqueta_periodo = resumen.get("etiqueta_mes") or ""
+        ctk.CTkLabel(fila_titulo, text=f"🏦 {etiqueta}",
+                     font=("Arial", 15, "bold"),
                      text_color="#1f538d").pack(side="left")
+        if es_mes:
+            ctk.CTkLabel(fila_titulo, text=f"Al cierre de {etiqueta_periodo} ►",
+                         font=("Arial", 11, "italic"), text_color="#7f8c8d").pack(side="left", padx=(10, 0))
         ctk.CTkLabel(fila_titulo, text=resumen["saldo_actual_txt"], font=("Arial", 16, "bold"),
                      text_color="#27ae60" if resumen["saldo_actual"] >= 0 else "#c0392b").pack(side="right")
 
@@ -1122,11 +1158,12 @@ class ModuloBancoApp:
         fila_det.pack(fill="x", padx=12, pady=(0, 6))
         ctk.CTkLabel(fila_det, text=f"Saldo inicial: {formatear_monto(resumen['saldo_inicial'])}",
                      font=("Arial", 11), text_color="gray").pack(side="left", padx=(0, 15))
-        ctk.CTkLabel(fila_det, text=f"+ Ingresos: {formatear_monto(resumen['ingresos'])}",
+        sufijo = f" ({etiqueta_periodo})" if es_mes else ""
+        ctk.CTkLabel(fila_det, text=f"+ Ingresos{sufijo}: {formatear_monto(resumen['ingresos'])}",
                      font=("Arial", 11), text_color="#27ae60").pack(side="left", padx=(0, 15))
-        ctk.CTkLabel(fila_det, text=f"− Egresos: {formatear_monto(resumen['egresos'])}",
+        ctk.CTkLabel(fila_det, text=f"− Egresos{sufijo}: {formatear_monto(resumen['egresos'])}",
                      font=("Arial", 11), text_color="#c0392b").pack(side="left", padx=(0, 15))
-        ctk.CTkLabel(fila_det, text=f"({resumen['n_movimientos']} movimientos)",
+        ctk.CTkLabel(fila_det, text=f"({resumen['n_movimientos']} movimientos{sufijo})",
                      font=("Arial", 10, "italic"), text_color="#7f8c8d").pack(side="left")
 
         fila_btn = ctk.CTkFrame(card, fg_color="transparent")
@@ -1138,14 +1175,33 @@ class ModuloBancoApp:
                       fg_color="#1f538d", hover_color="#163b65",
                       command=lambda b=banco: self.ir_a_conciliacion(b)).pack(side="left")
 
-    def calcular_resumen(self, banco, datos=None):
+    def calcular_resumen(self, banco, datos=None, mes=None):
         """Saldo del banco. Si se pasa 'datos' (movimientos crudos ya leídos de
-        la base) no se vuelve a consultar Supabase."""
-        movs = self._movimientos_de_banco(banco, datos)
+        la base) no se vuelve a consultar Supabase.
+
+        Si 'mes' (formato 'YYYY-MM') viene informado, los importes mostrados
+        son los del MES y el saldo es el de CIERRE de ese mes
+        (inicial + todo lo movido hasta el último día del mes).
+        Con 'mes' vacío se muestra el saldo actual con todos los movimientos.
+        """
+        if mes is None:
+            mes = getattr(self, "mes_saldos", None)
+        movs_todos = self._movimientos_de_banco(banco, datos)
+        saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
+
+        if mes:
+            # Fechas normalizadas 'YYYY-MM-DD': comparar por texto es suficiente.
+            validos = [(m, normalizar_fecha(m["fecha"])) for m in movs_todos]
+            movs = [m for m, f in validos if f and f[:7] == mes]
+            acumulados = [m for m, f in validos if f and f[:7] <= mes]
+        else:
+            movs = movs_todos
+            acumulados = movs_todos
+
         ingresos = sum(m["monto"] for m in movs if m["monto"] > 0)
         egresos = sum(-m["monto"] for m in movs if m["monto"] < 0)
-        saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
-        saldo = saldo_inicial + ingresos - egresos
+        saldo = saldo_inicial + sum(m["monto"] for m in acumulados)
+        etiqueta_mes = getattr(self, "mes_saldos_etiqueta", "") if mes else ""
         return {
             "saldo_inicial": saldo_inicial,
             "ingresos": ingresos,
@@ -1154,6 +1210,9 @@ class ModuloBancoApp:
             "saldo_actual_txt": formatear_monto(saldo),
             "n_movimientos": len(movs),
             "movimientos": movs,
+            "mes": mes or "",
+            "etiqueta_mes": etiqueta_mes or "",
+            "es_mes": bool(mes),
         }
 
     def _cargar_movimientos_crudos(self):
@@ -1283,12 +1342,13 @@ class ModuloBancoApp:
     def ver_movimientos(self, banco):
         resumen = self.calcular_resumen(banco)
         movs = resumen["movimientos"]
+        periodo = f" — {resumen['etiqueta_mes']}" if resumen.get("es_mes") else ""
         v = ctk.CTkToplevel(self.parent_frame)
-        v.title(f"Movimientos - {construir_etiqueta_banco(banco)}")
+        v.title(f"Movimientos - {construir_etiqueta_banco(banco)}{periodo}")
         v.geometry("760x480")
         v.transient(self.parent_frame)
 
-        ctk.CTkLabel(v, text=f"Movimientos de {construir_etiqueta_banco(banco)}",
+        ctk.CTkLabel(v, text=f"Movimientos de {construir_etiqueta_banco(banco)}{periodo}",
                      font=("Arial", 15, "bold"), text_color="#1f538d").pack(pady=(15, 5))
 
         f_tabla = ctk.CTkFrame(v, fg_color="transparent")
