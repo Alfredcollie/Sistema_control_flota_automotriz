@@ -123,7 +123,7 @@ PARAMETROS_DEFECTO = {
     "he_25_pct": ("25", "Recargo de las 2 primeras horas extra (%)"),
     "he_35_pct": ("35", "Recargo de las horas extra siguientes (%)"),
     "he_desde_hora": ("2", "Horas extra que se pagan al 25% antes de pasar al 35%"),
-    "he_tope_dia_min": ("300", "Tope de minutos extra reconocidos por dia"),
+    "he_tope_dia_min": ("240", "Maximo de minutos de hora extra por dia (240 = 4 h: tope legal)"),
     "he_minimo_min": ("15", "Minutos extra minimos para que se registren"),
     "he_bloque_min": ("15", "Redondeo de minutos extra (bloques de N minutos)"),
     "hora_inicio_nocturno": ("22:00", "Inicio del horario nocturno"),
@@ -137,6 +137,20 @@ PARAMETROS_DEFECTO = {
     "deduccion_uit_5ta": ("7", "UIT de deduccion para la renta de quinta categoria"),
     "pagar_descanso_trabajado": ("SI", "Pagar con recargo el trabajo en dia de descanso"),
     "minutos_minimos_entre_marcas": ("2", "Minutos minimos entre marcas: las mas cercanas se consideran la misma lectura repetida"),
+    # --- Garantia de sueldo (clientes cuyos choferes trabajan turnos de 12 y 14 horas) ---
+    # El trabajador cobra siempre su calculo de ley (8 horas + horas extra) y, si no
+    # llega al monto garantizado, la diferencia se completa con un bono.
+    "garantia_sobre": ("BRUTO", "La garantia se mide sobre el BRUTO del mes o sobre el NETO que recibe el trabajador"),
+    "garantia_prorratear": ("NO", "Reducir la garantia en proporcion a los dias que falto el trabajador"),
+    "bono_complemento_afecto": ("NO", "Si el bono de complemento descuenta pension y ESSALUD (normalmente NO)"),
+    "nombre_bono_complemento": ("Bono de complemento", "Nombre del concepto que completa hasta la garantia"),
+    # --- Tope legal de horas extra y bono por el tiempo que lo supera ---
+    # El motor paga como hora extra solo hasta el tope legal diario (4 horas). El
+    # tiempo trabajado que supera ese tope se compensa con un bono, de modo que el
+    # sobretiempo registrado nunca exceda el maximo permitido (D.S. 007-2002-TR, art. 10).
+    "bono_excedente_activo": ("SI", "Compensar con un bono las horas que superan el tope legal de horas extra del dia"),
+    "bono_excedente_afecto": ("NO", "Si el bono por horas excedentes descuenta pension y ESSALUD (normalmente NO)"),
+    "nombre_bono_excedente": ("Bono por horas adicionales", "Nombre del concepto que compensa las horas sobre el tope legal"),
 }
 
 # Clasificacion de los parametros para poder validarlos antes de guardarlos.
@@ -145,10 +159,15 @@ PARAMETROS_DEFECTO = {
 PARAMETROS_SOLO_POSITIVOS = {"rmv", "uit", "jornada_horas", "dias_base_mes", "he_bloque_min",
                             "he_minimo_min", "he_tope_dia_min"}
 PARAMETROS_SI_NO = {"descontar_tardanza", "descontar_falta", "descontar_anticipo",
-                    "calcular_renta_5ta", "pagar_descanso_trabajado"}
+                    "calcular_renta_5ta", "pagar_descanso_trabajado",
+                    "garantia_prorratear", "bono_complemento_afecto",
+                    "bono_excedente_activo", "bono_excedente_afecto"}
 PARAMETROS_HORA = {"hora_inicio_nocturno", "hora_fin_nocturno"}
+# Parametros de texto libre y de opciones fijas (no son numeros ni SI/NO)
+PARAMETROS_TEXTO = {"nombre_bono_complemento", "nombre_bono_excedente"}
+PARAMETROS_OPCIONES = {"garantia_sobre": ["BRUTO", "NETO"]}
 PARAMETROS_NO_CERO = {
-    "he_tope_dia_min": "Con 0 minutos de tope NO se registraria ninguna hora extra",
+    "he_tope_dia_min": "Con 0 minutos de tope NO se registraria ninguna hora extra. El tope legal es 240 (4 h)",
     "he_minimo_min": "Con 0 no habria minimo para reconocer una hora extra",
     "he_bloque_min": "Con 0 no se podria redondear el tiempo extra",
     "he_desde_hora": "Con 0 todas las horas extra se pagarian con el recargo del 35%",
@@ -600,6 +619,7 @@ TABLAS_NOMINA = [
         otros_descuentos NUMERIC(12,2) DEFAULT 0,
         retencion_judicial_pct NUMERIC(6,4) DEFAULT 0,
         adelanto_mensual NUMERIC(12,2) DEFAULT 0,
+        garantia_mensual NUMERIC(12,2) DEFAULT 0,
         estado VARCHAR(20) DEFAULT 'ACTIVO',
         observacion TEXT,
         actualizado VARCHAR(30)
@@ -667,6 +687,7 @@ TABLAS_NOMINA = [
         minutos_anticipo INTEGER DEFAULT 0,
         minutos_trabajados INTEGER DEFAULT 0,
         minutos_extra INTEGER DEFAULT 0,
+        minutos_excedente INTEGER DEFAULT 0,
         minutos_falta INTEGER DEFAULT 0,
         estado VARCHAR(30) DEFAULT 'PENDIENTE',
         manual BOOLEAN DEFAULT FALSE,
@@ -756,6 +777,12 @@ TABLAS_NOMINA = [
     """,
 ]
 
+# Migraciones: columnas que se agregan a tablas que ya existen en la base de datos
+MIGRACIONES_NOMINA = [
+    "ALTER TABLE nom_empleado ADD COLUMN IF NOT EXISTS garantia_mensual NUMERIC(12,2) DEFAULT 0",
+    "ALTER TABLE nom_asistencia ADD COLUMN IF NOT EXISTS minutos_excedente INTEGER DEFAULT 0",
+]
+
 INDICES_NOMINA = [
     "CREATE INDEX IF NOT EXISTS idx_nom_marcaciones_dni ON nom_marcaciones (dni, fecha)",
     "CREATE INDEX IF NOT EXISTS idx_nom_marcaciones_cod ON nom_marcaciones (codigo_reloj, fecha)",
@@ -784,6 +811,11 @@ def inicializar_esquema_nomina(forzar=False):
                 for indice in INDICES_NOMINA:
                     try:
                         cursor.execute(indice)
+                    except Exception:
+                        conn.rollback()
+                for migracion in MIGRACIONES_NOMINA:
+                    try:
+                        cursor.execute(migracion)
                     except Exception:
                         conn.rollback()
                 conn.commit()
@@ -888,6 +920,17 @@ def validar_parametros(diccionario):
         texto = "" if valor is None else str(valor).strip()
         if texto == "":
             errores.append("%s: el campo no puede quedar vacio" % clave)
+            continue
+        if clave in PARAMETROS_TEXTO:
+            limpios[clave] = texto
+            continue
+        if clave in PARAMETROS_OPCIONES:
+            opciones = PARAMETROS_OPCIONES[clave]
+            elegido = normalizar_texto(texto).upper()
+            if elegido not in opciones:
+                errores.append("%s: escriba una de estas opciones: %s" % (clave, " / ".join(opciones)))
+            else:
+                limpios[clave] = elegido
             continue
         if clave in PARAMETROS_SI_NO:
             marcado = normalizar_texto(texto)
@@ -1169,7 +1212,7 @@ CAMPOS_NOM_EMPLEADO = [
     "afp_nombre", "afp_comision_pct", "cuspp", "tipo_documento", "cargo", "regimen",
     "fecha_ingreso", "horario_id", "turno_id", "banco_haberes", "cuenta_haberes",
     "essalud_codigo", "discapacidad", "confianza", "otros_ingresos", "otros_descuentos",
-    "retencion_judicial_pct", "adelanto_mensual", "estado", "observacion",
+    "retencion_judicial_pct", "adelanto_mensual", "garantia_mensual", "estado", "observacion",
 ]
 
 
@@ -1186,7 +1229,8 @@ def listar_empleados(solo_activos=False, incluir_sin_chofer=True):
         "       n.afp_nombre, n.afp_comision_pct, n.cuspp, n.tipo_documento, n.cargo, n.regimen, "
         "       n.fecha_ingreso, n.horario_id, n.turno_id, n.banco_haberes, n.cuenta_haberes, "
         "       n.essalud_codigo, n.discapacidad, n.confianza, n.otros_ingresos, n.otros_descuentos, "
-        "       n.retencion_judicial_pct, n.adelanto_mensual, n.estado, n.observacion "
+        "       n.retencion_judicial_pct, n.adelanto_mensual, n.garantia_mensual, "
+        "       n.estado, n.observacion "
         "FROM choferes c LEFT JOIN nom_empleado n ON n.dni = c.dni "
         "ORDER BY c.nombres"
     ) or []
@@ -1229,8 +1273,9 @@ def listar_empleados(solo_activos=False, incluir_sin_chofer=True):
             "otros_descuentos": a_float(fila[30]),
             "retencion_judicial_pct": a_float(fila[31]),
             "adelanto_mensual": a_float(fila[32]),
-            "estado": fila[33] or "ACTIVO",
-            "observacion": fila[34] or "",
+            "garantia_mensual": a_float(fila[33]),
+            "estado": fila[34] or "ACTIVO",
+            "observacion": fila[35] or "",
         })
     if incluir_sin_chofer:
         # Empleados creados directamente en nom_empleado (no son choferes)
@@ -1238,7 +1283,7 @@ def listar_empleados(solo_activos=False, incluir_sin_chofer=True):
                 "SELECT dni, sueldo_basico, asignacion_familiar, jornada_horas, sistema_pension, "
                 "afp_nombre, afp_comision_pct, cuspp, cargo, regimen, fecha_ingreso, horario_id, "
                 "turno_id, estado, otros_ingresos, otros_descuentos, retencion_judicial_pct, "
-                "adelanto_mensual, observacion, banco_haberes, cuenta_haberes "
+                "adelanto_mensual, observacion, banco_haberes, cuenta_haberes, garantia_mensual "
                 "FROM nom_empleado ORDER BY dni") or []:
             dni = str(fila[0] or "").strip()
             if dni in dnis_vistos:
@@ -1256,6 +1301,7 @@ def listar_empleados(solo_activos=False, incluir_sin_chofer=True):
                 "essalud_codigo": "", "discapacidad": False, "confianza": False,
                 "otros_ingresos": a_float(fila[14]), "otros_descuentos": a_float(fila[15]),
                 "retencion_judicial_pct": a_float(fila[16]), "adelanto_mensual": a_float(fila[17]),
+                "garantia_mensual": a_float(fila[21]),
                 "estado": fila[13] or "ACTIVO", "observacion": fila[18] or "",
             })
         empleados.sort(key=lambda e: normalizar_texto(e["nombre"]))
@@ -1316,6 +1362,7 @@ def guardar_empleado_nomina(dni, datos, usuario="sistema"):
         a_float(datos.get("otros_descuentos", 0)),
         a_float(datos.get("retencion_judicial_pct", 0)),
         a_float(datos.get("adelanto_mensual", 0)),
+        a_float(datos.get("garantia_mensual", 0)),
         datos.get("estado", "ACTIVO") or "ACTIVO",
         datos.get("observacion", ""),
         datetime.now().strftime("%d/%m/%Y %H:%M"),
@@ -1325,8 +1372,8 @@ def guardar_empleado_nomina(dni, datos, usuario="sistema"):
            "sistema_pension, afp_nombre, afp_comision_pct, cuspp, tipo_documento, cargo, regimen, "
            "fecha_ingreso, horario_id, turno_id, banco_haberes, cuenta_haberes, essalud_codigo, "
            "discapacidad, confianza, otros_ingresos, otros_descuentos, retencion_judicial_pct, "
-           "adelanto_mensual, estado, observacion, actualizado, dni) "
-           "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+           "adelanto_mensual, garantia_mensual, estado, observacion, actualizado, dni) "
+           "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
            "ON CONFLICT (dni) DO UPDATE SET sueldo_basico=EXCLUDED.sueldo_basico, "
            "asignacion_familiar=EXCLUDED.asignacion_familiar, jornada_horas=EXCLUDED.jornada_horas, "
            "sistema_pension=EXCLUDED.sistema_pension, afp_nombre=EXCLUDED.afp_nombre, "
@@ -1337,6 +1384,7 @@ def guardar_empleado_nomina(dni, datos, usuario="sistema"):
            "cuenta_haberes=EXCLUDED.cuenta_haberes, essalud_codigo=EXCLUDED.essalud_codigo, "
            "discapacidad=EXCLUDED.discapacidad, confianza=EXCLUDED.confianza, "
            "otros_ingresos=EXCLUDED.otros_ingresos, otros_descuentos=EXCLUDED.otros_descuentos, "
+           "garantia_mensual=EXCLUDED.garantia_mensual, "
            "retencion_judicial_pct=EXCLUDED.retencion_judicial_pct, "
            "adelanto_mensual=EXCLUDED.adelanto_mensual, estado=EXCLUDED.estado, "
            "observacion=EXCLUDED.observacion, actualizado=EXCLUDED.actualizado")
@@ -1344,6 +1392,81 @@ def guardar_empleado_nomina(dni, datos, usuario="sistema"):
     if ok:
         registrar_auditoria(usuario, "Nomina", "Actualizo datos de nomina de %s" % dni)
     return ok, error
+
+
+def guardar_sueldos_lote(dnis, sueldo_basico=None, garantia_mensual=None, jornada_horas=None,
+                         sistema_pension=None, asignacion_familiar=None, usuario="sistema"):
+    """Aplica sueldo, garantia, jornada y pension a varios empleados a la vez.
+
+    Solo modifica los campos que se envian: los que llegan en None conservan su valor
+    actual (se lee la ficha y se combina antes de guardar). Sirve para cargar de golpe
+    el sueldo base de todo el personal sin abrir ficha por ficha.
+
+    Devuelve (ok, mensaje).
+    """
+    lista = []
+    for dni in dnis or []:
+        texto = str(dni or "").strip()
+        if texto and texto not in lista:
+            lista.append(texto)
+    if not lista:
+        return False, "No se selecciono ningun empleado"
+    if sueldo_basico is not None:
+        sueldo_basico = a_float(sueldo_basico)
+        if sueldo_basico < 0:
+            return False, "El sueldo no puede ser negativo"
+    if garantia_mensual is not None:
+        garantia_mensual = a_float(garantia_mensual)
+        if garantia_mensual < 0:
+            return False, "La garantia no puede ser negativa"
+    if jornada_horas is not None:
+        jornada_horas = a_float(jornada_horas)
+        if jornada_horas <= 0:
+            return False, "La jornada debe ser mayor que cero (8 es la jornada legal)"
+    if sistema_pension is not None:
+        sistema_pension = (str(sistema_pension).strip().upper() or "ONP")
+        if sistema_pension not in ("ONP", "AFP", "NINGUNO"):
+            return False, "El sistema de pension debe ser ONP, AFP o NINGUNO"
+
+    actuales = {str(e["dni"]): e for e in listar_empleados()}
+    ahora = datetime.now().strftime("%d/%m/%Y %H:%M")
+    filas, faltantes = [], []
+    for dni in lista:
+        empleado = actuales.get(dni)
+        if not empleado:
+            faltantes.append(dni)
+            continue
+        filas.append((
+            dni,
+            sueldo_basico if sueldo_basico is not None else a_float(empleado.get("sueldo_basico")),
+            (garantia_mensual if garantia_mensual is not None
+             else a_float(empleado.get("garantia_mensual"))),
+            (jornada_horas if jornada_horas is not None
+             else (a_float(empleado.get("jornada_horas"), 8) or 8)),
+            sistema_pension or (empleado.get("sistema_pension") or "ONP"),
+            (bool(asignacion_familiar) if asignacion_familiar is not None
+             else bool(empleado.get("asignacion_familiar"))),
+            ahora,
+        ))
+    if not filas:
+        return False, "Ninguno de los DNI indicados figura en el padron de empleados"
+
+    ok, _, error = _ejecutar_lote(
+        "INSERT INTO nom_empleado (dni, sueldo_basico, garantia_mensual, jornada_horas, "
+        "sistema_pension, asignacion_familiar, actualizado) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (dni) DO UPDATE SET sueldo_basico = EXCLUDED.sueldo_basico, "
+        "garantia_mensual = EXCLUDED.garantia_mensual, jornada_horas = EXCLUDED.jornada_horas, "
+        "sistema_pension = EXCLUDED.sistema_pension, "
+        "asignacion_familiar = EXCLUDED.asignacion_familiar, actualizado = EXCLUDED.actualizado",
+        filas)
+    if not ok:
+        return False, error or "No se pudieron guardar los sueldos"
+    registrar_auditoria(usuario, "Nomina",
+                        "Actualizo sueldos de %d empleado(s) en lote" % len(filas))
+    mensaje = "Se actualizaron %d empleado(s)." % len(filas)
+    if faltantes:
+        mensaje += " No se encontraron en el padron: %s." % ", ".join(faltantes[:5])
+    return True, mensaje
 
 
 def guardar_empleados_nomina_lote(lista_datos, usuario="sistema"):
@@ -2112,7 +2235,7 @@ def calcular_dia(dni, fecha, contexto, parametros=None):
         "dni": str(dni), "fecha": fecha_texto, "turno_id": turno["id"] if turno else None,
         "hora_entrada": None, "hora_salida": None, "primera_marca": None, "ultima_marca": None,
         "n_marcas": len(marcas), "minutos_tardanza": 0, "minutos_anticipo": 0,
-        "minutos_trabajados": 0, "minutos_extra": 0, "minutos_falta": 0,
+        "minutos_trabajados": 0, "minutos_extra": 0, "minutos_excedente": 0, "minutos_falta": 0,
         "estado": EST_PENDIENTE, "manual": False,
         "incidencia_id": incidencia["id"] if incidencia else None,
         "observacion": origen_turno if turno else (dia_calendario["descripcion"] if dia_calendario else ""),
@@ -2183,14 +2306,26 @@ def calcular_dia(dni, fecha, contexto, parametros=None):
     trabajados = max(0, marca_salida - marca_entrada - refrigerio)
     resultado["minutos_trabajados"] = trabajados
 
-    # Horas extra: tiempo posterior a la hora de salida, redondeado a bloques
-    extra_bruto = max(0, marca_salida - salida_teorica)
+    # Horas extra: tiempo trabajado por encima de la jornada legal del dia, redondeado
+    # a bloques. Se toma el mayor de estos dos criterios:
+    #   * el tiempo posterior a la hora de salida programada del turno, y
+    #   * el tiempo efectivamente trabajado que supera las horas de jornada.
+    # El segundo criterio es el que reconoce como sobretiempo los turnos de 12 y 14
+    # horas: la ventana del turno (por ejemplo 07:00 a 21:00) es la permanencia en el
+    # centro de trabajo y la jornada pagada de ley son las horas configuradas en el
+    # turno (normalmente 8). Asi, un turno de 14 horas con 8 de jornada genera 4 horas
+    # extra legales y el resto se compensa con bono.
+    jornada_min = int(round(a_float(turno.get("horas_jornada"), 8) * 60)) or 480
+    extra_bruto = max(marca_salida - salida_teorica, trabajados - jornada_min, 0)
     bloque = max(1, a_int(parametros.get("he_bloque_min"), 15))
     minimo = a_int(parametros.get("he_minimo_min"), 15)
-    tope = a_int(parametros.get("he_tope_dia_min"), 300)
+    tope = a_int(parametros.get("he_tope_dia_min"), 240)
     if extra_bruto >= minimo:
         extra = (extra_bruto // bloque) * bloque
         resultado["minutos_extra"] = min(extra, tope)
+        # Tiempo que supera el tope legal: NO se registra como sobretiempo, se
+        # compensa con un bono en la planilla (ver el modulo de planilla).
+        resultado["minutos_excedente"] = max(0, extra - tope)
     descontar_anticipo = normalizar_texto(parametros.get("descontar_anticipo", "SI")) == "SI"
     resultado["minutos_falta"] = (tardanza + anticipo) if descontar_anticipo else tardanza
     resultado["estado"] = EST_PUNTUAL if tardanza == 0 else EST_TARDANZA
@@ -2223,8 +2358,8 @@ def recalcular_asistencia(desde, hasta, dnis=None, usuario="sistema", progreso=N
     filas_guardar = []
     resumen = {"dias": 0, "puntuales": 0, "tardanzas": 0, "faltas": 0, "descansos": 0,
                "feriados": 0, "incompletos": 0, "justificados": 0, "trabajados_descanso": 0,
-               "minutos_tardanza": 0, "minutos_extra": 0, "minutos_trabajados": 0,
-               "minutos_descanso_trabajado": 0,
+               "minutos_tardanza": 0, "minutos_extra": 0, "minutos_excedente": 0,
+               "minutos_trabajados": 0, "minutos_descanso_trabajado": 0,
                "empleados": len(universo), "periodo": "%s a %s" % (dias[0], dias[-1])}
     procesados = 0
     for dni in sorted(universo):
@@ -2236,7 +2371,8 @@ def recalcular_asistencia(desde, hasta, dnis=None, usuario="sistema", progreso=N
                 calculo["dni"], calculo["fecha"], calculo["turno_id"], calculo["hora_entrada"],
                 calculo["hora_salida"], calculo["primera_marca"], calculo["ultima_marca"],
                 calculo["n_marcas"], calculo["minutos_tardanza"], calculo["minutos_anticipo"],
-                calculo["minutos_trabajados"], calculo["minutos_extra"], calculo["minutos_falta"],
+                calculo["minutos_trabajados"], calculo["minutos_extra"],
+                calculo["minutos_excedente"], calculo["minutos_falta"],
                 calculo["estado"], False, calculo["incidencia_id"], calculo["observacion"], ahora,
             ))
             estado = calculo["estado"]
@@ -2249,6 +2385,7 @@ def recalcular_asistencia(desde, hasta, dnis=None, usuario="sistema", progreso=N
             else:
                 resumen["minutos_extra"] += calculo["minutos_extra"]
             resumen["minutos_trabajados"] += calculo["minutos_trabajados"]
+            resumen["minutos_excedente"] += calculo["minutos_excedente"]
             if estado == EST_PUNTUAL:
                 resumen["puntuales"] += 1
             elif estado == EST_TARDANZA:
@@ -2275,14 +2412,15 @@ def recalcular_asistencia(desde, hasta, dnis=None, usuario="sistema", progreso=N
     ok_lote, _, error_lote = _ejecutar_lote(
         "INSERT INTO nom_asistencia (dni, fecha, turno_id, hora_entrada, hora_salida, primera_marca, "
         "ultima_marca, n_marcas, minutos_tardanza, minutos_anticipo, minutos_trabajados, minutos_extra, "
-        "minutos_falta, estado, manual, incidencia_id, observacion, actualizado) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+        "minutos_excedente, minutos_falta, estado, manual, incidencia_id, observacion, actualizado) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
         "ON CONFLICT (dni, fecha) DO UPDATE SET turno_id=EXCLUDED.turno_id, "
         "hora_entrada=EXCLUDED.hora_entrada, hora_salida=EXCLUDED.hora_salida, "
         "primera_marca=EXCLUDED.primera_marca, ultima_marca=EXCLUDED.ultima_marca, "
         "n_marcas=EXCLUDED.n_marcas, minutos_tardanza=EXCLUDED.minutos_tardanza, "
         "minutos_anticipo=EXCLUDED.minutos_anticipo, minutos_trabajados=EXCLUDED.minutos_trabajados, "
-        "minutos_extra=EXCLUDED.minutos_extra, minutos_falta=EXCLUDED.minutos_falta, "
+        "minutos_extra=EXCLUDED.minutos_extra, minutos_excedente=EXCLUDED.minutos_excedente, "
+        "minutos_falta=EXCLUDED.minutos_falta, "
         "estado=EXCLUDED.estado, incidencia_id=EXCLUDED.incidencia_id, "
         "observacion=EXCLUDED.observacion, actualizado=EXCLUDED.actualizado", filas_guardar)
     if not ok_lote:
@@ -2366,11 +2504,11 @@ def turno_nocturno(contexto, dni, fecha):
 def listar_asistencia(desde, hasta, dnis=None, estados=None):
     columnas = ["id", "dni", "fecha", "turno_id", "hora_entrada", "hora_salida", "primera_marca",
                 "ultima_marca", "n_marcas", "minutos_tardanza", "minutos_anticipo",
-                "minutos_trabajados", "minutos_extra", "minutos_falta", "estado", "manual",
-                "observacion"]
+                "minutos_trabajados", "minutos_extra", "minutos_excedente", "minutos_falta",
+                "estado", "manual", "observacion"]
     sql = ("SELECT id, dni, fecha, turno_id, hora_entrada, hora_salida, primera_marca, ultima_marca, "
            "n_marcas, minutos_tardanza, minutos_anticipo, minutos_trabajados, minutos_extra, "
-           "minutos_falta, estado, manual, observacion FROM nom_asistencia "
+           "minutos_excedente, minutos_falta, estado, manual, observacion FROM nom_asistencia "
            "WHERE fecha BETWEEN %s AND %s ")
     params = [fecha_iso(desde), fecha_iso(hasta)]
     if dnis:
@@ -2393,6 +2531,7 @@ def resumen_asistencia(desde, hasta, dnis=None):
            "SUM(CASE WHEN estado IN ('DESCANSO','FERIADO') THEN 1 ELSE 0 END), "
            "SUM(CASE WHEN estado IN ('DESCANSO TRABAJADO','FERIADO TRABAJADO') THEN 1 ELSE 0 END), "
            "COALESCE(SUM(minutos_tardanza),0), COALESCE(SUM(minutos_extra),0), "
+           "COALESCE(SUM(minutos_excedente),0), "
            "COALESCE(SUM(minutos_trabajados),0), COALESCE(SUM(minutos_falta),0), "
            "SUM(CASE WHEN estado NOT IN ('DESCANSO','FERIADO','PENDIENTE') THEN 1 ELSE 0 END) "
            "FROM nom_asistencia WHERE fecha BETWEEN %s AND %s ")
@@ -2402,15 +2541,16 @@ def resumen_asistencia(desde, hasta, dnis=None):
         params.append(list(dnis))
     sql += "GROUP BY dni ORDER BY dni"
     columnas = ["dni", "dias", "puntuales", "tardanzas", "faltas", "incompletos", "descansos",
-                "descansos_trabajados", "minutos_tardanza", "minutos_extra", "minutos_trabajados",
-                "minutos_falta", "dias_laborables"]
+                "descansos_trabajados", "minutos_tardanza", "minutos_extra", "minutos_excedente",
+                "minutos_trabajados", "minutos_falta", "dias_laborables"]
     resultado = {}
     for fila in _consultar(sql, tuple(params)) or []:
         datos = dict(zip(columnas, fila))
         datos["dni"] = str(datos["dni"])
         for clave in ("dias", "puntuales", "tardanzas", "faltas", "incompletos", "descansos",
                       "descansos_trabajados", "minutos_tardanza", "minutos_extra",
-                      "minutos_trabajados", "minutos_falta", "dias_laborables"):
+                      "minutos_excedente", "minutos_trabajados", "minutos_falta",
+                      "dias_laborables"):
             datos[clave] = int(datos[clave] or 0)
         resultado[datos["dni"]] = datos
     return resultado
@@ -2460,19 +2600,21 @@ def registrar_asistencia_manual(dni, fecha, datos, usuario="sistema"):
     ok, error = _ejecutar(
         "INSERT INTO nom_asistencia (dni, fecha, turno_id, hora_entrada, hora_salida, primera_marca, "
         "ultima_marca, n_marcas, minutos_tardanza, minutos_anticipo, minutos_trabajados, minutos_extra, "
-        "minutos_falta, estado, manual, observacion, actualizado) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE,%s,%s) "
+        "minutos_excedente, minutos_falta, estado, manual, observacion, actualizado) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE,%s,%s) "
         "ON CONFLICT (dni, fecha) DO UPDATE SET hora_entrada=EXCLUDED.hora_entrada, "
         "hora_salida=EXCLUDED.hora_salida, minutos_trabajados=EXCLUDED.minutos_trabajados, "
         "minutos_tardanza=EXCLUDED.minutos_tardanza, minutos_anticipo=EXCLUDED.minutos_anticipo, "
-        "minutos_extra=EXCLUDED.minutos_extra, minutos_falta=EXCLUDED.minutos_falta, "
+        "minutos_extra=EXCLUDED.minutos_extra, minutos_excedente=EXCLUDED.minutos_excedente, "
+        "minutos_falta=EXCLUDED.minutos_falta, "
         "estado=EXCLUDED.estado, manual=TRUE, observacion=EXCLUDED.observacion, "
         "actualizado=EXCLUDED.actualizado",
         (dni, fecha_texto, int(datos["turno_id"]) if datos.get("turno_id") else None,
          hora_entrada, hora_salida, hora_entrada, hora_salida,
          2 if (hora_entrada and hora_salida) else (1 if hora_entrada else 0),
          a_int(datos.get("minutos_tardanza")), a_int(datos.get("minutos_anticipo")),
-         minutos_trabajados, a_int(datos.get("minutos_extra")), a_int(datos.get("minutos_falta")),
+         minutos_trabajados, a_int(datos.get("minutos_extra")), a_int(datos.get("minutos_excedente")),
+         a_int(datos.get("minutos_falta")),
          datos.get("estado", EST_JUSTIFICADO), datos.get("observacion", ""),
          datetime.now().strftime("%d/%m/%Y %H:%M")))
     if ok:
@@ -2508,6 +2650,7 @@ def kpis_dashboard(periodo=None):
         "empleados": 0, "empleados_activos": 0, "marcaciones": 0, "turnos": 0, "horarios": 0,
         "sin_mapeo": 0, "dias_calculados": 0, "puntuales": 0, "tardanzas": 0, "faltas": 0,
         "incompletos": 0, "minutos_tardanza": 0, "minutos_extra": 0, "horas_extra": 0.0,
+        "minutos_excedente": 0, "horas_excedente": 0.0,
         "feriados_mes": 0, "incidencias": 0, "ultima_importacion": None, "planilla_estado": "SIN CALCULAR",
         "planilla_neto": 0.0, "asistencia_hoy": 0, "sin_marcar_hoy": 0,
     }
@@ -2530,6 +2673,7 @@ def kpis_dashboard(periodo=None):
                 indicadores["faltas"] += datos["faltas"]
                 indicadores["incompletos"] += datos["incompletos"]
                 indicadores["minutos_tardanza"] += datos["minutos_tardanza"]
+                indicadores["minutos_excedente"] += datos["minutos_excedente"]
             # Las horas extra se toman de la tabla de horas extra (lo que realmente se
             # paga), no de la asistencia, para no contar el trabajo en dia de descanso.
             fila_extra = _consultar(
@@ -2538,6 +2682,7 @@ def kpis_dashboard(periodo=None):
                 (dias[0].strftime("%Y-%m-%d"), dias[-1].strftime("%Y-%m-%d")), uno=True)
             indicadores["minutos_extra"] = a_int(fila_extra[0]) if fila_extra else 0
             indicadores["horas_extra"] = round(indicadores["minutos_extra"] / 60.0, 2)
+            indicadores["horas_excedente"] = round(indicadores["minutos_excedente"] / 60.0, 2)
         indicadores["feriados_mes"] = len([d for d in listar_calendario()
                                            if d["fecha"].startswith(periodo)])
         indicadores["incidencias"] = len(listar_incidencias(desde=dias[0] if dias else None,
@@ -2697,8 +2842,10 @@ def estado_configuracion(periodo=None):
         pasos.append(_crear_paso(
             "sueldos", FASES_ASISTENTE[0], "Sueldos y datos de pago", "PENDIENTE",
             "%d empleado(s) sin sueldo basico: %s." % (len(sin_sueldo), _nombres_cortos(sin_sueldo)),
-            "Sin sueldo, la planilla se calcula en cero. Complete tambien el sistema de pension "
-            "(ONP o AFP); si es AFP, indique el nombre y el porcentaje de comision mas prima.",
+            "Sin sueldo, la planilla se calcula en cero. Escribalos todos de una sola vez en "
+            "Personal - Empleados con el boton «Sueldos y garantias» (o uno por uno en la ficha). "
+            "Complete tambien el sistema de pension (ONP o AFP); si es AFP, indique el nombre y el "
+            "porcentaje de comision mas prima.",
             ("Personal", "Empleados"), True))
     elif afp_sin_comision:
         pasos.append(_crear_paso(

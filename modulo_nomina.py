@@ -137,7 +137,14 @@ def formatear_numero(valor, decimales=2):
 
 
 def parse_num(texto, por_defecto=0.0):
-    """Lee un número escrito como '1,234.56' o '1.234,56'."""
+    """Lee un número escrito por el usuario.
+
+    Acepta las formas habituales: '1130', '1,130.50', '1.130,50' y '1,130'.
+    La coma seguida de exactamente tres cifras se interpreta como separador de miles
+    ('1,130' = 1130), porque así se muestran los montos en el sistema; en cualquier
+    otro caso es decimal ('2,5' = 2.5). Si antes se escribía '1,130' el sistema
+    entendía S/ 1.13.
+    """
     if texto is None:
         return por_defecto
     limpio = str(texto).strip().replace("S/", "").replace(" ", "")
@@ -149,7 +156,11 @@ def parse_num(texto, por_defecto=0.0):
         else:
             limpio = limpio.replace(",", "")
     elif "," in limpio:
-        limpio = limpio.replace(",", ".")
+        partes = limpio.split(",")
+        if partes[0] != "0" and all(len(grupo) == 3 for grupo in partes[1:]):
+            limpio = limpio.replace(",", "")
+        else:
+            limpio = limpio.replace(",", ".")
     try:
         return float(limpio)
     except ValueError:
@@ -1061,6 +1072,224 @@ class AsistenteNomina(ctk.CTkToplevel):
 
 
 # =========================================================
+# CARGA MASIVA DE SUELDOS Y GARANTIAS
+# =========================================================
+class DialogoSueldos(ctk.CTkToplevel):
+    """Carga el sueldo, la garantia y la jornada de varios empleados a la vez.
+
+    Evita tener que abrir la ficha de cada chofer: se marcan los empleados de la
+    lista, se escriben los montos y se aplican todos de una sola vez. Los campos
+    que se dejan en blanco NO se modifican.
+    """
+
+    def __init__(self, parent, app, empleados, usuario_activo=""):
+        super().__init__(parent)
+        self.app = app
+        self.usuario = usuario_activo
+        self.empleados = [e for e in (empleados or [])
+                          if nc.normalizar_texto(e.get("estado")) != "CESADO"]
+        self.variables = {}
+        self.title("💵 Sueldos y garantías del personal")
+        self.geometry("900x580")
+        self.minsize(820, 500)
+        try:
+            self.transient(parent)
+            self.grab_set()
+        except Exception:
+            pass
+        self._construir()
+        self.lift()
+        self.focus_force()
+
+    # ------------------------------------------------------------------ dibujo
+    def _construir(self):
+        ctk.CTkLabel(self, text="💵 SUELDOS Y GARANTÍAS DEL PERSONAL", font=("Arial", 15, "bold"),
+                     text_color=COLOR_PRIMARIO).pack(anchor="w", padx=14, pady=(12, 2))
+        ctk.CTkLabel(self, text="Marque los empleados, escriba los montos y pulse APLICAR. "
+                                "Los campos que deje en blanco se conservan tal como están.",
+                     font=("Arial", 11), text_color=COLOR_GRIS,
+                     justify="left").pack(anchor="w", padx=14)
+
+        cuerpo = ctk.CTkFrame(self, fg_color="transparent")
+        cuerpo.pack(fill="both", expand=True, padx=12, pady=8)
+
+        # ---- lista de empleados (izquierda) ----
+        izquierda = ctk.CTkFrame(cuerpo, fg_color=COLOR_FONDO_SUAVE, corner_radius=10,
+                                 border_width=1, border_color="#e0e0e0")
+        izquierda.pack(side="left", fill="both", expand=True)
+        ctk.CTkLabel(izquierda, text="👥 ¿A quiénes?", font=("Arial", 12, "bold"),
+                     text_color=COLOR_PRIMARIO).pack(anchor="w", padx=10, pady=(8, 2))
+        botones_lista = ctk.CTkFrame(izquierda, fg_color="transparent")
+        botones_lista.pack(fill="x", padx=10)
+        ctk.CTkButton(botones_lista, text="Marcar todos", width=120, fg_color=COLOR_PRIMARIO,
+                      hover_color=COLOR_HOVER,
+                      command=lambda: self._marcar(True)).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(botones_lista, text="Ninguno", width=90, fg_color=COLOR_GRIS,
+                      hover_color="#606b6b",
+                      command=lambda: self._marcar(False)).pack(side="left")
+        self.lbl_seleccion = ctk.CTkLabel(botones_lista, text="", font=("Arial", 10),
+                                          text_color=COLOR_GRIS)
+        self.lbl_seleccion.pack(side="right")
+        lista = ctk.CTkScrollableFrame(izquierda, fg_color="transparent")
+        lista.pack(fill="both", expand=True, padx=6, pady=6)
+        if not self.empleados:
+            ctk.CTkLabel(lista, text="No hay empleados activos en el padrón.",
+                         font=("Arial", 11)).pack(anchor="w", padx=6, pady=6)
+        for empleado in self.empleados:
+            dni = str(empleado["dni"])
+            variable = tk.BooleanVar(value=True)
+            self.variables[dni] = variable
+            actual = nc.a_float(empleado.get("sueldo_basico"))
+            garantia = nc.a_float(empleado.get("garantia_mensual"))
+            detalle = "S/ %s" % formatear_numero(actual, 2)
+            if garantia > 0:
+                detalle += " · garantía S/ %s" % formatear_numero(garantia, 2)
+            ctk.CTkCheckBox(lista, text="%s  (%s)  ·  hoy: %s"
+                                       % (empleado.get("nombre") or dni, dni, detalle),
+                            variable=variable, font=("Arial", 11),
+                            command=self._actualizar_contador).pack(anchor="w", padx=6, pady=3)
+
+        # ---- montos (derecha) ----
+        derecha = ctk.CTkFrame(cuerpo, fg_color=COLOR_FONDO_SUAVE, corner_radius=10,
+                               border_width=1, border_color="#e0e0e0", width=340)
+        derecha.pack(side="right", fill="y", padx=(10, 0))
+        derecha.pack_propagate(False)
+        ctk.CTkLabel(derecha, text="💵 ¿Cuánto?", font=("Arial", 12, "bold"),
+                     text_color=COLOR_PRIMARIO).pack(anchor="w", padx=12, pady=(10, 4))
+
+        def campo(etiqueta, ayuda=""):
+            ctk.CTkLabel(derecha, text=etiqueta, font=("Arial", 11, "bold"),
+                         anchor="w").pack(anchor="w", padx=12, pady=(8, 0))
+            entrada = ctk.CTkEntry(derecha, width=300)
+            entrada.pack(anchor="w", padx=12)
+            if ayuda:
+                ctk.CTkLabel(derecha, text=ayuda, font=("Arial", 9), text_color=COLOR_GRIS,
+                             justify="left", wraplength=290).pack(anchor="w", padx=12)
+            return entrada
+
+        self.ent_sueldo = campo("Sueldo básico (S/)",
+                                "Sueldo mensual por las 8 horas de ley. La RMV vigente es S/ %s."
+                                % formatear_numero(nc.a_float(self.app.parametros.get("rmv"), 1130), 2))
+        self.ent_garantia = campo("Garantía mensual (S/)",
+                                  "Monto mínimo garantizado. Sugerencia: turno de 12 h → 2,000 · "
+                                  "turno de 14 h → 2,300. Deje 0 si no tiene garantía.")
+        self.ent_jornada = campo("Jornada (horas)",
+                                 "Horas de la jornada legal. Normalmente 8.")
+
+        ctk.CTkLabel(derecha, text="Sistema de pensión", font=("Arial", 11, "bold"),
+                     anchor="w").pack(anchor="w", padx=12, pady=(10, 0))
+        self.cmb_pension = ctk.CTkComboBox(derecha, values=["(No cambiar)", "ONP", "AFP", "NINGUNO"],
+                                           width=300, state="readonly")
+        self.cmb_pension.set("(No cambiar)")
+        self.cmb_pension.pack(anchor="w", padx=12)
+        self.var_asignacion = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(derecha, text="Marcar asignación familiar", variable=self.var_asignacion,
+                        font=("Arial", 11)).pack(anchor="w", padx=12, pady=(10, 2))
+        botones_rapidos = ctk.CTkFrame(derecha, fg_color="transparent")
+        botones_rapidos.pack(fill="x", padx=12, pady=(6, 0))
+        ctk.CTkButton(botones_rapidos, text="Sueldo = RMV", width=140, fg_color="#34495e",
+                      hover_color="#2c3e50", command=self._poner_rmv).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(botones_rapidos, text="Jornada = 8 h", width=140, fg_color="#34495e",
+                      hover_color="#2c3e50",
+                      command=lambda: self._escribir(self.ent_jornada, "8")).pack(side="left")
+
+        # ---- acciones ----
+        acciones = ctk.CTkFrame(self, fg_color="transparent")
+        acciones.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkButton(acciones, text="💾 APLICAR A LOS SELECCIONADOS", width=300, height=36,
+                      font=("Arial", 12, "bold"), fg_color=COLOR_OK, hover_color="#1e8449",
+                      command=self.aplicar).pack(side="left")
+        ctk.CTkButton(acciones, text="Cerrar", width=110, height=36, fg_color=COLOR_GRIS,
+                      hover_color="#606b6b", command=self.destroy).pack(side="right")
+        ctk.CTkLabel(acciones, text="Recuerde recalcular la planilla después de cambiar los sueldos.",
+                     font=("Arial", 10), text_color=COLOR_GRIS).pack(side="left", padx=12)
+        self._actualizar_contador()
+
+    # ---------------------------------------------------------------- ayudas
+    def _escribir(self, entrada, valor):
+        entrada.delete(0, tk.END)
+        entrada.insert(0, valor)
+
+    def _poner_rmv(self):
+        """Escribe la RMV vigente sin separador de miles (1130, no 1,130)."""
+        self._escribir(self.ent_sueldo, "%g" % (nc.a_float(self.app.parametros.get("rmv"), 1130) or 1130))
+
+    def _marcar(self, valor):
+        for variable in self.variables.values():
+            variable.set(valor)
+        self._actualizar_contador()
+
+    def _actualizar_contador(self):
+        try:
+            marcados = len([1 for v in self.variables.values() if v.get()])
+            self.lbl_seleccion.configure(text="%d de %d marcados"
+                                              % (marcados, len(self.variables)))
+        except Exception:
+            pass
+
+    def _leer(self, entrada, etiqueta):
+        """Devuelve None si el campo quedó vacío; lanza ValueError si está mal escrito."""
+        texto = entrada.get().strip()
+        if not texto:
+            return None
+        numero = parse_num(texto, None)
+        if numero is None:
+            raise ValueError("«%s» no es un número válido: %s" % (etiqueta, texto))
+        return numero
+
+    # --------------------------------------------------------------- aplicar
+    def aplicar(self):
+        dnis = [dni for dni, variable in self.variables.items() if variable.get()]
+        if not dnis:
+            return messagebox.showwarning("Atención", "Marque al menos un empleado de la lista.",
+                                          parent=self)
+        try:
+            sueldo = self._leer(self.ent_sueldo, "Sueldo básico")
+            garantia = self._leer(self.ent_garantia, "Garantía mensual")
+            jornada = self._leer(self.ent_jornada, "Jornada")
+        except ValueError as e:
+            return messagebox.showerror("Revisar los datos", str(e), parent=self)
+        if sueldo is None and garantia is None and jornada is None \
+                and self.cmb_pension.get() == "(No cambiar)" and not self.var_asignacion.get():
+            return messagebox.showwarning("Atención",
+                                          "Escriba al menos un monto (sueldo, garantía o jornada).",
+                                          parent=self)
+        rmv = nc.a_float(self.app.parametros.get("rmv"), 1130) or 1130
+        if sueldo is not None and 0 < sueldo < rmv * 0.5:
+            if not messagebox.askyesno(
+                    "Revise el sueldo",
+                    "El sueldo escrito es %s, muy por debajo de la RMV (%s).\n\n"
+                    "¿Está seguro de que no le falta un cero?" % (formatear_monto(sueldo),
+                                                                 formatear_monto(rmv)), parent=self):
+                return
+        pension = self.cmb_pension.get()
+        pension = None if pension == "(No cambiar)" else pension
+        asignacion = True if self.var_asignacion.get() else None
+        if not messagebox.askyesno(
+                "Confirmar",
+                "¿Aplicar estos valores a %d empleado(s)?\n\nSueldo: %s\nGarantía: %s\n"
+                "Jornada: %s\nPensión: %s\n\nLos campos en blanco no se modifican."
+                % (len(dnis),
+                   "sin cambio" if sueldo is None else formatear_monto(sueldo),
+                   "sin cambio" if garantia is None else formatear_monto(garantia),
+                   "sin cambio" if jornada is None else ("%.2f h" % jornada),
+                   pension or "sin cambio"), parent=self):
+            return
+        ok, mensaje = nc.guardar_sueldos_lote(dnis, sueldo_basico=sueldo, garantia_mensual=garantia,
+                                              jornada_horas=jornada, sistema_pension=pension,
+                                              asignacion_familiar=asignacion, usuario=self.usuario)
+        if not ok:
+            return messagebox.showerror("Error", mensaje, parent=self)
+        messagebox.showinfo("Sueldos actualizados", mensaje + "\n\nRecalcule la planilla del mes "
+                                                            "para ver el resultado.", parent=self)
+        try:
+            self.app.recargar_catalogos()
+        except Exception as e:
+            print("[Nomina] No se pudo refrescar el padron:", e)
+        self.destroy()
+
+
+# =========================================================
 # MÓDULO PRINCIPAL
 # =========================================================
 class ModuloNominaApp:
@@ -1568,6 +1797,8 @@ class ModuloNominaApp:
             ("🚫 Faltas del mes", str(indicadores.get("faltas", 0)), COLOR_ERROR),
             ("⚡ Horas extra del mes", "%s h" % formatear_numero(indicadores.get("horas_extra", 0), 2),
              "#8e44ad"),
+            ("🎁 Horas a bono", "%s h" % formatear_numero(indicadores.get("horas_excedente", 0), 2),
+             "#d35400"),
             ("💵 Neto planilla", formatear_monto(indicadores.get("planilla_neto", 0)), COLOR_OK),
         ]
         for indice, (titulo, valor, color) in enumerate(tarjetas):
@@ -1589,6 +1820,13 @@ class ModuloNominaApp:
             alertas.append("⚠️ %d empleado(s) sin turno ni horario asignado (se calcularán como "
                            "descanso): %s" % (len(sin_horario),
                                               ", ".join(e["nombre"].split()[0] for e in sin_horario[:6])))
+        sin_sueldo = [e for e in self.empleados
+                      if nc.a_float(e.get("sueldo_basico")) <= 0
+                      and nc.normalizar_texto(e.get("estado")) != "CESADO"]
+        if sin_sueldo:
+            alertas.append("💵 %d empleado(s) sin sueldo registrado: la planilla les saldrá en cero. "
+                           "Cárguelos de una sola vez en «Personal → Empleados → 💵 Sueldos y "
+                           "garantías»." % len(sin_sueldo))
         if not self.turnos:
             alertas.append("⚠️ No hay turnos configurados. Créelos en «Personal → Turnos».")
         # Revisión de parámetros: evita que un 0 accidental deje el cálculo en cero
@@ -2192,9 +2430,10 @@ class ModuloNominaApp:
             ("tardanza", "Tardanza", 90, "center"),
             ("anticipo", "Salida anticip.", 105, "center"),
             ("trabajado", "Tiempo trabajado", 125, "center"),
-            ("extra", "Horas extra", 95, "center"),
+            ("extra", "Horas extra (tope legal)", 140, "center"),
+            ("exceso", "Exceso a bono", 110, "center"),
             ("estado", "Estado", 160, "w"),
-            ("observacion", "Observación", 320, "w"),
+            ("observacion", "Observación", 300, "w"),
         ], alto=16)
         self.tabla_detalle.bind("<Double-1>", self.ver_marcas_del_dia)
 
@@ -2543,8 +2782,8 @@ class ModuloNominaApp:
                 if filtro and filtro != "Todos":
                     continue
                 self.tabla_detalle.insert("", tk.END, values=(
-                    clave, nc.DIAS_SEMANA[dia.weekday()], "", "", "", "", "", "", "", "SIN CALCULAR", ""),
-                    tags=(nc.EST_PENDIENTE,))
+                    clave, nc.DIAS_SEMANA[dia.weekday()], "", "", "", "", "", "", "", "", "SIN CALCULAR",
+                    ""), tags=(nc.EST_PENDIENTE,))
                 continue
             estado = registro.get("estado") or nc.EST_PENDIENTE
             self.tabla_detalle.insert("", tk.END, values=(
@@ -2557,6 +2796,9 @@ class ModuloNominaApp:
                 ("dia con recargo" if estado in (nc.EST_DESCANSO_TRAB, nc.EST_FERIADO_TRAB)
                  else (nc.formato_duracion(registro.get("minutos_extra"))
                        if registro.get("minutos_extra") else "")),
+                ("dia con recargo" if estado in (nc.EST_DESCANSO_TRAB, nc.EST_FERIADO_TRAB)
+                 else (nc.formato_duracion(registro.get("minutos_excedente"))
+                       if registro.get("minutos_excedente") else "")),
                 estado, registro.get("observacion") or ""), tags=(estado,))
         for estado, color in nc.COLORES_ESTADO.items():
             self.tabla_detalle.tag_configure(estado, foreground=color)
@@ -2824,6 +3066,9 @@ class ModuloNominaApp:
                      font=("Arial", 13, "bold"), text_color=COLOR_PRIMARIO).pack(side="left")
         ctk.CTkButton(barra, text="🔄 Sincronizar desde Choferes", width=210, fg_color="#34495e",
                       hover_color="#2c3e50", command=self.sincronizar_empleados).pack(side="right", padx=4)
+        ctk.CTkButton(barra, text="💵 Sueldos y garantías", width=190, fg_color="#8e44ad",
+                      hover_color="#6c3483", font=("Arial", 11, "bold"),
+                      command=self.abrir_sueldos).pack(side="right", padx=4)
         contenedor = ctk.CTkFrame(padre, fg_color="transparent")
         contenedor.pack(fill="both", expand=True)
         self.tabla_empleados = crear_tabla(contenedor, [
@@ -2885,6 +3130,7 @@ class ModuloNominaApp:
             ("otros_descuentos", "Otros desc. S/", 130),
             ("adelanto_mensual", "Adelanto S/", 130),
             ("retencion_judicial_pct", "Retención jud. %", 130),
+            ("garantia_mensual", "Garantía S/", 130),
         ]
         for indice, (clave, etiqueta, ancho) in enumerate(definicion):
             columna = (indice % 3) * 2
@@ -3002,7 +3248,8 @@ class ModuloNominaApp:
             entrada.delete(0, tk.END)
             valor = empleado.get(clave)
             if clave in ("sueldo_basico", "jornada_horas", "otros_ingresos", "otros_descuentos",
-                         "adelanto_mensual", "afp_comision_pct", "retencion_judicial_pct"):
+                         "adelanto_mensual", "afp_comision_pct", "retencion_judicial_pct",
+                         "garantia_mensual"):
                 if nc.a_float(valor):
                     entrada.insert(0, formatear_numero(valor, 2))
             elif clave == "fecha_ingreso":
@@ -3064,6 +3311,7 @@ class ModuloNominaApp:
         datos["otros_descuentos"] = parse_num(self.campos_empleado["otros_descuentos"].get())
         datos["adelanto_mensual"] = parse_num(self.campos_empleado["adelanto_mensual"].get())
         datos["retencion_judicial_pct"] = parse_num(self.campos_empleado["retencion_judicial_pct"].get())
+        datos["garantia_mensual"] = parse_num(self.campos_empleado["garantia_mensual"].get())
         datos["regimen"] = self.cmb_emp_regimen.get()
         datos["sistema_pension"] = self.cmb_emp_pension.get()
         datos["estado"] = self.cmb_emp_estado.get()
@@ -3112,6 +3360,13 @@ class ModuloNominaApp:
         messagebox.showinfo("Asignación masiva", "Se actualizaron %d empleados.\n\n"
                                                 "Recalcule la asistencia para aplicar los cambios." % guardados)
         self.recargar_catalogos()
+
+    def abrir_sueldos(self):
+        """Abre la pantalla de carga masiva de sueldos, garantías y jornada."""
+        if not self.empleados:
+            return messagebox.showwarning("Atención", "No hay empleados en el padrón. Use "
+                                                      "«Sincronizar desde Choferes» primero.")
+        DialogoSueldos(self.parent_frame, self, self.empleados, self.usuario_activo)
 
     def sincronizar_empleados(self):
         cantidad = nc.sincronizar_empleados(self.usuario_activo)
@@ -3633,6 +3888,7 @@ class ModuloNominaApp:
             ("tardanzas", "Tardanzas", 80, "center"),
             ("faltas", "Faltas", 70, "center"),
             ("horas_extra", "Horas extra", 90, "center"),
+            ("horas_excedente", "Horas a bono", 95, "center"),
             ("ingresos", "Total ingresos", 120, "e"),
             ("descuentos", "Total descuentos", 130, "e"),
             ("neto", "Neto a pagar", 120, "e"),
@@ -3719,6 +3975,7 @@ class ModuloNominaApp:
                 registro["dni"], registro["empleado"], datos_asistencia.get("dias_laborables", 0),
                 datos_asistencia.get("tardanzas", 0), datos_asistencia.get("faltas", 0),
                 "%.1f h" % (nc.a_int(datos_asistencia.get("minutos_extra")) / 60.0),
+                "%.1f h" % (nc.a_int(datos_asistencia.get("minutos_excedente")) / 60.0),
                 formatear_monto(registro["ingresos"]), formatear_monto(registro["descuentos"]),
                 formatear_monto(registro["neto"]), formatear_monto(registro["aportes"])))
         self.lbl_totales_planilla.configure(
@@ -3881,6 +4138,13 @@ class ModuloNominaApp:
                                                          asistencia.get("tardanzas", 0))),
                   ("Faltas", asistencia.get("faltas", 0)),
                   ("Horas extra", "%.2f h" % (nc.a_int(asistencia.get("minutos_extra")) / 60.0))]
+        garantia = boleta.get("garantia")
+        if garantia:
+            filas += [("Garantía mensual", formatear_monto(garantia["garantia"])),
+                      ("Cálculo de ley del mes", formatear_monto(garantia["calculo_ley"])),
+                      ("Bono de complemento", formatear_monto(garantia["complemento"])),
+                      ("Total del mes", formatear_monto(garantia["total_mes"])),
+                      ("Garantía medida sobre", garantia["sobre"])]
         for indice, (etiqueta, valor) in enumerate(filas):
             ctk.CTkLabel(datos, text=etiqueta + ":", font=("Arial", 11, "bold"), width=180,
                          anchor="w").grid(row=indice // 2, column=(indice % 2) * 2, sticky="w", padx=6, pady=2)
@@ -3990,7 +4254,8 @@ class ModuloNominaApp:
                       hover_color="#1e8449", command=self.exportar_reporte).pack(side="left", padx=4)
 
         self.sub_reportes = ctk.CTkSegmentedButton(
-            tab, values=["Puntualidad", "Tardanzas", "Faltas", "Horas extra", "Marcaciones del reloj"],
+            tab, values=["Puntualidad", "Tardanzas", "Faltas", "Horas extra", "Garantías",
+                         "Marcaciones"],
             selected_color=COLOR_PRIMARIO, selected_hover_color=COLOR_HOVER,
             command=lambda _v: self.generar_reporte())
         self.sub_reportes.pack(fill="x", padx=10, pady=(0, 6))
@@ -4026,6 +4291,15 @@ class ModuloNominaApp:
                     ("horas", "Horas", 80, "center"), ("tipo", "Tipo", 120, "center"),
                     ("origen", "Origen", 90, "center"), ("aprobado", "Aprobado", 90, "center"),
                     ("monto_estimado", "Monto estimado", 130, "e")]
+        if nombre == "Garantías":
+            return [("dni", "DNI", 100, "w"), ("empleado", "Empleado", 220, "w"),
+                    ("garantia", "Garantía mensual", 120, "e"), ("calculo_ley", "Cálculo de ley", 120, "e"),
+                    ("horas_excedente", "Horas a bono", 100, "center"),
+                    ("bono_excedente", "Bono por horas adicionales", 160, "e"),
+                    ("complemento", "Bono de complemento", 140, "e"),
+                    ("total_mes", "Total del mes", 120, "e"), ("base_afecta", "Base afecta", 110, "e"),
+                    ("neto_mes", "Neto del mes", 120, "e"),
+                    ("llego_por_calculo", "¿Llegó por su cálculo?", 130, "center")]
         return [("dni", "DNI vinculado", 110, "w"), ("codigo_reloj", "Código del reloj", 130, "w"),
                 ("nombre_reloj", "Nombre en el reloj", 260, "w"), ("fecha", "Fecha", 100, "center"),
                 ("hora", "Hora", 80, "center"), ("tipo_pase", "Tipo de pase", 150, "w"),
@@ -4048,6 +4322,8 @@ class ModuloNominaApp:
                 estado["datos"] = npl.reporte_faltas(periodo)
             elif nombre == "Horas extra":
                 estado["datos"] = npl.reporte_horas_extra(periodo)
+            elif nombre == "Garantías":
+                estado["datos"] = npl.reporte_garantias(periodo)
             else:
                 desde = parse_fecha_texto(self.ent_rep_desde.get()) or (dias[0].strftime("%Y-%m-%d")
                                                                        if dias else None)
@@ -4147,6 +4423,10 @@ class ModuloNominaApp:
                                           "pagar_descanso_trabajado"],
             "💰 Remuneraciones": ["rmv", "uit", "onp_pct", "essalud_pct", "asignacion_familiar_pct",
                                   "descontar_tardanza", "descontar_falta", "descontar_anticipo"],
+            "🎯 Garantía de sueldo y horas sobre el tope legal": [
+                "garantia_sobre", "garantia_prorratear", "bono_complemento_afecto",
+                "nombre_bono_complemento", "bono_excedente_activo", "bono_excedente_afecto",
+                "nombre_bono_excedente"],
             "🧾 Renta de quinta categoría (opcional)": ["calcular_renta_5ta", "deduccion_uit_5ta"],
         }
         for titulo, claves in grupos.items():
@@ -4158,7 +4438,15 @@ class ModuloNominaApp:
                 fila.pack(fill="x", padx=10, pady=2)
                 ctk.CTkLabel(fila, text=clave, font=("Arial", 10, "bold"), width=210, anchor="w").pack(
                     side="left")
-                entrada = ctk.CTkEntry(fila, width=110)
+                # Los parámetros de opciones fijas o de SI/NO se eligen de una lista, así no
+                # se pueden escribir mal (y el motor ya no tiene que rechazarlos).
+                if clave in nc.PARAMETROS_OPCIONES:
+                    entrada = ctk.CTkComboBox(fila, values=list(nc.PARAMETROS_OPCIONES[clave]),
+                                              width=110, state="readonly")
+                elif clave in nc.PARAMETROS_SI_NO:
+                    entrada = ctk.CTkComboBox(fila, values=["SI", "NO"], width=110, state="readonly")
+                else:
+                    entrada = ctk.CTkEntry(fila, width=110)
                 entrada.pack(side="left", padx=6)
                 ctk.CTkLabel(fila, text=descripcion, font=("Arial", 10), text_color=COLOR_GRIS,
                              anchor="w").pack(side="left", padx=6)
@@ -4176,8 +4464,16 @@ class ModuloNominaApp:
 
     def cargar_parametros(self):
         for clave, entrada in getattr(self, "entradas_parametros", {}).items():
-            entrada.delete(0, tk.END)
-            entrada.insert(0, str(self.parametros.get(clave, "")))
+            valor = str(self.parametros.get(clave, ""))
+            try:
+                if entrada.__class__.__name__ == "CTkComboBox":
+                    opciones = list(entrada.cget("values") or [""])
+                    entrada.set(valor if valor in opciones else opciones[0])
+                else:
+                    entrada.delete(0, tk.END)
+                    entrada.insert(0, valor)
+            except Exception:
+                pass
 
     def guardar_parametros(self):
         """Valida y guarda los parámetros. No guarda nada si algún campo es inválido."""
