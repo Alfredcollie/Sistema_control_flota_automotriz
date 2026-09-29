@@ -316,6 +316,10 @@ class CalendarioNativo(ctk.CTkToplevel):
 # La CLAVE interna ("DNI") se conserva para no perder los archivos ya guardados.
 ETIQUETAS_DOC = {"DNI": "DNI / C.E."}
 
+# Tallas sugeridas para el uniforme. El campo es editable: se puede escribir
+# cualquier otra medida (por ejemplo "42" o "XL / 16").
+TALLAS_UNIFORME = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"]
+
 
 # =========================================================
 # CLASE: DIÁLOGO DE OBSERVACIÓN DEL ESTADO
@@ -465,7 +469,10 @@ class ChoferesApp:
                     "ALTER TABLE choferes ADD COLUMN licencia2 VARCHAR(50) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN vencimiento_licencia2 VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN categoria_licencia2 VARCHAR(50) DEFAULT ''",
-                    "ALTER TABLE choferes ADD COLUMN telefono_emergencia VARCHAR(50) DEFAULT ''"
+                    "ALTER TABLE choferes ADD COLUMN telefono_emergencia VARCHAR(50) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN contacto_emergencia_nombre VARCHAR(150) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN talla_polo VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN talla_casaca VARCHAR(20) DEFAULT ''"
                 ]
                 
                 for query in columnas_nuevas:
@@ -868,6 +875,10 @@ class ChoferesApp:
             fin_contrato = _valor_campo("fin_contrato")
             sanidad_num = _valor_campo("carnet_sanidad")
             sanidad_venc = _valor_campo("venc_sanidad")
+            tel_emergencia = _valor_campo("telefono_emergencia")
+            nombre_emergencia = _valor_campo("contacto_emergencia_nombre")
+            talla_polo = _valor_campo("talla_polo")
+            talla_casaca = _valor_campo("talla_casaca")
 
             # NOTA: la ficha NO trae logística ni seguros (móvil / seguros salud-vida)
             self.limpiar_formulario()
@@ -880,6 +891,12 @@ class ChoferesApp:
                 self.cmb_sexo.set(sexo)
             self.ent_hijos.insert(0, hijos)
             self.ent_telefono.insert(0, telefono)
+            self.ent_emergencia.insert(0, tel_emergencia)
+            self.ent_emergencia_nombre.insert(0, nombre_emergencia)
+            if talla_polo:
+                self.cmb_talla_polo.set(talla_polo)
+            if talla_casaca:
+                self.cmb_talla_casaca.set(talla_casaca)
             self.ent_correo.insert(0, correo)
             if estado in ("Activo", "Inactivo", "Suspendido"):
                 self.cmb_estado.set(estado)
@@ -956,8 +973,24 @@ class ChoferesApp:
         
         self.ent_hijos = crear_campo("Número de Hijos:", "Ej: 0")
         self.ent_telefono = crear_campo("Teléfono / WhatsApp:", "Ej: 999888777")
+        self.ent_emergencia_nombre = crear_campo("Nombre del Contacto de Emergencia:", "Ej: María Pérez (esposa)")
         self.ent_emergencia = crear_campo("Teléfono de Contacto de Emergencia:", "Ej: 987654321 (familiar)")
         self.ent_correo = crear_campo("Correo Electrónico:", "Ej: correo@gmail.com")
+
+        # --- Tallas de Uniforme (polo y casaca) ---
+        ctk.CTkLabel(self.f_form, text="--- Tallas de Uniforme ---", font=("Arial", 11, "bold"), text_color="#8e44ad").pack(anchor="w", padx=10, pady=(10, 5))
+
+        def crear_campo_talla(texto):
+            """Desplegable editable: se elige una talla sugerida o se escribe otra."""
+            ctk.CTkLabel(self.f_form, text=texto, font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+            cmb = ctk.CTkComboBox(self.f_form, values=list(TALLAS_UNIFORME))
+            cmb.pack(fill="x", padx=10, pady=(0, 10))
+            try: cmb.set("")
+            except Exception: pass
+            return cmb
+
+        self.cmb_talla_polo = crear_campo_talla("Talla de Polo:")
+        self.cmb_talla_casaca = crear_campo_talla("Talla de Casaca:")
 
         # --- Asignación y Seguros ---
         ctk.CTkLabel(self.f_form, text="--- Logística y Seguros ---", font=("Arial", 11, "bold"), text_color="#d35400").pack(anchor="w", padx=10, pady=(10,5))
@@ -1218,8 +1251,11 @@ class ChoferesApp:
         self.cmb_sexo.set("Masculino")
         self.ent_hijos.delete(0, tk.END)
         self.ent_telefono.delete(0, tk.END)
+        self.ent_emergencia_nombre.delete(0, tk.END)
         self.ent_emergencia.delete(0, tk.END)
         self.ent_correo.delete(0, tk.END)
+        self.cmb_talla_polo.set("")
+        self.cmb_talla_casaca.set("")
         
         self.cargar_moviles_disponibles()
         self.ent_salud_num.delete(0, tk.END)
@@ -1387,6 +1423,9 @@ class ChoferesApp:
         
         tel = self.ent_telefono.get().strip()
         tel_emergencia = self.ent_emergencia.get().strip()   # 📞 contacto de emergencia
+        nombre_emergencia = self.ent_emergencia_nombre.get().strip()
+        talla_polo = self.cmb_talla_polo.get().strip().upper()
+        talla_casaca = self.cmb_talla_casaca.get().strip().upper()
         correo = self.ent_correo.get().strip()
         
         movil = self.cmb_movil.get()
@@ -1495,12 +1534,14 @@ class ChoferesApp:
                     ruta_documentos=%s, fecha_inicio_contrato=%s, fecha_fin_contrato=%s,
                     observacion_estado=%s, carnet_sanidad_num=%s, carnet_sanidad_venc=%s,
                     licencia2=%s, categoria_licencia2=%s, vencimiento_licencia2=%s,
-                    telefono_emergencia=%s
+                    telefono_emergencia=%s, contacto_emergencia_nombre=%s,
+                    talla_polo=%s, talla_casaca=%s
                     WHERE id=%s
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
-                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia, self.id_edicion))
+                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
+                      nombre_emergencia, talla_polo, talla_casaca, self.id_edicion))
                 detalle_estado = f" — marcado INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Actualizó datos de {nombres}{detalle_estado}"[:240])
@@ -1516,12 +1557,14 @@ class ChoferesApp:
                     direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc, ruta_documentos,
                     fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
                     carnet_sanidad_num, carnet_sanidad_venc, licencia2, categoria_licencia2,
-                    vencimiento_licencia2, telefono_emergencia) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    vencimiento_licencia2, telefono_emergencia, contacto_emergencia_nombre,
+                    talla_polo, talla_casaca)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
-                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia))
+                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
+                      nombre_emergencia, talla_polo, talla_casaca))
                 detalle_estado = f" — INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Registró nuevo conductor/personal: {nombres}{detalle_estado}"[:240])
@@ -1577,7 +1620,8 @@ class ChoferesApp:
                 direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc,
                 ruta_documentos, fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
                 carnet_sanidad_num, carnet_sanidad_venc, licencia2, categoria_licencia2,
-                vencimiento_licencia2, telefono_emergencia
+                vencimiento_licencia2, telefono_emergencia, contacto_emergencia_nombre,
+                talla_polo, talla_casaca
                 FROM choferes WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -1613,6 +1657,9 @@ class ChoferesApp:
                 self.ent_cat_licencia2.insert(0, r[26] if len(r) > 26 and r[26] else "")
                 self.ent_venc_licencia2.insert(0, r[27] if len(r) > 27 and r[27] else "")
                 self.ent_emergencia.insert(0, r[28] if len(r) > 28 and r[28] else "")
+                self.ent_emergencia_nombre.insert(0, r[29] if len(r) > 29 and r[29] else "")
+                self.cmb_talla_polo.set(str(r[30]) if len(r) > 30 and r[30] else "")
+                self.cmb_talla_casaca.set(str(r[31]) if len(r) > 31 and r[31] else "")
                 self.ent_ini_contrato.insert(0, r[20] if len(r) > 20 and r[20] else "")
                 self.ent_fin_contrato.insert(0, r[21] if len(r) > 21 and r[21] else "")
                 self._observacion_estado = (r[22] or "") if len(r) > 22 else ""
