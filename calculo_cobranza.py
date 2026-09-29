@@ -246,6 +246,19 @@ def _recortar_texto(c, texto, ancho_max, fuente="Helvetica", tam=10):
     return (t + "...") if t else ""
 
 
+def _fuente_ajustada(c, texto, ancho_max, fuente="Helvetica", tam_max=9.0, tam_min=6.0):
+    """Devuelve (texto, tamaño) reduciendo la fuente hasta que quepa en 'ancho_max'.
+
+    Se usa en las columnas angostas (unidad, motivo): primero se achica la
+    letra (hasta 'tam_min') y solo si aún no cabe se recorta con '...'.
+    """
+    t = str(texto if texto is not None else "")
+    tam = float(tam_max)
+    while tam > tam_min and c.stringWidth(t, fuente, tam) > ancho_max:
+        tam = round(tam - 0.5, 1)
+    return _recortar_texto(c, t, ancho_max, fuente, tam), tam
+
+
 def _envolver_texto(c, texto, ancho_max, max_lineas=2, fuente="Helvetica", tam=10):
     """Parte el texto en líneas que quepan en 'ancho_max' (máximo 'max_lineas').
 
@@ -567,6 +580,67 @@ def horas_de_asiento(asiento):
         return float(asiento.get("horas") or 0.0) + float(asiento.get("minutos") or 0.0) / 60.0
     except Exception:
         return 0.0
+
+
+def formato_horas_minutos(horas, etiqueta_cero="0 min"):
+    """Horas decimales → texto legible en horas y minutos.
+
+    En el PDF no se muestran horas con decimales largos (0.166667): se
+    redondea al minuto y se escribe '10 min', '1 h 30 min' o '12 h'.
+    """
+    try:
+        total = float(horas or 0.0)
+    except Exception:
+        total = 0.0
+    negativo = total < 0
+    total = abs(total)
+    horas_enteras = int(total)
+    minutos = int(round((total - horas_enteras) * 60))
+    if not horas_enteras and not minutos:
+        return etiqueta_cero
+    if minutos >= 60:
+        horas_enteras += 1
+        minutos -= 60
+    partes = []
+    if horas_enteras:
+        partes.append(f"{horas_enteras} h")
+    if minutos or not horas_enteras:
+        partes.append(f"{minutos} min")
+    texto = " ".join(partes) or etiqueta_cero
+    return f"-{texto}" if negativo else texto
+
+
+def numero_2_decimales(valor):
+    """Número redondeado a 2 decimales, sin ceros sobrantes ('2', '1.5', '1.25')."""
+    try:
+        v = round(float(valor or 0.0), 2)
+    except Exception:
+        v = 0.0
+    texto = f"{v:.2f}".rstrip("0").rstrip(".")
+    return texto or "0"
+
+
+def clave_orden_fecha(valor):
+    """Clave para ordenar asientos por FECHA de menor a mayor.
+
+    Los asientos sin fecha (o con una fecha inválida) se van al final.
+    Se usa tanto en el PDF como en las tablas del módulo.
+    """
+    if isinstance(valor, datetime):
+        valor = valor.date()
+    if not isinstance(valor, date):
+        return (1, date.max)
+    return (0, valor)
+
+
+def fecha_para_pdf(valor):
+    """Fecha del asiento como 'dd/mm/aaaa' (acepta date/datetime o texto)."""
+    try:
+        return valor.strftime("%d/%m/%Y")
+    except Exception:
+        pass
+    texto = str(valor if valor is not None else "").strip()
+    return texto or "—"
 
 
 def ded_agrupada_desde_asientos(asientos):
@@ -2615,7 +2689,8 @@ class CalculoCobranzaApp:
                 cursor.execute('''
                     SELECT plan, unidad, fecha, categoria, horas, minutos, cantidad,
                            distancia_desde, distancia_hasta, precio, motivo, monto, tipo
-                    FROM cobranza_deducciones_detalle WHERE id_cobranza=%s ORDER BY id
+                    FROM cobranza_deducciones_detalle WHERE id_cobranza=%s
+                    ORDER BY fecha ASC, id ASC
                 ''', (id_cob,))
                 asientos_pdf = cursor.fetchall()
             except Exception:
@@ -2624,11 +2699,15 @@ class CalculoCobranzaApp:
                     cursor.execute('''
                         SELECT plan, unidad, fecha, categoria, horas, minutos, cantidad,
                                distancia_desde, distancia_hasta, precio, motivo, monto
-                        FROM cobranza_deducciones_detalle WHERE id_cobranza=%s ORDER BY id
+                        FROM cobranza_deducciones_detalle WHERE id_cobranza=%s
+                        ORDER BY fecha ASC, id ASC
                     ''', (id_cob,))
                     asientos_pdf = [tuple(r) + ("DEDUCCION",) for r in cursor.fetchall()]
                 except Exception:
                     asientos_pdf = []
+
+            # Orden definitivo: por FECHA de menor a mayor (sin fecha, al final).
+            asientos_pdf = sorted(asientos_pdf, key=lambda f: clave_orden_fecha(f[2]))
 
             # Datos del cliente (actualizados)
             cliente_info = {"comercial": "", "contacto": "", "telefono": "", "direccion": ""}
@@ -2730,10 +2809,16 @@ class CalculoCobranzaApp:
 
         c.setFont("Helvetica-Bold", 10)
         c.setFillColorRGB(0, 0, 0)
+        # La razón social se recorta si es muy larga: nunca debe montarse
+        # encima del RUC que va alineado a la derecha.
+        texto_ruc_emp = f"RUC: {ruc_empresa}" if ruc_empresa else ""
+        ancho_ruc_emp = c.stringWidth(texto_ruc_emp, "Helvetica-Bold", 10) if texto_ruc_emp else 0.0
         if razon_empresa:
-            c.drawString(220, y - 42, f"{razon_empresa}")
-        if ruc_empresa:
-            c.drawRightString(572, y - 42, f"RUC: {ruc_empresa}")
+            ancho_disp = (572.0 - ancho_ruc_emp - 10.0) - 220.0
+            c.drawString(220, y - 42, _recortar_texto(
+                c, razon_empresa, max(ancho_disp, 60.0), "Helvetica-Bold", 10))
+        if texto_ruc_emp:
+            c.drawRightString(572, y - 42, texto_ruc_emp)
         c.setFont("Helvetica", 9)
         c.drawRightString(572, y - 57, f"Emisión: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
         c.drawRightString(572, y - 69, f"N° Registro: {id_rec:04d}")
@@ -2779,16 +2864,53 @@ class CalculoCobranzaApp:
         if fila_usada:
             y_cli -= 13.0
 
-        # RUC (izquierda) y DIRECCIÓN (derecha, hasta 2 líneas)
+        # RUC (izquierda)
         c.drawString(40, y_cli, f"RUC: {ruc_cli}")
-        lineas_dire = []
+        y_cli -= 13.0
+
+        # DIRECCIÓN: en una línea propia, a todo el ancho de la hoja y
+        # repartida hasta en 3 líneas, así las direcciones largas no se cortan.
         if cliente_info["direccion"]:
-            lineas_dire = _envolver_texto(c, f"Dirección: {cliente_info['direccion']}",
-                                          ANCHO_DER, max_lineas=2)
-            c.drawRightString(MARGEN_DER, y_cli, lineas_dire[0])
-            if len(lineas_dire) > 1:
-                c.drawRightString(MARGEN_DER, y_cli - 13.0, lineas_dire[1])
-        y_cli -= 13.0 + (13.0 if len(lineas_dire) > 1 else 0.0)
+            for linea in _envolver_texto(c, f"Dirección: {cliente_info['direccion']}",
+                                         ANCHO_TOTAL, max_lineas=3):
+                c.drawString(40, y_cli, linea)
+                y_cli -= 13.0
+
+        # ---- Compactado automático: TODO el cálculo debe caber en UNA hoja ----
+        # Se decide aquí (antes de dibujar el periodo y los cuadros) para poder
+        # ajustar también los espacios entre secciones. Cada plan indica:
+        # alto de fila, alto de encabezado, letra de las filas y los saltos
+        # entre secciones; se usa el más holgado que todavía entre en la hoja.
+        _PLANES_HOJA = (
+            (15.0, 16.0, 8.0, 16.0, 24.0),   # normal
+            (13.0, 15.0, 7.5, 15.0, 21.0),   # compacto
+            (11.5, 14.0, 7.0, 14.0, 18.0),   # muy compacto
+            (10.0, 13.0, 6.5, 12.0, 16.0),   # mínimo
+            (8.4, 11.5, 6.0, 11.0, 14.0),    # cargado (muchos asientos)
+        )
+        filas_tablas = len(unidades) + len(deducciones_pdf) + len(extras_pdf)
+        if viajes_pdf:
+            filas_tablas += len(viajes_pdf) * 2     # tabla de viajes + no realizados
+        plan_hoja = _PLANES_HOJA[-1]
+        for _plan in _PLANES_HOJA:
+            # Filas + encabezados + títulos, subtotales, TOTAL y notas
+            _y_tablas = (y_cli - 44.0) - 2 * _plan[3] - _plan[4]
+            _necesario = filas_tablas * _plan[0] + 3 * (_plan[1] + 14.0) + 165.0
+            if _necesario <= (_y_tablas - 58.0):
+                plan_hoja = _plan
+                break
+        (ALTO_FILA, ALTO_CAB, FUENTE_TABLA, SALTO_TITULO, SALTO_BLOQUE) = plan_hoja
+        # El cuadro por unidad lleva una letra algo mayor, pero solo si la fila
+        # es lo bastante alta (en los planes comprimidos se usa el mismo tamaño).
+        FUENTE_UNIDADES = FUENTE_TABLA + (1.0 if FUENTE_TABLA >= 7.5 else 0.0)
+        # Línea base centrada en la fila: deja aire arriba y espacio a los
+        # descendentes abajo, para que el texto nunca toque la fila vecina.
+        BASE_TXT = ALTO_FILA / 2.0 + FUENTE_TABLA * 0.35
+        BASE_CAB = ALTO_CAB / 2.0 + FUENTE_TABLA * 0.35
+        LINEA_FILA = ALTO_FILA - 1.0             # separador gris entre filas (al pie de la fila)
+        # Saltos calculados para dejar SIEMPRE ~13 pt entre dos líneas de texto
+        SALTO_FIN_TABLA = BASE_TXT + 14.0                                # tras el total de una tabla
+        SALTO_SECCION = 15.0 + BASE_TXT - ALTO_FILA                      # antes del título siguiente
 
         # ---- Periodo (debajo del bloque del cliente) ----
         y_cli -= 4.0
@@ -2801,22 +2923,22 @@ class CalculoCobranzaApp:
         y = y_cli - 40.0
 
         c.line(40, y, 572, y)
-        y -= 16.0
+        y -= SALTO_TITULO
 
         # ---- Días de la quincena: solo el resumen total ----
         c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 11)
         c.drawString(40, y, "DETALLE DE DÍAS DE LA QUINCENA")
-        y -= 16.0
+        y -= SALTO_TITULO
         c.setFont("Helvetica-Bold", 10)
         c.drawString(40, y, f"Total días: {len(detalle)}  |  Días Normales (Lun–Sáb): {c_lunvie}  |  Domingos: {c_dom}  |  Feriados: {c_fer}")
-        y -= 24.0
+        y -= SALTO_BLOQUE
 
         if viajes_pdf:
             # ---- Detalle de viajes por distancia ----
             c.setFont("Helvetica-Bold", 11)
             c.drawString(40, y, "DETALLE DE VIAJES POR DISTANCIA")
-            y -= 16.0
+            y -= SALTO_TITULO
             if y < 90:
                 c.showPage()
                 y = 750.0
@@ -2826,88 +2948,100 @@ class CalculoCobranzaApp:
             for w in cols_a:
                 xs_a.append(xs_a[-1] + w)
             ancho_a = sum(cols_a)
-            c.setFillColorRGB(0.9, 0.93, 0.97)
-            c.rect(40, y - 14, ancho_a, 14, stroke=0, fill=1)
-            c.setFillColorRGB(0, 0, 0)
-            c.setFont("Helvetica-Bold", 7)
             cab_a = ["DISTANCIA", "P.NORM", "P.DOM", "P.FER", "V.NORM", "V.DOM", "V.FER", "MONTO"]
-            for j, (w, txt) in enumerate(zip(cols_a, cab_a)):
-                c.drawCentredString(xs_a[j] + w / 2, y - 10, txt)
-            y -= 16.0
-            c.setFont("Helvetica", 8)
+
+            def _cabecera_viajes(cols, xs, ancho, cab):
+                """Encabezado de las tablas de viajes (se repite al cambiar de hoja)."""
+                nonlocal y
+                c.setFillColorRGB(0.9, 0.93, 0.97)
+                c.rect(40, y - ALTO_CAB, ancho, ALTO_CAB, stroke=0, fill=1)
+                c.setFillColorRGB(0, 0, 0)
+                c.setFont("Helvetica-Bold", max(FUENTE_TABLA - 1.0, 5.5))
+                for j, (w, txt) in enumerate(zip(cols, cab)):
+                    c.drawCentredString(xs[j] + w / 2, y - BASE_CAB, txt)
+                c.setFont("Helvetica", FUENTE_TABLA)
+                y -= ALTO_CAB
+
+            _cabecera_viajes(cols_a, xs_a, ancho_a, cab_a)
             for (desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
-                if y < 90:
+                if y < 70:
                     c.showPage()
                     y = 750.0
+                    _cabecera_viajes(cols_a, xs_a, ancho_a, cab_a)
                 c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_a[0] + 3, y - 10, f"{float(desde or 0):g}-{float(hasta or 0):g}")
-                c.drawCentredString(xs_a[1] + cols_a[1] / 2, y - 10, f"{float(pn or 0):g}")
-                c.drawCentredString(xs_a[2] + cols_a[2] / 2, y - 10, f"{float(pd or 0):g}")
-                c.drawCentredString(xs_a[3] + cols_a[3] / 2, y - 10, f"{float(pf or 0):g}")
-                c.drawCentredString(xs_a[4] + cols_a[4] / 2, y - 10, str(int(vn or 0)))
-                c.drawCentredString(xs_a[5] + cols_a[5] / 2, y - 10, str(int(vd or 0)))
-                c.drawCentredString(xs_a[6] + cols_a[6] / 2, y - 10, str(int(vf or 0)))
-                c.drawCentredString(xs_a[7] + cols_a[7] / 2, y - 10, f"{simbolo} {float(mb2 or 0):,.2f}")
+                c.drawString(xs_a[0] + 3, y - BASE_TXT, _recortar_texto(
+                    c, f"{numero_2_decimales(desde)} - {numero_2_decimales(hasta)} km",
+                    cols_a[0] - 6, "Helvetica", FUENTE_TABLA))
+                c.drawCentredString(xs_a[1] + cols_a[1] / 2, y - BASE_TXT, _recortar_texto(
+                    c, f"{round(float(pn or 0), 2):,.2f}", cols_a[1] - 4, "Helvetica", FUENTE_TABLA))
+                c.drawCentredString(xs_a[2] + cols_a[2] / 2, y - BASE_TXT, _recortar_texto(
+                    c, f"{round(float(pd or 0), 2):,.2f}", cols_a[2] - 4, "Helvetica", FUENTE_TABLA))
+                c.drawCentredString(xs_a[3] + cols_a[3] / 2, y - BASE_TXT, _recortar_texto(
+                    c, f"{round(float(pf or 0), 2):,.2f}", cols_a[3] - 4, "Helvetica", FUENTE_TABLA))
+                c.drawCentredString(xs_a[4] + cols_a[4] / 2, y - BASE_TXT, numero_2_decimales(vn))
+                c.drawCentredString(xs_a[5] + cols_a[5] / 2, y - BASE_TXT, numero_2_decimales(vd))
+                c.drawCentredString(xs_a[6] + cols_a[6] / 2, y - BASE_TXT, numero_2_decimales(vf))
+                c.drawCentredString(xs_a[7] + cols_a[7] / 2, y - BASE_TXT, _recortar_texto(
+                    c, f"{simbolo} {round(float(mb2 or 0), 2):,.2f}", cols_a[7] - 4,
+                    "Helvetica", FUENTE_TABLA))
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                c.line(40, y - 13, 40 + ancho_a, y - 13)
-                y -= 15.0
+                c.line(40, y - LINEA_FILA, 40 + ancho_a, y - LINEA_FILA)
+                y -= ALTO_FILA
             c.setStrokeColorRGB(0, 0, 0)
             c.setLineWidth(1)
             c.line(40, y + 1, 40 + ancho_a, y + 1)
-            # Tabla B: viajes no realizados (deducción) en la página siguiente
-            c.showPage()
-            y = 750.0
+            # Tabla B: viajes no realizados (deducción) — en la MISMA hoja
+            y -= ALTO_FILA + 2.0
             cols_b = [120, 60, 60, 60, 100]
             xs_b = [40]
             for w in cols_b:
                 xs_b.append(xs_b[-1] + w)
             ancho_b = sum(cols_b)
+            cab_b = ["DISTANCIA", "NR.NORM", "NR.DOM", "NR.FER", "MONTO"]
             c.setFont("Helvetica-Bold", 9)
             c.drawString(40, y, "VIAJES NO REALIZADOS (DEDUCCIÓN)")
             y -= 14.0
-            c.setFillColorRGB(0.9, 0.93, 0.97)
-            c.rect(40, y - 14, ancho_b, 14, stroke=0, fill=1)
-            c.setFillColorRGB(0, 0, 0)
-            c.setFont("Helvetica-Bold", 7)
-            cab_b = ["DISTANCIA", "NR.NORM", "NR.DOM", "NR.FER", "MONTO"]
-            for j, (w, txt) in enumerate(zip(cols_b, cab_b)):
-                c.drawCentredString(xs_b[j] + w / 2, y - 10, txt)
-            y -= 16.0
-            c.setFont("Helvetica", 8)
+            _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
             for (desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
-                if y < 90:
+                if y < 70:
                     c.showPage()
                     y = 750.0
+                    _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
                 c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_b[0] + 3, y - 10, f"{float(desde or 0):g}-{float(hasta or 0):g}")
-                c.drawCentredString(xs_b[1] + cols_b[1] / 2, y - 10, str(int(dn or 0)))
-                c.drawCentredString(xs_b[2] + cols_b[2] / 2, y - 10, str(int(dd or 0)))
-                c.drawCentredString(xs_b[3] + cols_b[3] / 2, y - 10, str(int(df or 0)))
-                c.drawCentredString(xs_b[4] + cols_b[4] / 2, y - 10, f"{simbolo} {float(md2 or 0):,.2f}")
+                c.drawString(xs_b[0] + 3, y - BASE_TXT, _recortar_texto(
+                    c, f"{numero_2_decimales(desde)} - {numero_2_decimales(hasta)} km",
+                    cols_b[0] - 6, "Helvetica", FUENTE_TABLA))
+                c.drawCentredString(xs_b[1] + cols_b[1] / 2, y - BASE_TXT, numero_2_decimales(dn))
+                c.drawCentredString(xs_b[2] + cols_b[2] / 2, y - BASE_TXT, numero_2_decimales(dd))
+                c.drawCentredString(xs_b[3] + cols_b[3] / 2, y - BASE_TXT, numero_2_decimales(df))
+                c.drawCentredString(xs_b[4] + cols_b[4] / 2, y - BASE_TXT, _recortar_texto(
+                    c, f"{simbolo} {round(float(md2 or 0), 2):,.2f}", cols_b[4] - 4,
+                    "Helvetica", FUENTE_TABLA))
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                c.line(40, y - 13, 40 + ancho_b, y - 13)
-                y -= 15.0
+                c.line(40, y - LINEA_FILA, 40 + ancho_b, y - LINEA_FILA)
+                y -= ALTO_FILA
             c.setStrokeColorRGB(0, 0, 0)
             c.setLineWidth(1)
             c.line(40, y + 1, 40 + ancho_b, y + 1)
             y -= 8.0
             c.setFont("Helvetica-Bold", 10)
-            c.drawString(42, y - 10, "SUBTOTAL (BASE)")
-            c.drawRightString(40 + ancho_a - 2, y - 10, f"{simbolo} {float(m_base or 0):,.2f}")
-            y -= 15.0
-            c.drawString(42, y - 10, "TOTAL NO REALIZADOS (DEDUCCIÓN)")
-            c.drawRightString(40 + ancho_a - 2, y - 10, f"- {simbolo} {float(m_ded or 0):,.2f}")
-            y -= 26.0
+            c.drawString(42, y - BASE_TXT, "SUBTOTAL (BASE)")
+            c.drawRightString(40 + ancho_a - 2, y - BASE_TXT,
+                              f"{simbolo} {round(float(m_base or 0), 2):,.2f}")
+            y -= ALTO_FILA
+            c.drawString(42, y - BASE_TXT, "TOTAL NO REALIZADOS (DEDUCCIÓN)")
+            c.drawRightString(40 + ancho_a - 2, y - BASE_TXT,
+                              f"- {simbolo} {round(float(m_ded or 0), 2):,.2f}")
+            y -= ALTO_FILA + SALTO_SECCION
         else:
             # ---- Cuadro de cobro POR UNIDAD ----
             c.setFont("Helvetica-Bold", 11)
             c.drawString(40, y, "CUADRO DE COBRO POR UNIDAD")
-            y -= 16.0
-            if y < 90:
-                c.showPage()
-                y = 750.0
+            y -= ALTO_CAB
             # Cuadro limpio: solo precios y base por unidad (sin deducciones ni horas extras)
-            cols_u = [150, 55, 62, 62, 62, 100]
+            # La columna UNIDAD es ancha y TODO texto se recorta a su columna,
+            # así los nombres largos no se montan sobre los precios.
+            cols_u = [176, 58, 62, 62, 62, 100]
             xs_u = [40]
             for w in cols_u:
                 xs_u.append(xs_u[-1] + w)
@@ -2915,42 +3049,53 @@ class CalculoCobranzaApp:
             cab_u = ["UNIDAD", "HORAS/DÍA", "P. NORMAL", "P. DOMINGO", "P. FERIADO", "SUBTOTAL"]
 
             def _cabecera_unidades():
+                nonlocal y
                 c.setFillColorRGB(0.9, 0.93, 0.97)
-                c.rect(40, y - 14, ancho_tabla, 14, stroke=0, fill=1)
+                c.rect(40, y - ALTO_CAB, ancho_tabla, ALTO_CAB, stroke=0, fill=1)
                 c.setFillColorRGB(0, 0, 0)
-                c.setFont("Helvetica-Bold", 8)
+                c.setFont("Helvetica-Bold", FUENTE_TABLA)
                 for j, (w, txt) in enumerate(zip(cols_u, cab_u)):
-                    c.drawCentredString(xs_u[j] + w / 2, y - 10, txt)
-                c.setFont("Helvetica", 9)
+                    c.drawCentredString(xs_u[j] + w / 2, y - BASE_CAB, txt)
+                c.setFont("Helvetica", FUENTE_UNIDADES)
+                y -= ALTO_CAB
 
             _cabecera_unidades()
-            y -= 16.0
             for (uni, pn, pd, pf, hd, cn, cdom, cfer,
                  dn, dd, df, mn, md, mf, mded, sub) in unidades:
-                if y < 90:
+                if y < 70:
                     c.showPage()
                     y = 750.0
                     _cabecera_unidades()
-                    y -= 16.0
                 # Base de la unidad = días normales + domingos + feriados (sin ajustes)
-                base_u = float(mn or 0) + float(md or 0) + float(mf or 0)
+                base_u = round(float(mn or 0) + float(md or 0) + float(mf or 0), 2)
                 c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_u[0] + 4, y - 10, str(uni)[:36])
-                c.drawCentredString(xs_u[1] + cols_u[1] / 2, y - 10, f"{float(hd or 0):g}")
-                c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - 10, f"{simbolo} {float(pn or 0):,.2f}")
-                c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - 10, f"{simbolo} {float(pd or 0):,.2f}")
-                c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - 10, f"{simbolo} {float(pf or 0):,.2f}")
-                c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - 10, f"{simbolo} {base_u:,.2f}")
+                texto_uni, tam_uni = _fuente_ajustada(
+                    c, str(uni or ""), cols_u[0] - 8, "Helvetica", FUENTE_UNIDADES, 6.0)
+                c.setFont("Helvetica", tam_uni)
+                c.drawString(xs_u[0] + 4, y - BASE_TXT, texto_uni)
+                c.setFont("Helvetica", FUENTE_UNIDADES)
+                # La jornada se muestra en horas y minutos ('12 h', '7 h 30 min')
+                c.drawCentredString(xs_u[1] + cols_u[1] / 2, y - BASE_TXT,
+                                    formato_horas_minutos(hd, etiqueta_cero="0 h"))
+                c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - BASE_TXT,
+                                    f"{simbolo} {round(float(pn or 0), 2):,.2f}")
+                c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - BASE_TXT,
+                                    f"{simbolo} {round(float(pd or 0), 2):,.2f}")
+                c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - BASE_TXT,
+                                    f"{simbolo} {round(float(pf or 0), 2):,.2f}")
+                c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - BASE_TXT,
+                                    f"{simbolo} {base_u:,.2f}")
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                c.line(40, y - 13, 40 + ancho_tabla, y - 13)
-                y -= 15.0
+                c.line(40, y - LINEA_FILA, 40 + ancho_tabla, y - LINEA_FILA)
+                y -= ALTO_FILA
             c.setStrokeColorRGB(0, 0, 0)
             c.setLineWidth(1)
             c.line(40, y + 1, 40 + ancho_tabla, y + 1)
             c.setFont("Helvetica-Bold", 10)
-            c.drawString(xs_u[0] + 4, y - 10, "SUBTOTAL (BASE)")
-            c.drawRightString(40 + ancho_tabla, y - 10, f"{simbolo} {float(m_base or 0):,.2f}")
-            y -= 26.0
+            c.drawString(xs_u[0] + 4, y - BASE_TXT, "SUBTOTAL (BASE)")
+            c.drawRightString(40 + ancho_tabla, y - BASE_TXT,
+                              f"{simbolo} {round(float(m_base or 0), 2):,.2f}")
+            y -= ALTO_FILA + SALTO_SECCION
 
         # ---- Asientos con fecha: deducciones y horas extras (uno por uno) ----
         es_viaje_pdf = (plan == "Por Punto o Viaje")
@@ -2960,37 +3105,41 @@ class CalculoCobranzaApp:
             nonlocal y
             if not filas:
                 return 0.0
-            if y < 200:
+            # Solo se pasa a otra hoja si la tabla de verdad no entra aquí
+            # (el cálculo ya viene compactado para caber en una sola hoja).
+            if y - (ALTO_CAB + len(filas) * ALTO_FILA + 50.0) < 58.0:
                 c.showPage()
                 y = 750.0
-            cols_dd = [62, 150, 68, 48, 120, 84]
+            # Ancho total 532 pt (40 → 572): cada celda se recorta a su columna
+            # para que ningún dato se monte sobre el de al lado.
+            cols_dd = [62, 168, 46, 62, 110, 84]
             xs_dd = [40]
             for w in cols_dd:
                 xs_dd.append(xs_dd[-1] + w)
             ancho_dd = sum(cols_dd)
             cab_dd = ["FECHA", "UNIDAD / DISTANCIA", "TIPO",
-                      "CANT." if es_viaje_pdf else "HORAS", "MOTIVO", "MONTO"]
+                      "CANT." if es_viaje_pdf else "TIEMPO", "MOTIVO", "MONTO"]
 
             def _cabecera():
                 nonlocal y
                 c.setFillColorRGB(0.9, 0.93, 0.97)
-                c.rect(40, y - 14, ancho_dd, 14, stroke=0, fill=1)
+                c.rect(40, y - ALTO_CAB, ancho_dd, ALTO_CAB, stroke=0, fill=1)
                 c.setFillColorRGB(0, 0, 0)
-                c.setFont("Helvetica-Bold", 7.5)
+                c.setFont("Helvetica-Bold", max(FUENTE_TABLA - 0.5, 5.5))
                 for j, (w, txt) in enumerate(zip(cols_dd, cab_dd)):
-                    c.drawCentredString(xs_dd[j] + w / 2, y - 10, txt)
-                y -= 16.0
-                c.setFont("Helvetica", 8)
+                    c.drawCentredString(xs_dd[j] + w / 2, y - BASE_CAB, txt)
+                y -= ALTO_CAB
+                c.setFont("Helvetica", FUENTE_TABLA)
 
             c.setFillColorRGB(0, 0, 0)
             c.setFont("Helvetica-Bold", 11)
             c.drawString(40, y, titulo)
-            y -= 16.0
+            y -= ALTO_CAB
             _cabecera()
             total_asientos = 0.0
             for (plan_d, unidad_d, fecha_d, cat_d, horas_d, min_d, cant_d,
                  desde_d, hasta_d, precio_d, motivo_d, monto_d, tipo_d) in filas:
-                if y < 90:
+                if y < 70:
                     c.showPage()
                     y = 750.0
                     _cabecera()
@@ -3002,33 +3151,51 @@ class CalculoCobranzaApp:
                 monto_v = float(monto_d or 0)
                 total_asientos += monto_v
                 c.setFillColorRGB(0, 0, 0)
-                c.drawCentredString(xs_dd[0] + cols_dd[0] / 2, y - 10, str(fecha_d or "—"))
-                c.drawString(xs_dd[1] + 3, y - 10, str(unidad_d or "")[:34])
-                c.drawCentredString(xs_dd[2] + cols_dd[2] / 2, y - 10,
-                                    str(ETIQUETAS_CORTAS.get(cat_d, cat_d) or "")[:14])
-                c.drawCentredString(xs_dd[3] + cols_dd[3] / 2, y - 10, f"{cant_v:g}")
-                c.drawString(xs_dd[4] + 3, y - 10, str(motivo_d or "")[:30])
-                c.drawCentredString(xs_dd[5] + cols_dd[5] / 2, y - 10, f"{simbolo} {monto_v:,.2f}")
+                c.drawCentredString(xs_dd[0] + cols_dd[0] / 2, y - BASE_TXT,
+                                    fecha_para_pdf(fecha_d))
+                texto_uni_d, tam_uni_d = _fuente_ajustada(
+                    c, str(unidad_d or ""), cols_dd[1] - 6, "Helvetica", FUENTE_TABLA, 6.0)
+                c.setFont("Helvetica", tam_uni_d)
+                c.drawString(xs_dd[1] + 3, y - BASE_TXT, texto_uni_d)
+                c.setFont("Helvetica", FUENTE_TABLA)
+                c.drawCentredString(xs_dd[2] + cols_dd[2] / 2, y - BASE_TXT, _recortar_texto(
+                    c, str(ETIQUETAS_CORTAS.get(cat_d, cat_d) or ""), cols_dd[2] - 4,
+                    "Helvetica", FUENTE_TABLA))
+                # El tiempo se escribe en horas y minutos ('10 min', '1 h 30 min');
+                # en el plan por viaje se muestra la cantidad de viajes con 2 decimales.
+                c.drawCentredString(xs_dd[3] + cols_dd[3] / 2, y - BASE_TXT,
+                                    numero_2_decimales(cant_v) if es_viaje_pdf
+                                    else formato_horas_minutos(cant_v))
+                texto_mot, tam_mot = _fuente_ajustada(
+                    c, str(motivo_d or ""), cols_dd[4] - 6, "Helvetica", FUENTE_TABLA, 6.0)
+                c.setFont("Helvetica", tam_mot)
+                c.drawString(xs_dd[4] + 3, y - BASE_TXT, texto_mot)
+                c.setFont("Helvetica", FUENTE_TABLA)
+                c.drawCentredString(xs_dd[5] + cols_dd[5] / 2, y - BASE_TXT,
+                                    f"{simbolo} {round(monto_v, 2):,.2f}")
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                c.line(40, y - 13, 40 + ancho_dd, y - 13)
-                y -= 15.0
+                c.line(40, y - LINEA_FILA, 40 + ancho_dd, y - LINEA_FILA)
+                y -= ALTO_FILA
             c.setStrokeColorRGB(0, 0, 0)
             c.setLineWidth(1)
             c.line(40, y + 1, 40 + ancho_dd, y + 1)
+            total_asientos = round(total_asientos, 2)
             c.setFont("Helvetica-Bold", 10)
-            c.drawString(42, y - 12, etiqueta_total)
-            c.drawRightString(40 + ancho_dd, y - 12, f"{signo}{simbolo} {total_asientos:,.2f}")
-            y -= 16.0
+            c.drawString(42, y - BASE_TXT - 1.0, etiqueta_total)
+            c.drawRightString(40 + ancho_dd, y - BASE_TXT - 1.0,
+                              f"{signo}{simbolo} {total_asientos:,.2f}")
+            y -= SALTO_FIN_TABLA
             if monto_declarado is not None:
-                diferencia_ded = float(monto_declarado) - total_asientos
+                diferencia_ded = round(float(monto_declarado) - total_asientos, 2)
                 if abs(diferencia_ded) > 0.009:
                     c.setFont("Helvetica", 8)
                     c.setFillColorRGB(0.4, 0.4, 0.4)
-                    c.drawString(42, y - 10, "Además hay deducciones registradas sin asiento detallado: "
-                                             f"{simbolo} {diferencia_ded:,.2f}")
+                    c.drawString(42, y - BASE_TXT + 1.0,
+                                 "Además hay deducciones registradas sin asiento detallado: "
+                                 f"{simbolo} {diferencia_ded:,.2f}")
                     c.setFillColorRGB(0, 0, 0)
-                    y -= 12.0
-            y -= 20.0
+                    y -= ALTO_FILA - 3.0
+            y -= SALTO_FIN_TABLA
             return total_asientos
 
         _tabla_asientos("DETALLE DE DEDUCCIONES REGISTRADAS (ASIENTOS CON FECHA)",
@@ -3042,14 +3209,17 @@ class CalculoCobranzaApp:
         c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 13)
         c.drawString(48, y - 14, "TOTAL A COBRAR")
-        c.drawRightString(460, y - 14, f"{simbolo} {float(total or 0):,.2f}")
-        y -= 34.0
+        c.drawRightString(460, y - 14, f"{simbolo} {round(float(total or 0), 2):,.2f}")
+        y -= 30.0
 
-        if notas:
+        # Las notas se dibujan mientras quede sitio: nunca sobre el pie de página.
+        if notas and y > 58:
             c.setFont("Helvetica-Bold", 10)
             c.drawString(40, y, "NOTAS:")
             c.setFont("Helvetica", 9)
             for linea in str(notas).split("\n"):
+                if y < 54:      # no invadir el pie de página
+                    break
                 c.drawString(80, y, linea[:95])
                 y -= 12.0
             y -= 10.0
@@ -3156,7 +3326,8 @@ class CalculoCobranzaApp:
                 cursor.execute('''
                     SELECT plan, unidad, fecha, categoria, horas, minutos, cantidad,
                            distancia_desde, distancia_hasta, precio, motivo, monto, tipo
-                    FROM cobranza_deducciones_detalle WHERE id_cobranza=%s ORDER BY id
+                    FROM cobranza_deducciones_detalle WHERE id_cobranza=%s
+                    ORDER BY fecha ASC, id ASC
                 ''', (id_cob,))
                 deducciones_rows = cursor.fetchall()
             except Exception:
@@ -5638,6 +5809,7 @@ class AsistenteCobranza(ctk.CTkToplevel):
         self._mapa_ex = []
         total_ded = 0.0
         total_ex = 0.0
+        filas_du, filas_ex = [], []
         for u in self.app.unidades:
             precios = self._precios_unidad(u)
             for pos, a in enumerate(u.get("ded_asientos") or []):
@@ -5647,12 +5819,7 @@ class AsistenteCobranza(ctk.CTkToplevel):
                 cat = a.get("categoria") if a.get("categoria") in precios else "normal"
                 monto = horas_a * precios[cat]
                 total_ded += monto
-                self.tabla_du.insert("", tk.END, values=(
-                    str(u["unidad"]), etiqueta_fecha_hora(a.get("fecha")),
-                    ETIQUETAS_CORTAS.get(cat, cat), f"{float(a.get('horas') or 0):g}",
-                    f"{float(a.get('minutos') or 0):g}", str(a.get("motivo") or ""),
-                    formatear_moneda(monto)))
-                self._mapa_du.append((u, pos))
+                filas_du.append((u, pos, a, cat, monto))
             for pos, a in enumerate(u.get("extras_asientos") or []):
                 horas_a = horas_de_asiento(a)
                 if horas_a <= 0:
@@ -5660,12 +5827,20 @@ class AsistenteCobranza(ctk.CTkToplevel):
                 cat = a.get("categoria") if a.get("categoria") in precios else "normal"
                 monto = horas_a * precios[cat]
                 total_ex += monto
-                self.tabla_ex.insert("", tk.END, values=(
+                filas_ex.append((u, pos, a, cat, monto))
+        # Las listas se muestran ORDENADAS POR FECHA (de menor a mayor); los
+        # asientos sin fecha van al final. El orden es estable, así que en una
+        # misma fecha se mantiene el orden en que se registraron.
+        for tabla, filas, mapa in ((self.tabla_du, filas_du, self._mapa_du),
+                                   (self.tabla_ex, filas_ex, self._mapa_ex)):
+            for u, pos, a, cat, monto in sorted(
+                    filas, key=lambda f: clave_orden_fecha(f[2].get("fecha"))):
+                tabla.insert("", tk.END, values=(
                     str(u["unidad"]), etiqueta_fecha_hora(a.get("fecha")),
-                    ETIQUETAS_CORTAS.get(cat, cat), f"{float(a.get('horas') or 0):g}",
-                    f"{float(a.get('minutos') or 0):g}", str(a.get("motivo") or ""),
+                    ETIQUETAS_CORTAS.get(cat, cat), numero_2_decimales(a.get("horas")),
+                    numero_2_decimales(a.get("minutos")), str(a.get("motivo") or ""),
                     formatear_moneda(monto)))
-                self._mapa_ex.append((u, pos))
+                mapa.append((u, pos))
         try:
             self.lbl_tot_du.configure(
                 text="TOTAL DEDUCCIONES: " + formatear_moneda(total_ded))
