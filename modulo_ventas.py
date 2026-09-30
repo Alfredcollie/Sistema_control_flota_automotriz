@@ -195,6 +195,15 @@ def desformatear_numero(valor_str):
 # =========================================================
 # 🧮 REDONDEO DE LA DETRACCIÓN (norma del Banco de la Nación)
 # =========================================================
+def redondear_centavos(monto):
+    """Redondea un importe a 2 decimales (evita el ruido de coma flotante al
+    desagregar el IGV de un total que ya lo incluye)."""
+    try:
+        return round(float(monto) + 1e-9, 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def redondear_detraccion(monto):
     """Redondea al entero el monto de la detracción.
 
@@ -443,6 +452,7 @@ class FacturasEmitidasTab:
         self.bloquear_autocompletado_ruc = False
         self.ruta_archivo_temp = ""
         self.id_cobranza_seleccionada = None   # id de cobranza_quincenas vinculada a la factura en curso
+        self.total_cobranza_seleccionada = 0.0  # total de esa cobranza (YA INCLUYE IGV) que debe totalizar la factura
         self.cobranzas_pendientes = {}          # etiqueta -> datos de la cobranza pendiente de facturar
         
         # 🚀 VARIABLES DE PAGINACIÓN
@@ -934,8 +944,12 @@ class FacturasEmitidasTab:
 
         ctk.CTkLabel(self.f_form, text="🧾 Cobranza a Facturar (No Facturadas):", font=("Arial", 11, "bold"), text_color="#166534").pack(anchor="w", padx=10)
         self.combo_cobranza = ctk.CTkComboBox(self.f_form, state="readonly", command=self.al_seleccionar_cobranza)
-        self.combo_cobranza.pack(fill="x", padx=10, pady=(0, 8))
+        self.combo_cobranza.pack(fill="x", padx=10, pady=(0, 2))
         self.combo_cobranza.set("--- Seleccione Cobranza ---")
+        # 💡 Aviso: el total de la cobranza ya incluye IGV (es lo que paga el cliente menos detracción)
+        self.lbl_cobranza_info = ctk.CTkLabel(self.f_form, text="", font=("Arial", 9),
+                                              text_color="#166534", justify="left", wraplength=290)
+        self.lbl_cobranza_info.pack(anchor="w", padx=10, pady=(0, 8))
 
         ctk.CTkLabel(self.f_form, text="Nombre del Cliente:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.combo_cliente = ctk.CTkComboBox(self.f_form, command=self.al_seleccionar_cliente)
@@ -1132,6 +1146,8 @@ class FacturasEmitidasTab:
             else:
                 self.lbl_titulo_det.configure(text="Detracción (%):")
                 self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, "0")
+            # Si la venta viene de una cobranza, la base se reajusta según el IGV del documento
+            self.aplicar_monto_cobranza()
             self.actualizar_totales()
             self.sugerir_correlativo()
 
@@ -1311,11 +1327,38 @@ class FacturasEmitidasTab:
         self.ent_desc.delete(0, tk.END)
         self.ent_desc.insert(0, desc)
 
-        # Monto base (sin IGV): se coloca tal cual en "Monto Base"
-        self.ent_subtotal.delete(0, tk.END)
-        self.ent_subtotal.insert(0, f"{data['total']:.2f}")
-
+        # 💡 El TOTAL de la cobranza YA INCLUYE IGV: es el importe que paga el cliente
+        # (menos la detracción). Por eso NO se carga tal cual en "Monto Base": se
+        # desagrega el IGV para que Base + IGV = total de la cobranza.
+        self.total_cobranza_seleccionada = float(data["total"] or 0)
+        self.aplicar_monto_cobranza()
         self.actualizar_totales()
+
+    def aplicar_monto_cobranza(self, *args):
+        """Carga en "Monto Base" el importe de la cobranza seleccionada.
+
+        El total de la cobranza ya incluye IGV, así que en FACTURA se coloca el valor
+        sin IGV (total ÷ 1.18): al sumarle el 18% la factura totaliza exactamente lo
+        que dice la cobranza. En boleta/recibo (sin IGV) el monto va tal cual.
+        El cliente paga ese total menos la detracción.
+        """
+        total = float(getattr(self, "total_cobranza_seleccionada", 0.0) or 0.0)
+        if not hasattr(self, "ent_subtotal"):
+            return
+        tipo = self.combo_tipo.get() if hasattr(self, "combo_tipo") else ""
+        con_igv = "Factura" in tipo
+        base = round(total / 1.18, 2) if con_igv else round(total, 2)
+        if total > 0:
+            self.ent_subtotal.delete(0, tk.END)
+            self.ent_subtotal.insert(0, f"{base:.2f}")
+        if hasattr(self, "lbl_cobranza_info"):
+            if total <= 0:
+                self.lbl_cobranza_info.configure(text="")
+            elif con_igv:
+                self.lbl_cobranza_info.configure(
+                    text=f"Cobranza (IGV incluido): {formatear_moneda(total)} → Base sin IGV: {formatear_moneda(base)}")
+            else:
+                self.lbl_cobranza_info.configure(text=f"Cobranza: {formatear_moneda(total)} (sin IGV)")
 
     def detraccion_con_redondeo(self):
         """True si el usuario activó el check de redondeo de la detracción."""
@@ -1341,9 +1384,10 @@ class FacturasEmitidasTab:
             ui_pct = float(self.ent_detraccion.get() or 0)
             redondeo = self.detraccion_con_redondeo()
             if "Factura" in tipo:
-                igv = sub * 0.18; tot = sub + igv; det = tot * (ui_pct / 100.0)
-                if redondeo: det = redondear_detraccion(det)
-                neto = tot - det
+                igv = redondear_centavos(sub * 0.18); tot = redondear_centavos(sub + igv)
+                det = tot * (ui_pct / 100.0)
+                det = redondear_detraccion(det) if redondeo else redondear_centavos(det)
+                neto = redondear_centavos(tot - det)
                 self.lbl_impuesto.configure(text=f"IGV (18%): {formatear_moneda(igv)}")
                 self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}{self._etiqueta_redondeo(redondeo)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
@@ -1355,8 +1399,8 @@ class FacturasEmitidasTab:
             else:
                 # Boleta / otros: sin IGV, pero sí puede estar sujeta a detracción
                 det = sub * (ui_pct / 100.0)
-                if redondeo: det = redondear_detraccion(det)
-                neto = sub - det
+                det = redondear_detraccion(det) if redondeo else redondear_centavos(det)
+                neto = redondear_centavos(sub - det)
                 self.lbl_impuesto.configure(text=f"IGV (0%): {formatear_moneda(0)}")
                 self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}{self._etiqueta_redondeo(redondeo)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
@@ -1396,16 +1440,19 @@ class FacturasEmitidasTab:
         redondeo_det = self.detraccion_con_redondeo()
 
         if "Factura" in tipo: 
-            imp = subtotal * 0.18; tot_bruto = subtotal + imp; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
-            if redondeo_det: det_monto = redondear_detraccion(det_monto)
-            neto_nuevo = tot_bruto - det_monto
+            imp = redondear_centavos(subtotal * 0.18); tot_bruto = redondear_centavos(subtotal + imp)
+            det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
+            det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
+            neto_nuevo = redondear_centavos(tot_bruto - det_monto)
         elif "Recibo" in tipo: 
-            imp = subtotal * (ui_pct / 100.0); tot_bruto = subtotal; det_pct = 0.0; det_monto = 0.0
-            neto_nuevo = subtotal - imp  
+            imp = redondear_centavos(subtotal * (ui_pct / 100.0)); tot_bruto = redondear_centavos(subtotal)
+            det_pct = 0.0; det_monto = 0.0
+            neto_nuevo = redondear_centavos(subtotal - imp)  
         else: 
-            imp = 0.0; tot_bruto = subtotal; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
-            if redondeo_det: det_monto = redondear_detraccion(det_monto)
-            neto_nuevo = tot_bruto - det_monto
+            imp = 0.0; tot_bruto = redondear_centavos(subtotal); det_pct = ui_pct
+            det_monto = tot_bruto * (det_pct / 100.0)
+            det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
+            neto_nuevo = redondear_centavos(tot_bruto - det_monto)
 
         # 🚀 FACTURA LOCAL: solicitar el PDF; si no lo tiene, permitir cargarlo después.
         if not self.ruta_archivo_temp:
@@ -1529,6 +1576,9 @@ class FacturasEmitidasTab:
                 self.lbl_archivo.configure(text="Sin PDF adjunto", text_color="#999999")
             self.combo_oc.set("--- Sin Orden de Compra ---")
             self.id_cobranza_seleccionada = None
+            self.total_cobranza_seleccionada = 0.0
+            if hasattr(self, "lbl_cobranza_info"):
+                self.lbl_cobranza_info.configure(text="")
             self.combo_cobranza.set("--- Seleccione Cobranza ---")
             self.cargar_cobranzas_pendientes()
             self.cargar_datos_tabla(reset_pagina=True)
@@ -1972,16 +2022,19 @@ class FacturasEmitidasTab:
                     redondeo_det = False
 
                 if "Factura" in tipo: 
-                    imp = sub * 0.18; tot_bruto = sub + imp; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
-                    if redondeo_det: det_monto = redondear_detraccion(det_monto)
-                    neto_nuevo = tot_bruto - det_monto
+                    imp = redondear_centavos(sub * 0.18); tot_bruto = redondear_centavos(sub + imp)
+                    det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
+                    det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
+                    neto_nuevo = redondear_centavos(tot_bruto - det_monto)
                 elif "Recibo" in tipo: 
-                    imp = sub * (ui_pct / 100.0); tot_bruto = sub; det_pct = 0.0; det_monto = 0.0
-                    neto_nuevo = sub - imp
+                    imp = redondear_centavos(sub * (ui_pct / 100.0)); tot_bruto = redondear_centavos(sub)
+                    det_pct = 0.0; det_monto = 0.0
+                    neto_nuevo = redondear_centavos(sub - imp)
                 else: 
-                    imp = 0.0; tot_bruto = sub; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
-                    if redondeo_det: det_monto = redondear_detraccion(det_monto)
-                    neto_nuevo = tot_bruto - det_monto
+                    imp = 0.0; tot_bruto = redondear_centavos(sub); det_pct = ui_pct
+                    det_monto = tot_bruto * (det_pct / 100.0)
+                    det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
+                    neto_nuevo = redondear_centavos(tot_bruto - det_monto)
 
                 conn2 = conectar_db()
                 if not conn2: return
