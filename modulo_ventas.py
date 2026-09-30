@@ -6,6 +6,7 @@ import os
 import sys
 import shutil
 import calendar
+import math
 import re
 import json
 import subprocess 
@@ -190,6 +191,25 @@ def desformatear_numero(valor_str):
         val = val.replace(",", "")
     try: return float(val)
     except ValueError: return 0.0
+
+# =========================================================
+# 🧮 REDONDEO DE LA DETRACCIÓN (norma del Banco de la Nación)
+# =========================================================
+def redondear_detraccion(monto):
+    """Redondea al entero el monto de la detracción.
+
+    - Fracción menor a 0.50  → se suprimen los decimales (baja al entero).
+    - Fracción igual o mayor a 0.50 → se ajusta a la unidad inmediata superior.
+    """
+    try:
+        valor = float(monto)
+    except (TypeError, ValueError):
+        return 0.0
+    if valor < 0:
+        return -redondear_detraccion(-valor)
+    entero = math.floor(valor)
+    return float(entero + 1) if (valor - entero) >= 0.5 else float(entero)
+
 
 def obtener_ruta_base_drive():
     """Carpeta base para guardar archivos.
@@ -407,6 +427,8 @@ class CalendarioNativo(ctk.CTkToplevel):
 
 
 _SCHEMA_VENTAS_OK = False
+# True solo si la columna 'det_redondeo' existe en 'facturas_emitidas' (se verifica al abrir el módulo).
+_COLUMNA_DET_REDONDEO = False
 
 # =========================================================
 # PESTAÑA 1: FACTURAS EMITIDAS
@@ -439,7 +461,7 @@ class FacturasEmitidasTab:
         if _SCHEMA_VENTAS_OK: return
 
         def tarea_curacion():
-            global _SCHEMA_VENTAS_OK
+            global _SCHEMA_VENTAS_OK, _COLUMNA_DET_REDONDEO
             conn = conectar_db(silencioso=True)
             if not conn: return
             try:
@@ -464,6 +486,16 @@ class FacturasEmitidasTab:
                 for query in columnas_nuevas:
                     try: cursor.execute(query); conn.commit()
                     except: conn.rollback()
+
+                # 🧮 Marca si la factura se registró con la detracción redondeada al entero.
+                # Solo se consulta/escribe esa columna si realmente existe en la BD.
+                try:
+                    cursor.execute("ALTER TABLE facturas_emitidas ADD COLUMN IF NOT EXISTS det_redondeo BOOLEAN DEFAULT FALSE")
+                    conn.commit()
+                    _COLUMNA_DET_REDONDEO = True
+                except Exception:
+                    conn.rollback()
+                    _COLUMNA_DET_REDONDEO = False
 
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS ordenes_compra_clientes (
@@ -933,6 +965,17 @@ class FacturasEmitidasTab:
         self.ent_detraccion.insert(0, CONFIG_REGIONAL.get("detraccion_porcentaje", "12"))
         self.ent_detraccion.bind("<KeyRelease>", self.actualizar_totales)
 
+        # 🧮 Redondeo opcional de la detracción al entero (norma del Banco de la Nación)
+        self.chk_redondeo_det = ctk.CTkCheckBox(
+            self.f_form, text="🧮 Redondear detracción al entero",
+            font=("Arial", 11, "bold"), checkbox_width=18, checkbox_height=18,
+            command=self.actualizar_totales)
+        self.chk_redondeo_det.pack(anchor="w", padx=10, pady=(0, 0))
+        ctk.CTkLabel(self.f_form,
+                     text="Fracción < 0.50: baja al entero · Fracción ≥ 0.50: sube a la unidad superior",
+                     font=("Arial", 9), text_color="#7a7a7a", justify="left",
+                     wraplength=290).pack(anchor="w", padx=10, pady=(0, 8))
+
         f_tot = ctk.CTkFrame(self.f_form, fg_color="#ffffff", border_width=1, border_color="#ccc")
         f_tot.pack(fill="x", padx=10, pady=(5, 10))
         self.lbl_impuesto = ctk.CTkLabel(f_tot, text="IGV (18%): 0.00", font=("Arial", 11), text_color="#555")
@@ -1070,6 +1113,12 @@ class FacturasEmitidasTab:
             self.combo_oc.set("--- Sin Orden de Compra ---")
 
     def on_tipo_change(self, choice):
+        if hasattr(self, 'chk_redondeo_det'):
+            # El redondeo solo aplica a la detracción (no a la retención de recibos)
+            try:
+                self.chk_redondeo_det.configure(state="disabled" if "Recibo" in choice else "normal")
+            except Exception:
+                pass
         if hasattr(self, 'ent_detraccion'):
             self.ent_detraccion.configure(state="normal")
             if "Recibo" in choice:
@@ -1268,6 +1317,20 @@ class FacturasEmitidasTab:
 
         self.actualizar_totales()
 
+    def detraccion_con_redondeo(self):
+        """True si el usuario activó el check de redondeo de la detracción."""
+        chk = getattr(self, "chk_redondeo_det", None)
+        if chk is None:
+            return False
+        try:
+            return bool(chk.get())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _etiqueta_redondeo(redondeo):
+        return " (redondeada)" if redondeo else ""
+
     def actualizar_totales(self, *args):
         if not hasattr(self, 'combo_tipo') or not hasattr(self, 'ent_subtotal') or not hasattr(self, 'ent_detraccion'):
             return
@@ -1276,15 +1339,26 @@ class FacturasEmitidasTab:
         try:
             sub = float(self.ent_subtotal.get() or 0)
             ui_pct = float(self.ent_detraccion.get() or 0)
+            redondeo = self.detraccion_con_redondeo()
             if "Factura" in tipo:
-                igv = sub * 0.18; tot = sub + igv; det = tot * (ui_pct / 100.0); neto = tot - det
+                igv = sub * 0.18; tot = sub + igv; det = tot * (ui_pct / 100.0)
+                if redondeo: det = redondear_detraccion(det)
+                neto = tot - det
                 self.lbl_impuesto.configure(text=f"IGV (18%): {formatear_moneda(igv)}")
-                self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}")
+                self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}{self._etiqueta_redondeo(redondeo)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
             elif "Recibo" in tipo:
                 ret = sub * (ui_pct / 100.0); neto = sub - ret
                 self.lbl_impuesto.configure(text=f"Retención ({ui_pct:g}%): -{formatear_moneda(ret)}")
                 self.lbl_detraccion.configure(text=f"Detracción (0%): -{formatear_moneda(0)}")
+                self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
+            else:
+                # Boleta / otros: sin IGV, pero sí puede estar sujeta a detracción
+                det = sub * (ui_pct / 100.0)
+                if redondeo: det = redondear_detraccion(det)
+                neto = sub - det
+                self.lbl_impuesto.configure(text=f"IGV (0%): {formatear_moneda(0)}")
+                self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}{self._etiqueta_redondeo(redondeo)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
         except ValueError: pass
 
@@ -1318,14 +1392,19 @@ class FacturasEmitidasTab:
             ui_pct = float(self.ent_detraccion.get() or 0)
         except ValueError: return messagebox.showerror("Error", "Los montos deben ser numéricos.")
 
+        # 🧮 Redondeo opcional de la detracción al entero (check del formulario)
+        redondeo_det = self.detraccion_con_redondeo()
+
         if "Factura" in tipo: 
             imp = subtotal * 0.18; tot_bruto = subtotal + imp; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
+            if redondeo_det: det_monto = redondear_detraccion(det_monto)
             neto_nuevo = tot_bruto - det_monto
         elif "Recibo" in tipo: 
             imp = subtotal * (ui_pct / 100.0); tot_bruto = subtotal; det_pct = 0.0; det_monto = 0.0
             neto_nuevo = subtotal - imp  
         else: 
             imp = 0.0; tot_bruto = subtotal; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
+            if redondeo_det: det_monto = redondear_detraccion(det_monto)
             neto_nuevo = tot_bruto - det_monto
 
         # 🚀 FACTURA LOCAL: solicitar el PDF; si no lo tiene, permitir cargarlo después.
@@ -1414,10 +1493,18 @@ class FacturasEmitidasTab:
                     liberar_conexion(conn)
                     return messagebox.showerror("Error", f"Fallo al guardar archivo:\n{e}")
 
-            cursor.execute("""
-                INSERT INTO facturas_emitidas (tipo_documento, numero_documento, fecha, cliente, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, orden_compra)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (tipo, nro_doc, fecha, cliente, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, oc_sel))
+            columnas_ins = ["tipo_documento", "numero_documento", "fecha", "cliente", "descripcion",
+                            "evento_asociado", "subtotal", "impuesto", "total", "archivo_ruta",
+                            "dias_credito", "det_porcentaje", "det_monto", "orden_compra"]
+            valores_ins = [tipo, nro_doc, fecha, cliente, desc, evento, subtotal, imp, tot_bruto,
+                           ruta_para_guardar(ruta_final), dias, det_pct, det_monto, oc_sel]
+            if _COLUMNA_DET_REDONDEO and "Recibo" not in tipo:
+                columnas_ins.append("det_redondeo")
+                valores_ins.append(bool(redondeo_det))
+            cursor.execute(
+                f"INSERT INTO facturas_emitidas ({', '.join(columnas_ins)}) "
+                f"VALUES ({', '.join(['%s'] * len(columnas_ins))})",
+                tuple(valores_ins))
             conn.commit()
 
             # 🚀 Marca la cobranza vinculada como FACTURADA (deja de aparecer en el desplegable,
@@ -1594,7 +1681,12 @@ class FacturasEmitidasTab:
         if not conn: return
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT tipo_documento, numero_documento, fecha, cliente, descripcion, evento_asociado, subtotal, dias_credito, COALESCE(det_porcentaje, 0), impuesto, total, enlace_pdf_sunat, estado_sunat, orden_compra FROM facturas_emitidas WHERE id = %s", (id_doc,))
+            cols_reg = ("tipo_documento, numero_documento, fecha, cliente, descripcion, evento_asociado, "
+                        "subtotal, dias_credito, COALESCE(det_porcentaje, 0), impuesto, total, "
+                        "enlace_pdf_sunat, estado_sunat, orden_compra, COALESCE(det_monto, 0)")
+            if _COLUMNA_DET_REDONDEO:
+                cols_reg += ", COALESCE(det_redondeo, FALSE)"
+            cursor.execute(f"SELECT {cols_reg} FROM facturas_emitidas WHERE id = %s", (id_doc,))
             reg = cursor.fetchone()
             
             cursor.execute("SELECT ruc, direccion_fiscal, correo FROM clientes WHERE TRIM(UPPER(nombre_empresa)) = TRIM(UPPER(%s))", (cli_str,))
@@ -1608,6 +1700,17 @@ class FacturasEmitidasTab:
         if not reg: return
         enlace_sunat = reg[11]
         estado_sunat_db = reg[12]
+
+        # 🧮 Estado inicial del check de redondeo de la detracción:
+        # se lee de la BD si la columna existe; si no, se deduce del monto guardado
+        # (un monto entero que no coincide con el cálculo exacto solo puede venir de un redondeo).
+        det_monto_guardado = float(reg[14]) if len(reg) > 14 and reg[14] else 0.0
+        redondeo_inicial = bool(reg[15]) if (len(reg) > 15 and reg[15] is not None) else False
+        if len(reg) <= 15 and "Recibo" not in str(reg[0]) and det_monto_guardado:
+            base_calc = float(reg[6] or 0) * (1.18 if "Factura" in str(reg[0]) else 1.0)
+            exacto = base_calc * (float(reg[8] or 0) / 100.0)
+            redondeo_inicial = (abs(det_monto_guardado - round(det_monto_guardado)) < 0.005
+                                and abs(det_monto_guardado - exacto) > 0.005)
         
         ya_anulado = False
         if estado_sunat_db and "Anulada" in str(estado_sunat_db):
@@ -1750,9 +1853,15 @@ class FacturasEmitidasTab:
             f_cont.pack(fill="both", expand=True, padx=20, pady=5)
 
             lbl_tit_det = ctk.CTkLabel(f_cont, text="Detracción (%):", font=("Arial", 11, "bold"))
-            
+            chk_redondeo = None      # se crea más abajo, junto al campo de porcentaje
+
             def toggle_detraccion_edit(*args):
                 tipo_val = cmb_tipo.get()
+                if chk_redondeo is not None:
+                    try:
+                        chk_redondeo.configure(state="disabled" if "Recibo" in tipo_val else "normal")
+                    except Exception:
+                        pass
                 if "Recibo" in tipo_val:
                     lbl_tit_det.configure(text="Retención (%):")
                     if "8%" in tipo_val:
@@ -1816,6 +1925,16 @@ class FacturasEmitidasTab:
             lbl_tit_det.pack(anchor="w")
             ent_det = ctk.CTkEntry(f_cont)
             ent_det.pack(fill="x", pady=(0, 10))
+
+            # 🧮 Redondeo de la detracción al entero (fracción < 0.50 baja, ≥ 0.50 sube)
+            chk_redondeo = ctk.CTkCheckBox(f_cont, text="🧮 Redondear detracción al entero",
+                                           font=("Arial", 11, "bold"),
+                                           checkbox_width=18, checkbox_height=18)
+            chk_redondeo.pack(anchor="w", pady=(0, 10))
+            if redondeo_inicial:
+                chk_redondeo.select()
+            if "Recibo" in str(reg[0]):
+                chk_redondeo.configure(state="disabled")
             
             if "Recibo" in str(reg[0]):
                 lbl_tit_det.configure(text="Retención (%):")
@@ -1846,14 +1965,22 @@ class FacturasEmitidasTab:
                     messagebox.showerror("Error", "Monto, días y porcentaje deben ser numéricos.", parent=v_mod)
                     return
 
+                # 🧮 Redondeo opcional de la detracción al entero (check de esta ventana)
+                try:
+                    redondeo_det = bool(chk_redondeo.get()) and "Recibo" not in tipo
+                except Exception:
+                    redondeo_det = False
+
                 if "Factura" in tipo: 
                     imp = sub * 0.18; tot_bruto = sub + imp; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
+                    if redondeo_det: det_monto = redondear_detraccion(det_monto)
                     neto_nuevo = tot_bruto - det_monto
                 elif "Recibo" in tipo: 
                     imp = sub * (ui_pct / 100.0); tot_bruto = sub; det_pct = 0.0; det_monto = 0.0
                     neto_nuevo = sub - imp
                 else: 
                     imp = 0.0; tot_bruto = sub; det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
+                    if redondeo_det: det_monto = redondear_detraccion(det_monto)
                     neto_nuevo = tot_bruto - det_monto
 
                 conn2 = conectar_db()
@@ -1916,8 +2043,16 @@ class FacturasEmitidasTab:
                             return messagebox.showerror("Bloqueo por Crédito", msg, parent=v_mod)
 
 
-                    c2.execute("UPDATE facturas_emitidas SET tipo_documento=%s, numero_documento=%s, fecha=%s, cliente=%s, descripcion=%s, evento_asociado=%s, subtotal=%s, impuesto=%s, total=%s, dias_credito=%s, det_porcentaje=%s, det_monto=%s, orden_compra=%s WHERE id=%s",
-                               (tipo, nro_doc, fecha, cli, desc, evento, sub, imp, tot_bruto, dias, det_pct, det_monto, oc_sel, id_doc))
+                    sql_upd = ("UPDATE facturas_emitidas SET tipo_documento=%s, numero_documento=%s, fecha=%s, "
+                               "cliente=%s, descripcion=%s, evento_asociado=%s, subtotal=%s, impuesto=%s, total=%s, "
+                               "dias_credito=%s, det_porcentaje=%s, det_monto=%s, orden_compra=%s{extra} WHERE id=%s")
+                    vals_upd = [tipo, nro_doc, fecha, cli, desc, evento, sub, imp, tot_bruto, dias, det_pct, det_monto, oc_sel]
+                    extra_redondeo = ""
+                    if _COLUMNA_DET_REDONDEO:
+                        extra_redondeo = ", det_redondeo=%s"
+                        vals_upd.append(bool(redondeo_det))
+                    vals_upd.append(id_doc)
+                    c2.execute(sql_upd.format(extra=extra_redondeo), tuple(vals_upd))
                     conn2.commit()
                     cache_sistema.invalidar()
                     registrar_auditoria(self.app_padre.usuario_activo, "Facturas Emitidas", f"Modificó la factura ID {id_doc}")
