@@ -197,6 +197,45 @@ def desformatear_numero(valor_str):
     try: return float(val)
     except ValueError: return 0.0
 
+def parsear_monto_texto(texto):
+    """Convierte lo escrito por el usuario en un monto (float >= 0).
+
+    Acepta formatos como 1000, 1000.50, 1.000,50, 1,000.50 o 12,50.
+    Lanza ValueError solo cuando el texto no contiene ningún dígito.
+    """
+    texto = str(texto or "").strip().replace(" ", "")
+    if not texto:
+        return 0.0
+    try:
+        return max(float(texto), 0.0)
+    except ValueError:
+        pass
+    if re.search(r"\d", texto) is None:
+        raise ValueError(texto)
+
+    limpio = re.sub(r"[^\d.,]", "", texto)
+    # El separador decimal es el que aparece más a la derecha; si el grupo final
+    # tiene 3 dígitos se asume que es separador de miles.
+    if "," in limpio and "." in limpio:
+        decimal = "," if limpio.rfind(",") > limpio.rfind(".") else "."
+    elif "," in limpio:
+        decimal = "," if len(limpio.split(",")[-1]) <= 2 else None
+    elif "." in limpio:
+        decimal = "." if len(limpio.split(".")[-1]) <= 2 else None
+    else:
+        decimal = None
+
+    if decimal:
+        entero, _sep, dec = limpio.rpartition(decimal)
+        entero = re.sub(r"[.,]", "", entero) or "0"
+        limpio = f"{entero}.{dec}"
+    else:
+        limpio = re.sub(r"[.,]", "", limpio)
+    try:
+        return max(float(limpio), 0.0)
+    except ValueError:
+        raise ValueError(texto)
+
 def obtener_ruta_base_drive():
     """Carpeta base para guardar archivos.
 
@@ -472,6 +511,10 @@ class FacturasRecibidasTab:
         self.bloquear_autocompletado_ruc = False
         self._ruc_autocompletado = False
         self.ruta_archivo_temp = ""
+
+        # 💰 Modo de ingreso del monto: "BASE" (monto sin IGV) o "CON_IGV" (monto total del documento).
+        # El usuario elige con el selector "Monto Base / Monto con IGV" y el sistema calcula el resto.
+        self.modo_monto = "BASE"
         
         # VARIABLES DE PAGINACIÓN (LAZY LOADING)
         self.pagina_actual = 1
@@ -615,6 +658,8 @@ class FacturasRecibidasTab:
                 else:
                     monto_base = t
             if monto_base > 0:
+                # El PDF entrega el monto BASE: se fuerza ese modo para no reinterpretarlo.
+                self._poner_modo_monto("BASE")
                 self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{monto_base:.2f}")
 
             self.ruta_archivo_temp = ruta
@@ -684,6 +729,8 @@ class FacturasRecibidasTab:
                     
             monetary = root.find('.//LegalMonetaryTotal')
             if monetary is not None:
+                # El XML entrega el monto BASE (TaxExclusiveAmount): se fuerza ese modo.
+                self._poner_modo_monto("BASE")
                 sub_node = monetary.find('TaxExclusiveAmount')
                 if sub_node is not None and sub_node.text:
                     self.ent_subtotal.delete(0, tk.END)
@@ -812,24 +859,21 @@ class FacturasRecibidasTab:
         ejecutar_en_hilo(v_sire, ejecucion_sire, aplicar=avanzar_sire, al_terminar=terminar_sire)
 
     def agregar_nueva_categoria(self):
-        nueva = simpledialog.askstring("Nueva Categoría", "Ingrese el nombre de la nueva categoría de gasto:", parent=self.main_root.winfo_toplevel())
-        if nueva:
-            nueva = nueva.strip()
-            if nueva:
-                try:
-                    from modulo_banco import cargar_categorias_gastos, guardar_categorias_gastos
-                    cats = cargar_categorias_gastos()
-                    cats.setdefault("Otros", [])
-                    if nueva not in cats["Otros"]:
-                        cats["Otros"].append(nueva)
-                        guardar_categorias_gastos(cats)
-                    self.cargar_categorias()
-                    etiqueta = f"Otros - {nueva}"
-                    if etiqueta in self.combo_categoria.cget("values"):
-                        self.combo_categoria.set(etiqueta)
-                    messagebox.showinfo("Éxito", f"Categoría '{nueva}' agregada y guardada.")
-                except Exception as e:
-                    messagebox.showerror("Error", f"No se pudo guardar la categoría:\n{e}")
+        # Se abre EXACTAMENTE la misma ventana que usa el módulo de Banco
+        # (Conciliación → Agregar Movimiento → "⚙️ Gestionar Categorías"), para que
+        # las categorías creadas aquí queden guardadas y disponibles en ambos módulos.
+        from modulo_banco import abrir_gestion_categorias_gastos
+        abrir_gestion_categorias_gastos(
+            self.main_root.winfo_toplevel(),
+            al_guardar=self.refrescar_categorias_gastos,
+        )
+
+    def refrescar_categorias_gastos(self):
+        """Vuelve a leer las categorías guardadas y actualiza el desplegable."""
+        try:
+            self.cargar_categorias()
+        except Exception as e:
+            print(f"No se pudieron refrescar las categorías de gastos: {e}")
 
     def crear_interfaz(self):
         frame_split = ctk.CTkFrame(self.tab_frame, fg_color="transparent")
@@ -901,7 +945,8 @@ class FacturasRecibidasTab:
         f_cat.pack(fill="x", padx=10, pady=(0, 8))
         self.combo_categoria = ctk.CTkComboBox(f_cat, state="readonly")
         self.combo_categoria.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(f_cat, text="+", width=30, fg_color="#1f538d", hover_color="#163b65", command=self.agregar_nueva_categoria).pack(side="right", padx=(5, 0))
+        # Abre la MISMA ventana de categorías que el módulo de Banco
+        ctk.CTkButton(f_cat, text="⚙️", width=34, fg_color="#8e44ad", hover_color="#703688", command=self.agregar_nueva_categoria).pack(side="right", padx=(5, 0))
         self.cargar_categorias()
 
         ctk.CTkLabel(self.f_form, text="Vehículo Asignado (Placa):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
@@ -909,10 +954,26 @@ class FacturasRecibidasTab:
         self.combo_evento.pack(fill="x", padx=10, pady=(0, 8))
         self.cargar_vehiculos_bd()
 
-        ctk.CTkLabel(self.f_form, text="Monto Base (Subtotal):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.ent_subtotal = ctk.CTkEntry(self.f_form)
-        self.ent_subtotal.pack(fill="x", padx=10, pady=(0, 8))
+        # 💰 El monto se puede digitar SIN IGV (monto base) o CON IGV (total del documento)
+        ctk.CTkLabel(self.f_form, text="Tipo de Monto a Ingresar:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+        self.seg_modo_monto = ctk.CTkSegmentedButton(
+            self.f_form,
+            values=["Monto Base (sin IGV)", "Monto con IGV (Total)"],
+            font=("Arial", 10, "bold"),
+            command=self.on_cambiar_modo_monto
+        )
+        self.seg_modo_monto.pack(fill="x", padx=10, pady=(0, 6))
+        self.seg_modo_monto.set("Monto Base (sin IGV)")
+
+        self.lbl_monto_entrada = ctk.CTkLabel(self.f_form, text="Monto Base (Subtotal):", font=("Arial", 11, "bold"))
+        self.lbl_monto_entrada.pack(anchor="w", padx=10)
+        self.ent_subtotal = ctk.CTkEntry(self.f_form, placeholder_text="Ej. 100.00")
+        self.ent_subtotal.pack(fill="x", padx=10, pady=(0, 4))
         self.ent_subtotal.bind("<KeyRelease>", self.actualizar_totales)
+
+        self.lbl_nota_modo = ctk.CTkLabel(self.f_form, text="", font=("Arial", 10, "italic"), text_color="#555555", wraplength=300, justify="left")
+        self.lbl_nota_modo.pack(anchor="w", padx=10, pady=(0, 8))
+        self._refrescar_etiqueta_modo()
 
         self.lbl_titulo_det = ctk.CTkLabel(self.f_form, text="Detracción (%):", font=("Arial", 11, "bold"))
         self.lbl_titulo_det.pack(anchor="w", padx=10)
@@ -923,8 +984,12 @@ class FacturasRecibidasTab:
 
         f_tot = ctk.CTkFrame(self.f_form, fg_color="#ffffff", border_width=1, border_color="#e0e0e0")
         f_tot.pack(fill="x", padx=10, pady=(5, 10))
+        self.lbl_base = ctk.CTkLabel(f_tot, text=f"Monto Base (Subtotal): {formatear_moneda(0)}", font=("Arial", 11), text_color="#555")
+        self.lbl_base.pack(anchor="w", padx=10, pady=(5, 0))
         self.lbl_impuesto = ctk.CTkLabel(f_tot, text=f"IGV (18%): {formatear_moneda(0)}", font=("Arial", 11), text_color="#555")
-        self.lbl_impuesto.pack(anchor="w", padx=10, pady=(5, 0))
+        self.lbl_impuesto.pack(anchor="w", padx=10, pady=(0, 0))
+        self.lbl_bruto = ctk.CTkLabel(f_tot, text=f"Total con IGV: {formatear_moneda(0)}", font=("Arial", 11, "bold"), text_color="#1f538d")
+        self.lbl_bruto.pack(anchor="w", padx=10, pady=(0, 0))
         self.lbl_detraccion = ctk.CTkLabel(f_tot, text=f"Detracción (0%): -{formatear_moneda(0)}", font=("Arial", 11), text_color="#e74c3c")
         self.lbl_detraccion.pack(anchor="w", padx=10, pady=(0, 0))
         self.lbl_total = ctk.CTkLabel(f_tot, text=f"Neto a Pagar: {formatear_moneda(0)}", font=("Arial", 13, "bold"), text_color="#1f538d")
@@ -1340,32 +1405,121 @@ class FacturasRecibidasTab:
         if self.combo_evento.get() not in lista_vehiculos:
             self.combo_evento.set("GENERAL / OFICINA")
 
+    # =========================================================================
+    # 💰 MONTO BASE (SIN IGV)  /  MONTO CON IGV (TOTAL)
+    # =========================================================================
+    def _es_factura(self):
+        return "Factura" in self.combo_tipo.get()
+
+    def _tasa_igv(self):
+        """Tasa de IGV según el tipo de documento elegido."""
+        return 0.105 if "10.5%" in self.combo_tipo.get() else 0.18
+
+    def _monto_tecleado(self):
+        """Número escrito en la casilla del monto (0.0 si está vacía)."""
+        return parsear_monto_texto(self.ent_subtotal.get())
+
+    def _montos_ingresados(self):
+        """Devuelve (subtotal, igv, total) según el modo elegido por el usuario.
+
+        - Modo "BASE"    : lo escrito es el monto SIN IGV  -> se calcula el IGV y el total.
+        - Modo "CON_IGV" : lo escrito es el monto CON IGV  -> se calcula la base y el IGV.
+        """
+        valor = self._monto_tecleado()
+        if self._es_factura():
+            tasa = self._tasa_igv()
+            if self.modo_monto == "CON_IGV":
+                total = valor
+                subtotal = total / (1.0 + tasa)
+                igv = total - subtotal
+            else:
+                subtotal = valor
+                igv = subtotal * tasa
+                total = subtotal + igv
+        else:
+            # Boletas, recibos por honorarios y otros: no llevan IGV en el monto.
+            subtotal = valor
+            igv = 0.0
+            total = valor
+        return round(subtotal, 2), round(igv, 2), round(total, 2)
+
+    def _refrescar_etiqueta_modo(self):
+        """Ajusta el rótulo de la casilla y el aviso según el modo y el tipo de documento."""
+        if not hasattr(self, "lbl_monto_entrada") or not hasattr(self, "lbl_nota_modo"):
+            return
+        con_igv = self.modo_monto == "CON_IGV"
+        if self._es_factura():
+            self.lbl_monto_entrada.configure(text="Monto Total con IGV:" if con_igv else "Monto Base (Subtotal):")
+            self.lbl_nota_modo.configure(
+                text=("Digite el monto final del documento (con IGV): la base y el IGV se calculan solos."
+                      if con_igv else
+                      "Digite el monto sin IGV: el IGV y el total se calculan solos."))
+        else:
+            self.lbl_monto_entrada.configure(text="Monto Total:" if con_igv else "Monto Base (Subtotal):")
+            self.lbl_nota_modo.configure(text="Este tipo de documento no lleva IGV: el monto se registra tal cual.")
+
+    def _poner_modo_monto(self, modo):
+        """Fija el modo sin recalcular lo escrito (se usa al autocargar PDF/XML)."""
+        self.modo_monto = "CON_IGV" if modo == "CON_IGV" else "BASE"
+        try:
+            self.seg_modo_monto.set("Monto con IGV (Total)" if self.modo_monto == "CON_IGV" else "Monto Base (sin IGV)")
+        except Exception:
+            pass
+        self._refrescar_etiqueta_modo()
+
+    def on_cambiar_modo_monto(self, choice=None):
+        """Cambia entre 'monto base' y 'monto con IGV' conservando el monto real."""
+        nuevo = "CON_IGV" if "con igv" in str(choice or "").lower() else "BASE"
+        if nuevo != self.modo_monto:
+            try:
+                subtotal, _igv, total = self._montos_ingresados()
+            except ValueError:
+                subtotal = total = 0.0
+            self.modo_monto = nuevo
+            nuevo_valor = total if nuevo == "CON_IGV" else subtotal
+            self.ent_subtotal.delete(0, tk.END)
+            if nuevo_valor > 0:
+                self.ent_subtotal.insert(0, f"{nuevo_valor:.2f}")
+        self._refrescar_etiqueta_modo()
+        self.actualizar_totales()
+
     def actualizar_totales(self, *args):
+        if not hasattr(self, "ent_subtotal"):
+            return
+        self._refrescar_etiqueta_modo()
         tipo = self.combo_tipo.get()
         try:
-            sub = float(self.ent_subtotal.get() or 0)
+            subtotal, igv, total = self._montos_ingresados()
             ui_pct = float(self.ent_detraccion.get() or 0)
-            
-            if "Factura" in tipo:
-                if "10.5%" in tipo:
-                    igv = sub * 0.105
-                    txt_igv = "10.5%"
-                else:
-                    igv = sub * 0.18
-                    txt_igv = "18%"
-                    
-                tot = sub + igv
-                det = tot * (ui_pct / 100.0)
-                neto = tot - det
-                self.lbl_impuesto.configure(text=f"IGV ({txt_igv}): {formatear_moneda(igv)}")
-                self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}")
-                self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
-            elif "Recibo" in tipo:
-                ret = sub * (ui_pct / 100.0); neto = sub - ret
-                self.lbl_impuesto.configure(text=f"Retención ({ui_pct:g}%): -{formatear_moneda(ret)}")
-                self.lbl_detraccion.configure(text=f"Detracción (0%): -{formatear_moneda(0)}")
-                self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
-        except ValueError: pass
+        except ValueError:
+            return
+
+        if "Factura" in tipo:
+            txt_igv = "10.5%" if "10.5%" in tipo else "18%"
+            det = total * (ui_pct / 100.0)
+            neto = total - det
+            self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
+            self.lbl_impuesto.configure(text=f"IGV ({txt_igv}): {formatear_moneda(igv)}")
+            self.lbl_bruto.configure(text=f"Total con IGV: {formatear_moneda(total)}")
+            self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}")
+            self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
+        elif "Recibo" in tipo:
+            ret = subtotal * (ui_pct / 100.0)
+            neto = subtotal - ret
+            self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
+            self.lbl_impuesto.configure(text=f"Retención ({ui_pct:g}%): -{formatear_moneda(ret)}")
+            self.lbl_bruto.configure(text=f"Total del Documento: {formatear_moneda(total)}")
+            self.lbl_detraccion.configure(text=f"Detracción (0%): -{formatear_moneda(0)}")
+            self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
+        else:
+            # Boletas / otros documentos sin IGV
+            det = total * (ui_pct / 100.0)
+            neto = total - det
+            self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
+            self.lbl_impuesto.configure(text=f"IGV (0%): {formatear_moneda(0)}")
+            self.lbl_bruto.configure(text=f"Total del Documento: {formatear_moneda(total)}")
+            self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}")
+            self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
 
     def seleccionar_archivo(self):
         ruta = seleccionar_archivo_dialogo("Seleccionar Documento", [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg;*.xml")])
@@ -1391,10 +1545,16 @@ class FacturasRecibidasTab:
         categoria = self.combo_categoria.get().strip() or "GENERAL / NO ASIGNADO"
         
         try: 
-            subtotal = float(self.ent_subtotal.get() or 0)
             dias = int(self.ent_dias.get().strip() or 0)
             ui_pct = float(self.ent_detraccion.get() or 0)
         except ValueError: return messagebox.showerror("Error", "Los montos deben ser numéricos.")
+
+        # 💰 Los montos salen de la casilla única según el modo elegido
+        # (Monto Base sin IGV o Monto con IGV): el resto se calcula automáticamente.
+        try:
+            subtotal, imp_calculado, total_calculado = self._montos_ingresados()
+        except ValueError:
+            return messagebox.showerror("Error", "El monto ingresado no es válido.")
 
         if not prov or not ruc_val: return messagebox.showwarning("Atención", "Llene los campos obligatorios.")
 
@@ -1409,8 +1569,8 @@ class FacturasRecibidasTab:
                 finally: liberar_conexion(conn_check)
 
         if "Factura" in tipo: 
-            imp = subtotal * 0.105 if "10.5%" in tipo else subtotal * 0.18
-            tot_bruto = subtotal + imp
+            imp = imp_calculado
+            tot_bruto = total_calculado
             det_pct = ui_pct
             det_monto = tot_bruto * (det_pct / 100.0)
         elif "Recibo" in tipo: 
@@ -1774,6 +1934,85 @@ class FacturasRecibidasTab:
         ent_tot = ctk.CTkEntry(f_montos, width=100)
         ent_tot.grid(row=1, column=2, padx=5)
         ent_tot.insert(0, str(e_tot))
+
+        # 💰 Igual que en el registro: se puede escribir el monto BASE o el monto ya CON IGV
+        # y el sistema calcula automáticamente la base, el IGV y el total.
+        seg_edit = ctk.CTkSegmentedButton(
+            f_form, values=["Monto Base (sin IGV)", "Monto con IGV (Total)"], font=("Arial", 10, "bold"),
+            command=lambda valor: cambiar_modo_edit(valor))
+        seg_edit.pack(fill="x", padx=5, pady=(10, 0))
+        seg_edit.set("Monto Base (sin IGV)")
+        lbl_edit_nota = ctk.CTkLabel(f_form, text="", font=("Arial", 10, "italic"), text_color="#555555", wraplength=400, justify="left")
+        lbl_edit_nota.pack(anchor="w", padx=5)
+        estado_edit = {"modo": "BASE"}
+
+        def _es_factura_edit():
+            return "Factura" in str(ent_tipo.get() or "")
+
+        def _es_boleta_edit():
+            return "Boleta" in str(ent_tipo.get() or "")
+
+        def _tasa_edit():
+            texto = str(ent_tipo.get() or "")
+            return 0.105 if "10.5%" in texto else 0.18
+
+        def _num_edit(entrada):
+            try:
+                return parsear_monto_texto(entrada.get())
+            except ValueError:
+                return 0.0
+
+        def _set_edit(entrada, valor):
+            entrada.delete(0, tk.END)
+            entrada.insert(0, f"{valor:.2f}")
+
+        def _nota_edit():
+            if _es_factura_edit():
+                lbl_edit_nota.configure(
+                    text=("Escriba en 'Total (Neto)' el monto con IGV: la base y el IGV se calculan solos."
+                          if estado_edit["modo"] == "CON_IGV" else
+                          "Escriba en 'Subtotal' el monto sin IGV: el IGV y el total se calculan solos."))
+            elif _es_boleta_edit():
+                lbl_edit_nota.configure(text="Boleta sin IGV: el total es igual al monto base.")
+            else:
+                lbl_edit_nota.configure(text="Este tipo de documento no lleva IGV: los montos se guardan tal cual.")
+
+        def _recalcular_desde_base(*_a):
+            base = _num_edit(ent_sub)
+            if _es_factura_edit():
+                _set_edit(ent_imp, base * _tasa_edit())
+                _set_edit(ent_tot, base * (1.0 + _tasa_edit()))
+            elif _es_boleta_edit():
+                _set_edit(ent_imp, 0.0)
+                _set_edit(ent_tot, base)
+            estado_edit["modo"] = "BASE"
+            seg_edit.set("Monto Base (sin IGV)")
+            _nota_edit()
+
+        def _recalcular_desde_total(*_a):
+            total = _num_edit(ent_tot)
+            if _es_factura_edit():
+                tasa = _tasa_edit()
+                base = total / (1.0 + tasa)
+                _set_edit(ent_sub, base)
+                _set_edit(ent_imp, total - base)
+            elif _es_boleta_edit():
+                _set_edit(ent_sub, total)
+                _set_edit(ent_imp, 0.0)
+            estado_edit["modo"] = "CON_IGV"
+            seg_edit.set("Monto con IGV (Total)")
+            _nota_edit()
+
+        def cambiar_modo_edit(valor):
+            estado_edit["modo"] = "CON_IGV" if "con igv" in str(valor).lower() else "BASE"
+            if estado_edit["modo"] == "CON_IGV":
+                _recalcular_desde_total()
+            else:
+                _recalcular_desde_base()
+
+        ent_sub.bind("<KeyRelease>", _recalcular_desde_base)
+        ent_tot.bind("<KeyRelease>", _recalcular_desde_total)
+        _nota_edit()
 
         def guardar_cambios():
             try:

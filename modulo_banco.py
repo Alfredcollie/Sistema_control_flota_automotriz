@@ -222,10 +222,151 @@ def cargar_categorias_gastos():
     return dict(CATEGORIAS_GASTOS_DEFAULT)
 
 
-def guardar_categorias_gastos(cats):
-    cfg = leer_config_disco()
-    cfg["categorias_gastos"] = cats
-    return guardar_config_disco(cfg)
+def abrir_gestion_categorias_gastos(parent=None, al_guardar=None):
+    """Ventana "Gestionar Categorías de Gastos" (principales y subcategorías).
+
+    Es la MISMA ventana que usa el módulo de Banco (Conciliación → Agregar
+    Movimiento → "⚙️ Gestionar Categorías") y ahora también el módulo de Compras,
+    de modo que ambos módulos comparten exactamente la misma lista guardada en la
+    configuración. Si se indica "al_guardar", se ejecuta tras guardar y cerrar
+    (para refrescar los combos del módulo que la abrió).
+    """
+    cats = cargar_categorias_gastos()
+    v = ctk.CTkToplevel(parent)
+    v.title("Gestionar Categorías de Gastos")
+    v.geometry("640x500")
+    if parent is not None:
+        try:
+            v.transient(parent)
+        except Exception:
+            pass
+
+    def _tomar_foco():
+        try:
+            v.grab_set()
+            v.lift()
+            v.focus_force()
+        except Exception:
+            pass
+
+    _tomar_foco()
+    try:
+        v.after(200, _tomar_foco)
+    except Exception:
+        pass
+
+    ctk.CTkLabel(v, text="⚙️ Categorías (principales y subcategorías)", font=("Arial", 14, "bold"),
+                 text_color="#1f538d").pack(pady=(15, 5))
+
+    f_tabla = ctk.CTkFrame(v, fg_color="transparent")
+    f_tabla.pack(fill="both", expand=True, padx=15, pady=10)
+    columnas = ("principal", "categoria")
+    tree = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="browse")
+    tree.heading("principal", text="Principal")
+    tree.heading("categoria", text="Categoría")
+    tree.column("principal", width=220, anchor="w")
+    tree.column("categoria", width=320, anchor="w")
+    vsb = ttk.Scrollbar(f_tabla, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=vsb.set)
+    tree.pack(side="left", fill="both", expand=True)
+    vsb.pack(side="right", fill="y")
+
+    def cargar_tree():
+        tree.delete(*tree.get_children())
+        for p, subs in cats.items():
+            for s in subs:
+                tree.insert("", tk.END, values=(p, s))
+
+    cargar_tree()
+
+    def seleccion():
+        sel = tree.selection()
+        if not sel:
+            return None, None
+        vals = tree.item(sel[0], "values")
+        return vals[0], vals[1]
+
+    def add_principal():
+        nombre = simpledialog.askstring("Nueva principal", "Nombre de la categoría principal:", parent=v)
+        if nombre:
+            nombre = nombre.strip()
+            if nombre and nombre not in cats:
+                cats[nombre] = ["Varios"]
+                cargar_tree()
+
+    def add_sub():
+        p, s = seleccion()
+        if not p:
+            messagebox.showinfo("Aviso", "Seleccione una fila para saber a qué principal agregar.", parent=v)
+            return
+        nombre = simpledialog.askstring("Nueva categoría", f"Categoría para '{p}':", parent=v)
+        if nombre:
+            nombre = nombre.strip()
+            if nombre and nombre not in cats.get(p, []):
+                cats.setdefault(p, []).append(nombre)
+                cargar_tree()
+
+    def edit():
+        p, s = seleccion()
+        if not p:
+            messagebox.showinfo("Aviso", "Seleccione una fila para editar.", parent=v)
+            return
+        if s:
+            nuevo = simpledialog.askstring("Editar categoría", f"Editar '{s}' en '{p}':", parent=v, initialvalue=s)
+            if nuevo:
+                nuevo = nuevo.strip()
+                if nuevo and nuevo != s:
+                    lista = cats.get(p, [])
+                    if s in lista:
+                        lista[lista.index(s)] = nuevo
+                    cargar_tree()
+        else:
+            nuevo = simpledialog.askstring("Editar principal", f"Editar '{p}':", parent=v, initialvalue=p)
+            if nuevo:
+                nuevo = nuevo.strip()
+                if nuevo and nuevo != p:
+                    cats[nuevo] = cats.pop(p, [])
+                    cargar_tree()
+
+    def delete():
+        p, s = seleccion()
+        if not p:
+            messagebox.showinfo("Aviso", "Seleccione una fila para eliminar.", parent=v)
+            return
+        if s:
+            if messagebox.askyesno("Eliminar", f"¿Eliminar la categoría '{s}' de '{p}'?", parent=v):
+                lista = cats.get(p, [])
+                if s in lista:
+                    lista.remove(s)
+                cargar_tree()
+        else:
+            if messagebox.askyesno("Eliminar", f"¿Eliminar la principal '{p}' y todas sus categorías?", parent=v):
+                cats.pop(p, None)
+                cargar_tree()
+
+    def guardar():
+        for p in list(cats.keys()):
+            if not cats.get(p):
+                cats[p] = ["Varios"]
+        if guardar_categorias_gastos(cats):
+            v.destroy()
+            if al_guardar:
+                try:
+                    al_guardar()
+                except Exception as e:
+                    print(f"No se pudo refrescar las categorías: {e}")
+            messagebox.showinfo("Éxito", "Categorías guardadas.", parent=parent)
+        else:
+            messagebox.showerror("Error", "No se pudieron guardar las categorías.", parent=v)
+
+    f_btns = ctk.CTkFrame(v, fg_color="transparent"); f_btns.pack(fill="x", padx=15, pady=(0, 15))
+    ctk.CTkButton(f_btns, text="➕ Principal", width=120, command=add_principal).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="➕ Categoría", width=120, command=add_sub).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="✏️ Editar", width=100, command=edit).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="🗑️ Eliminar", width=100, command=delete).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="💾 Guardar y Cerrar", width=150, fg_color="#27ae60", command=guardar).pack(side="right", padx=4)
+
+    return v
 
 
 def cargar_comision_interbancaria():
@@ -364,6 +505,29 @@ def normalizar_monto(v):
             return 0.0
 
 
+def monto_opcional(valor):
+    """Convierte un monto opcional a float (None si no se especificó)."""
+    if valor is None or valor == "":
+        return None
+    try:
+        return round(float(valor), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def detalle_base_igv(datos):
+    """(subtotal, impuesto) de un gasto cuando el usuario definió base + IGV.
+
+    Devuelve (None, None) cuando el pago no lleva IGV, para que en Compras se
+    registre como siempre (monto completo sin impuesto).
+    """
+    subtotal = monto_opcional((datos or {}).get("subtotal"))
+    impuesto = monto_opcional((datos or {}).get("impuesto"))
+    if subtotal is None or impuesto is None or impuesto <= 0:
+        return None, None
+    return subtotal, impuesto
+
+
 def monto_desde_texto(texto):
     """Extrae el primer monto que aparezca en un texto (ej. 'Comisión S/ 12.00')."""
     coincidencia = re.search(r"\d+(?:[.,]\d+)?", str(texto or ""))
@@ -396,6 +560,15 @@ def normalizar_fecha(s):
         except Exception:
             continue
     return s
+
+
+def clave_fecha(fecha):
+    """Devuelve 'YYYY-MM-DD' si la fecha se puede interpretar; '' si no.
+
+    Se usa para comparar/filtrar por mes sin que una fecha rara (texto libre)
+    se cuele por comparación alfabética."""
+    f = normalizar_fecha(fecha)
+    return f if re.match(r"^\d{4}-\d{2}-\d{2}$", f or "") else ""
 
 
 def construir_etiqueta_banco(b):
@@ -1166,6 +1339,20 @@ class ModuloBancoApp:
         ctk.CTkLabel(fila_det, text=f"({resumen['n_movimientos']} movimientos{sufijo})",
                      font=("Arial", 10, "italic"), text_color="#7f8c8d").pack(side="left")
 
+        # Fecha desde la que rige el saldo inicial de la cuenta
+        fecha_inicio = resumen.get("fecha_inicio") or ""
+        if fecha_inicio:
+            d, m_, a = fecha_inicio[8:10], fecha_inicio[5:7], fecha_inicio[0:4]
+            if resumen.get("antes_del_inicio"):
+                aviso = (f"⚠️ La cuenta inicia el {d}/{m_}/{a}: no hay movimientos "
+                         f"anteriores a esa fecha.")
+                color_aviso = "#856404"
+            else:
+                aviso = f"Movimientos considerados desde el {d}/{m_}/{a} (fecha del saldo inicial)."
+                color_aviso = "#7f8c8d"
+            ctk.CTkLabel(card, text=aviso, font=("Arial", 10, "italic"),
+                         text_color=color_aviso, justify="left").pack(anchor="w", padx=12, pady=(0, 4))
+
         fila_btn = ctk.CTkFrame(card, fg_color="transparent")
         fila_btn.pack(fill="x", padx=12, pady=(0, 10))
         ctk.CTkButton(fila_btn, text="👁 Ver Movimientos", width=160, font=("Arial", 11, "bold"),
@@ -1189,10 +1376,21 @@ class ModuloBancoApp:
         movs_todos = self._movimientos_de_banco(banco, datos)
         saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
 
-        if mes:
-            # Fechas normalizadas 'YYYY-MM-DD': comparar por texto es suficiente.
-            validos = [(m, normalizar_fecha(m["fecha"])) for m in movs_todos]
-            movs = [m for m, f in validos if f and f[:7] == mes]
+        # 📌 'fecha' de la cuenta = desde cuándo rige el saldo inicial. Lo movido
+        # ANTES de esa fecha ya está incluido en el saldo inicial, así que no se
+        # vuelve a contar (si no, el saldo sale descuadrado).
+        fecha_inicio = clave_fecha(banco.get("fecha", ""))
+        if fecha_inicio:
+            movs_todos = [m for m in movs_todos
+                          if not (clave_fecha(m["fecha"]) and clave_fecha(m["fecha"]) < fecha_inicio)]
+
+        antes_del_inicio = bool(mes and fecha_inicio and mes < fecha_inicio[:7])
+        if antes_del_inicio:
+            # Mes anterior a la apertura de la cuenta: todavía no había movimientos
+            movs, acumulados, saldo_inicial = [], [], 0.0
+        elif mes:
+            validos = [(m, clave_fecha(m["fecha"])) for m in movs_todos]
+            movs = [m for m, f in validos if f[:7] == mes]
             acumulados = [m for m, f in validos if f and f[:7] <= mes]
         else:
             movs = movs_todos
@@ -1213,6 +1411,8 @@ class ModuloBancoApp:
             "mes": mes or "",
             "etiqueta_mes": etiqueta_mes or "",
             "es_mes": bool(mes),
+            "fecha_inicio": fecha_inicio,
+            "antes_del_inicio": antes_del_inicio,
         }
 
     def _cargar_movimientos_crudos(self):
@@ -1331,8 +1531,8 @@ class ModuloBancoApp:
                     "origen": "sistema", "tabla": "transferencias_bancarias", "documento": "",
                 })
         if mes:
-            movs = [m for m in movs if normalizar_fecha(m["fecha"]).startswith(mes)]
-        movs.sort(key=lambda m: normalizar_fecha(m["fecha"]))
+            movs = [m for m in movs if clave_fecha(m["fecha"]).startswith(mes)]
+        movs.sort(key=lambda m: (clave_fecha(m["fecha"]), m["monto"]))
         return movs
 
     def cargar_movimientos_sistema(self, banco, mes=None):
@@ -2265,14 +2465,18 @@ class ModuloBancoApp:
         cmb_principal.configure(command=on_principal)
         cmb_sub.configure(command=lambda _=None: actualizar_chofer())
 
-        def abrir_gestion():
-            self.gestionar_categorias()
+        def recargar_categorias_combos():
             nonlocal cats, principales
             cats = cargar_categorias_gastos()
             principales = list(cats.keys()) or ["Gastos Operativos"]
             cmb_principal.configure(values=principales)
             cmb_principal.set(principales[0])
             on_principal()
+
+        def abrir_gestion():
+            # Misma ventana que usa el módulo de Compras ("⚙️" del formulario):
+            # al guardar y cerrar se recargan aquí los desplegables.
+            self.gestionar_categorias(al_guardar=recargar_categorias_combos)
         btn_gestion = ctk.CTkButton(f, text="⚙️ Gestionar Categorías", height=26, font=("Arial", 11),
                                     fg_color="#8e44ad", hover_color="#703688", command=abrir_gestion)
         btn_gestion.pack(fill="x", pady=(0, 8))
@@ -2323,6 +2527,43 @@ class ModuloBancoApp:
         ent_monto.bind("<KeyRelease>", lambda e: self._formatear_entrada_monto(ent_monto))
         ent_monto.bind("<FocusOut>", lambda e: self._formatear_entrada_monto(ent_monto))
 
+        # 💰 Igual que en Compras: el monto se puede digitar SIN IGV (monto base) o
+        # CON IGV (total del documento); lo que falte se calcula automáticamente.
+        ctk.CTkLabel(f, text="Tipo de Monto a Ingresar:", font=("Arial", 11, "bold")).pack(anchor="w")
+        seg_monto = ctk.CTkSegmentedButton(
+            f, values=["Monto Base (sin IGV)", "Monto con IGV (Total)"],
+            font=("Arial", 10, "bold"), command=lambda _v: actualizar_total())
+        seg_monto.pack(fill="x", pady=(0, 6))
+        seg_monto.set("Monto Base (sin IGV)")
+
+        f_igv = ctk.CTkFrame(f, fg_color="transparent")
+        f_igv.pack(fill="x", pady=(0, 2))
+        ctk.CTkLabel(f_igv, text="IGV (%):", font=("Arial", 11, "bold")).pack(side="left")
+        ent_igv = ctk.CTkEntry(f_igv, width=70)
+        ent_igv.pack(side="left", padx=(6, 0))
+        ent_igv.insert(0, "0")
+        ent_igv.bind("<KeyRelease>", lambda e: actualizar_total())
+
+        lbl_igv_det = ctk.CTkLabel(f, text="", font=("Arial", 10), text_color="#555555",
+                                   wraplength=520, justify="left")
+        lbl_igv_det.pack(anchor="w", pady=(0, 8))
+
+        def montos_con_igv():
+            """(subtotal, igv, total) del gasto según el modo elegido y el % de IGV.
+
+            Con IGV 0% el monto se registra tal cual (como se hacía antes).
+            """
+            valor = normalizar_monto(ent_monto.get())
+            pct = max(normalizar_monto(ent_igv.get()), 0.0)
+            if "con igv" in str(seg_monto.get()).lower():
+                total_gasto = valor
+                subtotal = (total_gasto / (1.0 + pct / 100.0)) if pct else total_gasto
+            else:
+                subtotal = valor
+                total_gasto = (subtotal * (1.0 + pct / 100.0)) if pct else subtotal
+            igv = total_gasto - subtotal
+            return round(subtotal, 2), round(igv, 2), round(total_gasto, 2)
+
         var_inter = tk.BooleanVar(value=bool(datos_ini.get("interbancario")))
         chk_inter = ctk.CTkCheckBox(f, text="Pago Interbancario", variable=var_inter)
         chk_inter.pack(anchor="w", pady=(0, 4))
@@ -2338,13 +2579,20 @@ class ModuloBancoApp:
         lbl_total.pack(side="right")
 
         def actualizar_total(*_):
-            base = normalizar_monto(ent_monto.get())
+            sub_gasto, igv_gasto, total_gasto = montos_con_igv()
             com = normalizar_monto(ent_comision.get())
-            total = base + (com if var_inter.get() else 0)
+            total = total_gasto + (com if var_inter.get() else 0)
             lbl_total.configure(text=f"Total: {formatear_monto(total)}")
+            if igv_gasto > 0:
+                lbl_igv_det.configure(
+                    text=f"Base: {formatear_monto(sub_gasto)}   +   IGV: {formatear_monto(igv_gasto)}"
+                         f"   =   Compra en Compras: {formatear_monto(total_gasto)}")
+            else:
+                lbl_igv_det.configure(text="Sin IGV (0%): el monto se registra tal cual.")
         chk_inter.configure(command=actualizar_total)
         ent_monto.bind("<KeyRelease>", actualizar_total)
         ent_comision.bind("<KeyRelease>", actualizar_total)
+        actualizar_total()   # muestra de una vez el total y el detalle base/IGV
 
         # ------------------------------------------------------------------
         # UNIFICACIÓN CON COMPRAS CRUZADAS (pago a tercero)
@@ -2421,6 +2669,16 @@ class ModuloBancoApp:
                         ent_fecha.insert(0, datos["fecha"])
                     if datos.get("total") and not ent_monto.get().strip():
                         ent_monto.insert(0, formatear_numero_entrada(f"{datos['total']:.2f}"))
+                        # 💰 El PDF trae el IMPORTE TOTAL: si es factura se asume 18% de IGV
+                        # (el usuario puede cambiar el modo o el % antes de guardar).
+                        tipo_pdf = str(datos.get("tipo_documento") or "").upper()
+                        ent_igv.delete(0, tk.END)
+                        if tipo_pdf == "FACTURA":
+                            ent_igv.insert(0, "18")
+                            seg_monto.set("Monto con IGV (Total)")
+                        else:
+                            ent_igv.insert(0, "0")
+                            seg_monto.set("Monto Base (sin IGV)")
                         actualizar_total()
                 else:
                     estado_cruzada["soporte"] = ruta
@@ -2474,7 +2732,15 @@ class ModuloBancoApp:
                 return
             com = normalizar_monto(ent_comision.get())
             inter = var_inter.get()
-            total = base + (com if inter else 0)
+            # 💰 Base e IGV del gasto (según el modo y el % elegidos en la ventana)
+            sub_gasto, igv_gasto, total_gasto = montos_con_igv()
+            total = total_gasto + (com if inter else 0)
+            # Solo se envía el detalle cuando el gasto SÍ tiene IGV: así los pagos
+            # sin IGV (planilla, transferencias, etc.) se registran como siempre.
+            detalle_igv = {}
+            if igv_gasto > 0:
+                detalle_igv = {"subtotal": round(sub_gasto + (com if inter else 0), 2),
+                               "impuesto": round(igv_gasto, 2)}
 
             guardar_comision_interbancaria(f"{com:.2f}")
 
@@ -2598,6 +2864,7 @@ class ModuloBancoApp:
                     "placa": placa, "banco": construir_etiqueta_banco(banco),
                     "soporte": estado_cruzada.get("soporte", "") if isinstance(estado_cruzada, dict) else "",
                     "id_gasto": id_gasto_previo,
+                    **detalle_igv,
                 }, id_movimiento=id_movimiento, parent=v)
 
             if es_cruzada:
@@ -2611,6 +2878,7 @@ class ModuloBancoApp:
                     "descripcion": desc,
                     "soporte_origen": estado_cruzada["soporte"],
                     "factura_origen": estado_cruzada["factura"],
+                    **detalle_igv,
                 }, v)
                 if not ok:
                     messagebox.showwarning(
@@ -2670,6 +2938,10 @@ class ModuloBancoApp:
         nro = (datos.get("nro") or "").strip().replace(" ", "")
         fecha = datos.get("fecha") or datetime.now().strftime("%d/%m/%Y")
         total = float(datos.get("total") or 0)
+        # 💰 Base + IGV definidos en la ventana de pago (si el gasto tiene IGV)
+        subtotal_cruz, impuesto_cruz = detalle_base_igv(datos)
+        subtotal_bd = subtotal_cruz if subtotal_cruz is not None else total
+        impuesto_bd = impuesto_cruz if impuesto_cruz is not None else 0.0
         categoria = datos.get("categoria") or "Compra Cruzada"
         descripcion = (datos.get("descripcion") or "").strip() or "Compra cruzada pagada por tercero"
 
@@ -2761,8 +3033,8 @@ class ModuloBancoApp:
                          categoria, ruc, pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, ("FACTURA", nro, fecha, proveedor, descripcion, "",
-                            total, 0, total, ruta_para_guardar(ruta_factura), 0, 0, 0, categoria, "", tercero,
-                            ruta_para_guardar(ruta_soporte), True))
+                            subtotal_bd, impuesto_bd, total, ruta_para_guardar(ruta_factura), 0, 0, 0,
+                            categoria, "", tercero, ruta_para_guardar(ruta_soporte), True))
                 conn.commit()
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo registrar la compra cruzada:\n{e}", parent=parent)
@@ -2808,6 +3080,12 @@ class ModuloBancoApp:
             soporte_bd = soporte
         id_gasto = int(datos.get("id_gasto") or 0)
 
+        # 💰 Detalle base + IGV definido en la ventana de pago (opcional).
+        #    Si no llega, se registra el total tal cual (comportamiento de siempre).
+        subtotal_dato, impuesto_dato = detalle_base_igv(datos)
+        subtotal_bd = subtotal_dato if subtotal_dato is not None else total
+        impuesto_bd = impuesto_dato if impuesto_dato is not None else 0.0
+
         conn = conectar_db(silencioso=True)
         if not conn:
             return 0
@@ -2815,12 +3093,15 @@ class ModuloBancoApp:
             with conn.cursor() as c:
                 if id_gasto:
                     # El gasto ya estaba registrado en Compras: se actualiza
-                    c.execute("""
-                        UPDATE facturas_recibidas
-                        SET fecha=%s, total=%s, subtotal=%s, categoria=%s, descripcion=%s,
-                            proveedor=%s, evento_asociado=%s
-                        WHERE id=%s
-                    """, (fecha, total, total, categoria, descripcion, proveedor, placa, id_gasto))
+                    sets = ["fecha=%s", "total=%s", "subtotal=%s", "categoria=%s", "descripcion=%s",
+                            "proveedor=%s", "evento_asociado=%s"]
+                    params = [fecha, total, subtotal_bd, categoria, descripcion, proveedor, placa]
+                    if impuesto_dato is not None:
+                        sets.append("impuesto=%s")
+                        params.append(impuesto_bd)
+                    params.append(id_gasto)
+                    c.execute("UPDATE facturas_recibidas SET " + ", ".join(sets) + " WHERE id=%s",
+                              tuple(params))
                     c.execute("""
                         UPDATE pagos_comprobantes
                         SET monto_pagado=%s, fecha_pago=%s, cuenta_origen=%s, categoria_suministro=%s,
@@ -2833,9 +3114,9 @@ class ModuloBancoApp:
                         (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado,
                          subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto,
                          categoria, ruc, es_compra_cruzada, pagado_por_tercero, soporte_pago_tercero)
-                        VALUES ('PAGO BANCO', '', %s, %s, %s, %s, %s, 0, %s, %s, 0, 0, 0, %s, '', FALSE, '', %s)
+                        VALUES ('PAGO BANCO', '', %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, %s, '', FALSE, '', %s)
                         RETURNING id
-                    """, (fecha, proveedor, descripcion, placa, total, total, soporte_bd,
+                    """, (fecha, proveedor, descripcion, placa, subtotal_bd, impuesto_bd, total, soporte_bd,
                           categoria, soporte_bd))
                     id_gasto = c.fetchone()[0]
                     # El pago por el importe total: así no queda saldo pendiente
@@ -2867,119 +3148,10 @@ class ModuloBancoApp:
             pass
         return id_gasto
 
-    def gestionar_categorias(self):
-        cats = cargar_categorias_gastos()
-        v = ctk.CTkToplevel(self.parent_frame)
-        v.title("Gestionar Categorías de Gastos")
-        v.geometry("640x500")
-        v.transient(self.parent_frame)
-        v.grab_set()
-
-        ctk.CTkLabel(v, text="⚙️ Categorías (principales y subcategorías)", font=("Arial", 14, "bold"),
-                     text_color="#1f538d").pack(pady=(15, 5))
-
-        f_tabla = ctk.CTkFrame(v, fg_color="transparent")
-        f_tabla.pack(fill="both", expand=True, padx=15, pady=10)
-        columnas = ("principal", "categoria")
-        tree = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="browse")
-        tree.heading("principal", text="Principal")
-        tree.heading("categoria", text="Categoría")
-        tree.column("principal", width=220, anchor="w")
-        tree.column("categoria", width=320, anchor="w")
-        vsb = ttk.Scrollbar(f_tabla, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-
-        def cargar_tree():
-            tree.delete(*tree.get_children())
-            for p, subs in cats.items():
-                for s in subs:
-                    tree.insert("", tk.END, values=(p, s))
-
-        cargar_tree()
-
-        def seleccion():
-            sel = tree.selection()
-            if not sel:
-                return None, None
-            vals = tree.item(sel[0], "values")
-            return vals[0], vals[1]
-
-        def add_principal():
-            nombre = simpledialog.askstring("Nueva principal", "Nombre de la categoría principal:", parent=v)
-            if nombre:
-                nombre = nombre.strip()
-                if nombre and nombre not in cats:
-                    cats[nombre] = ["Varios"]
-                    cargar_tree()
-
-        def add_sub():
-            p, s = seleccion()
-            if not p:
-                messagebox.showinfo("Aviso", "Seleccione una fila para saber a qué principal agregar.", parent=v)
-                return
-            nombre = simpledialog.askstring("Nueva categoría", f"Categoría para '{p}':", parent=v)
-            if nombre:
-                nombre = nombre.strip()
-                if nombre and nombre not in cats.get(p, []):
-                    cats.setdefault(p, []).append(nombre)
-                    cargar_tree()
-
-        def edit():
-            p, s = seleccion()
-            if not p:
-                messagebox.showinfo("Aviso", "Seleccione una fila para editar.", parent=v)
-                return
-            if s:
-                nuevo = simpledialog.askstring("Editar categoría", f"Editar '{s}' en '{p}':", parent=v, initialvalue=s)
-                if nuevo:
-                    nuevo = nuevo.strip()
-                    if nuevo and nuevo != s:
-                        lista = cats.get(p, [])
-                        if s in lista:
-                            lista[lista.index(s)] = nuevo
-                        cargar_tree()
-            else:
-                nuevo = simpledialog.askstring("Editar principal", f"Editar '{p}':", parent=v, initialvalue=p)
-                if nuevo:
-                    nuevo = nuevo.strip()
-                    if nuevo and nuevo != p:
-                        cats[nuevo] = cats.pop(p, [])
-                        cargar_tree()
-
-        def delete():
-            p, s = seleccion()
-            if not p:
-                messagebox.showinfo("Aviso", "Seleccione una fila para eliminar.", parent=v)
-                return
-            if s:
-                if messagebox.askyesno("Eliminar", f"¿Eliminar la categoría '{s}' de '{p}'?", parent=v):
-                    lista = cats.get(p, [])
-                    if s in lista:
-                        lista.remove(s)
-                    cargar_tree()
-            else:
-                if messagebox.askyesno("Eliminar", f"¿Eliminar la principal '{p}' y todas sus categorías?", parent=v):
-                    cats.pop(p, None)
-                    cargar_tree()
-
-        def guardar():
-            for p in list(cats.keys()):
-                if not cats.get(p):
-                    cats[p] = ["Varios"]
-            if guardar_categorias_gastos(cats):
-                v.destroy()
-                messagebox.showinfo("Éxito", "Categorías guardadas.", parent=self.parent_frame)
-            else:
-                messagebox.showerror("Error", "No se pudieron guardar las categorías.", parent=v)
-
-        f_btns = ctk.CTkFrame(v, fg_color="transparent"); f_btns.pack(fill="x", padx=15, pady=(0, 15))
-        ctk.CTkButton(f_btns, text="➕ Principal", width=120, command=add_principal).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="➕ Categoría", width=120, command=add_sub).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="✏️ Editar", width=100, command=edit).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="🗑️ Eliminar", width=100, command=delete).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="💾 Guardar y Cerrar", width=150, fg_color="#27ae60", command=guardar).pack(side="right", padx=4)
+    def gestionar_categorias(self, al_guardar=None):
+        # Ventana compartida con el módulo de Compras: mismas categorías guardadas.
+        # "al_guardar" se ejecuta al guardar y cerrar, para refrescar los combos.
+        return abrir_gestion_categorias_gastos(self.parent_frame, al_guardar=al_guardar)
 
     def corregir_movimiento(self):
         filas = self._filas_seleccionadas()
