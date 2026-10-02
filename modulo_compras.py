@@ -18,6 +18,8 @@ import shutil
 import calendar
 import re
 import json
+import difflib
+import tempfile
 import subprocess 
 import ctypes
 import urllib.request
@@ -197,6 +199,270 @@ def desformatear_numero(valor_str):
     try: return float(val)
     except ValueError: return 0.0
 
+# =========================================================================
+# 🔎 LECTURA DE COMPROBANTES ESCANEADOS (FOTO / PDF SIN CAPA DE TEXTO)
+# =========================================================================
+# Muchos comprobantes llegan escaneados (CamScanner) o como foto del celular:
+# no tienen texto seleccionable, por lo que se aplica OCR con el motor que ya
+# trae Windows (sin instalar nada y sin internet) y se reconstruyen las filas
+# usando la posición de cada palabra, para poder asociar "OP. GRAVADAS" con su
+# importe aunque el OCR devuelva los números en otra línea.
+
+_ETIQUETAS_MONTOS = {
+    "recargo": ["RECARGOALCONSUMO", "RECARGOALCONSUMOSERVICIO", "RECARGOPORSERVICIO",
+                "RECARGOSERVICIO", "PROPINASUGERIDA", "SERVICIOALCONSUMO"],
+    "total": ["IMPORTETOTAL", "TOTALAPAGAR", "TOTALNETO", "TOTALCOMPROBANTE",
+              "IMPORTETOTALVENTA", "TOTALPAGAR", "TOTALAGENERAL"],
+    "base": ["OPGRAVADAS", "OPGRABADAS", "OPGRAVADA", "SUBTOTAL", "BASEIMPONIBLE",
+             "VALORVENTA", "TOTALGRAVADO", "BASEGRAVADA"],
+    "igv": ["IGV", "IGV18", "IGV105", "IMPUESTOGENERALALASVENTAS", "IGVTOTAL"],
+}
+
+# Script de PowerShell que usa el motor OCR que ya incluye Windows.
+# Devuelve una línea por palabra:  X <TAB> Y <TAB> ancho <TAB> alto <TAB> texto
+_SCRIPT_OCR_WINDOWS = r'''
+param([string]$Ruta, [string]$Idiomas = "es-PE,es-MX,es-ES,en-US")
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $tipo) {
+    $m = $asTaskGeneric.MakeGenericMethod($tipo)
+    $t = $m.Invoke($null, @($op))
+    $t.Wait(-1) | Out-Null
+    $t.Result
+}
+[Windows.Storage.StorageFile,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
+[Windows.Graphics.Imaging.BitmapDecoder,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
+[Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
+[Windows.Globalization.Language,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
+
+$engine = $null
+foreach ($tag in $Idiomas.Split(",")) {
+    $tag = $tag.Trim()
+    if (-not $tag) { continue }
+    try {
+        $idioma = [Windows.Globalization.Language]::new($tag)
+        $posible = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($idioma)
+        if ($null -ne $posible) { $engine = $posible; break }
+    } catch { }
+}
+if ($null -eq $engine) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
+if ($null -eq $engine) { return }
+
+$archivo = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Ruta)) ([Windows.Storage.StorageFile])
+$stream  = Await ($archivo.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap  = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$resultado = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+foreach ($linea in $resultado.Lines) {
+  foreach ($p in $linea.Words) {
+    $r = $p.BoundingRect
+    Write-Output ([string][int]$r.X + [char]9 + [string][int]$r.Y + [char]9 + [string][int]$r.Width + [char]9 + [string][int]$r.Height + [char]9 + $p.Text)
+  }
+}
+'''
+
+
+def _normalizar_etiqueta(texto):
+    """Deja solo letras en mayúscula: sirve para reconocer rótulos aunque el OCR falle."""
+    return re.sub(r"[^A-ZÑ]", "", str(texto or "").upper())
+
+
+def _parecido(texto, candidato):
+    return difflib.SequenceMatcher(None, texto, candidato).ratio()
+
+
+def _etiqueta_reconocida(etiqueta, grupo, umbral=0.78):
+    """¿La etiqueta de la fila corresponde a base / IGV / recargo / total?"""
+    return any(_parecido(etiqueta, candidato) >= umbral
+               for candidato in _ETIQUETAS_MONTOS.get(grupo, []))
+
+
+def _agrupar_palabras_en_lineas(palabras, tolerancia_rel=0.6):
+    """Reconstruye las filas del documento a partir de palabras con posición.
+
+    'palabras' es una lista de (x, y, alto, texto). El OCR suele devolver el
+    rótulo y el importe en líneas distintas, pero conservando su Y: agrupando
+    por Y se recupera la fila real ("OP. GRAVADAS  S/  187.04").
+    """
+    if not palabras:
+        return ""
+    palabras = sorted(palabras, key=lambda p: (p[1], p[0]))
+    alturas = [p[2] for p in palabras if p[2]]
+    tolerancia = max(8.0, (sum(alturas) / len(alturas)) * tolerancia_rel) if alturas else 12.0
+    filas, actual, y_fila = [], [], None
+    for x, y, _alto, texto in palabras:
+        if y_fila is None or abs(y - y_fila) <= tolerancia:
+            actual.append((x, texto))
+            if y_fila is None:
+                y_fila = y
+        else:
+            filas.append(actual)
+            actual, y_fila = [(x, texto)], y
+    if actual:
+        filas.append(actual)
+    return "\n".join(" ".join(t for _x, t in sorted(fila, key=lambda p: p[0])) for fila in filas)
+
+
+def leer_ocr_windows(ruta, idiomas="es-PE,es-MX,es-ES,en-US", dpi=250):
+    """OCR local con el motor de Windows. Devuelve el texto reconstruido o "".
+
+    No requiere instalar nada ni conexión a internet. En otros sistemas
+    operativos devuelve "" (el usuario puede digitar los montos a mano).
+    """
+    if sys.platform != "win32":
+        return ""
+    try:
+        import fitz   # PyMuPDF: convierte el PDF (o la foto) en imágenes
+    except Exception:
+        return ""
+    try:
+        carpeta = tempfile.mkdtemp(prefix="ocr_compras_")
+        imagenes = []
+        documento = fitz.open(ruta)
+        for numero, pagina in enumerate(documento):
+            destino = os.path.join(carpeta, "pagina_%d.png" % (numero + 1))
+            pagina.get_pixmap(dpi=dpi).save(destino)
+            imagenes.append(destino)
+        documento.close()
+    except Exception:
+        return ""
+    if not imagenes:
+        return ""
+
+    script = os.path.join(carpeta, "ocr_windows.ps1")
+    try:
+        with open(script, "w", encoding="utf-8-sig") as archivo_ps:
+            archivo_ps.write(_SCRIPT_OCR_WINDOWS)
+    except Exception:
+        return ""
+
+    paginas = []
+    for imagen in imagenes[:5]:
+        try:
+            orden = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+                     "-Ruta", imagen, "-Idiomas", idiomas]
+            resultado = subprocess.run(orden, capture_output=True, text=True, encoding="utf-8",
+                                       errors="ignore", timeout=180,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            palabras = []
+            for linea in (resultado.stdout or "").splitlines():
+                partes = linea.split("\t")
+                if len(partes) != 5:
+                    continue
+                try:
+                    x, y, alto = int(partes[0]), int(partes[1]), int(partes[3])
+                except ValueError:
+                    continue
+                palabras.append((x, y, alto, partes[4]))
+            texto = _agrupar_palabras_en_lineas(palabras)
+            if texto.strip():
+                paginas.append(texto)
+        except Exception:
+            continue
+    try:
+        shutil.rmtree(carpeta, ignore_errors=True)
+    except Exception:
+        pass
+    return "\n".join(paginas)
+
+
+def _corregir_digitos_ocr(token):
+    """Corrige las confusiones típicas del OCR en fechas/números (i9 -> 19, ó9 -> 09...)."""
+    tabla = str.maketrans({"O": "0", "o": "0", "ó": "0", "Ó": "0", "Q": "0", "D": "0",
+                           "I": "1", "l": "1", "i": "1", "|": "1", "!": "1",
+                           "Z": "2", "z": "2", "A": "4", "S": "5", "s": "5",
+                           "G": "6", "b": "6", "T": "7", "B": "8", "g": "9", "q": "9"})
+    return str(token).translate(tabla)
+
+
+def extraer_montos_comprobante(texto):
+    """Lee base, IGV, recargo al consumo y total de un comprobante peruano.
+
+    Funciona igual con el texto de un PDF que con el texto reconstruido por OCR:
+    los rótulos se comparan de forma tolerante y el importe de cada fila se toma
+    como el último número de esa fila.
+    """
+    datos = {"base": 0.0, "igv": 0.0, "recargo": 0.0, "total": 0.0, "leidos": 0}
+    for linea in str(texto or "").splitlines():
+        fila = linea.replace("S/.", " ").replace("S/", " ")
+        corte = re.search(r"\d", fila)
+        etiqueta = _normalizar_etiqueta(fila[:corte.start()] if corte else fila)
+        if not etiqueta:
+            continue
+        montos = re.findall(r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{1,2}", fila)
+        if not montos:
+            continue
+        try:
+            valor = parsear_monto_texto(montos[-1])
+        except ValueError:
+            continue
+        for grupo in ("recargo", "total", "base", "igv"):
+            if datos[grupo]:
+                continue
+            if _etiqueta_reconocida(etiqueta, grupo):
+                datos[grupo] = valor
+                datos["leidos"] += 1
+                break
+
+    # El recargo al consumo puede no haberse leído: se deduce de la diferencia
+    if datos["base"] and datos["igv"] and datos["total"] and not datos["recargo"]:
+        diferencia = round(datos["total"] - datos["base"] - datos["igv"], 2)
+        if 0.02 <= diferencia <= datos["total"] * 0.35:
+            datos["recargo"] = diferencia
+    # Si no se leyó la base pero sí el total y el IGV, se deduce
+    if not datos["base"] and datos["total"] and datos["igv"]:
+        datos["base"] = round(datos["total"] - datos["recargo"] - datos["igv"], 2)
+    return datos
+
+
+def tasa_igv_de_montos(base, igv):
+    """Devuelve 10.5 (restaurantes) o 18 según los importes leídos; 0 si no cuadra."""
+    try:
+        base, igv = float(base), float(igv)
+    except (TypeError, ValueError):
+        return 0.0
+    if base <= 0 or igv <= 0:
+        return 0.0
+    tasa = igv / base
+    if abs(tasa - 0.105) < 0.02:
+        return 10.5
+    if abs(tasa - 0.18) < 0.025:
+        return 18.0
+    return 0.0
+
+
+def ruc_distinto_al_de_la_empresa(texto, ruc_empresa=""):
+    """RUC del proveedor: el primer RUC de 11 dígitos que no sea el de la empresa."""
+    propio = re.sub(r"\D", "", str(ruc_empresa or ""))
+    for candidato in re.findall(r"\d{11}", str(texto or "")):
+        if candidato != propio:
+            return candidato
+    return ""
+
+
+def nombre_proveedor_desde_texto(texto, ruc_proveedor=""):
+    """Razón social del emisor: la línea con letras que está sobre su RUC."""
+    lineas = [l.strip() for l in str(texto or "").splitlines() if l.strip()]
+    indice = None
+    if ruc_proveedor:
+        for i, linea in enumerate(lineas):
+            if ruc_proveedor in linea:
+                indice = i
+                break
+    if indice is None:
+        indice = min(len(lineas), 4)
+    for linea in reversed(lineas[:indice]):
+        if len(re.sub(r"[^A-Za-zÁÉÍÓÚÑáéíóúñ]", "", linea)) < 4:
+            continue
+        if re.search(r"FACTURA|BOLETA|ELECTR[OÓ]NIC|R\.?U\.?C|D\.?N\.?I|TICKET|"
+                     r"COMPROBANTE|COTIZACI|GUIA|PROFORMA", linea, re.IGNORECASE):
+            continue
+        return linea
+    return ""
+
+
 def parsear_monto_texto(texto):
     """Convierte lo escrito por el usuario en un monto (float >= 0).
 
@@ -267,6 +533,9 @@ def avisar_sin_permiso_guardado(parent=None):
 # =========================================================
 # 🔃 ORDENAMIENTO POR CUALQUIER COLUMNA (TODAS LAS PÁGINAS)
 # =========================================================
+# 🔗 Opción del desplegable cuando la factura NO se relaciona con ninguna orden de servicio
+SIN_ORDEN_SERVICIO = "— Sin orden de servicio —"
+
 COLUMNAS_ORDEN_MONEDA = {"subtotal", "impuesto", "igv", "total", "detraccion", "neto",
                          "neto_facturado", "pagado", "saldo"}
 COLUMNAS_ORDEN_NUMERO = {"num", "id", "id_factura", "dias", "kilometraje", "cantidad", "archivos"}
@@ -385,7 +654,7 @@ def construir_condicion_busqueda_compras(filtro):
     columnas = ("numero_documento", "proveedor", "evento_asociado", "descripcion",
                 "tipo_documento", "categoria", "ruc", "fecha", "dias_credito",
                 "kilometraje", "cantidad_combustible", "subtotal", "impuesto",
-                "total", "det_monto")
+                "total", "det_monto", "orden_servicio")
 
     partes = [f"CAST({c} AS TEXT) ILIKE %s" for c in columnas]
     cantidad = len(columnas)
@@ -565,6 +834,11 @@ class FacturasRecibidasTab:
                 except: conn.rollback()
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS soporte_pago_tercero TEXT DEFAULT '';"); conn.commit()
                 except: conn.rollback()
+                # 🔗 Cruce de la factura con su Orden de Servicio (módulo de Órdenes)
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS id_orden_servicio INTEGER;"); conn.commit()
+                except: conn.rollback()
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS orden_servicio VARCHAR(120) DEFAULT '';"); conn.commit()
+                except: conn.rollback()
                 _SCHEMA_COMPRAS_OK = True
             except Exception: pass
             finally: liberar_conexion(conn)
@@ -604,71 +878,156 @@ class FacturasRecibidasTab:
         self.pagina_actual = 1
         self.cargar_datos_tabla(reset_pagina=True)
 
+    def _extraer_texto_documento(self, ruta):
+        """Capa de texto del PDF (pdfplumber y, si falla, PyMuPDF). Devuelve "" si es un escaneo."""
+        texto = ""
+        if pdfplumber is not None:
+            try:
+                with pdfplumber.open(ruta) as pdf:
+                    for pagina in pdf.pages:
+                        extraido = pagina.extract_text()
+                        if extraido:
+                            texto += extraido + "\n"
+            except Exception:
+                texto = ""
+        if not texto.strip():
+            try:
+                import fitz
+                documento = fitz.open(ruta)
+                for pagina in documento:
+                    texto += (pagina.get_text() or "") + "\n"
+                documento.close()
+            except Exception:
+                pass
+        return texto
+
     def autocompletar_desde_pdf(self):
-        if pdfplumber is None:
-            messagebox.showerror("Librería faltante", "No se encontró 'pdfplumber'. Ejecuta: pip install pdfplumber")
+        """Lee un comprobante (PDF con texto, PDF escaneado o foto) y llena los campos."""
+        ruta = seleccionar_archivo_dialogo(
+            "Seleccionar la factura (PDF o foto escaneada)",
+            [("Documentos", "*.pdf;*.png;*.jpg;*.jpeg"),
+             ("Archivos PDF", "*.pdf"),
+             ("Imágenes", "*.png;*.jpg;*.jpeg")])
+        if not ruta:
             return
-        ruta = seleccionar_archivo_dialogo("Seleccionar Factura PDF de SUNAT", [("Archivos PDF", "*.pdf")])
-        if not ruta: return
         try:
             self.bloquear_autocompletado_ruc = True
-            texto = ""
-            with pdfplumber.open(ruta) as pdf:
-                for page in pdf.pages: texto += page.extract_text() + "\n"
-            if not texto.strip(): 
+            texto = self._extraer_texto_documento(ruta)
+            leido_con_ocr = False
+            if not texto.strip():
+                # Comprobante escaneado o foto: no tiene texto, se aplica OCR local
+                try:
+                    self.btn_auto_pdf.configure(text="⏳ Aplicando OCR al documento...")
+                    self.main_root.update_idletasks()
+                except Exception:
+                    pass
+                texto = leer_ocr_windows(ruta)
+                leido_con_ocr = bool(texto.strip())
+                try:
+                    self.btn_auto_pdf.configure(text="📄 Desde PDF")
+                except Exception:
+                    pass
+
+            if not texto.strip():
+                # No se pudo leer: el documento queda adjunto y el usuario solo digita los montos
+                self.ruta_archivo_temp = ruta
+                self.btn_archivo.configure(text="✅ Adjuntado (digite los montos)",
+                                           fg_color="#e67e22", hover_color="#b9651a")
                 self.bloquear_autocompletado_ruc = False
-                return messagebox.showwarning("Aviso", "El PDF no contiene texto seleccionable.")
-            
-            if re.search(r"FACTURA\s+ELECTR[OÓ]NICA", texto, re.IGNORECASE): 
-                if "10.5%" not in self.combo_tipo.get():
-                    self.combo_tipo.set("Factura (18% IGV)")
-            elif re.search(r"BOLETA\s+DE\s+VENTA", texto, re.IGNORECASE): self.combo_tipo.set("Boleta (Sin IGV)")
-            elif re.search(r"RECIBO\s+POR\s+HONORARIOS", texto, re.IGNORECASE):
-                if re.search(r"Retenci[oó]n.*?IR[\s:\|]*\(?([\d\,\.]+)\)?", texto, re.IGNORECASE): self.combo_tipo.set("Recibo por Honorarios (8% Retención)")
-                else: self.combo_tipo.set("Recibo por Honorarios (Sin Retención)")
+                return messagebox.showwarning(
+                    "Documento escaneado",
+                    "Este archivo no tiene texto (es un escaneo o una foto) y no se pudo leer con OCR.\n\n"
+                    "El documento quedó ADJUNTO al registro: digite el tipo de documento, el monto base "
+                    "(o el total con IGV), el recargo al consumo si lo tuviera y el N° de documento.")
+
+            montos = extraer_montos_comprobante(texto)
+            tasa_leida = tasa_igv_de_montos(montos["base"], montos["igv"])
+            es_restaurante = montos["recargo"] > 0 or abs(tasa_leida - 10.5) < 0.01
+
+            # ---- Tipo de documento ----
+            texto_mayus = texto.upper()
+            tipo_detectado = ""
+            if "BOLETA" in texto_mayus and "FACTURA" not in texto_mayus:
+                tipo_detectado = "Boleta (Sin IGV)"
+            elif "RECIBO" in texto_mayus and "HONORARIO" in texto_mayus:
+                tipo_detectado = ("Recibo por Honorarios (8% Retención)"
+                                  if re.search(r"RETENCI", texto_mayus)
+                                  else "Recibo por Honorarios (Sin Retención)")
+            elif "FACTURA" in texto_mayus:
+                # Las facturas de restaurante llevan 10.5% de IGV y recargo al consumo
+                tipo_detectado = ("Factura (10.5% IGV) Restaurantes" if es_restaurante
+                                  else "Factura (18% IGV)")
+            if tipo_detectado:
+                self.combo_tipo.set(tipo_detectado)
             self.on_tipo_change(self.combo_tipo.get())
 
+            # ---- N° de documento ----
             nro_match = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
             if nro_match:
-                self.ent_nro_doc.delete(0, tk.END); self.ent_nro_doc.insert(0, nro_match.group(1).replace(" ", ""))
-            
-            fecha_match = re.search(r"Fecha de Emisi[oó]n\s*[:\-]?\s*(\d{2})[/\-.](\d{2})[/\-.](\d{4})", texto, re.IGNORECASE)
-            if not fecha_match: fecha_match = re.search(r"(\d{2})[/\-.](\d{2})[/\-.](\d{4})", texto)
+                self.ent_nro_doc.delete(0, tk.END)
+                self.ent_nro_doc.insert(0, nro_match.group(1).replace(" ", ""))
+
+            # ---- Fecha ----
+            fecha_match = re.search(r"Fecha de Emisi[oó]n\s*[:\-]?\s*(\d{2})[/\-.](\d{2})[/\-.](\d{4})",
+                                    texto, re.IGNORECASE)
+            if not fecha_match:
+                fecha_match = re.search(r"(\d{2})[/\-.](\d{2})[/\-.](\d{4})", texto)
             if fecha_match:
                 d, m, y = fecha_match.groups()
                 fmt = CONFIG_REGIONAL.get("formato_fecha", "DD/MM/AAAA")
-                if fmt == "MM/DD/AAAA": self.ent_fecha.delete(0, tk.END); self.ent_fecha.insert(0, f"{m}/{d}/{y}")
-                else: self.ent_fecha.delete(0, tk.END); self.ent_fecha.insert(0, f"{d}/{m}/{y}")
-
-            rucs = re.findall(r"(?:RUC|R\.U\.C\.)\s*[:\-]?\s*(\d{11})", texto, re.IGNORECASE)
-            if rucs: self.ent_desc.delete(0, tk.END); self.ent_desc.insert(0, rucs[0])
-            lineas = [line.strip() for line in texto.split('\n') if line.strip()]
-            if lineas:
-                posibles = [l for l in lineas[:7] if "R.U.C" not in l and len(l) > 4]
-                if posibles: self.combo_proveedor.set(posibles[0])
-
-            sub_m = re.search(r"(?:OP\.\s*GRAVADAS|SUB\s*TOTAL|Subtotal|Total por honorarios)[\s:S/\|]+([\d\,\.]+)", texto, re.IGNORECASE)
-            tot_m = re.search(r"(?:IMPORTE\s*TOTAL|TOTAL\s*A\s*PAGAR|Total Neto Recibido)[\s:S/\|]+([\d\,\.]+)", texto, re.IGNORECASE)
-            monto_base = 0.0
-            if sub_m: monto_base = float(sub_m.group(1).replace(",", ""))
-            elif tot_m:
-                t = float(tot_m.group(1).replace(",", ""))
-                if "Factura" in self.combo_tipo.get():
-                    monto_base = t / 1.105 if "10.5%" in self.combo_tipo.get() else t / 1.18
+                self.ent_fecha.delete(0, tk.END)
+                if fmt == "MM/DD/AAAA":
+                    self.ent_fecha.insert(0, f"{m}/{d}/{y}")
                 else:
-                    monto_base = t
-            if monto_base > 0:
-                # El PDF entrega el monto BASE: se fuerza ese modo para no reinterpretarlo.
+                    self.ent_fecha.insert(0, f"{d}/{m}/{y}")
+            fecha_ilegible = bool(leido_con_ocr and not fecha_match)
+
+            # ---- RUC y razón social del proveedor (el emisor, no el cliente) ----
+            ruc_proveedor = ruc_distinto_al_de_la_empresa(texto, CONFIG_REGIONAL.get("ruc_empresa", ""))
+            if ruc_proveedor:
+                self.ent_desc.delete(0, tk.END)
+                self.ent_desc.insert(0, ruc_proveedor)
+            nombre = nombre_proveedor_desde_texto(texto, ruc_proveedor)
+            if not nombre:
+                lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+                posibles = [l for l in lineas[:7]
+                            if "R.U.C" not in l.upper() and "RUC" not in l.upper() and len(l) > 4]
+                nombre = posibles[0] if posibles else ""
+            if nombre:
+                self.combo_proveedor.set(nombre)
+
+            # ---- Montos: base, IGV, recargo al consumo y total ----
+            if hasattr(self, "ent_recargo"):
+                self.ent_recargo.delete(0, tk.END)
+                self.ent_recargo.insert(0, "%.2f" % montos["recargo"])
+            if montos["base"] > 0:
                 self._poner_modo_monto("BASE")
-                self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{monto_base:.2f}")
+                self.ent_subtotal.delete(0, tk.END)
+                self.ent_subtotal.insert(0, "%.2f" % montos["base"])
+            elif montos["total"] > 0:
+                self._poner_modo_monto("CON_IGV")
+                self.ent_subtotal.delete(0, tk.END)
+                self.ent_subtotal.insert(0, "%.2f" % montos["total"])
 
             self.ruta_archivo_temp = ruta
             self.btn_archivo.configure(text="✅ PDF Autocargado Exitosamente", fg_color="#28a745")
             self.actualizar_totales()
             self.al_seleccionar_proveedor()
-            messagebox.showinfo("Extracción Inteligente", "Se extrajeron los datos del PDF.")
+
+            avisos = []
+            if leido_con_ocr:
+                avisos.append("El documento era un ESCANEO o FOTO: los datos se leyeron con OCR. "
+                              "Revise la fecha, el N° de documento y los montos antes de guardar.")
+            if fecha_ilegible:
+                avisos.append("No se pudo leer la fecha con seguridad: corríjala a mano.")
+            if montos["recargo"] > 0:
+                avisos.append(f"Recargo al consumo detectado: {formatear_moneda(montos['recargo'])} "
+                              "(se suma al total y no lleva IGV).")
+            messagebox.showinfo("Extracción Inteligente",
+                                "Se extrajeron los datos del documento."
+                                + ("\n\n" + "\n".join(avisos) if avisos else ""))
             self.bloquear_autocompletado_ruc = False
-        except Exception as e: 
+        except Exception as e:
             self.bloquear_autocompletado_ruc = False
             messagebox.showerror("Error", f"Ocurrió un error:\n{e}")
 
@@ -954,6 +1313,23 @@ class FacturasRecibidasTab:
         self.combo_evento.pack(fill="x", padx=10, pady=(0, 8))
         self.cargar_vehiculos_bd()
 
+        # 🔗 CRUCE CON LA ORDEN DE SERVICIO: se elige la orden del módulo de Órdenes
+        # para relacionarla con esta factura y comparar montos.
+        ctk.CTkLabel(self.f_form, text="🔗 Orden de Servicio (relacionar):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+        f_orden = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_orden.pack(fill="x", padx=10, pady=(0, 4))
+        self.combo_orden_servicio = ctk.CTkComboBox(f_orden, values=[SIN_ORDEN_SERVICIO], state="readonly",
+                                                    command=self.al_seleccionar_orden_servicio)
+        self.combo_orden_servicio.pack(side="left", fill="x", expand=True)
+        self.btn_ver_orden = ctk.CTkButton(f_orden, text="📄", width=34, font=("Arial", 11),
+                                           fg_color="#34495e", hover_color="#2c3e50",
+                                           command=self.abrir_pdf_orden_servicio)
+        self.btn_ver_orden.pack(side="right", padx=(5, 0))
+        self.lbl_cruce_orden = ctk.CTkLabel(self.f_form, text="", font=("Arial", 10, "italic"),
+                                            text_color="#555555", wraplength=300, justify="left")
+        self.lbl_cruce_orden.pack(anchor="w", padx=10, pady=(0, 8))
+        self.cargar_ordenes_servicio()
+
         # 💰 El monto se puede digitar SIN IGV (monto base) o CON IGV (total del documento)
         ctk.CTkLabel(self.f_form, text="Tipo de Monto a Ingresar:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.seg_modo_monto = ctk.CTkSegmentedButton(
@@ -975,6 +1351,14 @@ class FacturasRecibidasTab:
         self.lbl_nota_modo.pack(anchor="w", padx=10, pady=(0, 8))
         self._refrescar_etiqueta_modo()
 
+        # 🍽️ Recargo al consumo (servicio / propina de restaurantes): suma al total
+        # pero NO forma parte de la base del IGV, igual que en la factura.
+        ctk.CTkLabel(self.f_form, text="Recargo al consumo (no gravado):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+        self.ent_recargo = ctk.CTkEntry(self.f_form, placeholder_text="0.00")
+        self.ent_recargo.pack(fill="x", padx=10, pady=(0, 8))
+        self.ent_recargo.insert(0, "0")
+        self.ent_recargo.bind("<KeyRelease>", self.actualizar_totales)
+
         self.lbl_titulo_det = ctk.CTkLabel(self.f_form, text="Detracción (%):", font=("Arial", 11, "bold"))
         self.lbl_titulo_det.pack(anchor="w", padx=10)
         self.ent_detraccion = ctk.CTkEntry(self.f_form)
@@ -988,6 +1372,8 @@ class FacturasRecibidasTab:
         self.lbl_base.pack(anchor="w", padx=10, pady=(5, 0))
         self.lbl_impuesto = ctk.CTkLabel(f_tot, text=f"IGV (18%): {formatear_moneda(0)}", font=("Arial", 11), text_color="#555")
         self.lbl_impuesto.pack(anchor="w", padx=10, pady=(0, 0))
+        self.lbl_recargo = ctk.CTkLabel(f_tot, text=f"Recargo al consumo: {formatear_moneda(0)}", font=("Arial", 11), text_color="#555")
+        self.lbl_recargo.pack(anchor="w", padx=10, pady=(0, 0))
         self.lbl_bruto = ctk.CTkLabel(f_tot, text=f"Total con IGV: {formatear_moneda(0)}", font=("Arial", 11, "bold"), text_color="#1f538d")
         self.lbl_bruto.pack(anchor="w", padx=10, pady=(0, 0))
         self.lbl_detraccion = ctk.CTkLabel(f_tot, text=f"Detracción (0%): -{formatear_moneda(0)}", font=("Arial", 11), text_color="#e74c3c")
@@ -1008,7 +1394,7 @@ class FacturasRecibidasTab:
         f_busqueda = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_busqueda.pack(fill="x", pady=(0, 5))
         ctk.CTkLabel(f_busqueda, text="🔍 Buscar:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por cualquier columna: N° doc, proveedor, RUC, placa, concepto, fecha, monto...")
+        self.ent_buscar_facturas = ctk.CTkEntry(f_busqueda, placeholder_text="Buscar por cualquier columna: N° doc, orden de servicio, proveedor, RUC, placa, concepto, fecha, monto...")
         self.ent_buscar_facturas.pack(side="left", fill="x", expand=True)
         
         ctk.CTkLabel(f_busqueda, text="🗓️ Mes:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
@@ -1029,7 +1415,7 @@ class FacturasRecibidasTab:
         f_tabla = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
 
-        columnas = ("num", "id", "fecha", "hora", "nro_doc", "dias", "tipo", "proveedor", "ruc", "categoria", "evento", "kilometraje", "cantidad", "desc", "metodo_pago", "subtotal", "impuesto", "total", "detraccion", "neto", "archivo")
+        columnas = ("num", "id", "fecha", "hora", "nro_doc", "orden", "dias", "tipo", "proveedor", "ruc", "categoria", "evento", "kilometraje", "cantidad", "desc", "metodo_pago", "subtotal", "impuesto", "total", "detraccion", "neto", "archivo")
         self.columnas_tabla = columnas
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings")
         
@@ -1041,6 +1427,7 @@ class FacturasRecibidasTab:
         self.tabla.heading("fecha", text="Fecha Fac. ↕", command=lambda: self.ordenar_por_columna("fecha", False))
         self.tabla.heading("hora", text="Hora ↕", command=lambda: self.ordenar_por_columna("hora", False))
         self.tabla.heading("nro_doc", text="N° Doc. ↕", command=lambda: self.ordenar_por_columna("nro_doc", False))
+        self.tabla.heading("orden", text="Orden Serv. ↕", command=lambda: self.ordenar_por_columna("orden", False))
         self.tabla.heading("proveedor", text="Proveedor ↕", command=lambda: self.ordenar_por_columna("proveedor", False))
         self.tabla.heading("ruc", text="RUC ↕", command=lambda: self.ordenar_por_columna("ruc", False))
         self.tabla.heading("evento", text="Vehículo (Placa) ↕", command=lambda: self.ordenar_por_columna("evento", False))
@@ -1055,6 +1442,7 @@ class FacturasRecibidasTab:
         self.tabla.column("fecha", width=75, anchor="center")
         self.tabla.column("hora", width=70, anchor="center")
         self.tabla.column("nro_doc", width=90, anchor="center")
+        self.tabla.column("orden", width=115, anchor="center")
         self.tabla.column("proveedor", width=120, anchor="w")
         self.tabla.column("ruc", width=90, anchor="center")
         self.tabla.column("evento", width=110, anchor="center")
@@ -1064,7 +1452,7 @@ class FacturasRecibidasTab:
         self.tabla.column("metodo_pago", width=120, anchor="center")
         self.tabla.column("neto", width=85, anchor="e")
         
-        self.tabla.config(displaycolumns=("num", "fecha", "hora", "nro_doc", "proveedor", "ruc", "evento", "kilometraje", "cantidad", "desc", "metodo_pago", "neto"))
+        self.tabla.config(displaycolumns=("num", "fecha", "hora", "nro_doc", "orden", "proveedor", "ruc", "evento", "kilometraje", "cantidad", "desc", "metodo_pago", "neto"))
         self._actualizar_flechas_orden()
         self.tabla.bind("<Double-1>", self.abrir_archivo)
 
@@ -1406,6 +1794,192 @@ class FacturasRecibidasTab:
             self.combo_evento.set("GENERAL / OFICINA")
 
     # =========================================================================
+    # 🔗 ÓRDENES DE SERVICIO: CRUCE Y RELACIÓN CON LA FACTURA DEL PROVEEDOR
+    # =========================================================================
+    def cargar_ordenes_servicio(self, forzar=False):
+        """Carga las órdenes de servicio (módulo de Órdenes) para el desplegable."""
+        if not forzar:
+            ordenes = cache_sistema.obtener("ordenes_servicio_compras")
+            if ordenes is not None:
+                self._aplicar_ordenes_servicio(ordenes)
+                return
+
+        def _leer_ordenes(estado):
+            lista = []
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("""
+                        SELECT o.id, COALESCE(o.numero_orden, ''), COALESCE(o.version, 0),
+                               COALESCE(o.placa, ''), COALESCE(o.proveedor, ''),
+                               COALESCE(o.servicio, ''), COALESCE(o.costo_total, 0),
+                               COALESCE(o.pdf_ruta, ''),
+                               (SELECT COUNT(*) FROM facturas_recibidas f
+                                 WHERE f.id_orden_servicio = o.id AND COALESCE(f.orden_servicio, '') <> '')
+                        FROM ordenes_servicio_flota o
+                        WHERE o.estado IS NULL OR o.estado <> 'Anulada'
+                        ORDER BY o.id DESC LIMIT 500
+                    """)
+                    for fila in c.fetchall():
+                        lista.append([int(fila[0]), str(fila[1] or ""), int(fila[2] or 0), str(fila[3] or ""),
+                                      str(fila[4] or ""), str(fila[5] or ""), float(fila[6] or 0),
+                                      str(fila[7] or ""), int(fila[8] or 0)])
+                    cache_sistema.guardar("ordenes_servicio_compras", lista)
+                except Exception:
+                    lista = []
+                finally:
+                    liberar_conexion(conn)
+            estado["valor"] = lista
+
+        # El hilo solo consulta; el combo se llena desde el hilo principal
+        ejecutar_en_hilo(self.main_root, _leer_ordenes,
+                         al_terminar=lambda e: self._aplicar_ordenes_servicio(e.get("valor") or []))
+
+    def _numero_visible_orden(self, orden):
+        """N° de orden tal como se imprime en el PDF (con su versión si la tiene)."""
+        numero = orden[1] or f"OS-{orden[0]}"
+        return f"{numero}-{orden[2]}" if orden[2] else numero
+
+    def _etiqueta_orden_servicio(self, orden):
+        """Texto que se muestra en el desplegable para identificar la orden."""
+        partes = [self._numero_visible_orden(orden)]
+        if orden[3]:
+            partes.append(orden[3])
+        if orden[4]:
+            partes.append(orden[4][:24])
+        if orden[6]:
+            partes.append(formatear_moneda(orden[6]))
+        if orden[8]:
+            partes.append("⚠ ya facturada")
+        return " · ".join(partes)
+
+    def _aplicar_ordenes_servicio(self, lista):
+        self._ordenes_servicio = {}
+        etiquetas = [SIN_ORDEN_SERVICIO]
+        for orden in lista:
+            etiqueta = self._etiqueta_orden_servicio(orden)
+            if etiqueta in self._ordenes_servicio:
+                etiqueta = f"{etiqueta} (#{orden[0]})"
+            self._ordenes_servicio[etiqueta] = orden
+            etiquetas.append(etiqueta)
+        try:
+            self.combo_orden_servicio.configure(values=etiquetas)
+            if self.combo_orden_servicio.get() not in etiquetas:
+                self.combo_orden_servicio.set(SIN_ORDEN_SERVICIO)
+        except Exception:
+            pass
+        # Si aún no aparece ninguna orden (por ejemplo al abrir la app mientras se
+        # preparan las columnas nuevas), se reintenta una vez en segundo plano.
+        if not lista and not getattr(self, "_reintento_ordenes_hecho", False):
+            self._reintento_ordenes_hecho = True
+            try:
+                self.main_root.after(4000, lambda: self.cargar_ordenes_servicio(forzar=True))
+            except Exception:
+                pass
+        self._actualizar_cruce_orden()
+
+    def orden_servicio_actual(self):
+        """Datos de la orden elegida en el desplegable (None si no hay ninguna)."""
+        if not hasattr(self, "combo_orden_servicio"):
+            return None
+        etiqueta = self.combo_orden_servicio.get()
+        if not etiqueta or etiqueta == SIN_ORDEN_SERVICIO:
+            return None
+        return (getattr(self, "_ordenes_servicio", {}) or {}).get(etiqueta)
+
+    def al_seleccionar_orden_servicio(self, choice=None):
+        """Al elegir una orden se completan los datos que falten y se compara con la factura."""
+        orden = self.orden_servicio_actual()
+        if orden:
+            # Proveedor de la orden: se completa solo si aún no se eligió ninguno
+            if orden[4] and not self.combo_proveedor.get().strip():
+                self.combo_proveedor.set(orden[4])
+                self.al_seleccionar_proveedor()
+            # Placa de la unidad (si la orden la tiene y aún no se eligió una)
+            if orden[3]:
+                try:
+                    valores = list(self.combo_evento.cget("values") or [])
+                    actual = self.combo_evento.get().strip()
+                    if not actual or actual == "GENERAL / OFICINA":
+                        if orden[3] not in valores:
+                            valores.append(orden[3])      # la unidad puede no estar en la lista
+                            self.combo_evento.configure(values=valores)
+                        self.combo_evento.set(orden[3])
+                except Exception:
+                    pass
+            # Servicio solicitado como concepto
+            if orden[5] and not self.ent_concepto.get().strip():
+                self.ent_concepto.delete(0, tk.END)
+                self.ent_concepto.insert(0, orden[5])
+            # Si todavía no se digitó el monto, se propone el costo acordado de la orden
+            if orden[6] > 0 and not self.ent_subtotal.get().strip():
+                self._poner_modo_monto("CON_IGV")
+                self.ent_subtotal.insert(0, f"{orden[6]:.2f}")
+        self._actualizar_cruce_orden()
+        self.actualizar_totales()
+
+    def _actualizar_cruce_orden(self):
+        """Compara el monto de la factura con el costo acordado de la orden elegida."""
+        if not hasattr(self, "lbl_cruce_orden"):
+            return
+        orden = self.orden_servicio_actual()
+        if not orden:
+            self.lbl_cruce_orden.configure(text="Sin orden de servicio relacionada.", text_color="#777777")
+            try:
+                self.btn_ver_orden.configure(state="disabled")
+            except Exception:
+                pass
+            return
+        try:
+            self.btn_ver_orden.configure(state="normal")
+        except Exception:
+            pass
+
+        numero = self._numero_visible_orden(orden)
+        costo = orden[6]
+        try:
+            _sub, _igv, total_factura = self._montos_ingresados()
+        except ValueError:
+            total_factura = 0.0
+
+        if costo <= 0:
+            self.lbl_cruce_orden.configure(text=f"Orden {numero}: sin costo registrado.", text_color="#b9770e")
+        elif total_factura <= 0:
+            self.lbl_cruce_orden.configure(
+                text=f"Orden {numero}: costo acordado {formatear_moneda(costo)}. Ingrese el monto de la factura.",
+                text_color="#555555")
+        elif abs(total_factura - costo) <= 0.05:
+            self.lbl_cruce_orden.configure(
+                text=f"✔ Cruce correcto: la factura coincide con la orden {numero} ({formatear_moneda(costo)}).",
+                text_color="#1e8449")
+        else:
+            diferencia = total_factura - costo
+            self.lbl_cruce_orden.configure(
+                text=f"⚠ La orden {numero} es {formatear_moneda(costo)} y la factura "
+                     f"{formatear_moneda(total_factura)}: diferencia de {formatear_moneda(abs(diferencia))} "
+                     f"{'de más' if diferencia > 0 else 'de menos'}.",
+                text_color="#c0392b")
+
+    def abrir_pdf_orden_servicio(self):
+        """Abre el PDF de la orden de servicio relacionada."""
+        orden = self.orden_servicio_actual()
+        if not orden:
+            return messagebox.showinfo("Orden de Servicio", "Seleccione una orden de servicio de la lista.")
+        if not orden[7]:
+            return messagebox.showinfo("Orden de Servicio", "Esta orden no tiene PDF guardado.")
+        try:
+            ruta_abs = resolver_ruta_archivo(orden[7])
+        except Exception:
+            ruta_abs = orden[7]
+        if ruta_abs and os.path.exists(ruta_abs):
+            abrir_documento(ruta_abs)
+        else:
+            messagebox.showwarning("Orden de Servicio",
+                                   "No se encontró el PDF de la orden en este equipo.\n"
+                                   "Puede abrirlo desde el módulo de Órdenes de Servicio.")
+
+    # =========================================================================
     # 💰 MONTO BASE (SIN IGV)  /  MONTO CON IGV (TOTAL)
     # =========================================================================
     def _es_factura(self):
@@ -1419,6 +1993,12 @@ class FacturasRecibidasTab:
         """Número escrito en la casilla del monto (0.0 si está vacía)."""
         return parsear_monto_texto(self.ent_subtotal.get())
 
+    def _recargo_tecleado(self):
+        """Recargo al consumo digitado (servicio/propina): suma al total y no lleva IGV."""
+        if not hasattr(self, "ent_recargo"):
+            return 0.0
+        return parsear_monto_texto(self.ent_recargo.get())
+
     def _montos_ingresados(self):
         """Devuelve (subtotal, igv, total) según el modo elegido por el usuario.
 
@@ -1426,21 +2006,23 @@ class FacturasRecibidasTab:
         - Modo "CON_IGV" : lo escrito es el monto CON IGV  -> se calcula la base y el IGV.
         """
         valor = self._monto_tecleado()
+        recargo = self._recargo_tecleado()
         if self._es_factura():
             tasa = self._tasa_igv()
             if self.modo_monto == "CON_IGV":
-                total = valor
-                subtotal = total / (1.0 + tasa)
-                igv = total - subtotal
+                # Lo digitado es el total del documento: se descuenta primero el
+                # recargo al consumo (no gravado) y el resto se reparte base + IGV.
+                gravado = max(valor - recargo, 0.0)
+                subtotal = gravado / (1.0 + tasa)
+                igv = gravado - subtotal
             else:
                 subtotal = valor
                 igv = subtotal * tasa
-                total = subtotal + igv
         else:
             # Boletas, recibos por honorarios y otros: no llevan IGV en el monto.
             subtotal = valor
             igv = 0.0
-            total = valor
+        total = subtotal + igv + recargo
         return round(subtotal, 2), round(igv, 2), round(total, 2)
 
     def _refrescar_etiqueta_modo(self):
@@ -1490,6 +2072,7 @@ class FacturasRecibidasTab:
         tipo = self.combo_tipo.get()
         try:
             subtotal, igv, total = self._montos_ingresados()
+            recargo = self._recargo_tecleado()
             ui_pct = float(self.ent_detraccion.get() or 0)
         except ValueError:
             return
@@ -1500,14 +2083,16 @@ class FacturasRecibidasTab:
             neto = total - det
             self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
             self.lbl_impuesto.configure(text=f"IGV ({txt_igv}): {formatear_moneda(igv)}")
+            self.lbl_recargo.configure(text=f"Recargo al consumo: {formatear_moneda(recargo)}")
             self.lbl_bruto.configure(text=f"Total con IGV: {formatear_moneda(total)}")
             self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}")
             self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
         elif "Recibo" in tipo:
             ret = subtotal * (ui_pct / 100.0)
-            neto = subtotal - ret
+            neto = total - ret
             self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
             self.lbl_impuesto.configure(text=f"Retención ({ui_pct:g}%): -{formatear_moneda(ret)}")
+            self.lbl_recargo.configure(text=f"Recargo al consumo: {formatear_moneda(recargo)}")
             self.lbl_bruto.configure(text=f"Total del Documento: {formatear_moneda(total)}")
             self.lbl_detraccion.configure(text=f"Detracción (0%): -{formatear_moneda(0)}")
             self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
@@ -1517,9 +2102,12 @@ class FacturasRecibidasTab:
             neto = total - det
             self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
             self.lbl_impuesto.configure(text=f"IGV (0%): {formatear_moneda(0)}")
+            self.lbl_recargo.configure(text=f"Recargo al consumo: {formatear_moneda(recargo)}")
             self.lbl_bruto.configure(text=f"Total del Documento: {formatear_moneda(total)}")
             self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}")
             self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
+
+        self._actualizar_cruce_orden()
 
     def seleccionar_archivo(self):
         ruta = seleccionar_archivo_dialogo("Seleccionar Documento", [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg;*.xml")])
@@ -1575,14 +2163,36 @@ class FacturasRecibidasTab:
             det_monto = tot_bruto * (det_pct / 100.0)
         elif "Recibo" in tipo: 
             imp = subtotal * (ui_pct / 100.0)
-            tot_bruto = subtotal
+            tot_bruto = total_calculado          # base + recargo al consumo (si hubiera)
             det_pct = 0.0
             det_monto = 0.0
         else: 
             imp = 0.0
-            tot_bruto = subtotal
+            tot_bruto = total_calculado          # base + recargo al consumo (si hubiera)
             det_pct = ui_pct
             det_monto = tot_bruto * (det_pct / 100.0)
+
+        # 🔗 Orden de servicio relacionada (si el usuario eligió una en el desplegable)
+        orden = self.orden_servicio_actual()
+        orden_id = orden[0] if orden else None
+        orden_txt = self._numero_visible_orden(orden) if orden else ""
+        if orden_id:
+            conn_orden = conectar_db()
+            if conn_orden:
+                try:
+                    c_orden = conn_orden.cursor()
+                    c_orden.execute("SELECT COALESCE(numero_documento, '') FROM facturas_recibidas "
+                                    "WHERE id_orden_servicio = %s LIMIT 1", (orden_id,))
+                    previa = c_orden.fetchone()
+                    if previa and not messagebox.askyesno(
+                            "Orden de Servicio",
+                            f"La orden {orden_txt} ya está relacionada con la factura "
+                            f"{previa[0] or '(sin N°)'}.\n\n¿Desea relacionarla también con este documento?"):
+                        return
+                except Exception:
+                    pass
+                finally:
+                    liberar_conexion(conn_orden)
 
         ruta_final = ""
         if self.ruta_archivo_temp:
@@ -1603,9 +2213,9 @@ class FacturasRecibidasTab:
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val))
+                INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc, id_orden_servicio, orden_servicio)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val, orden_id, orden_txt))
             conn.commit()
             
             cache_sistema.invalidar()
@@ -1613,10 +2223,14 @@ class FacturasRecibidasTab:
             messagebox.showinfo("Éxito", "Documento recibido registrado correctamente.")
             
             self.cargar_categorias()
+            self.cargar_ordenes_servicio()      # refresca la marca "⚠ ya facturada"
             self.ent_nro_doc.delete(0, tk.END)
             self.ent_desc.delete(0, tk.END)
             self.ent_concepto.delete(0, tk.END)
             self.ent_subtotal.delete(0, tk.END)
+            if hasattr(self, "ent_recargo"):
+                self.ent_recargo.delete(0, tk.END)
+                self.ent_recargo.insert(0, "0")
             self.ruta_archivo_temp = ""
             self.btn_archivo.configure(text="📎 Adjuntar Archivo Manual", fg_color="#7f8c8d", hover_color="#606b6b")
             self.cargar_datos_tabla(reset_pagina=True)
@@ -1661,7 +2275,7 @@ class FacturasRecibidasTab:
                     return
                 try:
                     cursor = conn.cursor()
-                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, '') FROM facturas_recibidas"
+                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(orden_servicio, '') FROM facturas_recibidas"
                     
                     condiciones = []
                     params = []
@@ -1738,6 +2352,7 @@ class FacturasRecibidasTab:
             km_val = r[14] if r[14] else "-"
             cant_val = r[15] if r[15] else "-"
             ruc_val = r[16] if len(r) > 16 and r[16] else "-"
+            orden_val = str(r[20]) if len(r) > 20 and r[20] else "-"
             
             desc_bruta = str(r[7]) if r[7] else "-"
             desc_limpia = desc_bruta
@@ -1752,8 +2367,11 @@ class FacturasRecibidasTab:
 
             metodo_pago = " + ".join(cuentas_por_factura.get(id_factura, []))
             if es_cruzada:
-                # Compra cruzada: la factura la pagó un tercero (dato del módulo de Banco)
-                metodo_pago = "🔁 Compra cruzada" + (f" · pagó: {tercero}" if tercero else "")
+                # Compra cruzada: se indica quién pagó, pero SIN ocultar la cuenta
+                # bancaria con la que salió el dinero (el pago también se registra
+                # en Banco, así que la factura figura como pagada).
+                nota = "🔁 Compra cruzada" + (f" · pagó: {tercero}" if tercero else "")
+                metodo_pago = f"{metodo_pago} · {nota}" if metodo_pago else nota
 
             if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
             else: neto = tot_bruto - det_monto
@@ -1761,7 +2379,7 @@ class FacturasRecibidasTab:
             etiqueta_color = "con_cuenta" if id_factura in cuentas_por_factura else "sin_cuenta"
 
             row_vals = (
-                0, id_factura, r[1], hora_consumo, r[2] if r[2] else "-", r[3], tipo_doc.split(" ")[0], r[5], ruc_val, cat,
+                0, id_factura, r[1], hora_consumo, r[2] if r[2] else "-", orden_val, r[3], tipo_doc.split(" ")[0], r[5], ruc_val, cat,
                 r[6].split(" | ")[0] if " | " in str(r[6]) else r[6], km_val, cant_val, desc_limpia, metodo_pago, formatear_moneda(r[8]), formatear_moneda(impuesto), formatear_moneda(tot_bruto), formatear_moneda(det_monto), formatear_moneda(neto), tiene_arch
             )
 
@@ -1861,13 +2479,18 @@ class FacturasRecibidasTab:
         if not conn: return
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT tipo_documento, ruc, proveedor, numero_documento, fecha, evento_asociado, kilometraje, cantidad_combustible, descripcion, subtotal, impuesto, total FROM facturas_recibidas WHERE id = %s", (id_doc,))
+            cursor.execute("SELECT tipo_documento, ruc, proveedor, numero_documento, fecha, evento_asociado, kilometraje, cantidad_combustible, descripcion, subtotal, impuesto, total, COALESCE(id_orden_servicio, 0), COALESCE(orden_servicio, '') FROM facturas_recibidas WHERE id = %s", (id_doc,))
             reg = cursor.fetchone()
         finally: 
             liberar_conexion(conn)
             
         if not reg: return
-        e_tipo, e_ruc, e_prov, e_nro, e_fec, e_placa, e_km, e_gal, e_desc, e_sub, e_imp, e_tot = reg
+        e_tipo, e_ruc, e_prov, e_nro, e_fec, e_placa, e_km, e_gal, e_desc, e_sub, e_imp, e_tot, e_orden_id, e_orden_txt = reg
+        try:
+            e_orden_id = int(e_orden_id or 0)
+        except (TypeError, ValueError):
+            e_orden_id = 0
+        e_orden_txt = str(e_orden_txt or "")
         
         desc_bruta = str(e_desc) if e_desc else ""
         c_val = desc_bruta
@@ -1916,6 +2539,30 @@ class FacturasRecibidasTab:
         ent_gal = crear_campo(f_form, "Galones/Cant.:", e_gal)
         ent_desc = crear_campo(f_form, "Concepto / Descripción:", c_val)
         ent_hora = crear_campo(f_form, "Hora de Consumo (Ej: 14:30):", h_val)
+
+        # 🔗 Orden de servicio relacionada con esta factura (se puede cambiar o quitar)
+        ctk.CTkLabel(f_form, text="🔗 Orden de Servicio (relacionar):", font=("Arial", 11, "bold")).pack(anchor="w", padx=5, pady=(5, 0))
+        combo_edit_orden = ctk.CTkComboBox(f_form, values=[SIN_ORDEN_SERVICIO], state="readonly")
+        combo_edit_orden.pack(fill="x", padx=5, pady=(0, 5))
+        valores_orden_edit = [SIN_ORDEN_SERVICIO]
+        mapa_ordenes_edit = {}
+        for _etiqueta, _orden in (getattr(self, "_ordenes_servicio", {}) or {}).items():
+            valores_orden_edit.append(_etiqueta)
+            mapa_ordenes_edit[_etiqueta] = _orden
+        seleccion_orden_edit = SIN_ORDEN_SERVICIO
+        if e_orden_id:
+            for _etiqueta, _orden in mapa_ordenes_edit.items():
+                if _orden[0] == e_orden_id:
+                    seleccion_orden_edit = _etiqueta
+                    break
+            else:
+                # La orden ya no está en la lista (anulada o de otro equipo): se conserva el vínculo
+                _etiqueta_actual = f"{e_orden_txt or ('Orden #' + str(e_orden_id))} (relacionada actualmente)"
+                valores_orden_edit.append(_etiqueta_actual)
+                mapa_ordenes_edit[_etiqueta_actual] = None
+                seleccion_orden_edit = _etiqueta_actual
+        combo_edit_orden.configure(values=valores_orden_edit)
+        combo_edit_orden.set(seleccion_orden_edit)
         
         f_montos = ctk.CTkFrame(f_form, fg_color="transparent")
         f_montos.pack(fill="x", pady=5)
@@ -1934,6 +2581,17 @@ class FacturasRecibidasTab:
         ent_tot = ctk.CTkEntry(f_montos, width=100)
         ent_tot.grid(row=1, column=2, padx=5)
         ent_tot.insert(0, str(e_tot))
+
+        # 🍽️ Recargo al consumo (servicio/propina): suma al total y no lleva IGV
+        ctk.CTkLabel(f_montos, text="Recargo al consumo (no gravado):", font=("Arial", 11, "bold")).grid(
+            row=2, column=0, columnspan=3, padx=5, pady=(8, 0), sticky="w")
+        ent_rec = ctk.CTkEntry(f_montos, width=100)
+        ent_rec.grid(row=3, column=0, padx=5)
+        try:
+            _recargo_inicial = float(e_tot or 0) - float(e_sub or 0) - float(e_imp or 0)
+        except (TypeError, ValueError):
+            _recargo_inicial = 0.0
+        ent_rec.insert(0, f"{max(_recargo_inicial, 0.0):.2f}")
 
         # 💰 Igual que en el registro: se puede escribir el monto BASE o el monto ya CON IGV
         # y el sistema calcula automáticamente la base, el IGV y el total.
@@ -1979,28 +2637,41 @@ class FacturasRecibidasTab:
 
         def _recalcular_desde_base(*_a):
             base = _num_edit(ent_sub)
+            rec = _num_edit(ent_rec)
             if _es_factura_edit():
-                _set_edit(ent_imp, base * _tasa_edit())
-                _set_edit(ent_tot, base * (1.0 + _tasa_edit()))
+                igv = base * _tasa_edit()
+                _set_edit(ent_imp, igv)
+                _set_edit(ent_tot, base + igv + rec)
             elif _es_boleta_edit():
                 _set_edit(ent_imp, 0.0)
-                _set_edit(ent_tot, base)
+                _set_edit(ent_tot, base + rec)
             estado_edit["modo"] = "BASE"
             seg_edit.set("Monto Base (sin IGV)")
             _nota_edit()
 
         def _recalcular_desde_total(*_a):
             total = _num_edit(ent_tot)
+            rec = _num_edit(ent_rec)
             if _es_factura_edit():
                 tasa = _tasa_edit()
-                base = total / (1.0 + tasa)
+                # El recargo al consumo no está gravado: se descuenta antes del IGV
+                gravado = max(total - rec, 0.0)
+                base = gravado / (1.0 + tasa)
                 _set_edit(ent_sub, base)
-                _set_edit(ent_imp, total - base)
+                _set_edit(ent_imp, gravado - base)
             elif _es_boleta_edit():
-                _set_edit(ent_sub, total)
+                _set_edit(ent_sub, max(total - rec, 0.0))
                 _set_edit(ent_imp, 0.0)
             estado_edit["modo"] = "CON_IGV"
             seg_edit.set("Monto con IGV (Total)")
+            _nota_edit()
+
+        def _recalcular_desde_recargo(*_a):
+            rec = _num_edit(ent_rec)
+            if _es_factura_edit():
+                _set_edit(ent_tot, _num_edit(ent_sub) + _num_edit(ent_imp) + rec)
+            elif _es_boleta_edit():
+                _set_edit(ent_tot, _num_edit(ent_sub) + rec)
             _nota_edit()
 
         def cambiar_modo_edit(valor):
@@ -2012,7 +2683,18 @@ class FacturasRecibidasTab:
 
         ent_sub.bind("<KeyRelease>", _recalcular_desde_base)
         ent_tot.bind("<KeyRelease>", _recalcular_desde_total)
+        ent_rec.bind("<KeyRelease>", _recalcular_desde_recargo)
         _nota_edit()
+
+        def _orden_elegida_edit():
+            """(id, texto) de la orden de servicio elegida en la ventana de edición."""
+            etiqueta = combo_edit_orden.get()
+            if etiqueta == SIN_ORDEN_SERVICIO:
+                return None, ""
+            orden = mapa_ordenes_edit.get(etiqueta)
+            if orden is None:                        # se mantiene el vínculo que ya tenía
+                return (e_orden_id or None), e_orden_txt
+            return orden[0], self._numero_visible_orden(orden)
 
         def guardar_cambios():
             try:
@@ -2031,16 +2713,17 @@ class FacturasRecibidasTab:
                 if conn_u:
                     try:
                         cursor_u = conn_u.cursor()
+                        id_orden_final, txt_orden_final = _orden_elegida_edit()
                         cursor_u.execute("""
                             UPDATE facturas_recibidas 
                             SET tipo_documento=%s, ruc=%s, proveedor=%s, numero_documento=%s, fecha=%s, 
                                 evento_asociado=%s, kilometraje=%s, cantidad_combustible=%s, descripcion=%s, 
-                                subtotal=%s, impuesto=%s, total=%s
+                                subtotal=%s, impuesto=%s, total=%s, id_orden_servicio=%s, orden_servicio=%s
                             WHERE id=%s
                         """, (
                             ent_tipo.get().strip(), ent_ruc.get().strip(), ent_prov.get().strip(), ent_nro.get().strip(), 
                             ent_fec.get().strip(), ent_placa.get().strip(), ent_km.get().strip(), ent_gal.get().strip(), 
-                            desc_final, val_sub, val_imp, val_tot, id_doc
+                            desc_final, val_sub, val_imp, val_tot, id_orden_final, txt_orden_final, id_doc
                         ))
                         
                         cursor_u.execute("""
@@ -2528,8 +3211,10 @@ class CuentasPorPagarTab:
             ruc_str = f['ruc_db'] if f['ruc_db'] else "-"
             metodo_pago = " + ".join(f['cuentas_lista']) if f['cuentas_lista'] else ""
             if f.get('es_cruzada'):
-                # Compra cruzada registrada desde el módulo de Banco
-                metodo_pago = "🔁 Compra cruzada" + (f" · pagó: {f['tercero']}" if f.get('tercero') else "")
+                # Compra cruzada registrada desde el módulo de Banco: se agrega la
+                # nota del tercero conservando la cuenta bancaria del pago.
+                nota = "🔁 Compra cruzada" + (f" · pagó: {f['tercero']}" if f.get('tercero') else "")
+                metodo_pago = f"{metodo_pago} · {nota}" if metodo_pago else nota
             txt_adjuntos = f"📁 {f['cant_archivos']} archivo(s)" if f['cant_archivos'] > 0 else "❌ Sin adjuntos"
             if f.get('es_cruzada') and f['cant_archivos'] == 0:
                 txt_adjuntos = "🔁 Ver factura / soporte"

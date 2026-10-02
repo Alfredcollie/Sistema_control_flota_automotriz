@@ -348,7 +348,7 @@ class OrdenesCompraApp:
         f_tabla = ctk.CTkFrame(self.tab_historial, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True, pady=10)
 
-        self.tree_historial = ttk.Treeview(f_tabla, columns=("id", "num_orden", "placa", "servicio", "proveedor", "fecha", "total"), show="headings")
+        self.tree_historial = ttk.Treeview(f_tabla, columns=("id", "num_orden", "placa", "servicio", "proveedor", "fecha", "total", "factura"), show="headings")
         
         self.tree_historial.heading("id", text="ID ↕", command=lambda: self.ordenar_por_columna("id", True))
         self.tree_historial.heading("num_orden", text="N° Orden ↕", command=lambda: self.ordenar_por_columna("num_orden", False))
@@ -357,6 +357,7 @@ class OrdenesCompraApp:
         self.tree_historial.heading("proveedor", text="Proveedor ↕", command=lambda: self.ordenar_por_columna("proveedor", False))
         self.tree_historial.heading("fecha", text="Emisión ↕", command=lambda: self.ordenar_por_columna("fecha", False))
         self.tree_historial.heading("total", text="Total S/ ↕", command=lambda: self.ordenar_por_columna("total", True))
+        self.tree_historial.heading("factura", text="Factura vinculada ↕", command=lambda: self.ordenar_por_columna("factura", False))
         
         self.tree_historial.column("id", width=40, anchor="center")
         self.tree_historial.column("num_orden", width=120, anchor="center")
@@ -365,6 +366,7 @@ class OrdenesCompraApp:
         self.tree_historial.column("proveedor", width=180, anchor="w")
         self.tree_historial.column("fecha", width=110, anchor="center")
         self.tree_historial.column("total", width=90, anchor="e")
+        self.tree_historial.column("factura", width=160, anchor="center")
         
         scroll_y = ctk.CTkScrollbar(f_tabla, command=self.tree_historial.yview)
         self.tree_historial.configure(yscrollcommand=scroll_y.set)
@@ -504,7 +506,7 @@ class OrdenesCompraApp:
         if datos is not None:
             self._pintar_historial(datos)
         else:
-            self.tree_historial.insert("", tk.END, values=("", "Cargando datos...", "", "", "", "", ""))
+            self.tree_historial.insert("", tk.END, values=("", "Cargando datos...", "", "", "", "", "", ""))
             
             def tarea_historial(estado):
                 datos_db = []
@@ -512,16 +514,27 @@ class OrdenesCompraApp:
                 if conn:
                     try:
                         cursor = conn.cursor()
-                        query_base = "SELECT id, numero_orden, version, placa, vehiculo_info, proveedor, servicio, fecha_emision, costo_total FROM ordenes_servicio_flota WHERE estado != 'Anulada' OR estado IS NULL"
+                        # 🔗 Se incluye la factura de compra vinculada (cruce factura <-> orden)
+                        query_base = ("SELECT o.id, o.numero_orden, o.version, o.placa, o.vehiculo_info, "
+                                      "o.proveedor, o.servicio, o.fecha_emision, o.costo_total, "
+                                      "COALESCE((SELECT STRING_AGG(f.numero_documento, ', ') "
+                                      "          FROM facturas_recibidas f "
+                                      "          WHERE f.id_orden_servicio = o.id AND COALESCE(f.numero_documento, '') <> ''), '') "
+                                      "FROM ordenes_servicio_flota o "
+                                      "WHERE o.estado != 'Anulada' OR o.estado IS NULL")
                         
                         if filtro == "":
-                            cursor.execute(f"{query_base} ORDER BY id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
+                            cursor.execute(f"{query_base} ORDER BY o.id DESC LIMIT %s OFFSET %s", (self.registros_por_pagina, offset))
                         else:
                             val = f"%{filtro}%"
                             cursor.execute(f"""
-                                {query_base} AND (numero_orden ILIKE %s OR placa ILIKE %s OR proveedor ILIKE %s OR servicio ILIKE %s)
-                                ORDER BY id DESC LIMIT %s OFFSET %s
-                            """, (val, val, val, val, self.registros_por_pagina, offset))
+                                {query_base} AND (o.numero_orden ILIKE %s OR o.placa ILIKE %s OR o.proveedor ILIKE %s
+                                                  OR o.servicio ILIKE %s
+                                                  OR EXISTS (SELECT 1 FROM facturas_recibidas fx
+                                                             WHERE fx.id_orden_servicio = o.id
+                                                               AND (fx.numero_documento ILIKE %s OR fx.proveedor ILIKE %s)))
+                                ORDER BY o.id DESC LIMIT %s OFFSET %s
+                            """, (val, val, val, val, val, val, self.registros_por_pagina, offset))
                             
                         datos_db = cursor.fetchall()
                         cache_sistema.guardar(clave_cache, datos_db)
@@ -547,7 +560,8 @@ class OrdenesCompraApp:
             try: costo_val = float(r[8]) if r[8] else 0.0
             except: costo_val = 0.0
             
-            row_vals = (r[0], n_imprimir, r[3], r[6], r[5], r[7], f"{costo_val:,.2f}")
+            factura_vinculada = str(r[9]).strip() if len(r) > 9 and r[9] else "— sin factura —"
+            row_vals = (r[0], n_imprimir, r[3], r[6], r[5], r[7], f"{costo_val:,.2f}", factura_vinculada)
             self.tree_historial.insert("", tk.END, values=row_vals)
             
         if self.pagina_actual > 1:

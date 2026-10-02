@@ -222,6 +222,30 @@ def cargar_categorias_gastos():
     return dict(CATEGORIAS_GASTOS_DEFAULT)
 
 
+def guardar_categorias_gastos(cats):
+    """Guarda las categorías principales y sus subcategorías en la configuración.
+
+    Es la MISMA lista que comparten Banco, Compras y las estadísticas financieras,
+    por eso se guarda en config_local.json igual que el resto de parámetros.
+    Devuelve True si se pudo escribir en el disco.
+    """
+    try:
+        limpias = {}
+        for principal, subs in (cats or {}).items():
+            principal = str(principal).strip()
+            if not principal:
+                continue
+            if isinstance(subs, str):
+                subs = [subs]
+            limpias[principal] = [str(s).strip() for s in (subs or []) if str(s).strip()]
+        cfg = leer_config_disco()
+        cfg["categorias_gastos"] = limpias
+        return bool(guardar_config_disco(cfg))
+    except Exception as e:
+        print(f"[Categorías de gastos] No se pudieron guardar: {e}")
+        return False
+
+
 def abrir_gestion_categorias_gastos(parent=None, al_guardar=None):
     """Ventana "Gestionar Categorías de Gastos" (principales y subcategorías).
 
@@ -285,6 +309,16 @@ def abrir_gestion_categorias_gastos(parent=None, al_guardar=None):
             return None, None
         vals = tree.item(sel[0], "values")
         return vals[0], vals[1]
+
+    def _seguro(funcion):
+        """Envuelve una acción para que cualquier error se muestre (antes se perdía)."""
+        def envuelto(*args, **kwargs):
+            try:
+                return funcion(*args, **kwargs)
+            except Exception as e:
+                messagebox.showerror("Categorías de Gastos",
+                                     f"No se pudo completar la acción:\n{e}", parent=v)
+        return envuelto
 
     def add_principal():
         nombre = simpledialog.askstring("Nueva principal", "Nombre de la categoría principal:", parent=v)
@@ -360,11 +394,11 @@ def abrir_gestion_categorias_gastos(parent=None, al_guardar=None):
             messagebox.showerror("Error", "No se pudieron guardar las categorías.", parent=v)
 
     f_btns = ctk.CTkFrame(v, fg_color="transparent"); f_btns.pack(fill="x", padx=15, pady=(0, 15))
-    ctk.CTkButton(f_btns, text="➕ Principal", width=120, command=add_principal).pack(side="left", padx=4)
-    ctk.CTkButton(f_btns, text="➕ Categoría", width=120, command=add_sub).pack(side="left", padx=4)
-    ctk.CTkButton(f_btns, text="✏️ Editar", width=100, command=edit).pack(side="left", padx=4)
-    ctk.CTkButton(f_btns, text="🗑️ Eliminar", width=100, command=delete).pack(side="left", padx=4)
-    ctk.CTkButton(f_btns, text="💾 Guardar y Cerrar", width=150, fg_color="#27ae60", command=guardar).pack(side="right", padx=4)
+    ctk.CTkButton(f_btns, text="➕ Principal", width=120, command=_seguro(add_principal)).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="➕ Categoría", width=120, command=_seguro(add_sub)).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="✏️ Editar", width=100, command=_seguro(edit)).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="🗑️ Eliminar", width=100, command=_seguro(delete)).pack(side="left", padx=4)
+    ctk.CTkButton(f_btns, text="💾 Guardar y Cerrar", width=150, fg_color="#27ae60", command=_seguro(guardar)).pack(side="right", padx=4)
 
     return v
 
@@ -2433,9 +2467,10 @@ class ModuloBancoApp:
         # Tercer desplegable: placa (solo para Gastos Operativos)
         placas = cargar_placas_flota()
         lbl_placa = ctk.CTkLabel(f, text="Placa / Vehículo:", font=("Arial", 11, "bold"))
-        cmb_placa = ctk.CTkComboBox(f, values=placas or ["(Sin placas)"], width=300, state="readonly")
-        if placas:
-            cmb_placa.set(placas[0])
+        # "Ninguno" primero: así un pago que no es de un vehículo (o una edición
+        # que no tenía placa) no queda con una placa asignada por descuido.
+        cmb_placa = ctk.CTkComboBox(f, values=["Ninguno"] + placas, width=300, state="readonly")
+        cmb_placa.set("Ninguno")
 
         # Cuarto desplegable: chofer (solo para categorías de Planilla / Sueldos)
         choferes = cargar_choferes()
@@ -2489,7 +2524,7 @@ class ModuloBancoApp:
                 cmb_sub.configure(values=valores_sub + [sub_ini])
             cmb_sub.set(sub_ini)
         placa_ini = str(datos_ini.get("placa") or "")
-        if placa_ini and placa_ini != "(Sin placas)":
+        if placa_ini and placa_ini not in ("Ninguno", "(Sin placas)"):
             valores_placa = list(cmb_placa.cget("values"))
             if placa_ini not in valores_placa:
                 valores_placa.append(placa_ini)          # placa que ya no está en la flota
@@ -2750,8 +2785,8 @@ class ModuloBancoApp:
                 sub = ""
             placa = ""
             if principal == "Gastos Operativos":
-                pv = cmb_placa.get()
-                if pv and pv != "(Sin placas)":
+                pv = cmb_placa.get().strip()
+                if pv and pv not in ("Ninguno", "(Sin placas)"):
                     placa = pv
             chofer = ""
             if es_categoria_planilla(f"{principal} {sub}"):
@@ -2878,6 +2913,8 @@ class ModuloBancoApp:
                     "descripcion": desc,
                     "soporte_origen": estado_cruzada["soporte"],
                     "factura_origen": estado_cruzada["factura"],
+                    "banco": construir_etiqueta_banco(banco),
+                    "id_movimiento": id_movimiento,
                     **detalle_igv,
                 }, v)
                 if not ok:
@@ -2944,6 +2981,9 @@ class ModuloBancoApp:
         impuesto_bd = impuesto_cruz if impuesto_cruz is not None else 0.0
         categoria = datos.get("categoria") or "Compra Cruzada"
         descripcion = (datos.get("descripcion") or "").strip() or "Compra cruzada pagada por tercero"
+        # Cuenta bancaria con la que salió el dinero (se muestra en Compras)
+        cuenta_banco = str(datos.get("banco") or "").strip()
+        id_movimiento_banco = int(datos.get("id_movimiento") or 0)
 
         # Copiar los PDF (factura de compra y soporte del pago a tercero) a las carpetas autorizadas
         origen_soporte = datos.get("soporte_origen") or ""
@@ -3011,6 +3051,7 @@ class ModuloBancoApp:
                                      ORDER BY id LIMIT 1""", (nro, proveedor))
                         existente = c.fetchone()
 
+                id_gasto_cruz = 0
                 if existente:
                     sets = ["es_compra_cruzada = TRUE", "categoria = %s", "pagado_por_tercero = %s"]
                     params = [categoria, tercero]
@@ -3024,6 +3065,7 @@ class ModuloBancoApp:
                     params.append(existente[0])
                     c.execute("UPDATE facturas_recibidas SET " + ", ".join(sets) + " WHERE id = %s",
                               tuple(params))
+                    id_gasto_cruz = int(existente[0])
                     actualizada = True
                 else:
                     c.execute("""
@@ -3032,9 +3074,42 @@ class ModuloBancoApp:
                          subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto,
                          categoria, ruc, pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
                     """, ("FACTURA", nro, fecha, proveedor, descripcion, "",
                             subtotal_bd, impuesto_bd, total, ruta_para_guardar(ruta_factura), 0, 0, 0,
                             categoria, "", tercero, ruta_para_guardar(ruta_soporte), True))
+                    try:
+                        id_gasto_cruz = int(c.fetchone()[0])
+                    except Exception:
+                        id_gasto_cruz = 0
+
+                # 💳 El pago se registra además a nombre de la CUENTA BANCARIA con la
+                # que se pagó: así en Compras la factura figura como PAGADA y su
+                # "Forma de Pago" muestra el banco (el soporte del tercero queda adjunto).
+                if id_gasto_cruz:
+                    c.execute("SELECT COUNT(*) FROM pagos_comprobantes WHERE id_factura = %s",
+                              (id_gasto_cruz,))
+                    fila_pago = c.fetchone()
+                    if not fila_pago or int(fila_pago[0] or 0) == 0:
+                        c.execute("""
+                            INSERT INTO pagos_comprobantes
+                            (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago,
+                             categoria_suministro, codigo_cotizacion, cuenta_origen)
+                            VALUES (%s, %s, %s, %s, %s, %s, '', %s)
+                        """, (id_gasto_cruz, total, ruta_para_guardar(ruta_soporte), proveedor,
+                              fecha, categoria, cuenta_banco))
+
+                # 🔗 Se enlaza el movimiento del banco con el gasto de Compras, para
+                # que ambos módulos queden sincronizados (como en el pago normal).
+                if id_gasto_cruz and id_movimiento_banco:
+                    try:
+                        c.execute("UPDATE conciliacion_bancaria SET id_gasto_compras=%s WHERE id=%s",
+                                  (id_gasto_cruz, id_movimiento_banco))
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
                 conn.commit()
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo registrar la compra cruzada:\n{e}", parent=parent)
