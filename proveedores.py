@@ -9,6 +9,7 @@ PROVEEDORES.PY - GESTIÓN CORPORATIVA DE PROVEEDORES (FLOTA Y EVENTOS)
 - 🚀 Scroll fluido en todo el formulario.
 - 🔇 Búsqueda de RUC totalmente silenciosa y segura (Bypass SSL & Anti-Error 404).
 """
+import os
 import psycopg2
 import tkinter as tk
 import customtkinter as ctk

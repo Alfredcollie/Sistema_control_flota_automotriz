@@ -10,9 +10,11 @@ from tkinter import ttk, messagebox
 import customtkinter as ctk
 import calendar
 import ctypes
+import os
 from datetime import datetime, timedelta
 import threading
 import json
+import psycopg2
 
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion

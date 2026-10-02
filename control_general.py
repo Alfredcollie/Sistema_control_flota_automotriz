@@ -890,6 +890,8 @@ class ControlGeneralEventos:
         self.root = root
         self.root.title("SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ")
         self.root.protocol("WM_DELETE_WINDOW", self.confirmar_salida)
+        self._avisos_error_mostrados = 0
+        self._instalar_aviso_de_errores()
 
         # 🍏 macOS: si el programa se minimiza, el clic en su icono del Dock debe
         # devolverlo a pantalla (ver instalar_manejador_dock_mac).
@@ -960,6 +962,37 @@ class ControlGeneralEventos:
         }
         self.root.withdraw()
         self.abrir_ventana_login()
+
+    def _instalar_aviso_de_errores(self):
+        """Registra y avisa cuando algo falla dentro de un botón o ventana.
+
+        Sin esto, cualquier error en un botón (por ejemplo una función que no
+        existe) se perdía en silencio: el usuario veía que "no hacía nada".
+        """
+        def _reportar(tipo, valor, traza):
+            detalle = "".join(traceback.format_exception(tipo, valor, traza))
+            try:
+                with open(str(DATA_DIR / "error_aplicacion.log"), "a", encoding="utf-8") as archivo:
+                    archivo.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] {detalle}")
+            except Exception:
+                pass
+            print(detalle)
+            # No se saturan los avisos: se muestran los primeros 5 de la sesión
+            if self._avisos_error_mostrados >= 5:
+                return
+            self._avisos_error_mostrados += 1
+            try:
+                messagebox.showerror(
+                    "Error inesperado",
+                    f"Ocurrió un error y la operación no se completó:\n\n{valor}\n\n"
+                    "El detalle se guardó en 'error_aplicacion.log'.")
+            except Exception:
+                pass
+
+        try:
+            self.root.report_callback_exception = _reportar
+        except Exception:
+            pass
 
     def tiene_permiso(self, modulo_key):
         if self.rol_activo == "Super Administrador":
