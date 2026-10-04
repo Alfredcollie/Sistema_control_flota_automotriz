@@ -1437,7 +1437,8 @@ class ControlGeneralEventos:
                             cursor.execute("""
                                 SELECT placa, vencimiento_soat, vencimiento_seguro, vencimiento_rt, 
                                        fec_rev_gas, fec_venc_bat, fec_venc_extintor, fec_aceite, 
-                                       km_prox_correa, kilometraje 
+                                       km_prox_correa, kilometraje, fecha_ultimo_general,
+                                       km_ultimo_general
                                 FROM flota_vehiculos 
                                 WHERE estado = 'Operativo'
                             """)
@@ -1445,7 +1446,7 @@ class ControlGeneralEventos:
                         except Exception:
                             conn.rollback()
                             cursor.execute("SELECT placa, vencimiento_soat, vencimiento_seguro, vencimiento_rt FROM flota_vehiculos WHERE estado = 'Operativo'")
-                            vehiculos = [(r[0], r[1], r[2], r[3], None, None, None, None, None, None) for r in cursor.fetchall()]
+                            vehiculos = [(r[0], r[1], r[2], r[3], None, None, None, None, None, None, None, None) for r in cursor.fetchall()]
 
                         for v in vehiculos:
                             placa = v[0]
@@ -1480,6 +1481,37 @@ class ControlGeneralEventos:
                                         alertas.append({"tipo": "peligro", "icono": "🛢️", "titulo": f"Cambio de Aceite Vencido ({placa})", "mensaje": f"Venció hace {abs(dias_restantes)} días (por tiempo)."})
                                     elif 0 <= dias_restantes <= dias_alerta:
                                         alertas.append({"tipo": "alerta", "icono": "🛢️", "titulo": f"Próximo Cambio de Aceite ({placa})", "mensaje": f"Vence en {dias_restantes} días (por tiempo)."})
+                                except Exception:
+                                    pass
+
+                            # 🛠️ Mantenimiento Preventivo / General: se registra desde Compras
+                            #    (ventana "Resetear Mantenimientos") y aquí se controla por
+                            #    TIEMPO (fecha del último) y por KILOMETRAJE (último km + límite).
+                            fec_general = v[10] if len(v) > 10 else None
+                            if fec_general and str(fec_general).strip():
+                                try:
+                                    meses_prev = int(config.get("alerta_mantenimiento_general_meses", "6"))
+                                    dt_prev = datetime.strptime(str(fec_general), "%d/%m/%Y").date()
+                                    dt_prox_prev = dt_prev + timedelta(days=30 * meses_prev)
+                                    dias_restantes = (dt_prox_prev - hoy.date()).days
+                                    if dias_restantes < 0:
+                                        alertas.append({"tipo": "peligro", "icono": "🛠️", "titulo": f"Mantenimiento Preventivo Vencido ({placa})", "mensaje": f"Toca mantenimiento hace {abs(dias_restantes)} días (último: {fec_general})."})
+                                    elif 0 <= dias_restantes <= dias_alerta:
+                                        alertas.append({"tipo": "alerta", "icono": "🛠️", "titulo": f"Mantenimiento Preventivo Próximo ({placa})", "mensaje": f"Toca en {dias_restantes} días (último: {fec_general})."})
+                                except Exception:
+                                    pass
+
+                            km_ultimo_gral = v[11] if len(v) > 11 else None
+                            if km_ultimo_gral and str(km_ultimo_gral).strip() and v[9] and str(v[9]).strip():
+                                try:
+                                    lim_gral = float(config.get("alerta_mantenimiento_general_km", "10000"))
+                                    km_objetivo = float(str(km_ultimo_gral).replace(",", "")) + lim_gral
+                                    k_act = float(str(v[9]).replace(",", ""))
+                                    km_restantes = km_objetivo - k_act
+                                    if km_restantes < 0:
+                                        alertas.append({"tipo": "peligro", "icono": "🛠️", "titulo": f"Mantenimiento General Vencido ({placa})", "mensaje": f"Excedido por {abs(km_restantes):g} KM."})
+                                    elif 0 <= km_restantes <= 1000:
+                                        alertas.append({"tipo": "alerta", "icono": "🛠️", "titulo": f"Mantenimiento General Próximo ({placa})", "mensaje": f"Faltan {km_restantes:g} KM para el servicio."})
                                 except Exception:
                                     pass
 
@@ -2658,6 +2690,8 @@ class ControlGeneralEventos:
         f_flota_row3 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row3.pack(fill="x", padx=15, pady=5)
         ctk.CTkLabel(f_flota_row3, text="Alerta Mantenimiento General (Kilómetros):", font=("Arial", 11, "bold")).pack(side="left")
         ent_km_general = ctk.CTkEntry(f_flota_row3, width=80); ent_km_general.pack(side="left", padx=10); ent_km_general.insert(0, config_actual.get("alerta_mantenimiento_general_km", "10000"))
+        ctk.CTkLabel(f_flota_row3, text="o Meses:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
+        ent_meses_general = ctk.CTkEntry(f_flota_row3, width=80); ent_meses_general.pack(side="left", padx=10); ent_meses_general.insert(0, config_actual.get("alerta_mantenimiento_general_meses", "6"))
         
         f_menu = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#eef2f3", border_width=1, border_color="#ccd1d9")
         f_menu.pack(fill="x", padx=10, pady=10, ipady=10)
@@ -2831,6 +2865,7 @@ class ControlGeneralEventos:
                 "alerta_aceite_km": ent_km_aceite.get().strip() or "5000",
                 "alerta_aceite_meses": ent_meses_aceite.get().strip() or "6",
                 "alerta_mantenimiento_general_km": ent_km_general.get().strip() or "10000",
+                "alerta_mantenimiento_general_meses": ent_meses_general.get().strip() or "6",
                 "color_menu_fondo": ent_m_fondo.get().strip(),
                 "color_menu_btn": ent_m_btn.get().strip(),
                 "color_menu_hover": ent_m_hov.get().strip(),

@@ -12,7 +12,7 @@
     "detraccion_porcentaje": "4",
     "renta_mensual_porcentaje": "1.5",
     "renta_anual_porcentaje": "0",
-    "regimen_empresa": "R\u00e9gimen General",
+    "regimen_empresa": "Régimen General",
     "proveedor_fe": "Nubefact",
     "url_api_fe": "",
     "token_api_fe": "",
@@ -90,21 +90,26 @@
         "usuarios",
         "bitacora"
     ],
-    "comision_interbancaria": "5.00",
+    "comision_interbancaria": "0.00",
     "categorias_gastos": {
         "Gastos Fijos": [
             "Alquiler",
             "Planilla / Sueldos",
             "Servicios (Luz, Agua, Internet)",
             "Seguros",
-            "Pr\u00e9stamos / Cuotas"
+            "Préstamos / Cuotas",
+            "Gastos de oficina",
+            "Inspeccion vehicular"
         ],
         "Gastos Operativos": [
             "Combustible",
             "Mantenimiento",
             "Repuestos",
             "Peajes",
-            "Otros operativos"
+            "Otros operativos",
+            "Alimentacion",
+            "Movilidad",
+            "Auto-Lavado"
         ],
         "Ingresos": [
             "Cobro de cliente",
@@ -116,5 +121,6 @@
         ]
     },
     "banco_esquema_ok_v1": "ok",
-    "banco_esquema_ok_v2": "ok"
+    "banco_esquema_ok_v2": "ok",
+    "banco_esquema_ok_v3": "ok"
 }

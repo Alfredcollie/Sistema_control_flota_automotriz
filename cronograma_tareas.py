@@ -282,7 +282,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
         filtro_s = self.combo_filtro_secundario.get() if hasattr(self, 'combo_filtro_secundario') else "-"
         
         # 🚀 CLAVE CACHÉ ACTUALIZADA PARA FORZAR RECALCULO
-        clave_cache = f"calendario_v4_{filtro_p}_{filtro_s}"
+        clave_cache = f"calendario_v5_{filtro_p}_{filtro_s}"
         datos_calendario = cache_sistema.obtener(clave_cache)
 
         if datos_calendario is not None:
@@ -339,7 +339,7 @@ class CalendarioDashboard(ctk.CTkToplevel):
                                     
                                     # Extraer parámetros seguros (no rompe si faltan)
                                     try:
-                                        cursor.execute("SELECT km_prox_cambio_correa FROM flota_vehiculos WHERE placa = %s", (placa,))
+                                        cursor.execute("SELECT km_prox_correa FROM flota_vehiculos WHERE placa = %s", (placa,))
                                         r_corr = cursor.fetchone()
                                         if r_corr and r_corr[0]: km_correa_limite = float(r_corr[0])
                                     except Exception: conn.rollback()
@@ -349,7 +349,58 @@ class CalendarioDashboard(ctk.CTkToplevel):
                                         r_ac = cursor.fetchone()
                                         if r_ac and r_ac[0]: km_ultimo_aceite = float(r_ac[0])
                                     except Exception: conn.rollback()
-                                    
+
+                                    # 📅 VENCIMIENTOS DE LA UNIDAD (SOAT, seguro, revisión técnica,
+                                    # sistema de gas, batería, extintor, aceite y mantenimiento
+                                    # preventivo). Se muestran SIEMPRE, aunque el vehículo todavía
+                                    # no tenga historial de kilometraje para proyectar.
+                                    try:
+                                        cursor.execute("""SELECT COALESCE(vencimiento_soat, ''), COALESCE(vencimiento_seguro, ''),
+                                                                 COALESCE(vencimiento_rt, ''), COALESCE(fec_rev_gas, ''),
+                                                                 COALESCE(fec_venc_bat, ''), COALESCE(fec_venc_extintor, ''),
+                                                                 COALESCE(fec_aceite, ''), COALESCE(fecha_ultimo_general, '')
+                                                          FROM flota_vehiculos WHERE placa = %s""", (placa,))
+                                        venc_veh = cursor.fetchone()
+                                    except Exception:
+                                        conn.rollback()
+                                        venc_veh = None
+
+                                    if venc_veh:
+                                        for etiqueta, fecha_venc, detalle in (
+                                                ("📄 Vence SOAT", venc_veh[0], "SOAT"),
+                                                ("🛡️ Vence Seguro", venc_veh[1], "Póliza de seguro"),
+                                                ("🔍 Vence Rev. Técnica", venc_veh[2], "Revisión técnica"),
+                                                ("💨 Vence Rev. Sist. Gas", venc_veh[3], "Revisión del sistema de gas"),
+                                                ("🔋 Vence Garantía Batería", venc_veh[4], "Garantía de batería"),
+                                                ("🧯 Vence Extintor", venc_veh[5], "Extintor"),
+                                                ("🛢️ Cambio de Aceite (por fecha)", venc_veh[6], "Cambio de aceite")):
+                                            fecha_venc = str(fecha_venc or "").strip()
+                                            if not fecha_venc:
+                                                continue
+                                            try:
+                                                datetime.strptime(fecha_venc, "%d/%m/%Y")
+                                            except Exception:
+                                                continue
+                                            datos_db.append(("VENC", fecha_venc, etiqueta, evt_name,
+                                                             "Sistema Automático",
+                                                             f"{detalle} de {placa} (dato de Flota Automotriz)",
+                                                             "Vencimiento", "", "No", "Sin aviso"))
+
+                                        # Mantenimiento preventivo proyectado: último + meses configurados
+                                        fec_general = str(venc_veh[7] or "").strip()
+                                        if fec_general:
+                                            try:
+                                                meses_gen = int(CONFIG_REGIONAL.get("alerta_mantenimiento_general_meses", "6"))
+                                                prox_general = (datetime.strptime(fec_general, "%d/%m/%Y")
+                                                                + timedelta(days=30 * meses_gen))
+                                                datos_db.append(("VENC", prox_general.strftime("%d/%m/%Y"),
+                                                                 "🛠️ Mantenimiento Preventivo (proyectado)", evt_name,
+                                                                 "Sistema Automático",
+                                                                 f"Último servicio: {fec_general} + {meses_gen} meses",
+                                                                 "Vencimiento", "", "No", "Sin aviso"))
+                                            except Exception:
+                                                pass
+
                                     # Extraer historial
                                     hist_crudo = []
                                     cols_pos = ["evento_asociado", "vehiculo", "vehiculo_placa", "placa_vehiculo", "placa"]
@@ -753,6 +804,10 @@ class CalendarioDashboard(ctk.CTkToplevel):
                             elif t_tipo == "Proyección":
                                 color_estado = "#fdebd0" 
                                 text_color = "#d35400"  
+                            elif t_tipo == "Vencimiento":
+                                # 📅 Documentos/mantenimientos que vencen (Flota Automotriz)
+                                color_estado = "#fadbd8"
+                                text_color = "#922b21"
                                 
                             titulo_corto = tarea_data["tarea"][:34] + ".." if len(tarea_data["tarea"]) > 34 else tarea_data["tarea"]
                             
@@ -772,6 +827,13 @@ class CalendarioDashboard(ctk.CTkToplevel):
                             
                             if str(tarea_data['id']) == "PROY":
                                 lbl_tarea.bind("<Button-1>", lambda e, td=tarea_data: messagebox.showinfo("Proyección Inteligente", f"Esta es una estimación generada por el sistema según el consumo de combustible de {td['evento_nombre']}.\n\nPara confirmarla, diríjase a la pestaña 'Proyecciones de Flota'.", parent=self))
+                            elif str(tarea_data['id']) == "VENC":
+                                lbl_tarea.bind("<Button-1>", lambda e, td=tarea_data: messagebox.showinfo(
+                                    "Vencimiento",
+                                    f"{td['tarea']}\n\nUnidad: {td['evento_nombre']}\nFecha: {td['fecha_limite']}\n"
+                                    f"{td['notas']}\n\nPara renovarlo o registrar el mantenimiento, use el botón "
+                                    f"'🛠️ Resetear Mantenimientos' del módulo de Compras (o edítelo en Flota Automotriz).",
+                                    parent=self))
                             else:
                                 lbl_tarea.bind("<Button-1>", lambda e, td=tarea_data: self.mostrar_detalle_tarea(td))
 
@@ -1346,7 +1408,7 @@ class CronogramaApp:
                         liberar_conexion(conn2)
                         return
                     limite_val = float(limite_str)
-                    c2.execute("UPDATE flota_vehiculos SET km_prox_cambio_correa = %s WHERE placa = %s", (limite_val, placa))
+                    c2.execute("UPDATE flota_vehiculos SET km_prox_correa = %s WHERE placa = %s", (limite_val, placa))
                 
                 conn2.commit()
                 registrar_auditoria(self.usuario_activo, "Cronograma", f"Reseteó {tipo} de {placa} a los {km_val} Km")
@@ -1383,7 +1445,7 @@ class CronogramaApp:
                         km_ultimo_aceite = 0.0
                         
                         try:
-                            cursor.execute("SELECT km_prox_cambio_correa FROM flota_vehiculos WHERE placa = %s", (placa,))
+                            cursor.execute("SELECT km_prox_correa FROM flota_vehiculos WHERE placa = %s", (placa,))
                             r_corr = cursor.fetchone()
                             if r_corr and r_corr[0]: km_correa_limite = float(r_corr[0])
                         except Exception: conn.rollback()

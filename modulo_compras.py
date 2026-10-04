@@ -766,6 +766,295 @@ _SCHEMA_COMPRAS_OK = False
 # =========================================================
 # PESTAÑA 1: FACTURAS RECIBIDAS
 # =========================================================
+# =========================================================
+# 🛠️ MANTENIMIENTOS DEL VEHÍCULO (mismas fechas que controla Flota Automotriz)
+# =========================================================
+# Cada mantenimiento indica las columnas de 'flota_vehiculos' que se actualizan
+# al registrar el servicio. El segundo valor son los MESES que se suman a la
+# fecha ingresada para calcular el PRÓXIMO vencimiento (0 = la misma fecha).
+MANTENIMIENTOS_VEHICULO = (
+    {"nombre": "🛢️ Cambio de Aceite",
+     "campos": (("fec_aceite", 0), ("fecha_ultimo_aceite", 0)),
+     "km": ("km_ultimo_aceite", "Km del cambio"),
+     "actual": ("fec_aceite", "fecha_ultimo_aceite", "km_ultimo_aceite")},
+    {"nombre": "⛓️ Cadena / Correa de Tiempo",
+     "campos": (("fec_correa", 0),),
+     "km": ("km_prox_correa", "Próximo cambio a los (Km)"),
+     "actual": ("fec_correa", "km_prox_correa")},
+    {"nombre": "💨 Mantenimiento del Sistema de Gas",
+     "campos": (("fec_rev_gas", 0),),
+     "actual": ("fec_rev_gas",)},
+    {"nombre": "🛠️ Mantenimiento Preventivo / General",
+     "campos": (("fecha_ultimo_general", 0),),
+     "km": ("km_ultimo_general", "Km del servicio"),
+     "actual": ("fecha_ultimo_general", "km_ultimo_general")},
+    {"nombre": "📄 SOAT (emisión → vence en 1 año)",
+     "campos": (("emision_soat", 0), ("vencimiento_soat", 12)),
+     "actual": ("emision_soat", "vencimiento_soat")},
+    {"nombre": "🔍 Revisión Técnica (realizada → vence en 1 año)",
+     "campos": (("vencimiento_rt", 12),),
+     "actual": ("vencimiento_rt",)},
+    {"nombre": "🛡️ Póliza de Seguro (emisión → vence en 1 año)",
+     "campos": (("emision_seguro", 0), ("vencimiento_seguro", 12)),
+     "actual": ("emision_seguro", "vencimiento_seguro")},
+    {"nombre": "🔋 Batería (compra → vence en 2 años)",
+     "campos": (("fec_compra_bat", 0), ("fec_venc_bat", 24)),
+     "actual": ("fec_compra_bat", "fec_venc_bat")},
+    {"nombre": "🧯 Extintor (recarga → vence en 1 año)",
+     "campos": (("fec_venc_extintor", 12),),
+     "actual": ("fec_venc_extintor",)},
+)
+
+ETIQUETAS_MANT = {
+    "fec_aceite": "Último cambio", "fecha_ultimo_aceite": "Fecha último aceite",
+    "km_ultimo_aceite": "Km último aceite", "fec_correa": "Cambio correa",
+    "km_prox_correa": "Km próximo correa", "fec_rev_gas": "Revisión gas",
+    "fecha_ultimo_general": "Último general", "km_ultimo_general": "Km último general",
+    "emision_soat": "Emisión SOAT", "vencimiento_soat": "Vence SOAT",
+    "vencimiento_rt": "Vence RT", "emision_seguro": "Emisión seguro",
+    "vencimiento_seguro": "Vence seguro", "fec_compra_bat": "Compra batería",
+    "fec_venc_bat": "Vence batería", "fec_venc_extintor": "Vence extintor",
+}
+
+COLUMNAS_MANT = ("placa", "marca", "modelo", "kilometraje", "fec_aceite", "fecha_ultimo_aceite",
+                 "fec_correa", "fec_rev_gas", "fecha_ultimo_general", "emision_soat",
+                 "vencimiento_soat", "vencimiento_rt", "emision_seguro", "vencimiento_seguro",
+                 "fec_compra_bat", "fec_venc_bat", "fec_venc_extintor", "km_ultimo_aceite",
+                 "km_prox_correa", "km_ultimo_general")
+
+
+def sumar_meses_a_fecha(fecha_txt, meses):
+    """Suma meses a una fecha DD/MM/AAAA (0 = la devuelve igual).
+
+    Devuelve '' si la fecha no se puede interpretar."""
+    fecha_txt = str(fecha_txt or "").strip()
+    if not meses:
+        return fecha_txt
+    try:
+        base = datetime.strptime(fecha_txt, "%d/%m/%Y")
+    except ValueError:
+        return ""
+    total = base.month - 1 + int(meses)
+    anio = base.year + total // 12
+    mes = total % 12 + 1
+    dia = min(base.day, calendar.monthrange(anio, mes)[1])
+    return f"{dia:02d}/{mes:02d}/{anio}"
+
+
+def abrir_reset_mantenimientos_vehiculo(parent, placa, usuario_activo="", al_terminar=None):
+    """Ventana con CHECK por mantenimiento para registrar el servicio hecho a una unidad.
+
+    Al marcar los mantenimientos realizados y escribir la fecha del servicio se
+    actualizan las fechas del vehículo en 'flota_vehiculos' (las mismas que
+    controla Flota Automotriz / Cronograma) y se calcula el próximo vencimiento.
+    """
+    placa = str(placa or "").strip()
+    if not placa or placa.upper().startswith("SIN "):
+        return messagebox.showwarning("Mantenimientos",
+                                      "Este registro no tiene un vehículo asignado.\n"
+                                      "Asigne la placa en la factura para poder registrar sus mantenimientos.",
+                                      parent=parent)
+
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=parent)
+    vehiculo = None
+    try:
+        with conn.cursor() as c:
+            # ::text porque varias columnas (km_ultimo_aceite, km_prox_correa...) son NUMERIC
+            columnas_sql = ", ".join("COALESCE({}::text, '')".format(col) for col in COLUMNAS_MANT)
+            c.execute("SELECT " + columnas_sql +
+                      " FROM flota_vehiculos WHERE UPPER(placa) = UPPER(%s) LIMIT 1", (placa,))
+            fila = c.fetchone()
+            if fila:
+                vehiculo = dict(zip(COLUMNAS_MANT, fila))
+    except Exception as e:
+        vehiculo = None
+        print("[Compras -> Mantenimientos]", e)
+    finally:
+        liberar_conexion(conn)
+
+    if not vehiculo:
+        return messagebox.showwarning("Mantenimientos",
+                                      f"La unidad '{placa}' no está registrada en Flota Automotriz.\n"
+                                      "Regístrela primero en ese módulo para poder controlar sus mantenimientos.",
+                                      parent=parent)
+
+    v = ctk.CTkToplevel(parent)
+    v.title(f"Mantenimientos - {vehiculo['placa']}")
+    centrar_ventana(v, parent, 640, 660)
+    v.transient(parent)
+    v.grab_set()
+
+    ctk.CTkLabel(v, text=f"🛠️ Mantenimientos de {vehiculo['placa']}", font=("Arial", 15, "bold"),
+                 text_color="#1f538d").pack(pady=(12, 2))
+    detalle = " ".join(x for x in (vehiculo.get("marca"), vehiculo.get("modelo")) if x)
+    ctk.CTkLabel(v, text=f"{detalle}    |    Kilometraje registrado: {vehiculo.get('kilometraje') or '-'}",
+                 font=("Arial", 11, "italic"), text_color="#7f8c8d").pack(pady=(0, 4))
+    ctk.CTkLabel(v, text="Marque los mantenimientos realizados e ingrese la fecha del servicio.\n"
+                         "Las fechas del vehículo se actualizan y queda calculado el próximo vencimiento.",
+                 font=("Arial", 10), text_color="#555555", justify="left").pack(padx=12, pady=(0, 4))
+
+    scroll = ctk.CTkScrollableFrame(v, fg_color="transparent")
+    scroll.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+
+    hoy_txt = datetime.now().strftime("%d/%m/%Y")
+    filas = []
+
+    def actualizar_vista(*_):
+        """Muestra, para cada mantenimiento marcado, las fechas que se van a guardar."""
+        for f in filas:
+            if not f["var"].get():
+                f["lbl"].configure(text="")
+                continue
+            fecha = f["ent_f"].get().strip()
+            partes = []
+            for col, meses in f["item"]["campos"]:
+                valor = sumar_meses_a_fecha(fecha, meses)
+                partes.append(f"{ETIQUETAS_MANT.get(col, col)}: {valor or 'fecha inválida'}")
+            f["lbl"].configure(text="Se guardará → " + " · ".join(partes))
+
+    def texto_actual(item):
+        partes = []
+        for col in item.get("actual", ()):
+            valor = vehiculo.get(col)
+            if valor in (None, "") or str(valor).strip() in ("", "0", "0.0"):
+                continue
+            etiqueta = ETIQUETAS_MANT.get(col, col)
+            if col.startswith("km_"):
+                try:
+                    valor = f"{float(valor):,.0f}"
+                except Exception:
+                    pass
+            partes.append(f"{etiqueta}: {valor}")
+        return " · ".join(partes) or "sin registro"
+
+    for item in MANTENIMIENTOS_VEHICULO:
+        card = ctk.CTkFrame(scroll, fg_color="#f8f9fa", corner_radius=8,
+                            border_width=1, border_color="#e0e0e0")
+        card.pack(fill="x", pady=3)
+
+        var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(card, text=item["nombre"], variable=var, font=("Arial", 11, "bold"),
+                        command=actualizar_vista).pack(anchor="w", padx=10, pady=(8, 0))
+        lbl_actual = ctk.CTkLabel(card, text=f"Actual: {texto_actual(item)}", font=("Arial", 10, "italic"),
+                                  text_color="#7f8c8d", wraplength=560, justify="left")
+        lbl_actual.pack(anchor="w", padx=30, pady=(0, 2))
+
+        fr = ctk.CTkFrame(card, fg_color="transparent")
+        fr.pack(fill="x", padx=30, pady=(2, 6))
+        ctk.CTkLabel(fr, text="Fecha en que se realizó:", font=("Arial", 11)).pack(side="left")
+        ent_f = ctk.CTkEntry(fr, width=115)
+        ent_f.pack(side="left", padx=6)
+        ent_f.insert(0, hoy_txt)
+        ctk.CTkButton(fr, text="📅", width=36, fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda e=ent_f: CalendarioNativo(v, e)).pack(side="left")
+
+        ent_km = None
+        if item.get("km"):
+            col_km, etq_km = item["km"]
+            ctk.CTkLabel(fr, text=f"{etq_km}:", font=("Arial", 11)).pack(side="left", padx=(14, 4))
+            ent_km = ctk.CTkEntry(fr, width=95)
+            ent_km.pack(side="left")
+            km_previo = vehiculo.get(col_km)
+            if km_previo not in (None, "") and str(km_previo).strip() not in ("", "0", "0.0"):
+                try:
+                    ent_km.insert(0, f"{float(km_previo):,.0f}")
+                except Exception:
+                    ent_km.insert(0, str(km_previo))
+            elif col_km == "km_ultimo_aceite" and vehiculo.get("kilometraje"):
+                ent_km.insert(0, str(vehiculo.get("kilometraje")))
+
+        lbl_prox = ctk.CTkLabel(card, text="", font=("Arial", 10, "bold"), text_color="#27ae60",
+                                wraplength=560, justify="left")
+        lbl_prox.pack(anchor="w", padx=30, pady=(0, 8))
+
+        filas.append({"item": item, "var": var, "ent_f": ent_f, "ent_km": ent_km, "lbl": lbl_prox})
+
+    for f in filas:
+        f["ent_f"].bind("<KeyRelease>", actualizar_vista)
+
+    f_pie = ctk.CTkFrame(v, fg_color="transparent")
+    f_pie.pack(fill="x", padx=10, pady=(0, 10))
+
+    def aplicar():
+        sets, params, resumen = [], [], []
+        for f in filas:
+            if not f["var"].get():
+                continue
+            fecha = f["ent_f"].get().strip()
+            if not re.match(r"^\d{1,2}/\d{1,2}/\d{4}$", fecha):
+                return messagebox.showerror("Mantenimientos",
+                                            f"Fecha inválida en «{f['item']['nombre']}» (use DD/MM/AAAA).",
+                                            parent=v)
+            for col, meses in f["item"]["campos"]:
+                sets.append(f"{col} = %s")
+                params.append(sumar_meses_a_fecha(fecha, meses))
+            if f["item"].get("km") and f["ent_km"] is not None:
+                km_txt = f["ent_km"].get().strip()
+                if km_txt:
+                    try:
+                        km_val = float(km_txt.replace(",", "").replace(" ", ""))
+                    except ValueError:
+                        return messagebox.showerror("Mantenimientos",
+                                                    f"Kilometraje inválido en «{f['item']['nombre']}».",
+                                                    parent=v)
+                    sets.append(f"{f['item']['km'][0]} = %s")
+                    params.append(km_val)
+                    # El kilometraje general del vehículo se mantiene al día
+                    if f["item"]["km"][0] in ("km_ultimo_aceite", "km_ultimo_general"):
+                        try:
+                            km_actual = float(str(vehiculo.get("kilometraje") or "0").replace(",", "") or 0)
+                        except ValueError:
+                            km_actual = 0.0
+                        if km_val > km_actual:
+                            sets.append("kilometraje = %s")
+                            params.append(f"{km_val:,.0f}")
+            resumen.append(f"{f['item']['nombre']}: {fecha}")
+
+        if not sets:
+            return messagebox.showinfo("Mantenimientos", "Marque al menos un mantenimiento realizado.",
+                                       parent=v)
+
+        conn2 = conectar_db()
+        if not conn2:
+            return messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=v)
+        try:
+            cursor = conn2.cursor()
+            cursor.execute("UPDATE flota_vehiculos SET " + ", ".join(sets) +
+                           " WHERE UPPER(placa) = UPPER(%s)", tuple(params + [vehiculo["placa"]]))
+            conn2.commit()
+            # 🗓️ El Cronograma y el panel de Vencimientos trabajan con caché: se limpia
+            # para que las fechas nuevas se vean de inmediato en el calendario.
+            try:
+                cache_sistema.invalidar()
+            except Exception:
+                pass
+            try:
+                registrar_auditoria(usuario_activo, "Compras",
+                                    f"Mantenimientos de {vehiculo['placa']}: " + "; ".join(resumen))
+            except Exception:
+                pass
+            messagebox.showinfo("Mantenimientos",
+                                f"Se actualizaron los mantenimientos de {vehiculo['placa']}:\n\n" +
+                                "\n".join("• " + r for r in resumen) +
+                                "\n\nYa se reflejan en Flota Automotriz y en el Cronograma.", parent=v)
+            v.destroy()
+            if al_terminar:
+                al_terminar()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudieron actualizar los mantenimientos:\n{e}", parent=v)
+        finally:
+            liberar_conexion(conn2)
+
+    ctk.CTkButton(f_pie, text="✅ Aplicar mantenimientos", height=36, font=("Arial", 12, "bold"),
+                  fg_color="#27ae60", hover_color="#1e8449", command=aplicar).pack(side="left", expand=True,
+                                                                                   fill="x", padx=(0, 5))
+    ctk.CTkButton(f_pie, text="✖ Cancelar", height=36, font=("Arial", 12), fg_color="#7f8c8d",
+                  hover_color="#606b6b", command=v.destroy).pack(side="right", expand=True, fill="x",
+                                                                 padx=(5, 0))
+
+
 class FacturasRecibidasTab:
     def __init__(self, tab_frame, main_root, app_padre):
         self.tab_frame = tab_frame
@@ -1309,8 +1598,16 @@ class FacturasRecibidasTab:
         self.cargar_categorias()
 
         ctk.CTkLabel(self.f_form, text="Vehículo Asignado (Placa):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.combo_evento = ctk.CTkComboBox(self.f_form, state="readonly")
-        self.combo_evento.pack(fill="x", padx=10, pady=(0, 8))
+        f_veh = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_veh.pack(fill="x", padx=10, pady=(0, 8))
+        self.combo_evento = ctk.CTkComboBox(f_veh, state="readonly")
+        self.combo_evento.pack(side="left", fill="x", expand=True)
+        # 🛠️ Si la compra es de un vehículo, desde aquí se resetean sus mantenimientos
+        ctk.CTkButton(f_veh, text="🛠️", width=34, font=("Arial", 12, "bold"),
+                      fg_color="#e67e22", hover_color="#ca6f1e",
+                      command=lambda: abrir_reset_mantenimientos_vehiculo(
+                          self.main_root, self.combo_evento.get(), self.app_padre.usuario_activo)).pack(
+            side="right", padx=(5, 0))
         self.cargar_vehiculos_bd()
 
         # 🔗 CRUCE CON LA ORDEN DE SERVICIO: se elige la orden del módulo de Órdenes
@@ -2535,6 +2832,12 @@ class FacturasRecibidasTab:
         ctk.CTkButton(f_fec, text="📅", width=35, fg_color="#1f538d", command=lambda: CalendarioNativo(v_edit, ent_fec)).pack(side="right", padx=(5, 0))
 
         ent_placa = crear_campo(f_form, "Vehículo (Placa):", e_placa)
+        # 🛠️ Mantenimientos del vehículo de esta factura (aceite, correa, gas, SOAT, etc.)
+        ctk.CTkButton(f_form, text="🛠️ Registrar mantenimientos del vehículo", height=28,
+                      font=("Arial", 11, "bold"), fg_color="#e67e22", hover_color="#ca6f1e",
+                      command=lambda: abrir_reset_mantenimientos_vehiculo(
+                          v_edit, ent_placa.get(), self.app_padre.usuario_activo)).pack(
+            fill="x", padx=5, pady=(0, 5))
         ent_km = crear_campo(f_form, "Kilometraje:", e_km)
         ent_gal = crear_campo(f_form, "Galones/Cant.:", e_gal)
         ent_desc = crear_campo(f_form, "Concepto / Descripción:", c_val)
@@ -2858,6 +3161,10 @@ class CuentasPorPagarTab:
                     cursor.execute("ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''")
                     conn.commit()
                 except Exception: conn.rollback()
+                try:
+                    cursor.execute("ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS numero_operacion VARCHAR(100) DEFAULT ''")
+                    conn.commit()
+                except Exception: conn.rollback()
             except Exception: pass
             finally: liberar_conexion(conn)
         threading.Thread(target=tarea_init, daemon=True).start()
@@ -2875,6 +3182,9 @@ class CuentasPorPagarTab:
 
         btn_editar = ctk.CTkButton(frame_acciones, text="✏️ Editar Pagos", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50")
         btn_editar.pack(side="left", padx=5, pady=5)
+
+        btn_mant = ctk.CTkButton(frame_acciones, text="🛠️ Resetear Mantenimientos", font=("Arial", 12, "bold"), command=self.resetear_mantenimientos_vehiculo, fg_color="#e67e22", hover_color="#ca6f1e")
+        btn_mant.pack(side="left", padx=5, pady=5)
 
         btn_refresh = ctk.CTkButton(frame_acciones, text="🔄 Actualizar", font=("Arial", 12, "bold"), command=lambda: self.cargar_datos_pagar(reset_pagina=True), fg_color="#7f8c8d", hover_color="#606b6b")
         btn_refresh.pack(side="right", padx=10, pady=5)
@@ -3257,6 +3567,17 @@ class CuentasPorPagarTab:
         self.btn_ant.configure(state="normal" if self.pagina_actual > 1 else "disabled")
         self.btn_sig.configure(state="normal" if self.pagina_actual < self.total_paginas else "disabled")
 
+    def resetear_mantenimientos_vehiculo(self):
+        """Abre los mantenimientos del vehículo asociado a la factura seleccionada."""
+        sel = self.tabla.selection()
+        if not sel:
+            return messagebox.showwarning("Mantenimientos",
+                                          "Seleccione una factura que tenga vehículo asignado.",
+                                          parent=self.main_root)
+        valores = self.tabla.item(sel[0], "values")
+        placa = valores[7] if len(valores) > 7 else ""
+        abrir_reset_mantenimientos_vehiculo(self.main_root, placa, self.app_padre.usuario_activo)
+
     def cargar_comprobante_pago(self):
         ruta_base = obtener_ruta_base_drive()
         if not ruta_base:
@@ -3274,7 +3595,7 @@ class CuentasPorPagarTab:
 
         v_pago = ctk.CTkToplevel(self.main_root)
         v_pago.title("Registrar Nuevo Pago")
-        centrar_ventana(v_pago, self.main_root, 450, 420)
+        centrar_ventana(v_pago, self.main_root, 450, 480)
         v_pago.transient(self.main_root)
         v_pago.grab_set()
 
@@ -3312,6 +3633,10 @@ class CuentasPorPagarTab:
         ent_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
         ctk.CTkButton(f_fecha_pago, text="📅", width=40, fg_color="#1f538d", command=lambda: CalendarioNativo(v_pago, ent_fecha)).pack(side="right", padx=(5, 0))
 
+        ctk.CTkLabel(f_form, text="N° de Operación (opcional):", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_operacion = ctk.CTkEntry(f_form, placeholder_text="Ej.: 00123456 / constancia de la transferencia")
+        ent_operacion.pack(fill="x", pady=(0, 10))
+
         def procesar_pago(event=None):
             try:
                 monto_val = float(ent_monto.get().strip())
@@ -3325,6 +3650,7 @@ class CuentasPorPagarTab:
 
             fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
             cuenta_val = cmb_cuenta.get().strip()
+            operacion_val = ent_operacion.get().strip()
 
             # Cerrar la ventana modal y abrir el diálogo de archivo en el SIGUIENTE
             # ciclo del bucle de eventos. En macOS, invocar el diálogo nativo de
@@ -3332,10 +3658,12 @@ class CuentasPorPagarTab:
             # (mismo callback) cierra la aplicación.
             v_pago.destroy()
             self.main_root.after(150, lambda: self._guardar_pago_con_soporte(
-                id_factura, nro_doc, proveedor, monto_val, fecha_val, cuenta_val, ruta_base))
+                id_factura, nro_doc, proveedor, monto_val, fecha_val, cuenta_val, ruta_base,
+                operacion_val))
 
         ent_monto.bind("<Return>", procesar_pago)
         ent_fecha.bind("<Return>", procesar_pago)
+        ent_operacion.bind("<Return>", procesar_pago)
 
         f_btns = ctk.CTkFrame(v_pago, fg_color="transparent")
         f_btns.pack(fill="x", padx=20, pady=15)
@@ -3347,7 +3675,8 @@ class CuentasPorPagarTab:
         btn_cancel.pack(side="right", expand=True, padx=5)
         ent_monto.focus()
 
-    def _guardar_pago_con_soporte(self, id_factura, nro_doc, proveedor, monto_val, fecha_val, cuenta_val, ruta_base):
+    def _guardar_pago_con_soporte(self, id_factura, nro_doc, proveedor, monto_val, fecha_val,
+                                  cuenta_val, ruta_base, numero_operacion=""):
         """Abre el diálogo para elegir el soporte y guarda el pago.
         Se invoca con after() para evitar el cierre de la app en macOS al abrir
         el diálogo nativo justo después de destruir la ventana modal."""
@@ -3374,9 +3703,9 @@ class CuentasPorPagarTab:
                 categoria_db = cat_res[0] if cat_res and cat_res[0] else "GENERAL"
 
                 cursor.execute("""
-                    INSERT INTO pagos_comprobantes (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (id_factura, monto_val, ruta_para_guardar(ruta_destino), proveedor, fecha_val, categoria_db, nro_doc, cuenta_val))
+                    INSERT INTO pagos_comprobantes (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen, numero_operacion) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (id_factura, monto_val, ruta_para_guardar(ruta_destino), proveedor, fecha_val, categoria_db, nro_doc, cuenta_val, numero_operacion))
                 conn.commit()
                 cache_sistema.invalidar()
                 registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar", f"Pagó {formatear_moneda(monto_val)} a Fac. {nro_doc} desde {cuenta_val}")
@@ -3440,19 +3769,19 @@ class CuentasPorPagarTab:
         frame_cuerpo = ctk.CTkFrame(v_edit, fg_color="transparent")
         frame_cuerpo.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        sub_tabla = ttk.Treeview(frame_cuerpo, columns=("id", "monto", "fecha", "cuenta", "tiene_archivo"), show="headings", height=8)
-        sub_tabla.heading("id", text="ID"); sub_tabla.heading("monto", text="Monto"); sub_tabla.heading("fecha", text="Fecha"); sub_tabla.heading("cuenta", text="Cuenta / Origen"); sub_tabla.heading("tiene_archivo", text="¿Soporte?")
-        sub_tabla.column("id", width=40, anchor="center"); sub_tabla.column("monto", width=90, anchor="e"); sub_tabla.column("fecha", width=90, anchor="center"); sub_tabla.column("cuenta", width=160, anchor="w"); sub_tabla.column("tiene_archivo", width=90, anchor="center")
+        sub_tabla = ttk.Treeview(frame_cuerpo, columns=("id", "monto", "fecha", "cuenta", "oper", "tiene_archivo"), show="headings", height=8)
+        sub_tabla.heading("id", text="ID"); sub_tabla.heading("monto", text="Monto"); sub_tabla.heading("fecha", text="Fecha"); sub_tabla.heading("cuenta", text="Cuenta / Origen"); sub_tabla.heading("oper", text="N° Operación"); sub_tabla.heading("tiene_archivo", text="¿Soporte?")
+        sub_tabla.column("id", width=40, anchor="center"); sub_tabla.column("monto", width=90, anchor="e"); sub_tabla.column("fecha", width=90, anchor="center"); sub_tabla.column("cuenta", width=160, anchor="w"); sub_tabla.column("oper", width=130, anchor="center"); sub_tabla.column("tiene_archivo", width=90, anchor="center")
         sub_tabla.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
         def refrescar_subtabla():
             for f in sub_tabla.get_children(): sub_tabla.delete(f)
             try:
                 conn = conectar_db(); cursor = conn.cursor()
-                cursor.execute("SELECT id, monto_pagado, fecha_pago, archivo_ruta, cuenta_origen FROM pagos_comprobantes WHERE id_factura = %s", (id_factura,))
+                cursor.execute("SELECT id, monto_pagado, fecha_pago, archivo_ruta, cuenta_origen, COALESCE(numero_operacion,'') FROM pagos_comprobantes WHERE id_factura = %s", (id_factura,))
                 for a in cursor.fetchall(): 
                     # El indicador resuelve la ruta (sirve con rutas relativas o de otro equipo)
-                    sub_tabla.insert("", tk.END, values=(a[0], formatear_moneda(a[1]), a[2] if a[2] else "Sin fecha", a[4] if a[4] else "-", "✅ Sí" if resolver_ruta_archivo(a[3]) else "❌ No"))
+                    sub_tabla.insert("", tk.END, values=(a[0], formatear_moneda(a[1]), a[2] if a[2] else "Sin fecha", a[4] if a[4] else "-", a[5] if a[5] else "-", "✅ Sí" if resolver_ruta_archivo(a[3]) else "❌ No"))
                 liberar_conexion(conn)
             except Exception: pass
         refrescar_subtabla()
@@ -3463,13 +3792,13 @@ class CuentasPorPagarTab:
             if not sub_sel: return
             id_pago = sub_tabla.item(sub_sel[0], "values")[0]
             conn = conectar_db(); cursor = conn.cursor()
-            cursor.execute("SELECT monto_pagado, fecha_pago, cuenta_origen FROM pagos_comprobantes WHERE id = %s", (id_pago,))
-            monto_actual, fecha_actual, cuenta_actual = cursor.fetchone()
+            cursor.execute("SELECT monto_pagado, fecha_pago, cuenta_origen, COALESCE(numero_operacion,'') FROM pagos_comprobantes WHERE id = %s", (id_pago,))
+            monto_actual, fecha_actual, cuenta_actual, operacion_actual = cursor.fetchone()
             liberar_conexion(conn)
 
             v_mod_pago = ctk.CTkToplevel(v_edit)
             v_mod_pago.title("Modificar Pago")
-            centrar_ventana(v_mod_pago, v_edit, 400, 320)
+            centrar_ventana(v_mod_pago, v_edit, 400, 400)
             v_mod_pago.transient(v_edit)
             v_mod_pago.grab_set()
 
@@ -3506,6 +3835,11 @@ class CuentasPorPagarTab:
             ent_mod_fecha.insert(0, str(fecha_actual) if fecha_actual else datetime.now().strftime("%d/%m/%Y"))
             ctk.CTkButton(f_fecha_mod, text="📅", width=40, fg_color="#1f538d", command=lambda: CalendarioNativo(v_mod_pago, ent_mod_fecha)).pack(side="right", padx=(5, 0))
 
+            ctk.CTkLabel(f_form, text="N° de Operación (opcional):", font=("Arial", 11, "bold")).pack(anchor="w")
+            ent_mod_oper = ctk.CTkEntry(f_form)
+            ent_mod_oper.pack(fill="x", pady=(0, 10))
+            if operacion_actual: ent_mod_oper.insert(0, str(operacion_actual))
+
             def guardar_mod(event=None):
                 nonlocal saldo_actual_global
                 try:
@@ -3532,8 +3866,9 @@ class CuentasPorPagarTab:
                 else:
                     nueva_fecha = ent_mod_fecha.get().strip() or fecha_actual
                     nueva_cuenta = ent_mod_cuenta.get().strip()
+                    nueva_oper = ent_mod_oper.get().strip()
                     conn = conectar_db(); cursor = conn.cursor()
-                    cursor.execute("UPDATE pagos_comprobantes SET monto_pagado = %s, fecha_pago = %s, cuenta_origen = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, id_pago))
+                    cursor.execute("UPDATE pagos_comprobantes SET monto_pagado = %s, fecha_pago = %s, cuenta_origen = %s, numero_operacion = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, nueva_oper, id_pago))
                     conn.commit(); liberar_conexion(conn)
                     cache_sistema.invalidar()
                     registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar", f"Modificó el pago ID {id_pago} a {formatear_moneda(nuevo_monto)}")

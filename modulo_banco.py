@@ -191,7 +191,7 @@ COMISION_INTERBANCARIA_DEFAULT = "4.80"
 # Marca local: indica que las tablas/columnas del Banco ya se verificaron en este
 # equipo. Cada sentencia DDL es un viaje a Supabase (~0,3 s) y son ~24 seguidas,
 # así que sólo se ejecutan la primera vez (o cuando cambie esta clave).
-CLAVE_ESQUEMA_BANCO = "banco_esquema_ok_v2"
+CLAVE_ESQUEMA_BANCO = "banco_esquema_ok_v3"
 
 
 def leer_config_disco():
@@ -1148,7 +1148,10 @@ class ModuloBancoApp:
                     "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS es_cruzada BOOLEAN DEFAULT FALSE",
                     # Enlace con el gasto creado en el módulo de Compras
                     "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS id_gasto_compras INTEGER DEFAULT 0",
+                    # N° de operación / referencia del pago (Banco y Compras)
+                    "ALTER TABLE conciliacion_bancaria ADD COLUMN IF NOT EXISTS numero_operacion VARCHAR(100) DEFAULT ''",
                     "ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''",
+                    "ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS numero_operacion VARCHAR(100) DEFAULT ''",
                 ):
                     try:
                         c.execute(col_sql)
@@ -2256,7 +2259,7 @@ class ModuloBancoApp:
                                COALESCE(categoria, ''), COALESCE(subcategoria, ''),
                                COALESCE(placa, ''), COALESCE(chofer, ''),
                                COALESCE(comision, 0), COALESCE(interbancario, FALSE),
-                               COALESCE(es_cruzada, FALSE)
+                               COALESCE(es_cruzada, FALSE), COALESCE(numero_operacion, '')
                         FROM conciliacion_bancaria
                         WHERE origen = 'manual' AND banco = %s
                         ORDER BY id
@@ -2271,10 +2274,10 @@ class ModuloBancoApp:
                         WHERE origen = 'manual' AND banco = %s
                         ORDER BY id
                     """, (banco.get("banco", ""),))
-                    filas = [tuple(f) + ("", "", "", "", 0, False, False) for f in c.fetchall()]
+                    filas = [tuple(f) + ("", "", "", "", 0, False, False, "") for f in c.fetchall()]
 
                 for (idp, fecha, desc, monto, tipo, estado, categoria, subcategoria,
-                     placa, chofer, comision, interbancario, es_cruzada) in filas:
+                     placa, chofer, comision, interbancario, es_cruzada, num_oper) in filas:
                     movs.append({
                         "id": idp, "fecha": fecha or "", "descripcion": desc or "",
                         "monto": float(monto or 0), "tipo": tipo or "ingreso",
@@ -2283,6 +2286,9 @@ class ModuloBancoApp:
                         "placa": placa or "", "chofer": chofer or "",
                         "comision": float(comision or 0), "interbancario": bool(interbancario),
                         "es_cruzada": bool(es_cruzada),
+                        "numero_operacion": num_oper or "",
+                        # En la conciliación el N° de operación se ve como N° de documento
+                        "documento": num_oper or "",
                     })
         except Exception:
             pass
@@ -2380,6 +2386,7 @@ class ModuloBancoApp:
             "sub": str(registro.get("subcategoria") or ""),
             "placa": str(registro.get("placa") or ""),
             "chofer": str(registro.get("chofer") or ""),
+            "numero_operacion": str(registro.get("numero_operacion") or ""),
             "comision": float(registro.get("comision") or 0),
             "interbancario": bool(registro.get("interbancario")),
             "es_cruzada": bool(registro.get("es_cruzada")),
@@ -2548,6 +2555,11 @@ class ModuloBancoApp:
         ctk.CTkButton(f_fecha, text="📅", width=42, font=("Arial", 13, "bold"),
                       fg_color="#1f538d", hover_color="#163b65",
                       command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(6, 0))
+
+        ctk.CTkLabel(f, text="N° de Operación (opcional):", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_operacion = ctk.CTkEntry(f, placeholder_text="Ej.: 00123456 / constancia de la transferencia")
+        ent_operacion.pack(fill="x", pady=(0, 8))
+        ent_operacion.insert(0, str(datos_ini.get("numero_operacion") or ""))
 
         ctk.CTkLabel(f, text="Descripción:", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_desc = ctk.CTkEntry(f)
@@ -2795,6 +2807,7 @@ class ModuloBancoApp:
                     chofer = chv
             fecha = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
             desc_manual = ent_desc.get().strip()
+            numero_operacion = ent_operacion.get().strip()
 
             tipo = "ingreso" if principal == "Ingresos" else "egreso"
             monto_final = total if tipo == "ingreso" else -total
@@ -2848,10 +2861,10 @@ class ModuloBancoApp:
                                 UPDATE conciliacion_bancaria
                                 SET fecha=%s, descripcion=%s, monto=%s, tipo=%s,
                                     categoria=%s, subcategoria=%s, placa=%s, chofer=%s,
-                                    comision=%s, interbancario=%s
+                                    comision=%s, interbancario=%s, numero_operacion=%s
                                 WHERE id=%s
                             """, (fecha, desc, monto_final, tipo, principal, sub, placa, chofer,
-                                  com, bool(inter), id_edicion))
+                                  com, bool(inter), numero_operacion, id_edicion))
                             try:
                                 c.execute("SELECT COALESCE(id_gasto_compras, 0) FROM conciliacion_bancaria WHERE id=%s",
                                           (id_edicion,))
@@ -2864,13 +2877,14 @@ class ModuloBancoApp:
                             c.execute("""
                                 INSERT INTO conciliacion_bancaria
                                 (banco, cuenta, fecha, descripcion, monto, tipo, origen, id_movimiento, estado,
-                                 categoria, subcategoria, placa, chofer, comision, interbancario, es_cruzada)
+                                 categoria, subcategoria, placa, chofer, comision, interbancario, es_cruzada,
+                                 numero_operacion)
                                 VALUES (%s, %s, %s, %s, %s, %s, 'manual', 0, 'pendiente',
-                                        %s, %s, %s, %s, %s, %s, %s)
+                                        %s, %s, %s, %s, %s, %s, %s, %s)
                                 RETURNING id
                             """, (banco.get("banco", ""), banco.get("cuenta", ""), fecha, desc,
                                   monto_final, tipo, principal, sub, placa, chofer, com,
-                                  bool(inter), es_cruzada))
+                                  bool(inter), es_cruzada, numero_operacion))
                             try:
                                 id_movimiento = c.fetchone()[0]
                             except Exception:
@@ -2897,6 +2911,7 @@ class ModuloBancoApp:
                     "fecha": fecha, "total": total, "descripcion": desc or desc_manual,
                     "categoria": categoria_gasto, "proveedor": proveedor_gasto,
                     "placa": placa, "banco": construir_etiqueta_banco(banco),
+                    "numero_operacion": numero_operacion,
                     "soporte": estado_cruzada.get("soporte", "") if isinstance(estado_cruzada, dict) else "",
                     "id_gasto": id_gasto_previo,
                     **detalle_igv,
@@ -2914,6 +2929,7 @@ class ModuloBancoApp:
                     "soporte_origen": estado_cruzada["soporte"],
                     "factura_origen": estado_cruzada["factura"],
                     "banco": construir_etiqueta_banco(banco),
+                    "numero_operacion": numero_operacion,
                     "id_movimiento": id_movimiento,
                     **detalle_igv,
                 }, v)
@@ -2983,6 +2999,7 @@ class ModuloBancoApp:
         descripcion = (datos.get("descripcion") or "").strip() or "Compra cruzada pagada por tercero"
         # Cuenta bancaria con la que salió el dinero (se muestra en Compras)
         cuenta_banco = str(datos.get("banco") or "").strip()
+        num_operacion_cruz = str(datos.get("numero_operacion") or "").strip()
         id_movimiento_banco = int(datos.get("id_movimiento") or 0)
 
         # Copiar los PDF (factura de compra y soporte del pago a tercero) a las carpetas autorizadas
@@ -3094,10 +3111,10 @@ class ModuloBancoApp:
                         c.execute("""
                             INSERT INTO pagos_comprobantes
                             (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago,
-                             categoria_suministro, codigo_cotizacion, cuenta_origen)
-                            VALUES (%s, %s, %s, %s, %s, %s, '', %s)
+                             categoria_suministro, codigo_cotizacion, cuenta_origen, numero_operacion)
+                            VALUES (%s, %s, %s, %s, %s, %s, '', %s, %s)
                         """, (id_gasto_cruz, total, ruta_para_guardar(ruta_soporte), proveedor,
-                              fecha, categoria, cuenta_banco))
+                              fecha, categoria, cuenta_banco, num_operacion_cruz))
 
                 # 🔗 Se enlaza el movimiento del banco con el gasto de Compras, para
                 # que ambos módulos queden sincronizados (como en el pago normal).
@@ -3147,6 +3164,7 @@ class ModuloBancoApp:
         proveedor = str(datos.get("proveedor") or "").strip() or descripcion or categoria
         placa = str(datos.get("placa") or "").strip()
         banco_txt = str(datos.get("banco") or "").strip()
+        num_operacion = str(datos.get("numero_operacion") or "").strip()
         soporte = str(datos.get("soporte") or "").strip()
         try:
             from app_paths import ruta_para_guardar
@@ -3180,9 +3198,9 @@ class ModuloBancoApp:
                     c.execute("""
                         UPDATE pagos_comprobantes
                         SET monto_pagado=%s, fecha_pago=%s, cuenta_origen=%s, categoria_suministro=%s,
-                            proveedor_nombre=%s
+                            proveedor_nombre=%s, numero_operacion=%s
                         WHERE id_factura=%s
-                    """, (total, fecha, banco_txt, categoria, proveedor, id_gasto))
+                    """, (total, fecha, banco_txt, categoria, proveedor, num_operacion, id_gasto))
                 else:
                     c.execute("""
                         INSERT INTO facturas_recibidas
@@ -3198,9 +3216,10 @@ class ModuloBancoApp:
                     c.execute("""
                         INSERT INTO pagos_comprobantes
                         (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago,
-                         categoria_suministro, codigo_cotizacion, cuenta_origen)
-                        VALUES (%s, %s, %s, %s, %s, %s, '', %s)
-                    """, (id_gasto, total, soporte_bd, proveedor, fecha, categoria, banco_txt))
+                         categoria_suministro, codigo_cotizacion, cuenta_origen, numero_operacion)
+                        VALUES (%s, %s, %s, %s, %s, %s, '', %s, %s)
+                    """, (id_gasto, total, soporte_bd, proveedor, fecha, categoria, banco_txt,
+                          num_operacion))
                     if id_movimiento:
                         c.execute("UPDATE conciliacion_bancaria SET id_gasto_compras=%s WHERE id=%s",
                                   (id_gasto, id_movimiento))
