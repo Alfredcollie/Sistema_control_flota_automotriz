@@ -139,8 +139,13 @@ def generar_ficha_chofer_pdf(ruta_salida=None):
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, 128, "4. CARNE DE SANIDAD")
 
-    _campo(102, "N° Carne de Sanidad:", "carnet_sanidad", "Numero del carne de sanidad", maxlen=30)
-    _campo(78, "Venc. Carne Sanidad (DD/MM/AAAA):", "venc_sanidad", "Vencimiento del carne de sanidad", maxlen=10)
+    _campo(102, "N° Carne de Sanidad:", "carnet_sanidad", "Numero del carne de sanidad",
+           maxlen=30, x_campo=205, ancho=145)
+    # Fecha de emision: el sistema calcula el vencimiento sumando 6 meses (durabilidad).
+    _campo(102, "Emision (DD/MM/AAAA):", "sanidad_emision", "Fecha de emision del carne de sanidad",
+           maxlen=10, x_etiqueta=368, x_campo=470, ancho=115)
+    _campo(78, "Venc. Carne Sanidad (DD/MM/AAAA):", "venc_sanidad",
+           "Vencimiento del carne de sanidad (emision + 6 meses)", maxlen=10)
 
     # =============================================================
     # INSTRUCCIONES FINALES

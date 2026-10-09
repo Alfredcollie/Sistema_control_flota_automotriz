@@ -11,6 +11,7 @@ import subprocess
 import urllib.request
 import time
 import threading
+import unicodedata
 from datetime import datetime
 
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
@@ -226,9 +227,12 @@ class AsistenteCargaDocs(ctk.CTkToplevel):
 # CLASE: CALENDARIO NATIVO (MEJORADO CON COMBOBOX)
 # =========================================================
 class CalendarioNativo(ctk.CTkToplevel):
-    def __init__(self, parent, target_entry):
+    def __init__(self, parent, target_entry, al_elegir=None):
         super().__init__(parent)
         self.target_entry = target_entry
+        # Se avisa al formulario cuando el usuario elige una fecha: así el
+        # vencimiento del carné de sanidad se calcula solo (emisión + 6 meses).
+        self.al_elegir = al_elegir
         self.title("Seleccionar Fecha")
         self.geometry("310x320")
         self.resizable(False, False)
@@ -311,6 +315,9 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.target_entry.delete(0, tk.END)
         self.target_entry.insert(0, f"{day:02d}/{self.current_month:02d}/{self.current_year}")
         self.destroy()
+        if callable(self.al_elegir):
+            try: self.al_elegir()
+            except Exception: pass
 
 # Nombres visibles de los documentos del expediente.
 # La CLAVE interna ("DNI") se conserva para no perder los archivos ya guardados.
@@ -319,6 +326,136 @@ ETIQUETAS_DOC = {"DNI": "DNI / C.E."}
 # Tallas sugeridas para el uniforme. El campo es editable: se puede escribir
 # cualquier otra medida (por ejemplo "42" o "XL / 16").
 TALLAS_UNIFORME = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"]
+
+
+# =========================================================
+# 🎫 CARNET DE SANIDAD (DURABILIDAD: 6 MESES)
+# =========================================================
+DURABILIDAD_CARNET_SANIDAD_MESES = 6
+
+
+def _sin_tildes(texto):
+    """Devuelve el texto sin tildes, para comparar categorías escritas de cualquier forma."""
+    base = unicodedata.normalize("NFKD", str(texto or ""))
+    return "".join(car for car in base if not unicodedata.combining(car))
+
+
+def es_categoria_carnet_sanidad(categoria):
+    """True si la categoría de gasto corresponde a un carné de sanidad.
+
+    Sirve para reconocer "Gastos Fijos - Carnet de sanidad", "CARNET DE SANIDAD",
+    "Carné de Sanidad", etc. sin depender de cómo se escriba.
+    """
+    texto = _sin_tildes(categoria).lower()
+    return ("carnet" in texto or "carne" in texto) and "sanidad" in texto
+
+
+def parsear_fecha(texto):
+    """Convierte 'DD/MM/AAAA' (o con guiones) a fecha; None si no es válida."""
+    if not texto: return None
+    limpio = str(texto).strip().replace("-", "/").replace(".", "/")
+    for formato in ("%d/%m/%Y", "%d/%m/%y"):
+        try: return datetime.strptime(limpio, formato).date()
+        except ValueError: continue
+    return None
+
+
+def sumar_meses_fecha(texto_fecha, meses=DURABILIDAD_CARNET_SANIDAD_MESES):
+    """Suma meses a una fecha 'DD/MM/AAAA' y devuelve 'DD/MM/AAAA' (o "" si no es válida).
+
+    Se ajusta el día al último del mes cuando no existe (ej. 31/08 + 6 meses).
+    """
+    base = parsear_fecha(texto_fecha)
+    if not base: return ""
+    total = (base.month - 1) + int(meses)
+    anio = base.year + total // 12
+    mes = (total % 12) + 1
+    dia = min(base.day, calendar.monthrange(anio, mes)[1])
+    return f"{dia:02d}/{mes:02d}/{anio}"
+
+
+def vencimiento_carnet_sanidad(emision, vencimiento_escrito="", meses=DURABILIDAD_CARNET_SANIDAD_MESES):
+    """Vencimiento del carné: el escrito a mano manda; si no, emisión + 6 meses."""
+    escrito = str(vencimiento_escrito or "").strip()
+    if escrito: return escrito
+    return sumar_meses_fecha(emision, meses)
+
+
+def actualizar_carnet_sanidad(id_chofer, numero=None, emision=None, vencimiento=None,
+                              usuario="Sistema", meses=DURABILIDAD_CARNET_SANIDAD_MESES):
+    """Guarda el carné de sanidad de un chofer y actualiza el cronograma.
+
+    Se usa desde el módulo de Choferes y también desde Compras (cuando se registra
+    una factura de categoría "Carnet de sanidad"). Si no se indica el vencimiento
+    se calcula sumando la durabilidad (6 meses) a la fecha de emisión.
+    Los valores en None conservan lo que ya estaba guardado.
+    Devuelve (ok, mensaje) donde el mensaje es el vencimiento o el motivo del fallo.
+    """
+    if not id_chofer:
+        return False, "No se indicó el chofer."
+
+    conn = conectar_db()
+    if not conn:
+        return False, "Sin conexión a la base de datos."
+
+    try:
+        cursor = conn.cursor()
+        # La columna de emisión puede no existir todavía en una base antigua.
+        for sentencia in ("ALTER TABLE choferes ADD COLUMN IF NOT EXISTS carnet_sanidad_num VARCHAR(100) DEFAULT ''",
+                          "ALTER TABLE choferes ADD COLUMN IF NOT EXISTS carnet_sanidad_emision VARCHAR(20) DEFAULT ''",
+                          "ALTER TABLE choferes ADD COLUMN IF NOT EXISTS carnet_sanidad_venc VARCHAR(20) DEFAULT ''"):
+            try:
+                cursor.execute(sentencia); conn.commit()
+            except Exception:
+                conn.rollback()
+
+        cursor.execute("""SELECT nombres, COALESCE(dni, ''), COALESCE(carnet_sanidad_num, ''),
+                                 COALESCE(carnet_sanidad_emision, ''), COALESCE(carnet_sanidad_venc, '')
+                          FROM choferes WHERE id = %s""", (id_chofer,))
+        fila = cursor.fetchone()
+        if not fila:
+            return False, "El chofer seleccionado ya no existe."
+        nombres, dni, num_actual, emi_actual, venc_actual = fila
+
+        numero = (num_actual if numero is None else str(numero)).strip()
+        emision = (emi_actual if emision is None else str(emision)).strip()
+        vencimiento = vencimiento_carnet_sanidad(emision, venc_actual if vencimiento is None else vencimiento, meses)
+
+        cursor.execute("""UPDATE choferes SET carnet_sanidad_num = %s, carnet_sanidad_emision = %s,
+                                                 carnet_sanidad_venc = %s WHERE id = %s""",
+                       (numero, emision, vencimiento, id_chofer))
+        conn.commit()
+
+        # 📅 Cronograma: la misma tarea que usa el módulo de Choferes ("FLOTA | Vencimientos")
+        identificador = f"{nombres} (DNI: {dni})"
+        try:
+            cursor.execute("""DELETE FROM tareas_evento
+                              WHERE evento_asociado = 'FLOTA | Vencimientos' AND responsable = %s
+                                AND nombre_tarea LIKE 'Venc. Carn%% de Sanidad%%'""", (identificador,))
+            if vencimiento:
+                cursor.execute("SELECT COALESCE(MAX(orden), 0) FROM tareas_evento WHERE evento_asociado = 'FLOTA | Vencimientos'")
+                nuevo_orden = (cursor.fetchone()[0] or 0) + 1
+                cursor.execute("""INSERT INTO tareas_evento
+                                  (evento_asociado, nombre_tarea, responsable, fecha_limite, estado, notas, orden, tipo_pago)
+                                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                               ("FLOTA | Vencimientos", "Venc. Carné de Sanidad", identificador, vencimiento,
+                                "Pendiente", f"Carné de sanidad de {nombres} (emitido: {emision or 'sin fecha'}). Alerta automática.",
+                                nuevo_orden, "No aplica"))
+            conn.commit()
+        except Exception as e_crono:
+            conn.rollback()
+            print("Aviso - cronograma del carné de sanidad:", e_crono)
+
+        cache_sistema.invalidar()
+        registrar_auditoria(usuario, "Choferes",
+                            f"Carné de sanidad de {nombres}: N° {numero or 'sin número'} | emisión {emision or 's/f'} | vence {vencimiento or 's/f'}"[:240])
+        return True, vencimiento
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return False, str(e)
+    finally:
+        liberar_conexion(conn)
 
 
 # =========================================================
@@ -465,6 +602,7 @@ class ChoferesApp:
                     "ALTER TABLE choferes ADD COLUMN fecha_fin_contrato VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN observacion_estado VARCHAR(300) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN carnet_sanidad_num VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN carnet_sanidad_emision VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN carnet_sanidad_venc VARCHAR(20) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN licencia2 VARCHAR(50) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN vencimiento_licencia2 VARCHAR(20) DEFAULT ''",
@@ -874,6 +1012,7 @@ class ChoferesApp:
             ini_contrato = _valor_campo("inicio_contrato")
             fin_contrato = _valor_campo("fin_contrato")
             sanidad_num = _valor_campo("carnet_sanidad")
+            sanidad_emision = _valor_campo("sanidad_emision") or _valor_campo("emision_sanidad")
             sanidad_venc = _valor_campo("venc_sanidad")
             tel_emergencia = _valor_campo("telefono_emergencia")
             nombre_emergencia = _valor_campo("contacto_emergencia_nombre")
@@ -906,6 +1045,7 @@ class ChoferesApp:
             self.ent_ini_contrato.insert(0, ini_contrato)
             self.ent_fin_contrato.insert(0, fin_contrato)
             self.ent_sanidad_num.insert(0, sanidad_num)
+            self.ent_sanidad_emision.insert(0, sanidad_emision)
             self.ent_sanidad_venc.insert(0, sanidad_venc)
 
             messagebox.showinfo("Ficha Importada", "¡Datos extraídos del PDF!\nRevisa el formulario y dale a guardar.")
@@ -931,13 +1071,17 @@ class ChoferesApp:
             ent.pack(fill="x", padx=10, pady=(0, 10))
             return ent
 
-        def crear_campo_fecha(texto):
+        def crear_campo_fecha(texto, al_cambiar=None):
             ctk.CTkLabel(self.f_form, text=texto, font=("Arial", 11, "bold"), text_color="#1f538d").pack(anchor="w", padx=10)
             f_fec = ctk.CTkFrame(self.f_form, fg_color="transparent")
             f_fec.pack(fill="x", padx=10, pady=(0, 10))
             ent = ctk.CTkEntry(f_fec, placeholder_text="DD/MM/AAAA")
             ent.pack(side="left", fill="x", expand=True)
-            ctk.CTkButton(f_fec, text="📅", width=35, fg_color="#1f538d", command=lambda: CalendarioNativo(self.parent_frame.winfo_toplevel(), ent)).pack(side="right", padx=(5, 0))
+            ctk.CTkButton(f_fec, text="📅", width=35, fg_color="#1f538d",
+                          command=lambda: CalendarioNativo(self.parent_frame.winfo_toplevel(), ent, al_cambiar)).pack(side="right", padx=(5, 0))
+            if callable(al_cambiar):
+                ent.bind("<KeyRelease>", lambda _e: al_cambiar())
+                ent.bind("<FocusOut>", lambda _e: al_cambiar())
             return ent
 
         # --- FOTO CARNET DEL CHOFER (PARTE SUPERIOR DEL FORMULARIO) ---
@@ -1015,10 +1159,14 @@ class ChoferesApp:
         self.ent_cat_licencia2 = crear_campo("Categoría Licencia / Brevete 2:", "Ej: A-IIIb")
         self.ent_venc_licencia2 = crear_campo_fecha("Vencimiento de Licencia / Brevete 2:")
 
-        # --- Carné de Sanidad ---
-        ctk.CTkLabel(self.f_form, text="--- Carné de Sanidad ---", font=("Arial", 11, "bold"), text_color="#2e86c1").pack(anchor="w", padx=10, pady=(10,5))
+        # --- Carné de Sanidad (durabilidad 6 meses) ---
+        ctk.CTkLabel(self.f_form, text="--- Carné de Sanidad (dura 6 meses) ---", font=("Arial", 11, "bold"), text_color="#2e86c1").pack(anchor="w", padx=10, pady=(10,5))
         self.ent_sanidad_num = crear_campo("N° Carné de Sanidad:", "Ej: CS-001234")
-        self.ent_sanidad_venc = crear_campo_fecha("Vencimiento Carné de Sanidad:")
+        self.ent_sanidad_emision = crear_campo_fecha("Fecha de Emisión del Carné:", self._calcular_vencimiento_sanidad)
+        self.ent_sanidad_venc = crear_campo_fecha("Vencimiento del Carné:")
+        ctk.CTkLabel(self.f_form,
+                     text="Durabilidad: 6 meses. Al elegir la fecha de emisión, el vencimiento se calcula solo (puede corregirlo).",
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d", wraplength=290, justify="left").pack(anchor="w", padx=10, pady=(0, 10))
 
         # --- Datos de Contrato ---
         ctk.CTkLabel(self.f_form, text="--- Contrato ---", font=("Arial", 11, "bold"), text_color="#16a085").pack(anchor="w", padx=10, pady=(10,5))
@@ -1240,6 +1388,21 @@ class ChoferesApp:
             except: pass
         self._busqueda_job = self.parent_frame.after(350, lambda: self.cargar_datos(reset_pagina=True))
 
+    def _calcular_vencimiento_sanidad(self, evento=None):
+        """Vencimiento del carné de sanidad = fecha de emisión + 6 meses."""
+        try:
+            emision = self.ent_sanidad_emision.get().strip()
+            calculado = sumar_meses_fecha(emision)
+            if not calculado:
+                return
+            actual = self.ent_sanidad_venc.get().strip()
+            if actual == calculado:
+                return
+            self.ent_sanidad_venc.delete(0, tk.END)
+            self.ent_sanidad_venc.insert(0, calculado)
+        except Exception:
+            pass
+
     def limpiar_formulario(self):
         self.id_edicion = None
         self.btn_guardar.configure(text="💾 Guardar Nuevo")
@@ -1270,6 +1433,7 @@ class ChoferesApp:
         self.ent_cat_licencia2.delete(0, tk.END)
         self.ent_venc_licencia2.delete(0, tk.END)
         self.ent_sanidad_num.delete(0, tk.END)
+        self.ent_sanidad_emision.delete(0, tk.END)
         self.ent_sanidad_venc.delete(0, tk.END)
 
         self.ent_ini_contrato.delete(0, tk.END)
@@ -1443,7 +1607,12 @@ class ChoferesApp:
         venc2 = self.ent_venc_licencia2.get().strip()
 
         sanidad_num = self.ent_sanidad_num.get().strip()
+        sanidad_emision = self.ent_sanidad_emision.get().strip()
         sanidad_venc = self.ent_sanidad_venc.get().strip()
+        # 🎫 El carné de sanidad dura 6 meses: si no se escribió el vencimiento,
+        #    se calcula automáticamente desde la fecha de emisión.
+        if not sanidad_venc and sanidad_emision:
+            sanidad_venc = sumar_meses_fecha(sanidad_emision)
 
         ini_contrato = self.ent_ini_contrato.get().strip()
         fin_contrato = self.ent_fin_contrato.get().strip()
@@ -1532,7 +1701,7 @@ class ChoferesApp:
                     direccion=%s, fecha_nacimiento=%s, sexo=%s, numero_hijos=%s,
                     movil_asignado=%s, seguro_salud_num=%s, seguro_salud_venc=%s, seguro_vida_num=%s, seguro_vida_venc=%s,
                     ruta_documentos=%s, fecha_inicio_contrato=%s, fecha_fin_contrato=%s,
-                    observacion_estado=%s, carnet_sanidad_num=%s, carnet_sanidad_venc=%s,
+                    observacion_estado=%s, carnet_sanidad_num=%s, carnet_sanidad_emision=%s, carnet_sanidad_venc=%s,
                     licencia2=%s, categoria_licencia2=%s, vencimiento_licencia2=%s,
                     telefono_emergencia=%s, contacto_emergencia_nombre=%s,
                     talla_polo=%s, talla_casaca=%s
@@ -1540,7 +1709,7 @@ class ChoferesApp:
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
-                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
+                      sanidad_num, sanidad_emision, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
                       nombre_emergencia, talla_polo, talla_casaca, self.id_edicion))
                 detalle_estado = f" — marcado INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
@@ -1556,14 +1725,14 @@ class ChoferesApp:
                     INSERT INTO choferes (dni, nombres, ruc, telefono, correo, licencia, categoria_licencia, vencimiento_licencia, estado, 
                     direccion, fecha_nacimiento, sexo, numero_hijos, movil_asignado, seguro_salud_num, seguro_salud_venc, seguro_vida_num, seguro_vida_venc, ruta_documentos,
                     fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
-                    carnet_sanidad_num, carnet_sanidad_venc, licencia2, categoria_licencia2,
+                    carnet_sanidad_num, carnet_sanidad_emision, carnet_sanidad_venc, licencia2, categoria_licencia2,
                     vencimiento_licencia2, telefono_emergencia, contacto_emergencia_nombre,
                     talla_polo, talla_casaca)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
-                      sanidad_num, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
+                      sanidad_num, sanidad_emision, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
                       nombre_emergencia, talla_polo, talla_casaca))
                 detalle_estado = f" — INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
@@ -1621,7 +1790,7 @@ class ChoferesApp:
                 ruta_documentos, fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
                 carnet_sanidad_num, carnet_sanidad_venc, licencia2, categoria_licencia2,
                 vencimiento_licencia2, telefono_emergencia, contacto_emergencia_nombre,
-                talla_polo, talla_casaca
+                talla_polo, talla_casaca, COALESCE(carnet_sanidad_emision, '')
                 FROM choferes WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -1653,6 +1822,7 @@ class ChoferesApp:
 
                 self.ent_sanidad_num.insert(0, r[23] if len(r) > 23 and r[23] else "")
                 self.ent_sanidad_venc.insert(0, r[24] if len(r) > 24 and r[24] else "")
+                self.ent_sanidad_emision.insert(0, r[32] if len(r) > 32 and r[32] else "")
                 self.ent_licencia2.insert(0, r[25] if len(r) > 25 and r[25] else "")
                 self.ent_cat_licencia2.insert(0, r[26] if len(r) > 26 and r[26] else "")
                 self.ent_venc_licencia2.insert(0, r[27] if len(r) > 27 and r[27] else "")

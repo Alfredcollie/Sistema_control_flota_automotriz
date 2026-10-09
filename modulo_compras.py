@@ -530,6 +530,48 @@ def avisar_sin_permiso_guardado(parent=None):
         messagebox.showwarning("Configuración Requerida", "No ha configurado la ruta de Google Drive.\nEs obligatorio para guardar archivos.", parent=parent)
         return False
 
+
+# =========================================================
+# 🏦 N° DE OPERACIÓN BANCARIA (OBLIGATORIO EN LOS PAGOS)
+# =========================================================
+def pago_sin_operacion_bancaria(cuenta):
+    """True cuando el medio de pago no genera N° de operación bancaria.
+
+    Los pagos que salen del banco (transferencia, cheque, tarjeta, etc.) deben
+    registrar obligatoriamente su N° de operación; los pagos en efectivo o de
+    caja chica no tienen número de operación.
+    """
+    texto = (cuenta or "").strip().lower()
+    return any(p in texto for p in ("efectivo", "caja chica", "caja", "rendicion", "rendición"))
+
+
+def validar_operacion_bancaria(operacion, cuenta):
+    """Valida el N° de operación bancaria y devuelve el texto que se guardará.
+
+    - Si el usuario escribió un número, se usa tal cual.
+    - Si el pago es en efectivo / caja chica y no escribió nada, se guarda "EFECTIVO".
+    - Si es un pago bancario y falta el número, devuelve None (el llamador avisa).
+    """
+    numero = (operacion or "").strip()
+    if numero:
+        return numero
+    if pago_sin_operacion_bancaria(cuenta):
+        return "EFECTIVO"
+    return None
+
+def cargar_comision_interbancaria_config():
+    """Comisión interbancaria configurada en el módulo de Banco (S/.)."""
+    try:
+        from modulo_banco import cargar_comision_interbancaria
+        return float(cargar_comision_interbancaria())
+    except Exception:
+        try:
+            from modulo_banco import COMISION_INTERBANCARIA_DEFAULT
+            return float(COMISION_INTERBANCARIA_DEFAULT)
+        except Exception:
+            return 4.80
+
+
 # =========================================================
 # 🔃 ORDENAMIENTO POR CUALQUIER COLUMNA (TODAS LAS PÁGINAS)
 # =========================================================
@@ -1123,6 +1165,11 @@ class FacturasRecibidasTab:
                 except: conn.rollback()
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS soporte_pago_tercero TEXT DEFAULT '';"); conn.commit()
                 except: conn.rollback()
+                # 💸 Comisión interbancaria de la factura cruzada (igual que en Banco)
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS comision_interbancaria NUMERIC DEFAULT 0;"); conn.commit()
+                except: conn.rollback()
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS es_interbancario BOOLEAN DEFAULT FALSE;"); conn.commit()
+                except: conn.rollback()
                 # 🔗 Cruce de la factura con su Orden de Servicio (módulo de Órdenes)
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS id_orden_servicio INTEGER;"); conn.commit()
                 except: conn.rollback()
@@ -1591,7 +1638,7 @@ class FacturasRecibidasTab:
         ctk.CTkLabel(self.f_form, text="Categoría de Gasto:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         f_cat = ctk.CTkFrame(self.f_form, fg_color="transparent")
         f_cat.pack(fill="x", padx=10, pady=(0, 8))
-        self.combo_categoria = ctk.CTkComboBox(f_cat, state="readonly")
+        self.combo_categoria = ctk.CTkComboBox(f_cat, state="readonly", command=self.on_cambiar_categoria)
         self.combo_categoria.pack(side="left", fill="x", expand=True)
         # Abre la MISMA ventana de categorías que el módulo de Banco
         ctk.CTkButton(f_cat, text="⚙️", width=34, fg_color="#8e44ad", hover_color="#703688", command=self.agregar_nueva_categoria).pack(side="right", padx=(5, 0))
@@ -1610,6 +1657,38 @@ class FacturasRecibidasTab:
             side="right", padx=(5, 0))
         self.cargar_vehiculos_bd()
 
+        # 🎫 CARNET DE SANIDAD: cuando la categoría del gasto es un carné de sanidad
+        # se pide el chofer y se calcula el vencimiento (6 meses) para el cronograma.
+        self.f_carnet = ctk.CTkFrame(self.f_form, fg_color="#eaf4fb", corner_radius=6,
+                                     border_width=1, border_color="#aed6f1")
+        ctk.CTkLabel(self.f_carnet, text="🎫 Carné de Sanidad del Chofer", font=("Arial", 11, "bold"),
+                     text_color="#1f538d").pack(anchor="w", padx=8, pady=(6, 2))
+
+        ctk.CTkLabel(self.f_carnet, text="Chofer:", font=("Arial", 10, "bold")).pack(anchor="w", padx=8)
+        self.combo_chofer = ctk.CTkComboBox(self.f_carnet, state="readonly")
+        self.combo_chofer.pack(fill="x", padx=8, pady=(0, 4))
+
+        ctk.CTkLabel(self.f_carnet, text="N° del Carné (opcional):", font=("Arial", 10, "bold")).pack(anchor="w", padx=8)
+        self.ent_carnet_num = ctk.CTkEntry(self.f_carnet, placeholder_text="Ej: CS-001234")
+        self.ent_carnet_num.pack(fill="x", padx=8, pady=(0, 4))
+
+        ctk.CTkLabel(self.f_carnet, text="Fecha de Emisión del Carné:", font=("Arial", 10, "bold")).pack(anchor="w", padx=8)
+        f_carnet_fec = ctk.CTkFrame(self.f_carnet, fg_color="transparent")
+        f_carnet_fec.pack(fill="x", padx=8, pady=(0, 4))
+        self.ent_carnet_emision = ctk.CTkEntry(f_carnet_fec, placeholder_text="DD/MM/AAAA")
+        self.ent_carnet_emision.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(f_carnet_fec, text="[ 📅 ]", width=40, font=("Arial", 11, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(self.f_carnet, self.ent_carnet_emision,
+                                                       self._actualizar_vencimiento_carnet)).pack(side="right", padx=(5, 0))
+        self.ent_carnet_emision.bind("<KeyRelease>", lambda _e: self._actualizar_vencimiento_carnet())
+        self.ent_carnet_emision.bind("<FocusOut>", lambda _e: self._actualizar_vencimiento_carnet())
+
+        self.lbl_carnet_venc = ctk.CTkLabel(self.f_carnet, text="Vencimiento: —", font=("Arial", 10, "bold"),
+                                            text_color="#c0392b", wraplength=290, justify="left")
+        self.lbl_carnet_venc.pack(anchor="w", padx=8, pady=(0, 8))
+        self._mapa_choferes = {}
+
         # 🔗 CRUCE CON LA ORDEN DE SERVICIO: se elige la orden del módulo de Órdenes
         # para relacionarla con esta factura y comparar montos.
         ctk.CTkLabel(self.f_form, text="🔗 Orden de Servicio (relacionar):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
@@ -1627,8 +1706,73 @@ class FacturasRecibidasTab:
         self.lbl_cruce_orden.pack(anchor="w", padx=10, pady=(0, 8))
         self.cargar_ordenes_servicio()
 
+
+        # =====================================================================
+        # 🔁 FACTURA CRUZADA (PAGADA POR UN TERCERO)
+        # Al marcarla se piden los datos de quien pagó y, si el pago fue
+        # interbancario, la comisión (igual que en el módulo de Banco).
+        # =====================================================================
+        self.var_cruzada = tk.BooleanVar(value=False)
+        self.chk_cruzada = ctk.CTkCheckBox(
+            self.f_form, text="🔁 Pagada por un tercero (factura cruzada)",
+            variable=self.var_cruzada, font=("Arial", 11, "bold"),
+            checkbox_width=18, checkbox_height=18, command=self._actualizar_bloque_cruzada)
+        self.chk_cruzada.pack(anchor="w", padx=10, pady=(4, 2))
+
+        self.f_cruzada = ctk.CTkFrame(self.f_form, fg_color="#f4ecf7", corner_radius=6,
+                                      border_width=1, border_color="#d2b4de")
+        ctk.CTkLabel(self.f_cruzada, text="🔁 Datos del pago a tercero", font=("Arial", 11, "bold"),
+                     text_color="#6c3483").pack(anchor="w", padx=8, pady=(6, 2))
+
+        ctk.CTkLabel(self.f_cruzada, text="Pagado por (tercero): *", font=("Arial", 10, "bold")).pack(anchor="w", padx=8)
+        self.ent_tercero = ctk.CTkEntry(self.f_cruzada, placeholder_text="Nombre de quien realizó el pago")
+        self.ent_tercero.pack(fill="x", padx=8, pady=(0, 4))
+
+        ctk.CTkLabel(self.f_cruzada, text="Cuenta / Banco con el que pagó:", font=("Arial", 10, "bold")).pack(anchor="w", padx=8)
+        self.cmb_cuenta_cruzada = ctk.CTkComboBox(self.f_cruzada, values=self._lista_cuentas_pago())
+        self.cmb_cuenta_cruzada.pack(fill="x", padx=8, pady=(0, 4))
+
+        ctk.CTkLabel(self.f_cruzada, text="N° de Operación Bancaria:", font=("Arial", 10, "bold")).pack(anchor="w", padx=8)
+        self.ent_oper_cruzada = ctk.CTkEntry(self.f_cruzada, placeholder_text="Ej.: 00123456 / constancia")
+        self.ent_oper_cruzada.pack(fill="x", padx=8, pady=(0, 4))
+
+        f_com_cruz = ctk.CTkFrame(self.f_cruzada, fg_color="transparent")
+        f_com_cruz.pack(fill="x", padx=8, pady=(0, 2))
+        self.var_interbancario = tk.BooleanVar(value=False)
+        self.chk_interbancario = ctk.CTkCheckBox(
+            f_com_cruz, text="Pago Interbancario", variable=self.var_interbancario,
+            font=("Arial", 10, "bold"), checkbox_width=16, checkbox_height=16,
+            command=self._actualizar_total_cruzada)
+        self.chk_interbancario.pack(side="left")
+        ctk.CTkLabel(f_com_cruz, text="Comisión (S/.):", font=("Arial", 10, "bold")).pack(side="left", padx=(10, 4))
+        self.ent_comision = ctk.CTkEntry(f_com_cruz, width=80)
+        self.ent_comision.pack(side="left")
+        self.ent_comision.insert(0, f"{cargar_comision_interbancaria_config():.2f}")
+        # El resumen se recalcula MIENTRAS se escribe (y al pegar) la comisión
+        for _evento in ("<KeyRelease>", "<FocusOut>", "<<Paste>>"):
+            self.ent_comision.bind(_evento, lambda _e: self._actualizar_total_cruzada(), add="+")
+        # Al entrar al campo se selecciona el valor: escribir la comisión lo reemplaza
+        try:
+            self.ent_comision.bind("<FocusIn>",
+                                   lambda _e: self.ent_comision.select_range(0, "end"), add="+")
+        except Exception:
+            pass
+
+        self.lbl_cruzada_total = ctk.CTkLabel(self.f_cruzada, text="", font=("Arial", 10, "bold"),
+                                              text_color="#6c3483", wraplength=290, justify="left")
+        self.lbl_cruzada_total.pack(anchor="w", padx=8, pady=(2, 4))
+
+        self.btn_soporte_tercero = ctk.CTkButton(
+            self.f_cruzada, text="📎 Adjuntar soporte del pago al tercero",
+            font=("Arial", 11, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
+            command=self.seleccionar_soporte_tercero)
+        self.btn_soporte_tercero.pack(fill="x", padx=8, pady=(0, 8))
+        self.ruta_soporte_tercero = ""
+
         # 💰 El monto se puede digitar SIN IGV (monto base) o CON IGV (total del documento)
-        ctk.CTkLabel(self.f_form, text="Tipo de Monto a Ingresar:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+        # (esta etiqueta sirve de ancla: el bloque del carné de sanidad se coloca antes)
+        self._ancla_bloque_carnet = ctk.CTkLabel(self.f_form, text="Tipo de Monto a Ingresar:", font=("Arial", 11, "bold"))
+        self._ancla_bloque_carnet.pack(anchor="w", padx=10)
         self.seg_modo_monto = ctk.CTkSegmentedButton(
             self.f_form,
             values=["Monto Base (sin IGV)", "Monto con IGV (Total)"],
@@ -1738,7 +1882,9 @@ class FacturasRecibidasTab:
         self.tabla.column("id", width=0, stretch=tk.NO)
         self.tabla.column("fecha", width=75, anchor="center")
         self.tabla.column("hora", width=70, anchor="center")
-        self.tabla.column("nro_doc", width=90, anchor="center")
+        # 📏 El N° de documento necesita ancho suficiente: con 90 px los números
+        # largos se recortaban (ej. F581-08266857 y F581-08266859 se veían IGUALES).
+        self.tabla.column("nro_doc", width=130, minwidth=120, stretch=False, anchor="w")
         self.tabla.column("orden", width=115, anchor="center")
         self.tabla.column("proveedor", width=120, anchor="w")
         self.tabla.column("ruc", width=90, anchor="center")
@@ -1936,6 +2082,8 @@ class FacturasRecibidasTab:
         self.combo_categoria.configure(values=base_cats)
         if not self.combo_categoria.get() or self.combo_categoria.get() not in base_cats:
             self.combo_categoria.set(base_cats[0])
+        # El bloque del carné de sanidad aparece solo con esa categoría
+        self._actualizar_bloque_carnet()
 
     def on_tipo_change(self, choice):
         self.ent_detraccion.configure(state="normal")
@@ -2089,6 +2237,272 @@ class FacturasRecibidasTab:
         self.combo_evento.configure(values=lista_vehiculos)
         if self.combo_evento.get() not in lista_vehiculos:
             self.combo_evento.set("GENERAL / OFICINA")
+
+    # =========================================================================
+    # 🎫 CARNET DE SANIDAD: CHOFER + VENCIMIENTO (6 MESES) EN EL CRONOGRAMA
+    # =========================================================================
+    def _es_carnet_sanidad(self):
+        """True si la categoría elegida en la factura es un carné de sanidad."""
+        try:
+            from choferes import es_categoria_carnet_sanidad
+        except Exception:
+            def es_categoria_carnet_sanidad(texto):
+                return "sanidad" in str(texto or "").lower()
+        try:
+            return bool(es_categoria_carnet_sanidad(self.combo_categoria.get()))
+        except Exception:
+            return False
+
+    def on_cambiar_categoria(self, valor=None):
+        """Al cambiar la categoría se muestra u oculta el bloque del carné."""
+        self._actualizar_bloque_carnet()
+
+    def _actualizar_bloque_carnet(self):
+        """Muestra los datos del carné de sanidad solo con esa categoría."""
+        try:
+            if not hasattr(self, "f_carnet"):
+                return
+            if self._es_carnet_sanidad():
+                if not self.f_carnet.winfo_ismapped():
+                    self.f_carnet.pack(fill="x", padx=10, pady=(0, 8), before=self._ancla_bloque_carnet)
+                self.cargar_choferes_bd()
+                self._actualizar_vencimiento_carnet()
+            elif self.f_carnet.winfo_ismapped():
+                self.f_carnet.pack_forget()
+        except Exception as e:
+            print("Aviso - bloque de carné de sanidad:", e)
+
+    def _actualizar_vencimiento_carnet(self, evento=None):
+        """Muestra el vencimiento: emisión (o fecha de la factura) + 6 meses."""
+        try:
+            from choferes import sumar_meses_fecha, DURABILIDAD_CARNET_SANIDAD_MESES
+        except Exception:
+            sumar_meses_fecha = lambda _t: ""
+            DURABILIDAD_CARNET_SANIDAD_MESES = 6
+        try:
+            emision = self.ent_carnet_emision.get().strip() or self.ent_fecha.get().strip()
+            vencimiento = sumar_meses_fecha(emision)
+            if vencimiento:
+                self.lbl_carnet_venc.configure(
+                    text=(f"Vencimiento: {vencimiento}  ({emision} + {DURABILIDAD_CARNET_SANIDAD_MESES} meses)\n"
+                          "Se agregará al cronograma como 'Venc. Carné de Sanidad'."))
+            else:
+                self.lbl_carnet_venc.configure(text="Vencimiento: — (escriba o elija la fecha de emisión)")
+        except Exception:
+            pass
+
+    def cargar_choferes_bd(self):
+        """Carga los choferes activos para el desplegable del carné de sanidad."""
+        choferes = cache_sistema.obtener("lista_choferes_compras")
+        if choferes is not None:
+            self._aplicar_choferes(choferes)
+            return
+
+        self.combo_chofer.set("Cargando choferes...")
+
+        def _leer_choferes(estado):
+            lista = []
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("""SELECT id, nombres, COALESCE(dni, '') FROM choferes
+                                 WHERE COALESCE(estado, 'Activo') <> 'Inactivo'
+                                 ORDER BY nombres ASC""")
+                    lista = [[int(r[0]), str(r[1] or ""), str(r[2] or "")] for r in c.fetchall()]
+                    cache_sistema.guardar("lista_choferes_compras", lista)
+                except Exception as e:
+                    print("Aviso cargando choferes:", e)
+                finally:
+                    liberar_conexion(conn)
+            estado["valor"] = lista
+
+        ejecutar_en_hilo(self.main_root, _leer_choferes,
+                         al_terminar=lambda e: self._aplicar_choferes(e.get("valor") or []))
+
+    def _aplicar_choferes(self, lista):
+        try:
+            self._mapa_choferes = {}
+            for fila in lista:
+                id_chofer, nombres, dni = (list(fila) + ["", ""])[:3]
+                etiqueta = f"{nombres} — {dni}".strip(" —")
+                if etiqueta:
+                    self._mapa_choferes[etiqueta] = id_chofer
+            etiquetas = list(self._mapa_choferes.keys())
+            if not etiquetas:
+                etiquetas = ["Sin choferes registrados"]
+            self.combo_chofer.configure(values=etiquetas)
+            # Se deja vacío a propósito: el usuario debe elegir el chofer.
+            self.combo_chofer.set("" if self._mapa_choferes else etiquetas[0])
+        except Exception as e:
+            print("Aviso - lista de choferes:", e)
+
+    def _registrar_carnet_sanidad(self, etiqueta_chofer, numero, emision, vencimiento=None):
+        """Guarda el carné de sanidad del chofer y su vencimiento en el cronograma."""
+        try:
+            from choferes import actualizar_carnet_sanidad
+        except Exception as e:
+            return False, f"No se pudo cargar el módulo de Choferes: {e}"
+        id_chofer = (getattr(self, "_mapa_choferes", {}) or {}).get(etiqueta_chofer)
+        if not id_chofer:
+            return False, "Seleccione un chofer de la lista."
+        return actualizar_carnet_sanidad(id_chofer, numero=numero, emision=emision,
+                                         vencimiento=vencimiento,
+                                         usuario=getattr(self.app_padre, "usuario_activo", "Sistema"))
+
+
+    # =========================================================================
+    # 🔁 FACTURA CRUZADA (PAGADA POR UN TERCERO)
+    # =========================================================================
+    def _lista_cuentas_pago(self):
+        """Cuentas bancarias + medios de pago (las mismas opciones que el Banco)."""
+        try:
+            lista = []
+            for b in cargar_bancos():
+                banco_nom = str(b.get("banco", "")).strip()
+                cuenta_num = str(b.get("cuenta", "")).strip()
+                if banco_nom or cuenta_num:
+                    lista.append(f"{banco_nom} - {cuenta_num}".strip(" -"))
+            lista.extend(["Efectivo / Caja Chica", "Tarjeta de Crédito", "Tarjeta de Débito", "Cheque", "Otro"])
+            return lista
+        except Exception:
+            return ["Efectivo / Caja Chica", "Cheque", "Otro"]
+
+    def _datos_cruzada(self):
+        """Datos del pago a tercero tal como están en el formulario."""
+        return {
+            "activa": bool(getattr(self, "var_cruzada", None) and self.var_cruzada.get()),
+            "tercero": self.ent_tercero.get().strip() if hasattr(self, "ent_tercero") else "",
+            "cuenta": self.cmb_cuenta_cruzada.get().strip() if hasattr(self, "cmb_cuenta_cruzada") else "",
+            "operacion": self.ent_oper_cruzada.get().strip() if hasattr(self, "ent_oper_cruzada") else "",
+            "interbancario": bool(getattr(self, "var_interbancario", None) and self.var_interbancario.get()),
+            "comision": (parsear_monto_texto(self.ent_comision.get())
+                         if hasattr(self, "ent_comision") and self.var_interbancario.get() else 0.0),
+            "soporte": getattr(self, "ruta_soporte_tercero", ""),
+        }
+
+    def _actualizar_bloque_cruzada(self):
+        """Muestra u oculta los datos del tercero al marcar la casilla."""
+        try:
+            if self.var_cruzada.get():
+                if not self.f_cruzada.winfo_ismapped():
+                    self.f_cruzada.pack(fill="x", padx=10, pady=(0, 8), before=self._ancla_bloque_carnet)
+                self._actualizar_total_cruzada()
+            elif self.f_cruzada.winfo_ismapped():
+                self.f_cruzada.pack_forget()
+        except Exception as e:
+            print("Aviso - bloque de factura cruzada:", e)
+
+    def _actualizar_total_cruzada(self, evento=None):
+        """Muestra el total de la factura más la comisión interbancaria (al instante)."""
+        try:
+            subtotal, impuesto, total = self._montos_ingresados()
+        except Exception:
+            subtotal, impuesto, total = 0.0, 0.0, 0.0
+        # Neto a pagar = total del documento menos la detracción escrita
+        try:
+            detraccion = total * (float(self.ent_detraccion.get() or 0) / 100.0)
+        except Exception:
+            detraccion = 0.0
+        neto_factura = max(0.0, total - detraccion)
+        comision = self._datos_cruzada()["comision"]
+        try:
+            if comision > 0:
+                self.lbl_cruzada_total.configure(
+                    text=(f"Factura: {formatear_moneda(neto_factura)}  +  Comisión: {formatear_moneda(comision)}"
+                          f"  =  {formatear_moneda(neto_factura + comision)} sale de la cuenta"))
+            else:
+                self.lbl_cruzada_total.configure(
+                    text=f"Factura: {formatear_moneda(neto_factura)} — sin comisión interbancaria")
+        except Exception:
+            pass
+
+    def seleccionar_soporte_tercero(self):
+        """Adjunta el comprobante del pago realizado al tercero."""
+        ruta = seleccionar_archivo_dialogo("Seleccionar el soporte del pago al tercero",
+                                           [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
+        if not ruta:
+            return
+        self.ruta_soporte_tercero = ruta
+        try:
+            self.btn_soporte_tercero.configure(text="✅ Soporte del pago listo",
+                                               fg_color="#28a745", hover_color="#218838")
+        except Exception:
+            pass
+
+    def _guardar_soporte_tercero(self, ruta_base, tercero):
+        """Copia el soporte del pago al tercero a la carpeta autorizada.
+
+        Devuelve la ruta guardada (relativa) o "" si no había soporte.
+        """
+        origen = getattr(self, "ruta_soporte_tercero", "")
+        if not origen or not os.path.exists(origen):
+            return ""
+        try:
+            carpeta = os.path.normpath(os.path.join(ruta_base, "soportes_pagos_terceros"))
+            if not os.path.exists(carpeta):
+                os.makedirs(carpeta)
+            ext = os.path.splitext(origen)[1] or ".pdf"
+            limpio = re.sub(r'[\\/*?:"<>|]', '-', str(tercero or "tercero")).replace(" ", "_")[:40]
+            destino = os.path.normpath(os.path.join(
+                carpeta, f"Soporte_{datetime.now().strftime('%Y%m%d%H%M%S')}_{limpio}{ext}"))
+            shutil.copy2(origen, destino)
+            return ruta_para_guardar(destino)
+        except Exception as e:
+            print("Aviso - copiando el soporte del pago al tercero:", e)
+            return ""
+
+    def _limpiar_formulario_factura(self):
+        """Deja el formulario listo para registrar el siguiente documento.
+
+        Se borra el N° de documento (antes se quedaba el de la factura anterior y
+        se repetía al registrar varias facturas seguidas del mismo proveedor), el
+        concepto, los montos, el adjunto y los datos del carné de sanidad.
+        El proveedor, la fecha, el tipo y la categoría se conservan para seguir
+        facturando, y el RUC se vuelve a cargar del proveedor seleccionado.
+        """
+        try:
+            self.ent_nro_doc.delete(0, tk.END)
+            self.ent_concepto.delete(0, tk.END)
+            self.ent_subtotal.delete(0, tk.END)
+            self.ent_desc.delete(0, tk.END)            # RUC (se recarga del proveedor)
+            if hasattr(self, "ent_recargo"):
+                self.ent_recargo.delete(0, tk.END)
+                self.ent_recargo.insert(0, "0")
+            if hasattr(self, "ent_detraccion") and "Factura" in self.combo_tipo.get():
+                self.ent_detraccion.delete(0, tk.END)
+                self.ent_detraccion.insert(0, "0")
+            # 🎫 Datos del carné de sanidad del documento anterior
+            for entrada in (getattr(self, "ent_carnet_num", None), getattr(self, "ent_carnet_emision", None)):
+                if entrada is not None:
+                    entrada.delete(0, tk.END)
+            if hasattr(self, "combo_chofer"):
+                self.combo_chofer.set("")
+            self._actualizar_vencimiento_carnet()
+            # 🔁 Datos del pago a tercero del documento anterior
+            if hasattr(self, "var_cruzada"):
+                self.var_cruzada.set(False)
+                self.var_interbancario.set(False)
+                for entrada in (self.ent_tercero, self.ent_oper_cruzada, self.ent_comision):
+                    entrada.delete(0, tk.END)
+                self.ent_comision.insert(0, f"{cargar_comision_interbancaria_config():.2f}")
+                self.ruta_soporte_tercero = ""
+                self.btn_soporte_tercero.configure(text="📎 Adjuntar soporte del pago al tercero",
+                                                   fg_color="#7f8c8d", hover_color="#606b6b")
+                self._actualizar_bloque_cruzada()
+            # 📎 Adjunto manual
+            self.ruta_archivo_temp = ""
+            self.btn_archivo.configure(text="📎 Adjuntar Archivo Manual", fg_color="#7f8c8d", hover_color="#606b6b")
+            # 🧾 RUC del proveedor que sigue seleccionado (evita el aviso de campos vacíos)
+            self._ruc_autocompletado = False
+            self.bloquear_autocompletado_ruc = False
+            if self.combo_proveedor.get().strip():
+                try: self.al_seleccionar_proveedor()
+                except Exception: pass
+            self.actualizar_totales()
+        except Exception as e:
+            print("Aviso - limpiando el formulario de compras:", e)
+
 
     # =========================================================================
     # 🔗 ÓRDENES DE SERVICIO: CRUCE Y RELACIÓN CON LA FACTURA DEL PROVEEDOR
@@ -2405,6 +2819,10 @@ class FacturasRecibidasTab:
             self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
 
         self._actualizar_cruce_orden()
+        # 🔁 Si la factura es cruzada, el resumen (factura + comisión interbancaria) se
+        # recalcula al instante con cualquier cambio de montos, sin tocar la casilla.
+        if getattr(self, "var_cruzada", None) is not None and self.var_cruzada.get():
+            self._actualizar_total_cruzada()
 
     def seleccionar_archivo(self):
         ruta = seleccionar_archivo_dialogo("Seleccionar Documento", [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg;*.xml")])
@@ -2428,7 +2846,14 @@ class FacturasRecibidasTab:
         
         evento = self.combo_evento.get()
         categoria = self.combo_categoria.get().strip() or "GENERAL / NO ASIGNADO"
-        
+
+        # 🎫 ¿La factura es de un carné de sanidad? Entonces se pide el chofer y su
+        #    vencimiento (emisión + 6 meses) se envía al cronograma.
+        es_carnet_sanidad = self._es_carnet_sanidad()
+
+        # 🔁 ¿La factura la pagó un tercero? (factura cruzada)
+        cruzada = self._datos_cruzada()
+
         try: 
             dias = int(self.ent_dias.get().strip() or 0)
             ui_pct = float(self.ent_detraccion.get() or 0)
@@ -2443,14 +2868,52 @@ class FacturasRecibidasTab:
 
         if not prov or not ruc_val: return messagebox.showwarning("Atención", "Llene los campos obligatorios.")
 
-        if nro_doc:
+        if es_carnet_sanidad and not self.combo_chofer.get().strip():
+            return messagebox.showwarning(
+                "Carné de Sanidad",
+                "Seleccione el chofer al que corresponde este carné de sanidad.\n\n"
+                "El vencimiento (fecha de emisión + 6 meses) se enviará al cronograma.")
+
+        if cruzada["activa"] and not cruzada["tercero"]:
+            return messagebox.showwarning(
+                "Factura Cruzada",
+                "Escriba el nombre de la persona o empresa a quien se le pagó (tercero).\n\n"
+                "La factura quedará registrada como pagada por ese tercero.")
+
+        if nro_doc and nro_doc.upper() not in ("POR-ASIGNAR", "ERROR-LECTURA", "S/N"):
             conn_check = conectar_db()
             if conn_check:
                 try:
                     c_check = conn_check.cursor()
-                    c_check.execute("SELECT COUNT(*) FROM facturas_recibidas WHERE numero_documento = %s AND proveedor = %s", (nro_doc, prov))
-                    if c_check.fetchone()[0] > 0:
-                        return messagebox.showwarning("Duplicado", "Ese N° de Documento ya está registrado.")
+                    # 🔎 Se compara SOLO el N° de documento (sin espacios ni mayúsculas) y
+                    # NO el nombre del proveedor: el mismo comprobante puede venir escrito
+                    # de dos formas (sobre todo si lo leyó la App desde una foto), y así se
+                    # evita registrar dos veces la misma factura.
+                    c_check.execute("""
+                        SELECT proveedor, fecha, COALESCE(total, 0), COALESCE(ruc, '')
+                        FROM facturas_recibidas
+                        WHERE UPPER(REPLACE(TRIM(numero_documento), ' ', '')) = UPPER(REPLACE(TRIM(%s), ' ', ''))
+                        ORDER BY id DESC LIMIT 1
+                    """, (nro_doc,))
+                    previa = c_check.fetchone()
+                    if previa:
+                        prov_prev, fecha_prev, total_prev, ruc_prev = previa
+                        detalle = (f"N° {nro_doc}\nProveedor: {prov_prev}\nFecha: {fecha_prev}\n"
+                                   f"Total: {formatear_moneda(total_prev)}")
+                        mismo_ruc = bool(str(ruc_val).strip()) and str(ruc_prev or "").strip() == str(ruc_val).strip()
+                        if mismo_ruc:
+                            return messagebox.showwarning(
+                                "Documento duplicado",
+                                f"Este documento ya está registrado en el sistema:\n\n{detalle}\n\n"
+                                "No se registró de nuevo. Revise el N° de documento.")
+                        if not messagebox.askyesno(
+                                "N° de documento repetido",
+                                f"El N° de documento ya existe en el sistema:\n\n{detalle}\n\n"
+                                f"RUC registrado: {ruc_prev or '(sin RUC)'}   |   RUC de esta factura: {ruc_val}\n\n"
+                                "¿Desea registrarla de todas formas?"):
+                            return
+                except Exception as e_dup:
+                    print("Aviso - verificación de documentos duplicados:", e_dup)
                 finally: liberar_conexion(conn_check)
 
         if "Factura" in tipo: 
@@ -2505,35 +2968,97 @@ class FacturasRecibidasTab:
                 shutil.copy2(self.ruta_archivo_temp, ruta_final)
             except Exception as e: return messagebox.showerror("Error", f"Fallo al guardar archivo:\n{e}")
 
+        # 📎 Soporte del pago hecho al tercero (se copia a la carpeta autorizada)
+        ruta_soporte_tercero = ""
+        if cruzada["activa"] and cruzada["soporte"]:
+            ruta_soporte_tercero = self._guardar_soporte_tercero(ruta_base, cruzada["tercero"])
+            if not ruta_soporte_tercero:
+                return messagebox.showwarning("Factura Cruzada",
+                                              "No se pudo copiar el soporte del pago al tercero.\n"
+                                              "Verifique el archivo o vuelva a adjuntarlo.")
+
         conn = conectar_db()
         if not conn: return
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc, id_orden_servicio, orden_servicio)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val, orden_id, orden_txt))
+                INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc, id_orden_servicio, orden_servicio,
+                                                pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada, comision_interbancaria, es_interbancario)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val, orden_id, orden_txt,
+                  cruzada["tercero"] if cruzada["activa"] else "", ruta_soporte_tercero,
+                  bool(cruzada["activa"]), cruzada["comision"], bool(cruzada["interbancario"])))
+            try:
+                id_factura_nueva = int(cursor.fetchone()[0])
+            except Exception:
+                id_factura_nueva = 0
             conn.commit()
+
+            # 💳 Factura cruzada: se registra el pago hecho por el tercero para que la
+            #    factura aparezca como PAGADA y su forma de pago muestre la cuenta.
+            aviso_cruzada = ""
+            if cruzada["activa"] and id_factura_nueva:
+                if "Recibo" in tipo and "8%" in tipo:
+                    neto_cruzada = tot_bruto - imp - det_monto
+                else:
+                    neto_cruzada = tot_bruto - det_monto
+                # 💸 El tercero pagó la factura MÁS la comisión interbancaria: el pago
+                #    registrado incluye las dos cosas (y así no queda nada pendiente).
+                comision_cruzada = cruzada["comision"] if cruzada["interbancario"] else 0.0
+                monto_pago_cruz = max(0.0, neto_cruzada) + max(0.0, comision_cruzada)
+                try:
+                    cur_pago = conn.cursor()
+                    cur_pago.execute("""
+                        INSERT INTO pagos_comprobantes (id_factura, monto_pagado, archivo_ruta, proveedor_nombre,
+                                                       fecha_pago, categoria_suministro, codigo_cotizacion,
+                                                       cuenta_origen, numero_operacion)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (id_factura_nueva, monto_pago_cruz, ruta_soporte_tercero or "", prov, fecha,
+                          categoria, nro_doc, cruzada["cuenta"] or f"Pago de {cruzada['tercero']}",
+                          cruzada["operacion"] or "PAGO A TERCERO"))
+                    conn.commit()
+                except Exception as e_pago_cruz:
+                    print("Aviso - pago de la factura cruzada:", e_pago_cruz)
+                detalle_comision = (f" (factura {formatear_moneda(neto_cruzada)}"
+                                    f" + comisión {formatear_moneda(comision_cruzada)})"
+                                    if comision_cruzada > 0 else "")
+                aviso_cruzada = (f"\n\n🔁 Factura cruzada: pagada por {cruzada['tercero']}"
+                                 f"\nPago registrado: {formatear_moneda(monto_pago_cruz)}{detalle_comision}"
+                                 "\nQueda registrada como PAGADA en Cuentas por Pagar, sin saldo pendiente.")
             
             cache_sistema.invalidar()
             registrar_auditoria(self.app_padre.usuario_activo, "Facturas Recibidas", f"Registró factura {nro_doc} del proveedor '{prov}'")
-            messagebox.showinfo("Éxito", "Documento recibido registrado correctamente.")
-            
-            self.cargar_categorias()
-            self.cargar_ordenes_servicio()      # refresca la marca "⚠ ya facturada"
-            self.ent_nro_doc.delete(0, tk.END)
-            self.ent_desc.delete(0, tk.END)
-            self.ent_concepto.delete(0, tk.END)
-            self.ent_subtotal.delete(0, tk.END)
-            if hasattr(self, "ent_recargo"):
-                self.ent_recargo.delete(0, tk.END)
-                self.ent_recargo.insert(0, "0")
-            self.ruta_archivo_temp = ""
-            self.btn_archivo.configure(text="📎 Adjuntar Archivo Manual", fg_color="#7f8c8d", hover_color="#606b6b")
+
+            # 🎫 Carné de sanidad: se actualiza el chofer y su vencimiento en el cronograma
+            aviso_carnet = ""
+            if es_carnet_sanidad:
+                emision_carnet = self.ent_carnet_emision.get().strip() or fecha
+                ok_carnet, respuesta_carnet = self._registrar_carnet_sanidad(
+                    self.combo_chofer.get().strip(),
+                    self.ent_carnet_num.get().strip() or nro_doc,
+                    emision_carnet)
+                if ok_carnet:
+                    aviso_carnet = (f"\n\n🎫 Carné de sanidad de {self.combo_chofer.get().strip()}"
+                                    f"\nEmisión: {emision_carnet}    Vence: {respuesta_carnet or '—'}"
+                                    "\nSe agregó el vencimiento al cronograma.")
+                else:
+                    aviso_carnet = f"\n\n⚠ No se pudo actualizar el carné de sanidad: {respuesta_carnet}"
+
+            messagebox.showinfo("Éxito", f"Documento {nro_doc or 's/n'} registrado correctamente."
+                                + aviso_carnet + aviso_cruzada)
+
+            # ✅ El formulario se limpia SIEMPRE (aunque falle un refresco), para que el
+            #    siguiente documento no herede el N° de la factura anterior.
+            self._limpiar_formulario_factura()
+            for refresco in (self.cargar_categorias, self.cargar_ordenes_servicio):
+                try: refresco()                 # refresca categorías y la marca "⚠ ya facturada"
+                except Exception as e_ref: print("Aviso - refresco tras guardar:", e_ref)
             self.cargar_datos_tabla(reset_pagina=True)
-            
+
             if hasattr(self.app_padre, 'app_pagos'):
-                self.app_padre.app_pagos.cargar_datos_pagar(reset_pagina=True)
+                try: self.app_padre.app_pagos.cargar_datos_pagar(reset_pagina=True)
+                except Exception as e_pag: print("Aviso - refresco de cuentas por pagar:", e_pag)
         except Exception as e: messagebox.showerror("Error", str(e))
         finally: liberar_conexion(conn)
 
@@ -2572,7 +3097,7 @@ class FacturasRecibidasTab:
                     return
                 try:
                     cursor = conn.cursor()
-                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(orden_servicio, '') FROM facturas_recibidas"
+                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(orden_servicio, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE) FROM facturas_recibidas"
                     
                     condiciones = []
                     params = []
@@ -2668,6 +3193,12 @@ class FacturasRecibidasTab:
                 # bancaria con la que salió el dinero (el pago también se registra
                 # en Banco, así que la factura figura como pagada).
                 nota = "🔁 Compra cruzada" + (f" · pagó: {tercero}" if tercero else "")
+                try:
+                    comision_cruz = float(r[21] or 0) if len(r) > 21 else 0.0
+                except Exception:
+                    comision_cruz = 0.0
+                if comision_cruz > 0:
+                    nota += f" · comisión {formatear_moneda(comision_cruz)}"
                 metodo_pago = f"{metodo_pago} · {nota}" if metodo_pago else nota
 
             if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
@@ -2776,13 +3307,19 @@ class FacturasRecibidasTab:
         if not conn: return
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT tipo_documento, ruc, proveedor, numero_documento, fecha, evento_asociado, kilometraje, cantidad_combustible, descripcion, subtotal, impuesto, total, COALESCE(id_orden_servicio, 0), COALESCE(orden_servicio, '') FROM facturas_recibidas WHERE id = %s", (id_doc,))
+            cursor.execute("SELECT tipo_documento, ruc, proveedor, numero_documento, fecha, evento_asociado, kilometraje, cantidad_combustible, descripcion, subtotal, impuesto, total, COALESCE(id_orden_servicio, 0), COALESCE(orden_servicio, ''), COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(det_monto, 0) FROM facturas_recibidas WHERE id = %s", (id_doc,))
             reg = cursor.fetchone()
+            # 💳 Pagos ya registrados (para saber si la factura figura pagada)
+            cursor.execute("""SELECT id, COALESCE(monto_pagado, 0), COALESCE(cuenta_origen, ''),
+                                     COALESCE(numero_operacion, '')
+                              FROM pagos_comprobantes WHERE id_factura = %s ORDER BY id""", (id_doc,))
+            e_pagos = cursor.fetchall() or []
         finally: 
             liberar_conexion(conn)
             
         if not reg: return
-        e_tipo, e_ruc, e_prov, e_nro, e_fec, e_placa, e_km, e_gal, e_desc, e_sub, e_imp, e_tot, e_orden_id, e_orden_txt = reg
+        (e_tipo, e_ruc, e_prov, e_nro, e_fec, e_placa, e_km, e_gal, e_desc, e_sub, e_imp, e_tot,
+         e_orden_id, e_orden_txt, e_tercero, e_cruzada, e_comision, e_inter, e_det) = reg
         try:
             e_orden_id = int(e_orden_id or 0)
         except (TypeError, ValueError):
@@ -2843,6 +3380,76 @@ class FacturasRecibidasTab:
         ent_desc = crear_campo(f_form, "Concepto / Descripción:", c_val)
         ent_hora = crear_campo(f_form, "Hora de Consumo (Ej: 14:30):", h_val)
 
+        # 🔁 FACTURA CRUZADA (pagada por un tercero) + comisión interbancaria
+        e_tercero = str(e_tercero or "")
+        e_cruzada = bool(e_cruzada)
+        try: e_comision = float(e_comision or 0)
+        except (TypeError, ValueError): e_comision = 0.0
+        e_inter = bool(e_inter)
+
+        ctk.CTkLabel(f_form, text="🔁 Pago a tercero (factura cruzada)", font=("Arial", 11, "bold"),
+                     text_color="#6c3483").pack(anchor="w", padx=5, pady=(8, 0))
+        var_edit_cruzada = tk.BooleanVar(value=e_cruzada)
+        ctk.CTkCheckBox(f_form, text="Esta factura la pagó un tercero", variable=var_edit_cruzada,
+                        font=("Arial", 11), checkbox_width=18, checkbox_height=18).pack(anchor="w", padx=5)
+        ent_edit_tercero = crear_campo(f_form, "Pagado por (tercero):", e_tercero)
+        f_edit_com = ctk.CTkFrame(f_form, fg_color="transparent")
+        f_edit_com.pack(fill="x", padx=5, pady=(0, 5))
+        var_edit_inter = tk.BooleanVar(value=e_inter)
+        ctk.CTkCheckBox(f_edit_com, text="Interbancario", variable=var_edit_inter,
+                        font=("Arial", 11), checkbox_width=16, checkbox_height=16).pack(side="left")
+        ctk.CTkLabel(f_edit_com, text="Comisión (S/.):", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 4))
+        ent_edit_comision = ctk.CTkEntry(f_edit_com, width=80)
+        ent_edit_comision.pack(side="left")
+        ent_edit_comision.insert(0, f"{e_comision:.2f}")
+
+        # 💳 El total que pagó el tercero se calcula AL INSTANTE (factura + comisión)
+        lbl_edit_cruz_total = ctk.CTkLabel(f_form, text="", font=("Arial", 10, "bold"),
+                                           text_color="#6c3483", wraplength=400, justify="left")
+        lbl_edit_cruz_total.pack(anchor="w", padx=5, pady=(0, 5))
+
+        def actualizar_total_cruzada_edit(*_a):
+            """Muestra el total pagado al tercero: factura + comisión interbancaria."""
+            try:
+                neto = max(0.0, _num_edit(ent_tot) - float(e_det or 0))
+            except Exception:
+                neto = 0.0
+            try:
+                com = parsear_monto_texto(ent_edit_comision.get()) if var_edit_inter.get() else 0.0
+            except Exception:
+                com = 0.0
+            try:
+                if com > 0:
+                    lbl_edit_cruz_total.configure(
+                        text=(f"💳 El tercero pagó: {formatear_moneda(neto + com)}   "
+                              f"(factura {formatear_moneda(neto)} + comisión {formatear_moneda(com)})"))
+                else:
+                    lbl_edit_cruz_total.configure(
+                        text=f"💳 El tercero pagó: {formatear_moneda(neto)} (sin comisión interbancaria)")
+            except Exception:
+                pass
+
+        for _evento_com in ("<KeyRelease>", "<FocusOut>", "<<Paste>>"):
+            ent_edit_comision.bind(_evento_com, actualizar_total_cruzada_edit, add="+")
+        # Al entrar al campo se selecciona el valor: escribir la comisión lo reemplaza
+        try:
+            ent_edit_comision.bind("<FocusIn>",
+                                   lambda _e: ent_edit_comision.select_range(0, "end"), add="+")
+        except Exception:
+            pass
+        try:
+            var_edit_inter.trace_add("write", lambda *_a: actualizar_total_cruzada_edit())
+        except Exception:
+            pass
+
+        ctk.CTkLabel(f_form, text="Cuenta / Banco con el que pagó:", font=("Arial", 11, "bold")).pack(anchor="w", padx=5, pady=(5, 0))
+        cmb_edit_cuenta = ctk.CTkComboBox(f_form, values=self._lista_cuentas_pago())
+        cmb_edit_cuenta.pack(fill="x", padx=5, pady=(0, 5))
+        if e_pagos and e_pagos[0][2]:
+            cmb_edit_cuenta.set(str(e_pagos[0][2]))
+        ent_edit_oper = crear_campo(f_form, "N° de Operación Bancaria:",
+                                    str(e_pagos[0][3]) if e_pagos and e_pagos[0][3] else "")
+
         # 🔗 Orden de servicio relacionada con esta factura (se puede cambiar o quitar)
         ctk.CTkLabel(f_form, text="🔗 Orden de Servicio (relacionar):", font=("Arial", 11, "bold")).pack(anchor="w", padx=5, pady=(5, 0))
         combo_edit_orden = ctk.CTkComboBox(f_form, values=[SIN_ORDEN_SERVICIO], state="readonly")
@@ -2895,6 +3502,18 @@ class FacturasRecibidasTab:
         except (TypeError, ValueError):
             _recargo_inicial = 0.0
         ent_rec.insert(0, f"{max(_recargo_inicial, 0.0):.2f}")
+
+        # 💳 El resumen del pago al tercero sigue los montos y la comisión en vivo
+        for _campo_monto in (ent_sub, ent_imp, ent_tot, ent_rec):
+            try:
+                _campo_monto.bind("<KeyRelease>", actualizar_total_cruzada_edit, add="+")
+            except Exception:
+                pass
+        # Se pinta cuando la ventana ya está armada (así lee el total y la comisión actuales)
+        try:
+            v_edit.after(300, actualizar_total_cruzada_edit)
+        except Exception:
+            pass
 
         # 💰 Igual que en el registro: se puede escribir el monto BASE o el monto ya CON IGV
         # y el sistema calcula automáticamente la base, el IGV y el total.
@@ -3011,6 +3630,15 @@ class FacturasRecibidasTab:
             n_hora = ent_hora.get().strip()
             desc_final = f"{n_desc} | Hora: {n_hora}" if n_hora else n_desc
 
+            # 🔁 Datos del pago a tercero (factura cruzada)
+            es_cruz_edit = bool(var_edit_cruzada.get())
+            tercero_edit = ent_edit_tercero.get().strip()
+            inter_edit = bool(var_edit_inter.get())
+            comision_edit = parsear_monto_texto(ent_edit_comision.get()) if inter_edit else 0.0
+            if es_cruz_edit and not tercero_edit:
+                return messagebox.showwarning("Factura cruzada",
+                                              "Escriba el nombre de quien pagó (tercero).", parent=v_edit)
+
             if messagebox.askyesno("Confirmar", "¿Guardar los cambios?", parent=v_edit):
                 conn_u = conectar_db()
                 if conn_u:
@@ -3021,12 +3649,16 @@ class FacturasRecibidasTab:
                             UPDATE facturas_recibidas 
                             SET tipo_documento=%s, ruc=%s, proveedor=%s, numero_documento=%s, fecha=%s, 
                                 evento_asociado=%s, kilometraje=%s, cantidad_combustible=%s, descripcion=%s, 
-                                subtotal=%s, impuesto=%s, total=%s, id_orden_servicio=%s, orden_servicio=%s
+                                subtotal=%s, impuesto=%s, total=%s, id_orden_servicio=%s, orden_servicio=%s,
+                                pagado_por_tercero=%s, es_compra_cruzada=%s,
+                                comision_interbancaria=%s, es_interbancario=%s
                             WHERE id=%s
                         """, (
                             ent_tipo.get().strip(), ent_ruc.get().strip(), ent_prov.get().strip(), ent_nro.get().strip(), 
                             ent_fec.get().strip(), ent_placa.get().strip(), ent_km.get().strip(), ent_gal.get().strip(), 
-                            desc_final, val_sub, val_imp, val_tot, id_orden_final, txt_orden_final, id_doc
+                            desc_final, val_sub, val_imp, val_tot, id_orden_final, txt_orden_final,
+                            tercero_edit if es_cruz_edit else "", es_cruz_edit,
+                            comision_edit, inter_edit, id_doc
                         ))
                         
                         cursor_u.execute("""
@@ -3034,10 +3666,50 @@ class FacturasRecibidasTab:
                             SET proveedor_nombre=%s, codigo_cotizacion=%s
                             WHERE id_factura=%s
                         """, (ent_prov.get().strip(), ent_nro.get().strip(), id_doc))
-                        
+
+                        # 💸 FACTURA CRUZADA: el tercero pagó la factura MÁS la comisión, así
+                        #    que el pago registrado se completa para no dejar saldo pendiente.
+                        aviso_pago = ""
+                        if es_cruz_edit and comision_edit > 0:
+                            try:
+                                neto_objetivo = max(0.0, float(val_tot or 0) - float(e_det or 0))
+                            except (TypeError, ValueError):
+                                neto_objetivo = 0.0
+                            objetivo = neto_objetivo + comision_edit
+                            cuenta_edit = cmb_edit_cuenta.get().strip()
+                            oper_edit = ent_edit_oper.get().strip()
+                            registrados = float(sum(float(p[1] or 0) for p in (e_pagos or [])))
+                            if not e_pagos:
+                                cursor_u.execute("""
+                                    INSERT INTO pagos_comprobantes
+                                    (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago,
+                                     categoria_suministro, codigo_cotizacion, cuenta_origen, numero_operacion)
+                                    VALUES (%s, %s, '', %s, %s, '', %s, %s, %s)
+                                """, (id_doc, objetivo, ent_prov.get().strip(), ent_fec.get().strip(),
+                                      ent_nro.get().strip(), cuenta_edit or f"Pago de {tercero_edit}",
+                                      oper_edit or "PAGO A TERCERO"))
+                                aviso_pago = ("\n\n💳 Se registró el pago al tercero por "
+                                              f"{formatear_moneda(objetivo)} (factura + comisión).")
+                            elif len(e_pagos) == 1 and registrados < objetivo - 0.01:
+                                sets_p = ["monto_pagado = %s"]
+                                params_p = [objetivo]
+                                if cuenta_edit:
+                                    sets_p.append("cuenta_origen = %s"); params_p.append(cuenta_edit)
+                                if oper_edit:
+                                    sets_p.append("numero_operacion = %s"); params_p.append(oper_edit)
+                                params_p.append(e_pagos[0][0])
+                                cursor_u.execute("UPDATE pagos_comprobantes SET " + ", ".join(sets_p)
+                                                 + " WHERE id = %s", tuple(params_p))
+                                aviso_pago = (f"\n\n💳 El pago se completó a {formatear_moneda(objetivo)}: "
+                                              f"factura {formatear_moneda(neto_objetivo)} + comisión "
+                                              f"{formatear_moneda(comision_edit)}. No queda saldo pendiente.")
+                            elif len(e_pagos) > 1:
+                                aviso_pago = ("\n\n💡 Esta factura tiene varios pagos registrados: "
+                                              "revise los montos en 'Editar Pagos'.")
+
                         conn_u.commit()
                         cache_sistema.invalidar()
-                        messagebox.showinfo("Éxito", "Registro actualizado correctamente.", parent=v_edit)
+                        messagebox.showinfo("Éxito", "Registro actualizado correctamente." + aviso_pago, parent=v_edit)
                         v_edit.destroy()
                         self.cargar_datos_tabla(reset_pagina=True)
                         if hasattr(self.app_padre, 'app_pagos'):
@@ -3244,7 +3916,8 @@ class CuentasPorPagarTab:
         self.tabla.column("id_factura", width=0, stretch=tk.NO)
         self.tabla.column("fecha", width=80, anchor="center")
         self.tabla.column("hora", width=70, anchor="center")
-        self.tabla.column("nro_doc", width=100, anchor="center")
+        # 📏 Ancho suficiente para el N° de documento completo (ver pestaña de facturas)
+        self.tabla.column("nro_doc", width=130, minwidth=120, stretch=False, anchor="w")
         self.tabla.column("proveedor", width=140, anchor="w")
         self.tabla.column("ruc", width=90, anchor="center")
         self.tabla.column("evento", width=120, anchor="center")
@@ -3421,7 +4094,7 @@ class CuentasPorPagarTab:
 
                     # Se traen TODOS los comprobantes del filtro/mes (sin LIMIT) para
                     # poder ordenar por cualquier columna en todas las páginas
-                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, '') FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
+                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE) FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
                     registros = cursor.fetchall()
                     
                     ids_actuales = [r[0] for r in registros]
@@ -3439,7 +4112,8 @@ class CuentasPorPagarTab:
                     for reg in registros:
                         (id_factura, fecha, nro_doc, proveedor, evento, concepto, subtotal, impuesto,
                          tot_bruto, det_monto, tipo_doc, km_val, cant_val, ruc_db,
-                         tercero, es_cruzada, soporte_cruzada) = reg
+                         tercero, es_cruzada, soporte_cruzada,
+                         comision_cruz, interbancario_cruz) = reg
                         tercero = str(tercero or "")
                         es_cruzada = bool(es_cruzada)
                         soporte_cruzada = str(soporte_cruzada or "")
@@ -3468,9 +4142,10 @@ class CuentasPorPagarTab:
                         
                         saldo_pendiente = max(0.0, neto_facturado - monto_pagado)
                         if es_cruzada:
-                            # Compra cruzada (creada desde el módulo de Banco): la factura
-                            # la pagó un TERCERO, así que no queda saldo por pagar.
-                            monto_pagado = neto_facturado
+                            # Compra cruzada (pagada por un TERCERO): no queda saldo por pagar.
+                            # Si hay pagos registrados se muestra lo realmente pagado, que
+                            # incluye la comisión interbancaria (ej. 28.00 + 4.80 = 32.80).
+                            monto_pagado = max(neto_facturado, monto_pagado)
                             saldo_pendiente = 0.0
                         
                         filas_procesadas.append({
@@ -3478,7 +4153,8 @@ class CuentasPorPagarTab:
                             "evento": evento, "km_val": km_val, "cant_val": cant_val, "concepto": concepto, "cuentas_lista": cuentas_lista,
                             "sub_val": sub_val, "imp_val": imp_val, "det_monto_val": det_monto_val, "neto_facturado": neto_facturado,
                             "monto_pagado": monto_pagado, "saldo_pendiente": saldo_pendiente, "cant_archivos": cant_archivos, "tiene_cuenta": tiene_cuenta,
-                            "es_cruzada": es_cruzada, "tercero": tercero, "soporte_cruzada": soporte_cruzada
+                            "es_cruzada": es_cruzada, "tercero": tercero, "soporte_cruzada": soporte_cruzada,
+                            "comision_cruzada": float(comision_cruz or 0), "interbancario": bool(interbancario_cruz)
                         })
                         
                     # Total pendiente global (mismo criterio que antes) calculado
@@ -3524,6 +4200,8 @@ class CuentasPorPagarTab:
                 # Compra cruzada registrada desde el módulo de Banco: se agrega la
                 # nota del tercero conservando la cuenta bancaria del pago.
                 nota = "🔁 Compra cruzada" + (f" · pagó: {f['tercero']}" if f.get('tercero') else "")
+                if float(f.get('comision_cruzada') or 0) > 0:
+                    nota += f" · comisión {formatear_moneda(f['comision_cruzada'])}"
                 metodo_pago = f"{metodo_pago} · {nota}" if metodo_pago else nota
             txt_adjuntos = f"📁 {f['cant_archivos']} archivo(s)" if f['cant_archivos'] > 0 else "❌ Sin adjuntos"
             if f.get('es_cruzada') and f['cant_archivos'] == 0:
@@ -3590,17 +4268,69 @@ class CuentasPorPagarTab:
         valores = self.tabla.item(seleccion[0], "values")
         id_factura, nro_doc, proveedor = valores[1], valores[4], valores[5] 
         saldo_actual = desformatear_numero(valores[17]) 
-        
-        if saldo_actual <= 0: return messagebox.showinfo("Aviso", "Esta factura ya está pagada por completo.")
+
+        # 💸 Si la factura es cruzada con comisión interbancaria, el pago al tercero
+        #    cubre la factura MÁS la comisión (ej. factura 28.00 + comisión 4.80 = 32.80).
+        comision_factura = 0.0
+        es_factura_cruzada = False
+        neto_factura = saldo_actual
+        ya_pagado = 0.0
+        try:
+            conn_com = conectar_db(silencioso=True)
+            if conn_com:
+                try:
+                    with conn_com.cursor() as c_com:
+                        c_com.execute("""SELECT COALESCE(comision_interbancaria, 0), COALESCE(es_compra_cruzada, FALSE),
+                                                COALESCE(total, 0), COALESCE(det_monto, 0), COALESCE(impuesto, 0),
+                                                COALESCE(tipo_documento, '')
+                                         FROM facturas_recibidas WHERE id = %s""", (id_factura,))
+                        fila_com = c_com.fetchone()
+                        if fila_com:
+                            comision_factura = float(fila_com[0] or 0)
+                            es_factura_cruzada = bool(fila_com[1])
+                            total_fac = float(fila_com[2] or 0)
+                            det_fac = float(fila_com[3] or 0)
+                            imp_fac = float(fila_com[4] or 0)
+                            tipo_fac = str(fila_com[5] or "")
+                            if "Recibo" in tipo_fac and "8%" in tipo_fac:
+                                neto_factura = max(0.0, total_fac - imp_fac - det_fac)
+                            else:
+                                neto_factura = max(0.0, total_fac - det_fac)
+                        c_com.execute("SELECT COALESCE(SUM(monto_pagado), 0) FROM pagos_comprobantes WHERE id_factura = %s",
+                                      (id_factura,))
+                        ya_pagado = float((c_com.fetchone() or [0])[0] or 0)
+                finally:
+                    liberar_conexion(conn_com)
+        except Exception as e_com:
+            print("Aviso - comisión de la factura cruzada:", e_com)
+
+        # Lo que falta pagar = factura + comisión interbancaria - lo ya pagado
+        pendiente_total = max(0.0, neto_factura + comision_factura - ya_pagado)
+        saldo_actual = max(0.0, neto_factura - ya_pagado)
+        if pendiente_total <= 0.01:
+            return messagebox.showinfo(
+                "Aviso",
+                "Esta factura ya está pagada por completo"
+                + (f" (incluida la comisión interbancaria de {formatear_moneda(comision_factura)})."
+                   if comision_factura > 0 else "."))
 
         v_pago = ctk.CTkToplevel(self.main_root)
         v_pago.title("Registrar Nuevo Pago")
-        centrar_ventana(v_pago, self.main_root, 450, 480)
+        centrar_ventana(v_pago, self.main_root, 450, 520)
         v_pago.transient(self.main_root)
         v_pago.grab_set()
 
         ctk.CTkLabel(v_pago, text=f"Pago para: {proveedor}", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 5))
-        ctk.CTkLabel(v_pago, text=f"Saldo Pendiente: {formatear_moneda(saldo_actual)}", font=("Arial", 12)).pack(pady=(0, 15))
+        ctk.CTkLabel(v_pago, text=f"Saldo Pendiente: {formatear_moneda(saldo_actual)}", font=("Arial", 12)).pack(pady=(0, 2))
+        if comision_factura > 0:
+            ctk.CTkLabel(v_pago,
+                         text=(f"🔁 Factura cruzada: incluye la comisión interbancaria de "
+                               f"{formatear_moneda(comision_factura)} → total a pagar "
+                               f"{formatear_moneda(pendiente_total)}"),
+                         font=("Arial", 10, "bold"), text_color="#6c3483",
+                         wraplength=400, justify="center").pack(pady=(0, 10))
+        else:
+            ctk.CTkLabel(v_pago, text="", font=("Arial", 2)).pack(pady=(0, 10))
 
         f_form = ctk.CTkFrame(v_pago, fg_color="transparent")
         f_form.pack(fill="x", padx=20)
@@ -3623,7 +4353,8 @@ class CuentasPorPagarTab:
         ctk.CTkLabel(f_form, text="Monto a Pagar (S/.):", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_monto = ctk.CTkEntry(f_form)
         ent_monto.pack(fill="x", pady=(0, 10))
-        ent_monto.insert(0, str(saldo_actual)) 
+        # En una factura cruzada con comisión se propone el total: factura + comisión.
+        ent_monto.insert(0, f"{pendiente_total:.2f}")
 
         ctk.CTkLabel(f_form, text="Fecha del Pago:", font=("Arial", 11, "bold")).pack(anchor="w")
         f_fecha_pago = ctk.CTkFrame(f_form, fg_color="transparent")
@@ -3633,9 +4364,11 @@ class CuentasPorPagarTab:
         ent_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
         ctk.CTkButton(f_fecha_pago, text="📅", width=40, fg_color="#1f538d", command=lambda: CalendarioNativo(v_pago, ent_fecha)).pack(side="right", padx=(5, 0))
 
-        ctk.CTkLabel(f_form, text="N° de Operación (opcional):", font=("Arial", 11, "bold")).pack(anchor="w")
+        ctk.CTkLabel(f_form, text="N° de Operación Bancaria (obligatorio):", font=("Arial", 11, "bold")).pack(anchor="w")
         ent_operacion = ctk.CTkEntry(f_form, placeholder_text="Ej.: 00123456 / constancia de la transferencia")
-        ent_operacion.pack(fill="x", pady=(0, 10))
+        ent_operacion.pack(fill="x", pady=(0, 2))
+        ctk.CTkLabel(f_form, text="Se exige el N° de operación del banco. Solo se omite si el pago es en Efectivo / Caja Chica.",
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d", wraplength=400, justify="left").pack(anchor="w", pady=(0, 10))
 
         def procesar_pago(event=None):
             try:
@@ -3645,12 +4378,27 @@ class CuentasPorPagarTab:
 
             if monto_val <= 0:
                 return messagebox.showerror("Error", "El monto debe ser mayor a 0.", parent=v_pago)
-            if monto_val > (saldo_actual + 0.01):
-                return messagebox.showerror("Error", "El monto supera el saldo pendiente.", parent=v_pago)
+            # Se admite hasta el pendiente total (saldo de la factura + comisión interbancaria)
+            if monto_val > (pendiente_total + 0.01):
+                mensaje = "El monto supera el saldo pendiente."
+                if comision_factura > 0:
+                    mensaje += (f"\n\nEsta factura cruzada incluye la comisión interbancaria de "
+                                f"{formatear_moneda(comision_factura)}: el máximo a pagar es "
+                                f"{formatear_moneda(pendiente_total)}.")
+                return messagebox.showerror("Error", mensaje, parent=v_pago)
 
             fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
             cuenta_val = cmb_cuenta.get().strip()
-            operacion_val = ent_operacion.get().strip()
+
+            # 🏦 El N° de operación bancaria es OBLIGATORIO (en efectivo/caja chica se guarda "EFECTIVO")
+            operacion_val = validar_operacion_bancaria(ent_operacion.get(), cuenta_val)
+            if operacion_val is None:
+                ent_operacion.focus()
+                return messagebox.showerror("Falta el N° de Operación",
+                                            "Ingrese el N° de Operación Bancaria de este pago.\n\n"
+                                            "Si el pago fue en efectivo o con caja chica, seleccione esa cuenta en "
+                                            "'Cuenta Origen / Método'.",
+                                            parent=v_pago)
 
             # Cerrar la ventana modal y abrir el diálogo de archivo en el SIGUIENTE
             # ciclo del bucle de eventos. En macOS, invocar el diálogo nativo de
@@ -3835,9 +4583,11 @@ class CuentasPorPagarTab:
             ent_mod_fecha.insert(0, str(fecha_actual) if fecha_actual else datetime.now().strftime("%d/%m/%Y"))
             ctk.CTkButton(f_fecha_mod, text="📅", width=40, fg_color="#1f538d", command=lambda: CalendarioNativo(v_mod_pago, ent_mod_fecha)).pack(side="right", padx=(5, 0))
 
-            ctk.CTkLabel(f_form, text="N° de Operación (opcional):", font=("Arial", 11, "bold")).pack(anchor="w")
-            ent_mod_oper = ctk.CTkEntry(f_form)
-            ent_mod_oper.pack(fill="x", pady=(0, 10))
+            ctk.CTkLabel(f_form, text="N° de Operación Bancaria (obligatorio):", font=("Arial", 11, "bold")).pack(anchor="w")
+            ent_mod_oper = ctk.CTkEntry(f_form, placeholder_text="Ej.: 00123456")
+            ent_mod_oper.pack(fill="x", pady=(0, 2))
+            ctk.CTkLabel(f_form, text="Obligatorio en pagos bancarios; en Efectivo / Caja Chica se guarda \"EFECTIVO\".",
+                         font=("Arial", 9, "italic"), text_color="#7f8c8d", wraplength=400, justify="left").pack(anchor="w", pady=(0, 10))
             if operacion_actual: ent_mod_oper.insert(0, str(operacion_actual))
 
             def guardar_mod(event=None):
@@ -3866,7 +4616,15 @@ class CuentasPorPagarTab:
                 else:
                     nueva_fecha = ent_mod_fecha.get().strip() or fecha_actual
                     nueva_cuenta = ent_mod_cuenta.get().strip()
-                    nueva_oper = ent_mod_oper.get().strip()
+
+                    # 🏦 El N° de operación bancaria es OBLIGATORIO (efectivo/caja chica => "EFECTIVO")
+                    nueva_oper = validar_operacion_bancaria(ent_mod_oper.get(), nueva_cuenta)
+                    if nueva_oper is None:
+                        ent_mod_oper.focus()
+                        return messagebox.showerror("Falta el N° de Operación",
+                                                    "Ingrese el N° de Operación Bancaria del pago.\n\n"
+                                                    "Si el pago fue en efectivo o con caja chica, seleccione esa cuenta.",
+                                                    parent=v_mod_pago)
                     conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("UPDATE pagos_comprobantes SET monto_pagado = %s, fecha_pago = %s, cuenta_origen = %s, numero_operacion = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, nueva_oper, id_pago))
                     conn.commit(); liberar_conexion(conn)

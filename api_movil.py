@@ -5,14 +5,51 @@ import os
 import json
 import re
 from datetime import datetime
-from conexion import conectar_db, liberar_conexion
 from google import genai
+from google.genai import types
+from conexion import conectar_db, liberar_conexion
 
-# --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL ---
-# La API key se lee de la variable de entorno GEMINI_API_KEY (ya no va en el código).
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+# --- CONFIGURACIÓN DE LA IA (GOOGLE GEMINI) PARA OCR DE TICKETS ---
+# Clave GRATIS de Google AI Studio -> variable de entorno GEMINI_API_KEY en Render.
+# https://aistudio.google.com/apikey
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # ---------------------------------------------------
+
+
+def _a_float(v):
+    """Convierte a float de forma segura (tolera S/, $, espacios y coma decimal)."""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace("S/", "").replace("s/", "").replace("$", "").replace(" ", "")
+    s = s.replace(",", ".")
+    m = re.search(r'-?\d+(\.\d+)?', s)
+    return float(m.group(0)) if m else 0.0
+
+
+def _preprocesar_imagen(foto_bytes):
+    """Prepara la foto para el OCR: redimensiona, escala de grises y realza contraste.
+    Mejora mucho la lectura de tickets térmicos (desvanecidos, pequeños, torcidos)."""
+    try:
+        from PIL import Image, ImageEnhance, ImageOps
+        import io
+        img = Image.open(io.BytesIO(foto_bytes))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        max_dim = 1280
+        w, h = img.size
+        if max(w, h) > max_dim:
+            escala = max_dim / max(w, h)
+            img = img.resize((int(w * escala), int(h * escala)), Image.LANCZOS)
+        img = ImageOps.grayscale(img)
+        img = ImageEnhance.Contrast(img).enhance(2.0)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return foto_bytes
+
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
@@ -41,59 +78,100 @@ async def subir_ticket_grifo(
         proveedor_ia = "GRIFO (Desde App)"
         ruc_ia = ""
         direccion_ia = ""
+        fecha_ticket = ""
+        hora_ticket = ""
+        ocr_ok = False
+        error_ia = ""
         
         try:
             if cliente_ia is None:
                 raise ValueError("GEMINI_API_KEY no configurada en el servidor")
             print(f"🤖 IA Analizando el ticket de la placa {placa}...")
             
-            # Pasamos la imagen directamente sin guardarla en disco
-            archivo_ia = {'mime_type': foto.content_type, 'data': foto_bytes}
+            # Preprocesamos la foto (resize + contraste) y se la pasamos a la IA.
+            foto_ocr = _preprocesar_imagen(foto_bytes)
+            archivo_ia = types.Part.from_bytes(data=foto_ocr, mime_type='image/jpeg')
             
             prompt = """
-            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Bajo ninguna circunstancia copies los datos de ejemplo. Extrae la información en formato JSON estricto:
-            - "numero_documento": (El número de serie y correlativo exacto impreso, ej. F001-00012345)
-            - "subtotal": (solo el número decimal de las operaciones gravadas o subtotal, ej. 84.75)
-            - "igv": (solo el número decimal del IGV o impuesto, ej. 15.25)
-            - "total": (solo el número decimal del importe total, ej. 100.00)
-            - "tipo_combustible": (ej. Diesel, Gasohol 95)
-            - "cantidad": (ej. 10.500 GAL)
-            - "proveedor": (El nombre del establecimiento comercial)
-            - "ruc": (Los 11 dígitos del RUC, ej. 20123456789)
-            - "direccion": (La dirección del comprobante)
+            Eres un lector OCR de boletas/facturas de combustible (grifo). La foto puede ser un ticket térmico pequeño, borroso o torcido. Devuelve SOLO un JSON válido, sin texto adicional, con estas claves exactas:
+            - "numero_documento": serie y correlativo (ej. "F531-00129762"). Si no se ve, "".
+            - "fecha": fecha en DD/MM/YYYY. Si no se ve, "".
+            - "hora": hora en HH:MM. Si no se ve, "".
+            - "proveedor": razón social o nombre del establecimiento. Si no se ve, "".
+            - "ruc": exactamente 11 dígitos del RUC. Si no se ve o no son 11 dígitos, "".
+            - "direccion": dirección del establecimiento. Si no se ve, "".
+            - "tipo_combustible": ej. "Gasohol Premium", "Diesel", "GLP". Si no se ve, "".
+            - "cantidad": cantidad con unidad (ej. "4.002 GAL"). Si no se ve, "".
+            - "subtotal": importe sin IGV, número con punto decimal (ej. 84.75). Si no se ve, 0.
+            - "igv": importe del IGV (ej. 15.25). Si no se ve, 0.
+            - "total": importe total / gran total (ej. 100.00). Si no se ve, 0.
+            Reglas: NO inventes datos. Montos como números con punto decimal, sin símbolo de moneda ni comas. Si un campo no se ve, devuélvelo vacío o 0.
             """
             
-            respuesta = cliente_ia.models.generate_content(
-                model='gemini-3.5-flash',
-                contents=[archivo_ia, prompt]
-            )
+            # Llamada única y ligera: un solo modelo, un solo intento, sin esperas.
+            texto_ia = ""
+            try:
+                print("🤖 IA leyendo el ticket con gemini-3.5-flash-lite...")
+                respuesta = cliente_ia.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=[prompt, archivo_ia],
+                )
+                texto_ia = (respuesta.text or "").strip()
+            except Exception as e:
+                error_ia = str(e)
+                print(f"⚠️ Error IA: {e}")
+            if not texto_ia:
+                raise ValueError(f"La IA no devolvió texto. Error: {error_ia[:300]}")
             
-            match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
+            match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
             if match:
-                datos_ia = json.loads(match.group(0))
-                numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
-                subtotal_monto = float(datos_ia.get("subtotal", 0.0))
-                igv_monto = float(datos_ia.get("igv", 0.0))
-                total_monto = float(datos_ia.get("total", 0.0))
-                tipo_combustible = datos_ia.get("tipo_combustible", "NO INDICA")
-                cantidad_combustible = datos_ia.get("cantidad", "0")
-                proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
-                ruc_ia = datos_ia.get("ruc", "")
-                direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
+                try:
+                    datos_ia = json.loads(match.group(0))
+                except Exception as e:
+                    print(f"⚠️ JSON inválido devuelto por IA: {match.group(0)[:500]}")
+                    raise ValueError(f"La IA devolvió un JSON inválido: {e}")
+                numero_doc = str(datos_ia.get("numero_documento") or "POR-ASIGNAR")
+                fecha_ticket = str(datos_ia.get("fecha") or "").strip()
+                hora_ticket = str(datos_ia.get("hora") or "").strip()
+                subtotal_monto = _a_float(datos_ia.get("subtotal"))
+                igv_monto = _a_float(datos_ia.get("igv"))
+                total_monto = _a_float(datos_ia.get("total"))
+                tipo_combustible = str(datos_ia.get("tipo_combustible") or "NO INDICA")
+                cantidad_combustible = str(datos_ia.get("cantidad") or "0")
+                proveedor_ia = str(datos_ia.get("proveedor") or "GRIFO (Desde App)").upper()
+                ruc_ia = str(datos_ia.get("ruc") or "")
+                direccion_ia = str(datos_ia.get("direccion") or "Dirección no indicada")
                 
                 # Respaldo matemático
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
+                ocr_ok = True
             else:
-                raise ValueError("No JSON found")
+                print(f"⚠️ IA no devolvió JSON. Texto recibido: {texto_ia[:500]}")
+                raise ValueError("La IA no devolvió JSON válido")
             
         except Exception as e:
-            print(f"⚠️ Error IA: {e}")
+            error_ia = str(e)
+            print(f"⚠️ Error IA: {error_ia}")
 
         # 3. GUARDAR EN LA BASE DE DATOS (SUPABASE)
         cursor = conn.cursor()
+
+        # Cuenta bancaria asignada para pagos del App Grifo (Configuración General).
+        cuenta_grifo = ""
+        try:
+            cursor.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
+            cursor.execute("ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''")
+            cursor.execute("SELECT valor FROM config_general WHERE clave = 'cuenta_grifo_pagos'")
+            fila_cfg = cursor.fetchone()
+            if fila_cfg:
+                cuenta_grifo = (fila_cfg[0] or "").strip()
+        except Exception:
+            conn.rollback()
+            cuenta_grifo = ""
+        conn.commit()
         
         # Proveedores automáticos
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
@@ -107,58 +185,67 @@ async def subir_ticket_grifo(
                     conn.commit()
             except Exception: conn.rollback()
 
-        # Candado Anti-duplicados
+        # Candado Anti-duplicados: se compara el N° de documento sin espacios ni
+        # mayúsculas y SIN exigir que el nombre del proveedor coincida, porque la IA
+        # puede leer el mismo ticket con dos nombres ("COESTI S.A" / "COESTI S.A E/S ORRANTIA").
         if numero_doc and numero_doc not in ["POR-ASIGNAR", "ERROR-LECTURA"]:
-            cursor.execute("SELECT COUNT(*) FROM facturas_recibidas WHERE numero_documento = %s AND proveedor = %s", (numero_doc, proveedor_ia))
-            if cursor.fetchone()[0] > 0:
+            cursor.execute("""
+                SELECT proveedor, fecha FROM facturas_recibidas
+                WHERE UPPER(REPLACE(TRIM(numero_documento), ' ', '')) = UPPER(REPLACE(TRIM(%s), ' ', ''))
+                ORDER BY id DESC LIMIT 1
+            """, (numero_doc,))
+            previo = cursor.fetchone()
+            if previo:
                 liberar_conexion(conn)
-                return {"status": "warning", "mensaje": f"El ticket {numero_doc} ya está registrado."}
+                return {"status": "warning",
+                        "mensaje": f"El ticket {numero_doc} ya está registrado (proveedor: {previo[0]}, fecha: {previo[1]})."}
 
         cursor.execute("UPDATE flota_vehiculos SET kilometraje = %s WHERE placa = %s", (kilometraje, placa))
 
-        # Crear columnas dinámicas (Incluyendo el almacén temporal de la foto "imagen_base64")
-        for col in ["kilometraje", "cantidad_combustible", "ruc"]:
+        # Crear columnas dinámicas (incluido el almacén temporal de la foto "imagen_base64").
+        # "ADD COLUMN IF NOT EXISTS" evita errores y rollbacks en cada envío (más rápido).
+        for col in ["kilometraje", "cantidad_combustible", "ruc", "hora", "imagen_base64"]:
             try:
-                cursor.execute(f"ALTER TABLE facturas_recibidas ADD COLUMN {col} VARCHAR(50);")
-                conn.commit()
-            except Exception: conn.rollback() 
-            
-        try:
-            cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN imagen_base64 TEXT;")
-            conn.commit()
-        except Exception: conn.rollback() 
+                cursor.execute(f"ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS {col} TEXT;")
+            except Exception:
+                conn.rollback()
+        conn.commit()
 
-        descripcion_final = f"Combustible: {tipo_combustible}"
-        fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+        # El detalle va en la columna "descripcion": tipo de combustible + hora
+        if hora_ticket:
+            descripcion_final = f"{tipo_combustible} | Hora: {hora_ticket}"
+        else:
+            descripcion_final = tipo_combustible
+        fecha_hoy = fecha_ticket or datetime.now().strftime("%d/%m/%Y")
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
         # INSERTAMOS INDICANDO QUE EL ARCHIVO ESTÁ "PENDIENTE_DESCARGA" Y METEMOS LA FOTO EN LA NUBE
         cursor.execute("""
             INSERT INTO facturas_recibidas (
-                tipo_documento, numero_documento, fecha, proveedor, 
+                tipo_documento, numero_documento, fecha, hora, proveedor, 
                 descripcion, evento_asociado, subtotal, impuesto, 
                 total, archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, imagen_base64
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
         """, (
-            tipo_doc_final, numero_doc, fecha_hoy, proveedor_ia, 
+            tipo_doc_final, numero_doc, fecha_hoy, hora_ticket, proveedor_ia, 
             descripcion_final, placa, subtotal_monto, igv_monto, total_monto, "PENDIENTE_DESCARGA", "Combustible y Peajes", kilometraje, cantidad_combustible, ruc_ia, foto_b64
         ))
-
-        cursor.execute("SELECT id FROM facturas_recibidas ORDER BY id DESC LIMIT 1")
         id_factura = cursor.fetchone()[0]
 
         cursor.execute("""
             INSERT INTO pagos_comprobantes (
                 id_factura, monto_pagado, archivo_ruta, proveedor_nombre, 
-                fecha_pago, categoria_suministro, codigo_cotizacion
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             id_factura, total_monto, "PENDIENTE_DESCARGA", 
-            proveedor_ia, fecha_hoy, "Combustible y Peajes", numero_doc
+            proveedor_ia, fecha_hoy, "Combustible y Peajes", numero_doc, cuenta_grifo
         ))
 
         conn.commit()
-        return {"status": "success", "mensaje": "Ticket procesado y subido a la nube."}
+        if ocr_ok:
+            return {"status": "success", "mensaje": "Ticket procesado y subido a la nube."}
+        return {"status": "warning", "mensaje": "Ticket guardado, pero la IA no pudo leerlo (datos incompletos).", "detalle_ia": error_ia[:300]}
 
     except Exception as e:
         conn.rollback()

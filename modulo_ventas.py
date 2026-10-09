@@ -1042,7 +1042,9 @@ class FacturasEmitidasTab:
         self.tabla.column("num", width=35, anchor="center")
         self.tabla.column("id", width=0, stretch=tk.NO)
         self.tabla.column("fecha", width=75, anchor="center")
-        self.tabla.column("nro_doc", width=90, anchor="center")
+        # 📏 Ancho suficiente para el N° de documento completo: "F001-00000159" mide
+        # 89 px y con 90 px se recortaba el último dígito (parecían números repetidos).
+        self.tabla.column("nro_doc", width=130, minwidth=120, stretch=False, anchor="w")
         self.tabla.column("cliente", width=120, anchor="w")
         self.tabla.column("concepto", width=140, anchor="w")
         self.tabla.column("neto", width=85, anchor="e")
@@ -2331,7 +2333,8 @@ class CuentasPorCobrarTab:
         self.tabla.column("num", width=40, anchor="center")
         self.tabla.column("id_factura", width=0, stretch=tk.NO) 
         self.tabla.column("fecha", width=80, anchor="center")
-        self.tabla.column("nro_doc", width=100, anchor="center")
+        # 📏 Ancho suficiente para el N° de documento completo (ver pestaña de facturas)
+        self.tabla.column("nro_doc", width=130, minwidth=120, stretch=False, anchor="w")
         self.tabla.column("cliente", width=140, anchor="w")
         self.tabla.column("concepto", width=150, anchor="w")
         self.tabla.column("neto_facturado", width=95, anchor="e")
@@ -3246,8 +3249,9 @@ class NotasCreditoTab:
         self.tabla.column("num", width=40, anchor="center")
         self.tabla.column("id_fac", width=0, stretch=tk.NO)
         self.tabla.column("fecha_orig", width=100, anchor="center")
-        self.tabla.column("doc_orig", width=100, anchor="center")
-        self.tabla.column("doc_nc", width=100, anchor="center")
+        # 📏 N° de documento (origen y nota de crédito) sin recortar el último dígito
+        self.tabla.column("doc_orig", width=130, minwidth=120, stretch=False, anchor="w")
+        self.tabla.column("doc_nc", width=130, minwidth=120, stretch=False, anchor="w")
         self.tabla.column("cliente", width=250, anchor="w")
         self.tabla.column("monto_anulado", width=110, anchor="e")
         self.tabla.column("estado", width=180, anchor="center")

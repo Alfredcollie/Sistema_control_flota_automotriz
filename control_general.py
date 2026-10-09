@@ -1260,7 +1260,10 @@ class ControlGeneralEventos:
         
         self.contenedor_central = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
         self.contenedor_central.pack(side="right", fill="both", expand=True)
-        
+
+        # 🪟 ESCRITORIO MULTIVENTANA: aquí se abren los módulos (varios a la vez)
+        self._construir_escritorio()
+
         frame_top_sidebar = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         frame_top_sidebar.pack(side="top", fill="x", pady=(10, 5))
         
@@ -1394,19 +1397,476 @@ class ControlGeneralEventos:
         lanzar_sync_background()
         self.root.after(600000, self.ciclo_sincronizacion_nube)
 
+    # =======================================================
+    # ESCRITORIO MULTIVENTANA (VARIOS MÓDULOS A LA VEZ)
+    # Cada módulo se abre en su propia ventana dentro del escritorio:
+    # se puede mover, redimensionar, minimizar (barra de tareas),
+    # maximizar y cerrar. La ventana que se abre queda al frente.
+    # =======================================================
+    def _construir_escritorio(self):
+        """Crea el escritorio (área de trabajo) y la barra de tareas."""
+        self.ventanas_modulos = {}
+        self._clave_activa = None
+        self._contador_cascada = 0
+        self._arrastre = None
+
+        # Barra de tareas: siempre visible al pie del área de trabajo
+        self.barra_tareas = ctk.CTkFrame(self.contenedor_central, height=34, corner_radius=0, fg_color="#1a252c")
+        self.barra_tareas.pack(side="bottom", fill="x")
+        self.barra_tareas.pack_propagate(False)
+
+        ctk.CTkLabel(self.barra_tareas, text="🗂️ Módulos abiertos:", font=("Arial", 10, "bold"),
+                     text_color="#bdc3c7").pack(side="left", padx=(10, 4))
+
+        self.frame_botones_tareas = ctk.CTkFrame(self.barra_tareas, fg_color="transparent")
+        self.frame_botones_tareas.pack(side="left", fill="both", expand=True, padx=(0, 10))
+
+        ctk.CTkButton(self.barra_tareas, text="🧹 Cerrar todos", width=110, height=24,
+                      font=("Arial", 10, "bold"), fg_color="#c0392b", hover_color="#922b21",
+                      command=self.cerrar_todas_las_ventanas).pack(side="right", padx=8, pady=5)
+
+        self._lbl_sin_ventanas = ctk.CTkLabel(self.frame_botones_tareas, text="(ninguno abierto)",
+                                              font=("Arial", 10, "italic"), text_color="#7f8c8d")
+        self._lbl_sin_ventanas.pack(side="left", padx=6)
+
+        # Escritorio: las ventanas de los módulos se colocan aquí con place()
+        self.escritorio = ctk.CTkFrame(self.contenedor_central, corner_radius=0, fg_color="#e9edf2")
+        self.escritorio.pack(side="top", fill="both", expand=True)
+        self.escritorio.bind("<Configure>", self._al_redimensionar_escritorio)
+
+        # Un clic en cualquier punto de una ventana la trae al frente
+        # (se engancha una sola vez aunque se reconstruya el dashboard)
+        try:
+            if not getattr(self.root, "_mdi_clic_enganchado", False):
+                self.root.bind_all("<Button-1>", self._traer_ventana_del_clic, add="+")
+                self.root._mdi_clic_enganchado = True
+        except Exception:
+            pass
+
+    def _preparar_contenedor_modulo(self, widget):
+        """Prepara el marco que recibe un módulo.
+
+        Algunos módulos llaman métodos propios de una ventana (title, geometry...)
+        sobre el contenedor que reciben. Como aquí el contenedor es un marco del
+        escritorio, esos métodos se dejan como "sin efecto" en vez de fallar.
+        """
+        def dummy(*args, **kwargs): pass
+        for metodo in ("title", "geometry", "resizable", "iconbitmap", "state",
+                       "attributes", "maxsize", "minsize", "deiconify", "withdraw"):
+            if not hasattr(widget, metodo):
+                try: setattr(widget, metodo, dummy)
+                except Exception: pass
+        return widget
+
+    def _titulo_modulo(self, clave, respaldo=""):
+        """Nombre visible del módulo (para la barra de título y la barra de tareas)."""
+        return self.modulos_sistema.get(clave) or respaldo or clave
+
     def limpiar_contenedor(self):
-        for widget in self.contenedor_central.winfo_children():
-            widget.destroy()
+        """Cierra todas las ventanas de módulos y deja el escritorio limpio."""
+        for clave in list(getattr(self, "ventanas_modulos", {}).keys()):
+            self.cerrar_ventana(clave)
+        # Compatibilidad: algunos módulos piden métodos de ventana al contenedor.
         def dummy(*args, **kwargs): pass
         if not hasattr(self.contenedor_central, 'title'): self.contenedor_central.title = dummy
         if not hasattr(self.contenedor_central, 'geometry'): self.contenedor_central.geometry = dummy
         if not hasattr(self.contenedor_central, 'resizable'): self.contenedor_central.resizable = dummy
         if not hasattr(self.contenedor_central, 'iconbitmap'): self.contenedor_central.iconbitmap = dummy
-            
+
+    def abrir_ventana_modulo(self, clave, titulo, constructor, ancho_rel=0.92, alto_rel=0.90):
+        """Abre un módulo en su propia ventana del escritorio.
+
+        Si el módulo ya está abierto, no se duplica: se restaura (si estaba
+        minimizado) y se trae al frente. Devuelve la instancia del módulo.
+        """
+        escritorio = getattr(self, "escritorio", None)
+        if escritorio is None or not escritorio.winfo_exists():
+            messagebox.showerror("Error", "El escritorio de módulos no está disponible.")
+            return None
+
+        info = self.ventanas_modulos.get(clave)
+        if info and info["contenedor"].winfo_exists():
+            self.restaurar_ventana(clave)
+            self._traer_al_frente(clave)
+            return info.get("app")
+
+        contenedor = ctk.CTkFrame(escritorio, corner_radius=8, fg_color="#ffffff",
+                                  border_width=2, border_color="#1f538d")
+        contenedor._clave_modulo = clave
+        # El tamaño de la ventana lo decide el escritorio (no el contenido), así se
+        # puede mover, redimensionar y maximizar con precisión.
+        try:
+            contenedor.pack_propagate(False)
+            contenedor.grid_propagate(False)
+        except Exception:
+            pass
+
+        self._preparar_contenedor_modulo(contenedor)
+
+        barra_titulo = ctk.CTkFrame(contenedor, height=30, corner_radius=6, fg_color="#1f538d")
+        barra_titulo.pack(fill="x", padx=2, pady=(2, 0))
+        barra_titulo.pack_propagate(False)
+
+        lbl_titulo = ctk.CTkLabel(barra_titulo, text=f" {titulo}", font=("Arial", 12, "bold"),
+                                  text_color="white", anchor="w")
+        lbl_titulo.pack(side="left", fill="x", expand=True, padx=(10, 0))
+
+        ctk.CTkButton(barra_titulo, text="✕", width=30, height=22, font=("Arial", 12, "bold"),
+                      fg_color="#c0392b", hover_color="#922b21",
+                      command=lambda k=clave: self.cerrar_ventana(k)).pack(side="right", padx=3, pady=4)
+        ctk.CTkButton(barra_titulo, text="□", width=30, height=22, font=("Arial", 12, "bold"),
+                      fg_color="#34495e", hover_color="#2c3e50",
+                      command=lambda k=clave: self.alternar_maximizar_ventana(k)).pack(side="right", padx=3, pady=4)
+        ctk.CTkButton(barra_titulo, text="—", width=30, height=22, font=("Arial", 12, "bold"),
+                      fg_color="#34495e", hover_color="#2c3e50",
+                      command=lambda k=clave: self.minimizar_ventana(k)).pack(side="right", padx=3, pady=4)
+
+        cuerpo = ctk.CTkFrame(contenedor, fg_color="transparent")
+        cuerpo.pack(fill="both", expand=True, padx=2, pady=2)
+        # El módulo recibe el marco del cuerpo: también se prepara por compatibilidad.
+        self._preparar_contenedor_modulo(cuerpo)
+
+        # Asa inferior derecha para redimensionar la ventana
+        asa = ctk.CTkFrame(contenedor, width=16, height=16, corner_radius=0, fg_color="#1f538d")
+        asa.place(relx=1.0, rely=1.0, anchor="se")
+        asa.bind("<ButtonPress-1>", lambda e, k=clave: self._iniciar_redimension(e, k))
+        asa.bind("<B1-Motion>", self._redimensionar_ventana)
+        asa.bind("<ButtonRelease-1>", self._terminar_arrastre)
+        try: asa.configure(cursor="size_nw_se")
+        except Exception: pass
+
+        # Arrastrar la ventana tomándola de su barra de título (doble clic = maximizar)
+        for widget_barra in (barra_titulo, lbl_titulo):
+            widget_barra.bind("<ButtonPress-1>", lambda e, k=clave: self._iniciar_arrastre(e, k))
+            widget_barra.bind("<B1-Motion>", self._arrastrar_ventana)
+            widget_barra.bind("<ButtonRelease-1>", self._terminar_arrastre)
+            widget_barra.bind("<Double-Button-1>", lambda e, k=clave: self.alternar_maximizar_ventana(k))
+
+        btn_tarea = ctk.CTkButton(self.frame_botones_tareas, text=titulo, height=24, width=180,
+                                  font=("Arial", 10, "bold"), fg_color="#34495e", hover_color="#2c3e50",
+                                  anchor="w", command=lambda k=clave: self.alternar_ventana(k))
+        btn_tarea.pack(side="left", padx=3, pady=5)
+
+        self.ventanas_modulos[clave] = {
+            "titulo": titulo, "contenedor": contenedor, "cuerpo": cuerpo,
+            "btn_tarea": btn_tarea, "app": None,
+            "minimizada": False, "maximizada": False, "geometria": None, "geometria_previa": None,
+        }
+        self._refrescar_barra_tareas()
+        self._colocar_ventana_inicial(clave, ancho_rel, alto_rel)
+        self._traer_al_frente(clave)
+
+        try:
+            app = constructor(cuerpo)
+        except Exception as e:
+            self.cerrar_ventana(clave)
+            messagebox.showerror("Error", f"Fallo al abrir el módulo:\n{e}")
+            return None
+        self.ventanas_modulos[clave]["app"] = app
+        return app
+
+    def _colocar_ventana_inicial(self, clave, ancho_rel=0.92, alto_rel=0.90):
+        """Coloca la ventana con un tamaño cómodo y en cascada."""
+        info = self.ventanas_modulos.get(clave)
+        if not info: return
+        try:
+            self.escritorio.update_idletasks()
+            ancho_total = max(500, self.escritorio.winfo_width())
+            alto_total = max(400, self.escritorio.winfo_height())
+            ancho = min(ancho_total, max(460, int(ancho_total * ancho_rel)))
+            alto = min(alto_total, max(340, int(alto_total * alto_rel)))
+            desfase = (self._contador_cascada % 6) * 36
+            self._contador_cascada += 1
+            x = min(desfase, max(0, ancho_total - ancho))
+            y = min(desfase, max(0, alto_total - alto))
+            self._ubicar_ventana(info, x, y, ancho, alto)
+            info["maximizada"] = False
+        except Exception as e:
+            print("Aviso - colocando ventana de módulo:", e)
+
+    def _geometria_actual(self, info):
+        """Posición y tamaño actuales de la ventana (o None si no se pudo leer)."""
+        try:
+            contenedor = info["contenedor"]
+            datos = contenedor.place_info()
+            ancho = int(float(datos.get("width") or 0)) or contenedor.winfo_width()
+            alto = int(float(datos.get("height") or 0)) or contenedor.winfo_height()
+            return {"x": int(float(datos.get("x") or 0)), "y": int(float(datos.get("y") or 0)),
+                    "ancho": int(ancho), "alto": int(alto)}
+        except Exception:
+            return None
+
+    def _ubicar_ventana(self, info, x, y, ancho, alto):
+        """Coloca la ventana en el escritorio y recuerda su geometría.
+
+        CustomTkinter exige que el ancho/alto se configuren en el widget y no en
+        place(), por eso se separa: primero el tamaño, luego la posición.
+        """
+        ancho = max(300, int(ancho))
+        alto = max(200, int(alto))
+        try:
+            info["contenedor"].configure(width=ancho, height=alto)
+        except Exception:
+            pass
+        info["contenedor"].place(x=int(x), y=int(y))
+        info["geometria"] = {"x": int(x), "y": int(y), "ancho": ancho, "alto": alto}
+
+    def _traer_al_frente(self, clave):
+        """La ventana indicada pasa al frente de todas las demás."""
+        info = self.ventanas_modulos.get(clave)
+        if not info: return
+        try:
+            info["contenedor"].lift()
+        except Exception:
+            pass
+        self._clave_activa = clave
+        self._refrescar_barra_tareas()
+        self._actualizar_bienvenida()
+
+    def _traer_ventana_del_clic(self, evento=None):
+        """Clic dentro de una ventana de módulo => esa ventana pasa al frente."""
+        try:
+            widget = getattr(evento, "widget", None)
+            escritorio = getattr(self, "escritorio", None)
+            if widget is None or escritorio is None or not self.ventanas_modulos:
+                return
+            actual = widget
+            while actual is not None:
+                if getattr(actual, "master", None) is escritorio:
+                    break
+                actual = getattr(actual, "master", None)
+            if actual is None or actual is widget:
+                return
+            clave = getattr(actual, "_clave_modulo", None)
+            if not clave or clave == self._clave_activa:
+                return
+            if self.ventanas_modulos.get(clave, {}).get("minimizada"):
+                return
+            self._traer_al_frente(clave)
+        except Exception:
+            pass
+
+    def minimizar_ventana(self, clave):
+        """Oculta la ventana y la deja en la barra de tareas."""
+        info = self.ventanas_modulos.get(clave)
+        if not info or info["minimizada"]: return
+        geo = self._geometria_actual(info)
+        if geo: info["geometria"] = geo
+        try:
+            info["contenedor"].place_forget()
+        except Exception:
+            pass
+        info["minimizada"] = True
+        if self._clave_activa == clave:
+            self._clave_activa = None
+        self._refrescar_barra_tareas()
+        self._actualizar_bienvenida()
+
+    def restaurar_ventana(self, clave):
+        """Vuelve a mostrar una ventana minimizada en su sitio."""
+        info = self.ventanas_modulos.get(clave)
+        if not info or not info["minimizada"]: return
+        geo = info["geometria"] or {}
+        try:
+            self.escritorio.update_idletasks()
+            ancho_total = max(500, self.escritorio.winfo_width())
+            alto_total = max(400, self.escritorio.winfo_height())
+            ancho = min(int(geo.get("ancho") or ancho_total), ancho_total)
+            alto = min(int(geo.get("alto") or alto_total), alto_total)
+            x = max(0, min(int(geo.get("x") or 0), max(0, ancho_total - ancho)))
+            y = max(0, min(int(geo.get("y") or 0), max(0, alto_total - alto)))
+            self._ubicar_ventana(info, x, y, ancho, alto)
+        except Exception as e:
+            print("Aviso - restaurando ventana de módulo:", e)
+        info["minimizada"] = False
+        self._refrescar_barra_tareas()
+        self._actualizar_bienvenida()
+
+    def alternar_ventana(self, clave):
+        """Botón de la barra de tareas: restaura, trae al frente o minimiza."""
+        info = self.ventanas_modulos.get(clave)
+        if not info: return
+        if info["minimizada"]:
+            self.restaurar_ventana(clave)
+            self._traer_al_frente(clave)
+        elif self._clave_activa == clave:
+            self.minimizar_ventana(clave)
+        else:
+            self._traer_al_frente(clave)
+
+    def alternar_maximizar_ventana(self, clave):
+        """Maximiza la ventana dentro del escritorio o la devuelve a su tamaño."""
+        info = self.ventanas_modulos.get(clave)
+        if not info or info["minimizada"]: return
+        try:
+            if info["maximizada"]:
+                # Vuelve al tamaño y la posición que tenía antes de maximizarse
+                geo = info.get("geometria_previa") or info["geometria"] or {}
+                self._ubicar_ventana(info, geo.get("x") or 0, geo.get("y") or 0,
+                                     geo.get("ancho") or 800, geo.get("alto") or 600)
+                info["geometria_previa"] = None
+                info["maximizada"] = False
+            else:
+                info["geometria_previa"] = self._geometria_actual(info) or info["geometria"]
+                self.escritorio.update_idletasks()
+                self._ubicar_ventana(info, 0, 0, self.escritorio.winfo_width(), self.escritorio.winfo_height())
+                info["maximizada"] = True
+        except Exception as e:
+            print("Aviso - maximizando ventana de módulo:", e)
+        self._traer_al_frente(clave)
+
+    def cerrar_ventana(self, clave):
+        """Cierra la ventana del módulo (y libera sus recursos de interfaz)."""
+        info = self.ventanas_modulos.pop(clave, None)
+        if not info: return
+        # Antes de destruir la ventana se anulan sus temporizadores: así ningún
+        # sondeo en segundo plano intenta pintar sobre widgets que ya no existen.
+        for marco in (info.get("contenedor"), info.get("cuerpo")):
+            if marco is None: continue
+            try:
+                marco.after = lambda *a, **k: None
+                marco.after_cancel = lambda *a, **k: None
+            except Exception:
+                pass
+        try: info["btn_tarea"].destroy()
+        except Exception: pass
+        try: info["contenedor"].destroy()
+        except Exception: pass
+        if self._clave_activa == clave:
+            self._clave_activa = None
+            for otra, datos in reversed(list(self.ventanas_modulos.items())):
+                if not datos["minimizada"]:
+                    self._traer_al_frente(otra)
+                    break
+        self._refrescar_barra_tareas()
+        self._actualizar_bienvenida()
+
+    def cerrar_todas_las_ventanas(self):
+        for clave in list(getattr(self, "ventanas_modulos", {}).keys()):
+            self.cerrar_ventana(clave)
+
+    def _refrescar_barra_tareas(self):
+        """Pinta los botones de la barra de tareas (ventana activa / minimizada)."""
+        try:
+            if not hasattr(self, "frame_botones_tareas"): return
+            if hasattr(self, "_lbl_sin_ventanas"):
+                if self.ventanas_modulos:
+                    self._lbl_sin_ventanas.pack_forget()
+                elif not self._lbl_sin_ventanas.winfo_ismapped():
+                    self._lbl_sin_ventanas.pack(side="left", padx=6)
+            for clave, info in self.ventanas_modulos.items():
+                btn = info.get("btn_tarea")
+                if btn is None: continue
+                if info["minimizada"]:
+                    btn.configure(fg_color="#7f8c8d", hover_color="#606b6b", text=f"🗗 {info['titulo']}")
+                elif clave == self._clave_activa:
+                    btn.configure(fg_color="#1f538d", hover_color="#163b65", text=info["titulo"])
+                else:
+                    btn.configure(fg_color="#34495e", hover_color="#2c3e50", text=info["titulo"])
+        except Exception:
+            pass
+
+    def _actualizar_bienvenida(self):
+        """La pantalla de bienvenida solo se ve cuando no hay ventanas a la vista."""
+        bienvenida = getattr(self, "frame_bienvenida", None)
+        if bienvenida is None: return
+        try:
+            if not bienvenida.winfo_exists(): return
+            hay_visible = any((not d["minimizada"]) for d in self.ventanas_modulos.values())
+            if hay_visible:
+                if bienvenida.winfo_ismapped():
+                    bienvenida.pack_forget()
+            elif not bienvenida.winfo_ismapped():
+                bienvenida.pack(fill="both", expand=True, padx=20, pady=20)
+                for datos in self.ventanas_modulos.values():
+                    if not datos["minimizada"]:
+                        datos["contenedor"].lift()
+        except Exception:
+            pass
+
+    def _al_redimensionar_escritorio(self, evento=None):
+        """Si cambia el tamaño del escritorio, las ventanas maximizadas se reajustan."""
+        try:
+            if evento is not None and getattr(evento, "widget", None) is not self.escritorio:
+                return
+            ancho = self.escritorio.winfo_width()
+            alto = self.escritorio.winfo_height()
+            for info in self.ventanas_modulos.values():
+                if info["maximizada"] and not info["minimizada"]:
+                    self._ubicar_ventana(info, 0, 0, ancho, alto)
+        except Exception:
+            pass
+
+    def _iniciar_arrastre(self, evento, clave):
+        info = self.ventanas_modulos.get(clave)
+        if not info or info["minimizada"] or info["maximizada"]: return
+        geo = self._geometria_actual(info) or {"x": 0, "y": 0, "ancho": 800, "alto": 600}
+        self._arrastre = {"clave": clave, "modo": "mover", "x0": evento.x_root, "y0": evento.y_root,
+                          "x": geo["x"], "y": geo["y"], "ancho": geo["ancho"], "alto": geo["alto"]}
+        try: info["contenedor"].lift()
+        except Exception: pass
+        self._clave_activa = clave
+        self._refrescar_barra_tareas()
+
+    def _arrastrar_ventana(self, evento):
+        est = self._arrastre
+        if not est or est.get("modo") != "mover": return
+        info = self.ventanas_modulos.get(est["clave"])
+        if not info: return
+        try:
+            ancho_total = self.escritorio.winfo_width()
+            alto_total = self.escritorio.winfo_height()
+            nuevo_x = est["x"] + (evento.x_root - est["x0"])
+            nuevo_y = est["y"] + (evento.y_root - est["y0"])
+            nuevo_x = max(120 - est["ancho"], min(nuevo_x, max(0, ancho_total - 120)))
+            nuevo_y = max(0, min(nuevo_y, max(0, alto_total - 40)))
+            info["contenedor"].place(x=nuevo_x, y=nuevo_y)
+        except Exception:
+            pass
+
+    def _iniciar_redimension(self, evento, clave):
+        info = self.ventanas_modulos.get(clave)
+        if not info or info["minimizada"]: return
+        geo = self._geometria_actual(info) or {"x": 0, "y": 0, "ancho": 800, "alto": 600}
+        self._arrastre = {"clave": clave, "modo": "redimensionar", "x0": evento.x_root, "y0": evento.y_root,
+                          "x": geo["x"], "y": geo["y"], "ancho": geo["ancho"], "alto": geo["alto"]}
+        try: info["contenedor"].lift()
+        except Exception: pass
+
+    def _redimensionar_ventana(self, evento):
+        est = self._arrastre
+        if not est or est.get("modo") != "redimensionar": return
+        info = self.ventanas_modulos.get(est["clave"])
+        if not info: return
+        try:
+            ancho_total = self.escritorio.winfo_width()
+            alto_total = self.escritorio.winfo_height()
+            nuevo_ancho = est["ancho"] + (evento.x_root - est["x0"])
+            nuevo_alto = est["alto"] + (evento.y_root - est["y0"])
+            nuevo_ancho = max(460, min(nuevo_ancho, max(460, ancho_total - est["x"])))
+            nuevo_alto = max(340, min(nuevo_alto, max(340, alto_total - est["y"])))
+            info["contenedor"].configure(width=int(nuevo_ancho), height=int(nuevo_alto))
+        except Exception:
+            pass
+
+    def _terminar_arrastre(self, evento=None):
+        est = self._arrastre
+        self._arrastre = None
+        if not est: return
+        info = self.ventanas_modulos.get(est["clave"])
+        if not info: return
+        geo = self._geometria_actual(info)
+        if geo: info["geometria"] = geo
+
     def mostrar_pantalla_bienvenida(self):
-        self.limpiar_contenedor()
-        f_dashboard = ctk.CTkScrollableFrame(self.contenedor_central, fg_color="transparent")
+        anterior = getattr(self, "frame_bienvenida", None)
+        if anterior is not None:
+            try: anterior.destroy()
+            except Exception: pass
+        self.frame_bienvenida = ctk.CTkScrollableFrame(self.escritorio, fg_color="transparent")
+        f_dashboard = self.frame_bienvenida
         f_dashboard.pack(fill="both", expand=True, padx=20, pady=20)
+        self._actualizar_bienvenida()
         
         f_header = ctk.CTkFrame(f_dashboard, fg_color="transparent")
         f_header.pack(fill="x", pady=(0, 20))
@@ -1669,174 +2129,164 @@ class ControlGeneralEventos:
     # =======================================================
     def abrir_modulo_ventas(self):
         if not self.tiene_permiso("ventas"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import modulo_ventas
             importlib.reload(modulo_ventas)
-            app = modulo_ventas.ModuloVentasApp(self.contenedor_central)
+            app = modulo_ventas.ModuloVentasApp(cuerpo)
             app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+            return app
+        self.abrir_ventana_modulo("ventas", self._titulo_modulo("ventas"), construir)
 
     def abrir_modulo_compras(self):
         if not self.tiene_permiso("compras"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import modulo_compras
             importlib.reload(modulo_compras)
-            app = modulo_compras.ModuloComprasApp(self.contenedor_central)
+            app = modulo_compras.ModuloComprasApp(cuerpo)
             app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+            return app
+        self.abrir_ventana_modulo("compras", self._titulo_modulo("compras"), construir)
 
     def abrir_modulo_ordenes(self):
         if not self.tiene_permiso("ordenes"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import ordenes_compra
             importlib.reload(ordenes_compra)
-            app = ordenes_compra.OrdenesCompraApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+            return ordenes_compra.OrdenesCompraApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("ordenes", self._titulo_modulo("ordenes"), construir)
 
     def abrir_modulo_ordenes_cliente(self):
         if not self.tiene_permiso("ordenes_cliente"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import ordenes_compra_cliente
             importlib.reload(ordenes_compra_cliente)
-            app = ordenes_compra_cliente.OrdenesCompraClienteApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+            return ordenes_compra_cliente.OrdenesCompraClienteApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("ordenes_cliente", self._titulo_modulo("ordenes_cliente"), construir)
 
     def abrir_estadisticas_financiera(self):
         if not self.tiene_permiso("dashboard"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import estadisticas_financiera
             importlib.reload(estadisticas_financiera)
-            estadisticas_financiera.EstadisticasFinancieraApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return estadisticas_financiera.EstadisticasFinancieraApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("dashboard", self._titulo_modulo("dashboard"), construir)
 
     def abrir_modulo_banco(self):
         if not self.tiene_permiso("banco"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import modulo_banco
             importlib.reload(modulo_banco)
-            app = modulo_banco.ModuloBancoApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Banco:\n{e}")
+            return modulo_banco.ModuloBancoApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("banco", self._titulo_modulo("banco"), construir)
 
     def abrir_modulo_nomina(self):
         if not self.tiene_permiso("nomina"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import modulo_nomina
             importlib.reload(modulo_nomina)
-            app = modulo_nomina.ModuloNominaApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Nómina:\n{e}")
+            return modulo_nomina.ModuloNominaApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("nomina", self._titulo_modulo("nomina"), construir)
 
     def abrir_calculo_impuestos(self):
         if not self.tiene_permiso("impuestos"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import calculo_impuestos
             importlib.reload(calculo_impuestos)
-            calculo_impuestos.CalculoImpuestosApp(self.contenedor_central)
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return calculo_impuestos.CalculoImpuestosApp(cuerpo)
+        self.abrir_ventana_modulo("impuestos", self._titulo_modulo("impuestos"), construir)
 
     def abrir_modulo_cobranza(self):
         if not self.tiene_permiso("cobranza"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import calculo_cobranza
             importlib.reload(calculo_cobranza)
-            app = calculo_cobranza.CalculoCobranzaApp(self.contenedor_central)
+            app = calculo_cobranza.CalculoCobranzaApp(cuerpo)
             app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return app
+        self.abrir_ventana_modulo("cobranza", self._titulo_modulo("cobranza"), construir)
 
     def abrir_modulo_proveedores(self):
         if not self.tiene_permiso("proveedores"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import proveedores
             importlib.reload(proveedores)
-            app = proveedores.SistemaProveedores(self.contenedor_central)
+            app = proveedores.SistemaProveedores(cuerpo)
             app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return app
+        self.abrir_ventana_modulo("proveedores", self._titulo_modulo("proveedores"), construir)
 
     def abrir_modulo_libro_diario(self):
         if not self.tiene_permiso("libro_diario"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import libro_diario
             importlib.reload(libro_diario)
-            libro_diario.LibroDiarioApp(self.contenedor_central)
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return libro_diario.LibroDiarioApp(cuerpo)
+        self.abrir_ventana_modulo("libro_diario", self._titulo_modulo("libro_diario"), construir)
 
     def abrir_modulo_libro_mayor(self):
         if not self.tiene_permiso("libro_mayor"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import libro_mayor
             importlib.reload(libro_mayor)
-            libro_mayor.LibroMayorApp(self.contenedor_central)
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return libro_mayor.LibroMayorApp(cuerpo)
+        self.abrir_ventana_modulo("libro_mayor", self._titulo_modulo("libro_mayor"), construir)
 
     def abrir_modulo_clientes(self):
         if not self.tiene_permiso("clientes"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import clientes
             importlib.reload(clientes)
-            app = clientes.SistemaClientes(self.contenedor_central)
+            app = clientes.SistemaClientes(cuerpo)
             app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return app
+        self.abrir_ventana_modulo("clientes", self._titulo_modulo("clientes"), construir)
 
     def abrir_modulo_cronograma(self):
         if not self.tiene_permiso("cronograma"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import cronograma_tareas
             importlib.reload(cronograma_tareas)
-            app = cronograma_tareas.CronogramaApp(self.contenedor_central)
+            app = cronograma_tareas.CronogramaApp(cuerpo)
             app.usuario_activo = self.usuario_activo
-        except Exception as e: messagebox.showerror("Error", str(e))
+            return app
+        self.abrir_ventana_modulo("cronograma", self._titulo_modulo("cronograma"), construir)
 
     def abrir_modulo_bitacora(self):
         if not self.tiene_permiso("bitacora"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import bitacora
             importlib.reload(bitacora)
-            bitacora.BitacoraApp(self.contenedor_central)
+            app = bitacora.BitacoraApp(cuerpo)
             registrar_auditoria(self.usuario_activo, "Bitácora", "Accedió a revisar el historial de auditoría")
-        except Exception as e: messagebox.showerror("Error", f"No se pudo cargar la Bitácora:\n{e}")
+            return app
+        self.abrir_ventana_modulo("bitacora", self._titulo_modulo("bitacora"), construir)
 
     def abrir_modulo_flota(self):
         if not self.tiene_permiso("flota"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import flota_automotriz
             importlib.reload(flota_automotriz)
-            app = flota_automotriz.FlotaAutomotrizApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Flota:\n{e}")
+            return flota_automotriz.FlotaAutomotrizApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("flota", self._titulo_modulo("flota"), construir)
 
     def abrir_modulo_choferes(self):
         if not self.tiene_permiso("choferes"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import choferes
             importlib.reload(choferes)
-            app = choferes.ChoferesApp(self.contenedor_central, self.usuario_activo)
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Padrón de Choferes:\n{e}")
+            return choferes.ChoferesApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("choferes", self._titulo_modulo("choferes"), construir)
 
     def abrir_modulo_inspeccion_vehicular(self):
         if not self.tiene_permiso("inspeccion_vehicular"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        self.limpiar_contenedor()
-        try:
+        def construir(cuerpo):
             import inspeccion_vehicular
             importlib.reload(inspeccion_vehicular)
-            inspeccion_vehicular.InspeccionVehicularApp(self.contenedor_central, self.usuario_activo)
+            app = inspeccion_vehicular.InspeccionVehicularApp(cuerpo, self.usuario_activo)
             registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
                                 "Accedió al módulo de Inspección Vehicular")
-        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir Inspección Vehicular:\n{e}")
+            return app
+        self.abrir_ventana_modulo("inspeccion_vehicular", self._titulo_modulo("inspeccion_vehicular"), construir)
 
     # =======================================================
     # CONFIGURACIÓN GENERAL (CROSS-PLATFORM)
