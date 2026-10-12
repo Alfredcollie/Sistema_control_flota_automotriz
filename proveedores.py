@@ -10,6 +10,7 @@ PROVEEDORES.PY - GESTIÓN CORPORATIVA DE PROVEEDORES (FLOTA Y EVENTOS)
 - 🔇 Búsqueda de RUC totalmente silenciosa y segura (Bypass SSL & Anti-Error 404).
 """
 import os
+import re
 import psycopg2
 import tkinter as tk
 import customtkinter as ctk
@@ -178,6 +179,106 @@ class ToolTip:
         tw = self.tip_window
         self.tip_window = None
         if tw: tw.destroy()
+
+
+# =========================================================================
+# 🌐 CONSULTA DE RUC EN INTERNET (misma API que usa la ficha del proveedor)
+# =========================================================================
+# Resultados ya consultados en esta sesión (evita repetir la misma consulta)
+_CACHE_RUC = {}
+
+
+def consultar_ruc_en_internet(ruc, timeout=10, reintentos=3):
+    """Datos completos de una empresa en SUNAT a partir del RUC.
+
+    Usa la misma API pública que el botón "Consultar RUC" de la ficha del
+    proveedor (y el token_api_ruc de la configuración, si estuviera cargado).
+    La API gratuita solo admite unas pocas consultas por minuto: si responde
+    "429 Too Many Requests" se espera un momento y se reintenta (hasta 3 veces).
+    Devuelve un diccionario con los datos normalizados, o None si no se pudo
+    consultar (sin internet, RUC inexistente, etc.).
+    """
+    ruc = re.sub(r"\D", "", str(ruc or ""))
+    if len(ruc) != 11:
+        return None
+    if ruc in _CACHE_RUC:
+        return _CACHE_RUC[ruc]
+
+    import ssl as _ssl
+    import time as _time
+    import urllib.request
+    import urllib.error
+    try:
+        ctx = _ssl._create_unverified_context()
+    except AttributeError:
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+
+    token = ""
+    try:
+        from app_paths import CONFIG_FILE as _CONFIG_FILE
+        if os.path.exists(str(_CONFIG_FILE)):
+            with open(str(_CONFIG_FILE), "r", encoding="utf-8") as f:
+                token = (json.load(f) or {}).get("token_api_ruc", "")
+    except Exception:
+        token = ""
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    url = "https://api.apis.net.pe/v1/ruc?numero=" + ruc
+
+    data = None
+    for intento in range(max(1, int(reintentos))):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, context=ctx, timeout=timeout) as respuesta:
+                if respuesta.status != 200:
+                    return None
+                data = json.loads(respuesta.read().decode())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 422):        # el RUC no existe en SUNAT
+                return None
+            if e.code in (429, 500, 502, 503, 504) and intento < reintentos - 1:
+                _time.sleep(1.6 * (intento + 1))    # se espera y se reintenta
+                continue
+            return None
+        except Exception:
+            if intento < reintentos - 1:
+                _time.sleep(0.8 * (intento + 1))
+                continue
+            return None
+    if not isinstance(data, dict):
+        return None
+
+    def limpio(valor):
+        texto = str(valor or "").strip()
+        return "" if texto in ("-", "None", "nan") else texto
+
+    nombre = limpio(data.get("nombre") or data.get("razonSocial") or data.get("razon_social"))
+    direccion = limpio(data.get("direccion"))
+    if not direccion:
+        direccion = limpio(data.get("direccion_completa") or data.get("direccionCompleta"))
+    distrito = limpio(data.get("distrito"))
+    provincia = limpio(data.get("provincia"))
+    departamento = limpio(data.get("departamento"))
+
+    partes = [p for p in (distrito, provincia, departamento) if p]
+    ubicacion = ", ".join(partes)
+    if direccion and ubicacion and distrito and distrito not in direccion:
+        direccion = f"{direccion} - {ubicacion}"
+    elif not direccion and ubicacion:
+        direccion = ubicacion
+
+    resultado = {"ruc": ruc, "nombre": nombre, "direccion_fiscal": direccion, "ubicacion": ubicacion,
+                 "distrito": distrito, "provincia": provincia, "departamento": departamento,
+                 "estado": limpio(data.get("estado")), "condicion": limpio(data.get("condicion")),
+                 "crudo": data}
+    if nombre:
+        _CACHE_RUC[ruc] = resultado          # solo se guarda si trajo datos útiles
+    return resultado
 
 
 class SistemaProveedores:
@@ -526,6 +627,9 @@ class SistemaProveedores:
     # =======================================================
     # ⚡ CONSULTA DE RUC (SUNAT) ASÍNCRONA (BYPASS SSL)
     # =======================================================
+
+
+
     def consultar_ruc_api(self, ruc_entry, nombre_entry, dir_entry):
         ruc = ruc_entry.get().strip()
         if len(ruc) != 11 or not ruc.isdigit():
