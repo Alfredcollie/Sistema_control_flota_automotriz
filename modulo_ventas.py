@@ -359,6 +359,290 @@ def solicitar_otp(accion, callback_exito, parent_window):
 # =========================================================
 # CLASE: MINI CALENDARIO COMPARTIDO
 # =========================================================
+# =========================================================================
+# 💳 PAGOS POR ADELANTADO (sin factura) — se asocian después a UNA factura
+# =========================================================================
+# Se guardan como un cobro normal en 'pagos_clientes' con:
+#   tipo = 'Adelanto'  y  id_factura = 0 (todavía sin factura)
+# Al asociarlo a su factura solo se le pone el id_factura, así que TODO lo que ya
+# lee esa tabla (Banco, Libro Diario, Estadísticas Financiera, estado de cuenta
+# del cliente) lo cuenta automáticamente. El contrato es externo: texto libre.
+
+def registrar_adelanto_cliente(cliente, monto, fecha="", contrato="", cuenta="", archivo="",
+                               usuario="Sistema"):
+    """Guarda un pago por adelantado SIN factura. Devuelve (ok, mensaje)."""
+    nombre = str(cliente or "").strip()
+    if not nombre:
+        return False, "Indique el cliente."
+    try:
+        monto_val = round(float(str(monto).replace(",", ".")), 2)
+    except Exception:
+        return False, "El monto no es un número válido."
+    if monto_val <= 0:
+        return False, "El monto debe ser mayor a 0."
+    if not str(fecha or "").strip():
+        from datetime import datetime as _dt
+        fecha = _dt.now().strftime("%Y-%m-%d")
+
+    conn = conectar_db()
+    if not conn:
+        return False, "Sin conexión a la base de datos."
+    try:
+        cursor = conn.cursor()
+        for sentencia in ("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'Cobro'",
+                          "ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS contrato VARCHAR(255) DEFAULT ''"):
+            try:
+                cursor.execute(sentencia); conn.commit()
+            except Exception:
+                conn.rollback()
+        cursor.execute("""
+            INSERT INTO pagos_clientes (codigo_cotizacion, monto_pagado, archivo_ruta, cliente_nombre,
+                                        fecha_pago, id_factura, cuenta_destino, tipo, contrato)
+            VALUES (%s, %s, %s, %s, %s, 0, %s, 'Adelanto', %s)
+            RETURNING id
+        """, (str(contrato or "").strip(), monto_val, str(archivo or ""), nombre, str(fecha),
+              str(cuenta or ""), str(contrato or "").strip()))
+        try:
+            id_nuevo = int(cursor.fetchone()[0])
+        except Exception:
+            id_nuevo = 0
+        conn.commit()
+        try:
+            registrar_auditoria(usuario, "Ventas",
+                                "Registró un pago por adelantado de %s a %s (contrato %s)"
+                                % (monto_val, nombre, contrato or "sin dato"))
+        except Exception:
+            pass
+        try:
+            cache_sistema.invalidar()
+        except Exception:
+            pass
+        return True, "Adelanto registrado (N° %s). Queda como saldo a favor hasta asociarlo a su factura." % id_nuevo
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e)
+    finally:
+        liberar_conexion(conn)
+
+
+def adelantos_disponibles(cliente="", incluir_aplicados=False):
+    """Adelantos de clientes. Por defecto solo los que están SIN factura (saldo a favor).
+
+    Devuelve [{'id', 'cliente', 'monto', 'fecha', 'contrato', 'cuenta', 'id_factura', 'estado'}].
+    """
+    lista = []
+    conn = conectar_db()
+    if not conn:
+        return lista
+    try:
+        cursor = conn.cursor()
+        for sentencia in ("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'Cobro'",
+                          "ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS contrato VARCHAR(255) DEFAULT ''"):
+            try:
+                cursor.execute(sentencia); conn.commit()
+            except Exception:
+                conn.rollback()
+        donde = "WHERE COALESCE(tipo, 'Cobro') = 'Adelanto'"
+        parametros = []
+        if not incluir_aplicados:
+            donde += " AND COALESCE(id_factura, 0) = 0"
+        if str(cliente or "").strip():
+            donde += " AND cliente_nombre ILIKE %s"
+            parametros.append("%" + str(cliente).strip() + "%")
+        cursor.execute("""
+            SELECT id, COALESCE(cliente_nombre, ''), COALESCE(monto_pagado, 0),
+                   COALESCE(fecha_pago, ''), COALESCE(contrato, ''), COALESCE(cuenta_destino, ''),
+                   COALESCE(id_factura, 0)
+            FROM pagos_clientes %s ORDER BY id DESC
+        """ % donde, tuple(parametros))
+        for fila in cursor.fetchall():
+            id_adelanto, nombre, monto, fecha, contrato, cuenta, id_factura = (list(fila) + [0, "", 0, "", "", "", 0])[:7]
+            lista.append({"id": int(id_adelanto or 0), "cliente": str(nombre or ""),
+                          "monto": round(float(monto or 0), 2), "fecha": str(fecha or ""),
+                          "contrato": str(contrato or ""), "cuenta": str(cuenta or ""),
+                          "id_factura": int(id_factura or 0),
+                          "estado": ("Aplicado a la factura N° %s" % id_factura) if id_factura else "Saldo a favor"})
+    except Exception as e:
+        print("Aviso - adelantos:", e)
+    finally:
+        liberar_conexion(conn)
+    return lista
+
+
+def aplicar_adelanto_a_factura(id_adelanto, id_factura, usuario="Sistema"):
+    """Asocia el adelanto a su factura (uno a uno). Devuelve (ok, mensaje)."""
+    try:
+        id_adelanto, id_factura = int(id_adelanto), int(id_factura)
+    except Exception:
+        return False, "Datos incompletos."
+    if not id_adelanto or not id_factura:
+        return False, "Elija el adelanto y la factura."
+    conn = conectar_db()
+    if not conn:
+        return False, "Sin conexión a la base de datos."
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""SELECT COALESCE(monto_pagado, 0), COALESCE(cliente_nombre, ''),
+                                 COALESCE(id_factura, 0)
+                          FROM pagos_clientes WHERE id = %s""", (id_adelanto,))
+        fila = cursor.fetchone()
+        if not fila:
+            return False, "El adelanto ya no existe."
+        monto, cliente, factura_actual = (list(fila) + [0, "", 0])[:3]
+        if int(factura_actual or 0):
+            return False, "Ese adelanto ya está asociado a la factura N° %s." % factura_actual
+        cursor.execute("UPDATE pagos_clientes SET id_factura = %s WHERE id = %s", (id_factura, id_adelanto))
+        conn.commit()
+        try:
+            registrar_auditoria(usuario, "Ventas",
+                                "Asoció el adelanto N° %s (%s) a la factura N° %s" % (id_adelanto, cliente, id_factura))
+        except Exception:
+            pass
+        try:
+            cache_sistema.invalidar()
+        except Exception:
+            pass
+        return True, "Adelanto de %s asociado a la factura N° %s." % (monto, id_factura)
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e)
+    finally:
+        liberar_conexion(conn)
+
+
+# =========================================================================
+# 🏢 CLIENTES DE VENTAS: se validan contra el módulo de Clientes
+# =========================================================================
+# Al cargar una factura desde un archivo (PDF/imagen) el nombre del cliente se
+# busca en la tabla 'clientes': si existe se toma SU RUC, y si no existe se crea
+# automáticamente (cuando el comprobante trae RUC, que es obligatorio ahí).
+
+def buscar_cliente_por_nombre(nombre, ruc=""):
+    """Cliente de la tabla 'clientes' por RUC o por nombre (tolerante). Devuelve dict o None."""
+    nombre = str(nombre or "").strip()
+    ruc = re.sub(r"\D", "", str(ruc or ""))
+    if not nombre and not ruc:
+        return None
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return None
+    try:
+        cursor = conn.cursor()
+        if ruc:
+            cursor.execute("""SELECT id, ruc, COALESCE(nombre_empresa, ''),
+                                     COALESCE(razon_comercial, ''), COALESCE(direccion_fiscal, '')
+                              FROM clientes WHERE ruc = %s LIMIT 1""", (ruc,))
+            fila = cursor.fetchone()
+            if fila:
+                return {"id": int(fila[0]), "ruc": str(fila[1] or ""), "nombre": str(fila[2] or ""),
+                        "comercial": str(fila[3] or ""), "direccion": str(fila[4] or "")}
+        if nombre:
+            cursor.execute("""SELECT id, ruc, COALESCE(nombre_empresa, ''),
+                                     COALESCE(razon_comercial, ''), COALESCE(direccion_fiscal, '')
+                              FROM clientes
+                              WHERE nombre_empresa ILIKE %s OR razon_comercial ILIKE %s
+                              ORDER BY id LIMIT 1""", ("%" + nombre + "%", "%" + nombre + "%"))
+            fila = cursor.fetchone()
+            if fila:
+                return {"id": int(fila[0]), "ruc": str(fila[1] or ""), "nombre": str(fila[2] or ""),
+                        "comercial": str(fila[3] or ""), "direccion": str(fila[4] or "")}
+    except Exception as e:
+        print("Aviso - buscar cliente:", e)
+    finally:
+        liberar_conexion(conn)
+    return None
+
+
+def asegurar_cliente_ventas(nombre, ruc="", direccion="", usuario="Sistema"):
+    """Devuelve (estado, datos) con el cliente del comprobante.
+
+    estado: 'existe' (ya estaba) · 'creado' (se creó ahora) · 'sin-datos'
+            (no se pudo crear porque falta el RUC) · 'error'.
+    datos: {'id','ruc','nombre','direccion'} del cliente encontrado o creado.
+    """
+    nombre = str(nombre or "").strip()
+    ruc = re.sub(r"\D", "", str(ruc or ""))
+    if not nombre and not ruc:
+        return "sin-datos", {}
+    encontrado = buscar_cliente_por_nombre(nombre, ruc)
+    if encontrado:
+        return "existe", encontrado
+    if len(ruc) != 11:
+        # En la tabla 'clientes' el RUC es obligatorio y único: sin él no se crea.
+        return "sin-datos", {"nombre": nombre, "ruc": ""}
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return "error", {}
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""INSERT INTO clientes (ruc, nombre_empresa, direccion_fiscal)
+                          VALUES (%s, %s, %s)
+                          ON CONFLICT (ruc) DO NOTHING
+                          RETURNING id""", (ruc, nombre, str(direccion or "")))
+        fila = cursor.fetchone()
+        conn.commit()
+        if not fila:
+            # Ya existía con ese RUC: se devuelve el que está
+            otro = buscar_cliente_por_nombre("", ruc)
+            return ("existe", otro) if otro else ("error", {})
+        try:
+            registrar_auditoria(usuario, "Clientes",
+                                "Cliente creado automáticamente al cargar una factura: %s (RUC %s)"
+                                % (nombre, ruc))
+        except Exception:
+            pass
+        try:
+            cache_sistema.invalidar()
+        except Exception:
+            pass
+        return "creado", {"id": int(fila[0]), "ruc": ruc, "nombre": nombre, "direccion": str(direccion or "")}
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print("Aviso - crear cliente:", e)
+        return "error", {}
+    finally:
+        liberar_conexion(conn)
+
+
+# 💧 Detracción de las facturas de venta: regla del negocio
+#    Si la factura SUPERA los S/ 400 se detrae el 4%; si no los supera, es cero.
+UMBRAL_DETRACCION_VENTAS = 400.0      # soles
+PORCENTAJE_DETRACCION_VENTAS = 4.0    # %
+
+
+def porcentaje_detraccion_ventas(total, umbral=UMBRAL_DETRACCION_VENTAS,
+                                 porcentaje=PORCENTAJE_DETRACCION_VENTAS):
+    """4% si el total SUPERA los S/ 400; si no, 0% (no hay detracción)."""
+    try:
+        texto = str(total).replace("S/", "").replace("s/", "").strip()
+        if not texto:
+            return 0.0
+        if "," in texto and "." in texto:
+            # "1,000.50" (miles con coma) o "1.000,50" (decimal con coma)
+            if texto.rfind(",") < texto.rfind("."):
+                texto = texto.replace(",", "")
+            else:
+                texto = texto.replace(".", "").replace(",", ".")
+        else:
+            texto = texto.replace(",", ".")
+        total = float(texto)
+    except Exception:
+        return 0.0
+    try:
+        return float(porcentaje) if total > float(umbral) else 0.0
+    except Exception:
+        return 0.0
+
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry):
         super().__init__(parent)
@@ -607,6 +891,10 @@ class FacturasEmitidasTab:
         ejecutar_en_hilo(self.main_root, tarea_sugerir, al_terminar=_aplicar_correlativo_hilo)
 
     def _aplicar_correlativo(self, nuevo_doc):
+        # 📄 Si el N° vino del archivo (PDF/OCR), el correlativo del sistema NO lo pisa.
+        if getattr(self, "_nro_desde_archivo", False):
+            print("Aviso - se conserva el N° leído del archivo:", self.ent_nro_doc.get())
+            return
         self.ent_nro_doc.delete(0, tk.END)
         self.ent_nro_doc.insert(0, nuevo_doc)
 
@@ -619,6 +907,139 @@ class FacturasEmitidasTab:
         else:
             elementos.sort(key=lambda el: el[0].lower(), reverse=not ascendente)
         for index, (_, item) in enumerate(elementos): self.tabla.move(item, "", index)
+
+    def escanear_factura_multifuncional(self):
+        """Escanea el comprobante en la multifuncional y lo carga en el formulario.
+
+        Es el mismo flujo del módulo de Compras: escanea, arma el PDF, lo lee (texto
+        del PDF u OCR de la imagen) y completa todos los campos, validando al cliente.
+        Funciona en Windows y en macOS (M1/M2).
+        """
+        try:
+            import escaner
+        except Exception as e:
+            return messagebox.showerror("Escáner", "No se pudo cargar el módulo de escaneo:\n%s" % e,
+                                        parent=self._padre_mensaje())
+        try:
+            if not escaner.sistema_soportado():
+                return messagebox.showinfo(
+                    "Escáner",
+                    "El escaneo con la multifuncional está disponible en Windows y en macOS (M1/M2).",
+                    parent=self._padre_mensaje())
+        except Exception:
+            pass
+        try:
+            config = cargar_configuracion_regional()
+            datos = escaner.config_escaner(config)
+        except Exception as e:
+            return messagebox.showerror("Escáner", "No se pudo leer la configuración del escáner:\n%s" % e,
+                                        parent=self._padre_mensaje())
+
+        modo = str(datos.get("escaner_modo", "Automático (sin ventanas)"))
+        if modo.lower().startswith("con la ventana"):
+            instruccion = "Se abrirá el cuadro de escaneo del sistema."
+        else:
+            instruccion = ("Coloque el comprobante en el escáner (cristal) — %s ppp, %s."
+                           % (datos.get("escaner_dpi", "300"), datos.get("escaner_color", "Escala de grises")))
+            if not datos.get("escaner_dispositivo"):
+                instruccion += ("\n(Si hay varios escáneres, elíjalo en Ajustes → "
+                                "Configuración General → Escáner.)")
+
+        v_prog = ctk.CTkToplevel(self.main_root)
+        v_prog.title("Escaneando comprobante")
+        v_prog.geometry("440x175")
+        v_prog.transient(self.main_root)
+        try:
+            v_prog.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(v_prog, text="🖨️ Escaneando y leyendo el comprobante...",
+                     font=("Arial", 13, "bold"), text_color="#1f538d").pack(pady=(18, 4))
+        ctk.CTkLabel(v_prog, text=instruccion, font=("Arial", 10), text_color="gray",
+                     justify="center", wraplength=390).pack(pady=(0, 10))
+        barra = ctk.CTkProgressBar(v_prog, width=350, mode="indeterminate")
+        barra.pack(pady=4)
+        barra.start()
+        ctk.CTkLabel(v_prog, text="Esto puede tardar unos segundos.", font=("Arial", 9, "italic"),
+                     text_color="gray").pack(pady=(4, 0))
+        try:
+            traer_al_frente(v_prog)
+        except Exception:
+            pass
+        threading.Thread(target=self._worker_escanear_venta, args=(config, v_prog), daemon=True).start()
+        return v_prog
+
+    def _padre_mensaje(self):
+        """Ventana que debe quedar delante en los avisos (o la principal)."""
+        try:
+            if "ventana_para_mensaje" in globals():
+                return ventana_para_mensaje(getattr(self, "main_root", None))
+        except Exception:
+            pass
+        return getattr(self, "main_root", None)
+
+    def _cerrar_progreso_escaneo(self, v_prog):
+        try:
+            if v_prog is not None and v_prog.winfo_exists():
+                v_prog.destroy()
+        except Exception:
+            pass
+
+    def _worker_escanear_venta(self, config, v_prog):
+        """Escanea en segundo plano, arma el PDF y lo aplica al formulario."""
+        try:
+            import escaner
+            datos = escaner.config_escaner(config)
+            carpeta = escaner.carpeta_escaneos(config)
+            try:
+                paginas_pedidas = int(str(datos.get("escaner_paginas") or 1))
+            except Exception:
+                paginas_pedidas = 1
+            escaneo = escaner.escanear(
+                carpeta,
+                dispositivo=datos.get("escaner_dispositivo", ""),
+                dpi=datos.get("escaner_dpi", "300"),
+                color=datos.get("escaner_color", "Escala de grises"),
+                origen=datos.get("escaner_origen", "Cristal (una página a la vez)"),
+                paginas=paginas_pedidas,
+                optimizar=str(datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+                modo=datos.get("escaner_modo", "Automático (sin ventanas)"))
+            if not escaneo.get("ok"):
+                error = str(escaneo.get("error") or "No se pudo escanear.")
+                return self.main_root.after(0, lambda: (
+                    self._cerrar_progreso_escaneo(v_prog),
+                    messagebox.showerror("Escáner", "No se pudo escanear el comprobante.\n\n" + error,
+                                         parent=self._padre_mensaje())))
+
+            paginas = [str(p) for p in (escaneo.get("paginas") or []) if os.path.exists(str(p))]
+            if not paginas:
+                return self.main_root.after(0, lambda: (
+                    self._cerrar_progreso_escaneo(v_prog),
+                    messagebox.showinfo("Escáner", "El escáner no devolvió ninguna imagen.",
+                                        parent=self._padre_mensaje())))
+            marca = datetime.now().strftime("%Y%m%d_%H%M%S")
+            pdf = os.path.join(os.path.dirname(paginas[0]), "Comprobante_Venta_" + marca + ".pdf")
+            try:
+                escaner.imagenes_a_pdf(paginas, pdf)
+            except Exception as e_pdf:
+                print("Aviso - PDF del escaneo:", e_pdf)
+
+            def aplicar():
+                self._cerrar_progreso_escaneo(v_prog)
+                ruta = pdf if os.path.exists(pdf) else paginas[0]
+                try:
+                    self._autocompletar_desde_archivo(ruta)   # texto/OCR + cliente validado
+                except Exception as e:
+                    messagebox.showerror("Escáner", "Se escaneó, pero no se pudo leer:\n%s" % e,
+                                         parent=self._padre_mensaje())
+
+            return self.main_root.after(0, aplicar)
+        except Exception as e:
+            return self.main_root.after(0, lambda: (
+                self._cerrar_progreso_escaneo(v_prog),
+                messagebox.showerror("Escáner", "No se pudo escanear el comprobante:\n%s" % e,
+                                     parent=self._padre_mensaje())))
+
 
     def autocompletar_desde_pdf(self):
         ruta = seleccionar_archivo_dialogo(
@@ -645,10 +1066,46 @@ class FacturasEmitidasTab:
             if hasattr(self, "lbl_archivo"):
                 self.lbl_archivo.configure(text=f"📎 {os.path.basename(ruta)}", text_color="#166534")
             self.actualizar_totales()
+
+            # 🏢 El cliente se valida contra el módulo de Clientes: se toma SU RUC y,
+            #    si no existe, se crea automáticamente.
+            aviso_cliente = ""
+            try:
+                nombre_cli = self.combo_cliente.get().strip()
+                ruc_cli = re.sub(r"\D", "", self.ent_ruc.get() or "")
+                if nombre_cli:
+                    estado_cli, datos_cli = asegurar_cliente_ventas(nombre_cli, ruc_cli)
+                    if estado_cli in ("existe", "creado") and datos_cli.get("ruc"):
+                        if not ruc_cli:
+                            self.ent_ruc.configure(state="normal")
+                            self.ent_ruc.delete(0, tk.END)
+                            self.ent_ruc.insert(0, datos_cli["ruc"])
+                            ruc_cli = datos_cli["ruc"]
+                        if datos_cli.get("nombre"):
+                            self.combo_cliente.set(datos_cli["nombre"])
+                        aviso_cliente = ("  🏢 Se creó el cliente en el módulo de Clientes (RUC %s)."
+                                         % datos_cli["ruc"]) if estado_cli == "creado" else \
+                                        "  El cliente ya estaba registrado (RUC %s)." % datos_cli["ruc"]
+                        for nombre_metodo in ("cargar_clientes_combo", "cargar_clientes_combobox",
+                                              "actualizar_clientes", "cargar_clientes"):
+                            metodo = getattr(self, nombre_metodo, None)
+                            if callable(metodo):
+                                try:
+                                    metodo()
+                                except Exception:
+                                    pass
+                                break
+                    elif estado_cli == "sin-datos":
+                        aviso_cliente = ("  ⚠️ No se pudo crear el cliente: el comprobante no trae "
+                                         "un RUC de 11 dígitos (es obligatorio en Clientes).")
+            except Exception as e_cli:
+                print("Aviso - cliente del archivo:", e_cli)
+
             self.al_seleccionar_cliente()
 
             if rellenado:
-                messagebox.showinfo("Lectura de Factura", "Datos de la factura rellenados automáticamente (texto/OCR).")
+                messagebox.showinfo("Lectura de Factura",
+                                    "Datos de la factura rellenados automáticamente (texto/OCR)." + aviso_cliente)
             else:
                 messagebox.showwarning("Lectura Incompleta", "No se pudieron leer automáticamente los datos del documento.\nRevise los campos manualmente.")
         except Exception as e:
@@ -696,6 +1153,7 @@ class FacturasEmitidasTab:
 
         nro_match = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
         if nro_match:
+            self._nro_desde_archivo = True          # el N° es el del comprobante
             self.ent_nro_doc.delete(0, tk.END); self.ent_nro_doc.insert(0, nro_match.group(1).replace(" ", ""))
             relleno = True
 
@@ -837,6 +1295,7 @@ class FacturasEmitidasTab:
 
             nro = str(datos.get("numero_documento") or "").strip()
             if nro:
+                self._nro_desde_archivo = True      # el N° es el del comprobante
                 self.ent_nro_doc.delete(0, tk.END); self.ent_nro_doc.insert(0, nro)
                 relleno = True
 
@@ -908,6 +1367,11 @@ class FacturasEmitidasTab:
 
         self.f_form = ctk.CTkScrollableFrame(frame_split, corner_radius=10, width=330, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
         self.f_form.pack(side="left", fill="y", padx=(0, 15))
+
+        btn_escanear = ctk.CTkButton(self.f_form, text="🖨️ Escanear con la Multifuncional",
+                                     fg_color="#8e44ad", hover_color="#703688", font=("Arial", 12, "bold"),
+                                     command=self.escanear_factura_multifuncional)
+        btn_escanear.pack(fill="x", padx=10, pady=(10, 5))
 
         btn_auto = ctk.CTkButton(self.f_form, text="📄 Cargar PDF y Autocompletar (OCR)", fg_color="#1f538d", hover_color="#163b65", command=self.autocompletar_desde_pdf)
         btn_auto.pack(fill="x", padx=10, pady=(10, 5))
@@ -1387,13 +1851,24 @@ class FacturasEmitidasTab:
             redondeo = self.detraccion_con_redondeo()
             if "Factura" in tipo:
                 igv = redondear_centavos(sub * 0.18); tot = redondear_centavos(sub + igv)
+
+                # 💧 Regla: si la factura SUPERA los S/ 400 se detrae el 4%; si no, es cero.
+                porcentaje_regla = porcentaje_detraccion_ventas(tot)
+                if abs(porcentaje_regla - ui_pct) > 0.001:
+                    ui_pct = porcentaje_regla
+                    try:
+                        self.ent_detraccion.delete(0, tk.END)
+                        self.ent_detraccion.insert(0, "%g" % ui_pct)
+                    except Exception:
+                        pass
+
                 det = tot * (ui_pct / 100.0)
                 det = redondear_detraccion(det) if redondeo else redondear_centavos(det)
                 neto = redondear_centavos(tot - det)
                 self.lbl_impuesto.configure(text=f"IGV (18%): {formatear_moneda(igv)}")
                 self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}{self._etiqueta_redondeo(redondeo)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
-            elif "Recibo" in tipo:
+            elif "Recibo" in tipo:      # los recibos usan su retención (no esta regla)
                 ret = sub * (ui_pct / 100.0); neto = sub - ret
                 self.lbl_impuesto.configure(text=f"Retención ({ui_pct:g}%): -{formatear_moneda(ret)}")
                 self.lbl_detraccion.configure(text=f"Detracción (0%): -{formatear_moneda(0)}")
@@ -2270,6 +2745,13 @@ class CuentasPorCobrarTab:
                     cursor.execute("ALTER TABLE pagos_clientes ADD COLUMN cuenta_destino VARCHAR(255) DEFAULT ''")
                     conn.commit()
                 except Exception: conn.rollback()
+
+                # 💳 Pagos por adelantado (sin factura): tipo y contrato externo
+                for sentencia in ("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'Cobro'",
+                                  "ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS contrato VARCHAR(255) DEFAULT ''"):
+                    try:
+                        cursor.execute(sentencia); conn.commit()
+                    except Exception: conn.rollback()
                 
             except Exception: pass
             finally: liberar_conexion(conn)
@@ -2288,6 +2770,16 @@ class CuentasPorCobrarTab:
 
         btn_comprobante = ctk.CTkButton(frame_acciones, text="🧾 Registrar Cobro", font=("Arial", 12, "bold"), command=self.cargar_comprobante_cobro, fg_color="#1f538d", hover_color="#163b65")
         btn_comprobante.pack(side="left", padx=5, pady=5)
+
+        btn_adelanto = ctk.CTkButton(frame_acciones, text="💳 Registrar Adelanto", font=("Arial", 12, "bold"),
+                                     fg_color="#8e44ad", hover_color="#703688",
+                                     command=self.abrir_registrar_adelanto)
+        btn_adelanto.pack(side="left", padx=5, pady=5)
+
+        btn_aplicar = ctk.CTkButton(frame_acciones, text="🧩 Asociar Adelanto a Factura", font=("Arial", 12, "bold"),
+                                    fg_color="#16a085", hover_color="#11806a",
+                                    command=self.abrir_asociar_adelanto)
+        btn_aplicar.pack(side="left", padx=5, pady=5)
 
         btn_editar = ctk.CTkButton(frame_acciones, text="✏️ Editar Cobros", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50")
         btn_editar.pack(side="left", padx=5, pady=5)
@@ -2593,6 +3085,264 @@ class CuentasPorCobrarTab:
             self.btn_sig.configure(state="normal")
         else:
             self.btn_sig.configure(state="disabled")
+
+    def _cuentas_para_combo(self):
+        """Cuentas registradas en el sistema (Bancos) + los métodos habituales.
+
+        Es la misma lista que usa «Registrar Cobro», para que el adelanto entre a
+        la cuenta correcta y sume igual en Banco / Libro Diario / Estadísticas.
+        """
+        lista = []
+        try:
+            for b in cargar_bancos():
+                banco_nom = str((b or {}).get("banco", "")).strip()
+                cuenta_num = str((b or {}).get("cuenta", "")).strip()
+                if banco_nom or cuenta_num:
+                    etiqueta = ("%s - %s" % (banco_nom, cuenta_num)).strip(" -")
+                    if etiqueta and etiqueta not in lista:
+                        lista.append(etiqueta)
+        except Exception as e:
+            print("Aviso - cuentas registradas:", e)
+        for extra in ("Efectivo / Caja Chica", "Tarjeta de Crédito", "Tarjeta de Débito", "Cheque", "Otro"):
+            if extra not in lista:
+                lista.append(extra)
+        return lista
+
+    def _clientes_para_combo(self):
+        """Clientes ya registrados (para el desplegable del adelanto)."""
+        lista = []
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return lista
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""SELECT DISTINCT COALESCE(cliente, '') FROM facturas_emitidas
+                              WHERE COALESCE(cliente, '') <> '' ORDER BY 1 LIMIT 400""")
+            lista = [str(f[0]) for f in cursor.fetchall() if f and str(f[0]).strip()]
+        except Exception as e:
+            print("Aviso - clientes:", e)
+        finally:
+            liberar_conexion(conn)
+        return lista
+
+    def abrir_registrar_adelanto(self):
+        """Ventana para asentar un pago por adelantado SIN factura.
+
+        Queda como saldo a favor del cliente (aparece en su estado de cuenta y en
+        Banco / Libro Diario / Estadísticas) hasta asociarlo a su factura.
+        """
+        v = ctk.CTkToplevel(self.main_root)
+        v.title("Registrar Pago por Adelantado (sin factura)")
+        v.geometry("620x560")
+        v.transient(self.main_root)
+        try:
+            traer_al_frente(v)
+        except Exception:
+            pass
+        ctk.CTkLabel(v, text="💳 PAGO POR ADELANTADO (SIN FACTURA)", font=("Arial", 15, "bold"),
+                     text_color="#1f538d").pack(pady=(12, 2))
+        ctk.CTkLabel(v, text="No se elige factura: queda como saldo a favor del cliente y después "
+                             "se asocia con «🧩 Asociar Adelanto a Factura».",
+                     font=("Arial", 11), text_color="gray", wraplength=560).pack(pady=(0, 8))
+        f = ctk.CTkScrollableFrame(v, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+
+        ctk.CTkLabel(f, text="Cliente:", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_cliente = ctk.CTkComboBox(f, values=self._clientes_para_combo() or [""])
+        cmb_cliente.pack(fill="x", pady=(0, 8))
+
+        ctk.CTkLabel(f, text="N° de Contrato (externo, opcional):", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_contrato = ctk.CTkEntry(f, placeholder_text="Ej. CONT-2026-014")
+        ent_contrato.pack(fill="x", pady=(0, 8))
+
+        ctk.CTkLabel(f, text="Monto adelantado (S/.):", font=("Arial", 11, "bold")).pack(anchor="w")
+        ent_monto = ctk.CTkEntry(f)
+        ent_monto.pack(fill="x", pady=(0, 8))
+
+        ctk.CTkLabel(f, text="Fecha del adelanto:", font=("Arial", 11, "bold")).pack(anchor="w")
+        f_fecha = ctk.CTkFrame(f, fg_color="transparent")
+        f_fecha.pack(fill="x", pady=(0, 8))
+        ent_fecha = ctk.CTkEntry(f_fecha, placeholder_text="AAAA-MM-DD")
+        ent_fecha.pack(side="left", fill="x", expand=True)
+        ent_fecha.insert(0, datetime.now().strftime("%Y-%m-%d"))
+        ctk.CTkButton(f_fecha, text="[ 📅 ]", width=44, font=("Arial", 11, "bold"),
+                      fg_color="#2980b9", hover_color="#1f6391",
+                      command=lambda e=ent_fecha: CalendarioNativo(
+                          self.main_root.winfo_toplevel(), e)).pack(side="left", padx=(5, 0))
+
+        ctk.CTkLabel(f, text="Cuenta donde entró el dinero:", font=("Arial", 11, "bold")).pack(anchor="w")
+        cmb_cuenta = ctk.CTkComboBox(f, values=self._cuentas_para_combo(), width=400)
+        cmb_cuenta.pack(fill="x", pady=(0, 8))
+
+        ctk.CTkLabel(f, text="Comprobante del depósito (opcional):", font=("Arial", 11, "bold")).pack(anchor="w")
+        f_arch = ctk.CTkFrame(f, fg_color="transparent")
+        f_arch.pack(fill="x", pady=(0, 8))
+        ent_arch = ctk.CTkEntry(f_arch, placeholder_text="Ruta del PDF/JPG del depósito")
+        ent_arch.pack(side="left", fill="x", expand=True)
+        ruta_adjunto = {"ruta": ""}
+
+        def elegir_archivo():
+            try:
+                ruta = filedialog.askopenfilename(title="Comprobante del adelanto",
+                                                  filetypes=[("Documentos", "*.pdf *.jpg *.jpeg *.png")])
+                if ruta:
+                    ruta_adjunto["ruta"] = ruta
+                    ent_arch.delete(0, "end"); ent_arch.insert(0, ruta)
+            except Exception as e:
+                print("Aviso - adjunto:", e)
+
+        ctk.CTkButton(f_arch, text="📎", width=44, font=("Arial", 11, "bold"), fg_color="#2980b9",
+                      hover_color="#1f6391", command=elegir_archivo).pack(side="left", padx=(5, 0))
+
+        def guardar():
+            ok, mensaje = registrar_adelanto_cliente(
+                cmb_cliente.get(), ent_monto.get(), fecha=ent_fecha.get().strip(),
+                contrato=ent_contrato.get().strip(), cuenta=cmb_cuenta.get().strip(),
+                archivo=(ruta_adjunto["ruta"] or ent_arch.get().strip()),
+                usuario=getattr(self, "usuario_activo", "Sistema"))
+            if not ok:
+                return messagebox.showerror("Adelanto", str(mensaje), parent=v)
+            messagebox.showinfo("Adelanto registrado", str(mensaje), parent=v)
+            try:
+                v.destroy()
+            except Exception:
+                pass
+            try:
+                self.cargar_datos_tabla()
+            except Exception:
+                pass
+
+        barra = ctk.CTkFrame(v, fg_color="transparent")
+        barra.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkButton(barra, text="✅ Registrar Adelanto", height=40, font=("Arial", 13, "bold"),
+                      fg_color="#27ae60", hover_color="#1e8449", command=guardar).pack(
+            side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(barra, text="❌ Cancelar", height=40, font=("Arial", 13, "bold"), fg_color="#7f8c8d",
+                      hover_color="#616a6b", command=v.destroy).pack(side="left", expand=True, fill="x", padx=(6, 0))
+        return v
+
+    def _facturas_con_cliente(self, limite=400):
+        """Facturas emitidas (para asociarles un adelanto): (id, cliente, documento, total, pagado)."""
+        lista = []
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return lista
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT f.id, COALESCE(f.cliente, ''), COALESCE(f.numero_documento, ''),
+                       COALESCE(f.total, 0),
+                       COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_clientes p WHERE p.id_factura = f.id), 0)
+                FROM facturas_emitidas f ORDER BY f.id DESC LIMIT %s
+            """, (limite,))
+            for fila in cursor.fetchall():
+                id_f, cliente, documento, total, pagado = (list(fila) + [0, "", "", 0, 0])[:5]
+                lista.append({"id": int(id_f or 0), "cliente": str(cliente or ""),
+                              "documento": str(documento or ""), "total": round(float(total or 0), 2),
+                              "pagado": round(float(pagado or 0), 2)})
+        except Exception as e:
+            print("Aviso - facturas para adelanto:", e)
+        finally:
+            liberar_conexion(conn)
+        return lista
+
+    def abrir_asociar_adelanto(self):
+        """Ventana para asociar un adelanto (saldo a favor) a su factura."""
+        v = ctk.CTkToplevel(self.main_root)
+        v.title("Asociar Adelanto a su Factura")
+        v.geometry("900x600")
+        v.transient(self.main_root)
+        try:
+            traer_al_frente(v)
+        except Exception:
+            pass
+        ctk.CTkLabel(v, text="🧩 ASOCIAR ADELANTO A SU FACTURA", font=("Arial", 15, "bold"),
+                     text_color="#1f538d").pack(pady=(12, 2))
+        ctk.CTkLabel(v, text="El adelanto es de UNA sola factura: al asociarlo pasa a contar como "
+                             "cobrado en esa factura (y deja de ser saldo a favor).",
+                     font=("Arial", 11), text_color="gray").pack(pady=(0, 8))
+
+        marco = ctk.CTkFrame(v, fg_color="transparent")
+        marco.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        izq = ctk.CTkFrame(marco, fg_color="#f7f9fb", corner_radius=8)
+        izq.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        der = ctk.CTkFrame(marco, fg_color="#f7f9fb", corner_radius=8)
+        der.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        ctk.CTkLabel(izq, text="💳 Adelantos con saldo a favor", font=("Arial", 12, "bold")).pack(pady=6)
+        ctk.CTkLabel(der, text="🧾 Facturas emitidas", font=("Arial", 12, "bold")).pack(pady=6)
+
+        lista_adelantos = ctk.CTkScrollableFrame(izq, fg_color="transparent")
+        lista_adelantos.pack(fill="both", expand=True, padx=6, pady=6)
+        lista_facturas = ctk.CTkScrollableFrame(der, fg_color="transparent")
+        lista_facturas.pack(fill="both", expand=True, padx=6, pady=6)
+
+        elegido = {"adelanto": None, "factura": None}
+        botones = {"adelanto": {}, "factura": {}}
+
+        def marcar_adelanto(datos, boton):
+            elegido["adelanto"] = datos
+            for otro in botones["adelanto"].values():
+                otro.configure(fg_color="#5d6d7e")
+            boton.configure(fg_color="#27ae60")
+
+        def marcar_factura(datos, boton):
+            elegido["factura"] = datos
+            for otro in botones["factura"].values():
+                otro.configure(fg_color="#5d6d7e")
+            boton.configure(fg_color="#27ae60")
+
+        adelantos = adelantos_disponibles()
+        if not adelantos:
+            ctk.CTkLabel(lista_adelantos, text="(no hay adelantos con saldo a favor)",
+                         font=("Arial", 11), text_color="gray").pack(pady=10)
+        for datos in adelantos:
+            texto = "%s — S/ %.2f\n%s | contrato: %s" % (datos["cliente"], datos["monto"],
+                                                         datos["fecha"] or "sin fecha",
+                                                         datos["contrato"] or "sin dato")
+            b = ctk.CTkButton(lista_adelantos, text=texto, font=("Arial", 11), anchor="w",
+                              fg_color="#5d6d7e", hover_color="#4a5967", height=46,
+                              command=lambda d=datos: None)
+            b.configure(command=lambda d=datos, bb=b: marcar_adelanto(d, bb))
+            b.pack(fill="x", pady=3)
+            botones["adelanto"][datos["id"]] = b
+
+        for datos in self._facturas_con_cliente():
+            saldo = max(0.0, datos["total"] - datos["pagado"])
+            texto = "%s — %s\nTotal S/ %.2f | pagado S/ %.2f | saldo S/ %.2f" % (
+                datos["cliente"], datos["documento"] or ("ID %s" % datos["id"]),
+                datos["total"], datos["pagado"], saldo)
+            b = ctk.CTkButton(lista_facturas, text=texto, font=("Arial", 11), anchor="w",
+                              fg_color="#5d6d7e", hover_color="#4a5967", height=46,
+                              command=lambda d=datos: None)
+            b.configure(command=lambda d=datos, bb=b: marcar_factura(d, bb))
+            b.pack(fill="x", pady=3)
+            botones["factura"][datos["id"]] = b
+
+        def asociar():
+            if not elegido["adelanto"] or not elegido["factura"]:
+                return messagebox.showwarning("Adelanto", "Elija un adelanto y una factura.", parent=v)
+            ok, mensaje = aplicar_adelanto_a_factura(elegido["adelanto"]["id"], elegido["factura"]["id"],
+                                                     usuario=getattr(self, "usuario_activo", "Sistema"))
+            if not ok:
+                return messagebox.showerror("Adelanto", str(mensaje), parent=v)
+            messagebox.showinfo("Adelanto asociado", str(mensaje), parent=v)
+            try:
+                v.destroy()
+            except Exception:
+                pass
+            try:
+                self.cargar_datos_tabla()
+            except Exception:
+                pass
+
+        barra = ctk.CTkFrame(v, fg_color="transparent")
+        barra.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkButton(barra, text="🔗 Asociar a la factura", height=40, font=("Arial", 13, "bold"),
+                      fg_color="#16a085", hover_color="#11806a", command=asociar).pack(
+            side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(barra, text="❌ Cancelar", height=40, font=("Arial", 13, "bold"), fg_color="#7f8c8d",
+                      hover_color="#616a6b", command=v.destroy).pack(side="left", expand=True, fill="x", padx=(6, 0))
+        return v
 
     def cargar_comprobante_cobro(self):
         ruta_base = obtener_ruta_base_drive()

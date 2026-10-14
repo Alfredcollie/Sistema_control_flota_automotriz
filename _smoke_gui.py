@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import io, os, sys, time, traceback, warnings
 warnings.filterwarnings("ignore")
-sys.path.insert(0, r"C:\\Users\\Alberto\\Desktop\\Proyecto Control Flota 140926")
+sys.path.insert(0, r_BASE_PROYECTO)
 registro_dialogos = []
 out = io.StringIO()
 def p(*a): out.write(" ".join(str(x) for x in a) + "\n")
@@ -20,6 +20,8 @@ messagebox.askyesno = lambda t="", m="", **k: (registro_dialogos.append(("askyes
 simpledialog.askstring = lambda *a, **k: None
 
 import modulo_nomina
+import os as _os
+_BASE_PROYECTO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))) if _os.path.basename(_os.path.dirname(_os.path.abspath(__file__))) in ("__dsh_test__", "Programas de pruebas") else _os.path.dirname(_os.path.abspath(__file__))
 
 root = ctk.CTk()
 root.geometry("1600x950")

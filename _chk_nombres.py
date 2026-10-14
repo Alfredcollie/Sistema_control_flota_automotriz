@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """Busca nombres usados como globales que no existen en el modulo (posibles NameError silenciosos)."""
 import ast, builtins, glob, io, os, symtable, sys, traceback
-sys.path.insert(0, r"C:\Users\Alberto\Desktop\Proyecto Control Flota 140926")
+import os as _os
+_BASE_PROYECTO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))) if _os.path.basename(_os.path.dirname(_os.path.abspath(__file__))) in ("__dsh_test__", "Programas de pruebas") else _os.path.dirname(_os.path.abspath(__file__))
+sys.path.insert(0, _BASE_PROYECTO)
 os.chdir(r"C:\Users\Alberto\Desktop\Proyecto Control Flota 140926")
 
 archivos = sorted(glob.glob("*.py"))
