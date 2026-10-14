@@ -43,6 +43,16 @@
     "color_menu_btn": "#4b4b4b",
     "color_menu_hover": "#e745b3",
     "color_menu_texto": "white",
+    "escaner_dispositivo": "{6BDD1FC6-810F-11D0-BEC7-08002BE2092F}\\0002",
+    "escaner_dpi": "300",
+    "escaner_color": "Escala de grises",
+    "escaner_origen": "Cristal (una página a la vez)",
+    "escaner_paginas": "1",
+    "escaner_ocr": "Sí",
+    "escaner_idioma_ocr": "Automático",
+    "escaner_optimizar": "Sí",
+    "escaner_modo": "Automático (sin ventanas)",
+    "escaner_carpeta": "",
     "orden_operativos": [
         "clientes",
         "proveedores",
@@ -99,7 +109,9 @@
             "Seguros",
             "Préstamos / Cuotas",
             "Gastos de oficina",
-            "Inspeccion vehicular"
+            "Inspeccion vehicular",
+            "Carnet de sanidad",
+            "Impuestos / otros"
         ],
         "Gastos Operativos": [
             "Combustible",
@@ -109,7 +121,10 @@
             "Otros operativos",
             "Alimentacion",
             "Movilidad",
-            "Auto-Lavado"
+            "Auto-Lavado",
+            "Articulos de oficina",
+            "Tegnologia",
+            "Mermas/incidentes"
         ],
         "Ingresos": [
             "Cobro de cliente",
@@ -122,5 +137,6 @@
     },
     "banco_esquema_ok_v1": "ok",
     "banco_esquema_ok_v2": "ok",
-    "banco_esquema_ok_v3": "ok"
+    "banco_esquema_ok_v3": "ok",
+    "alerta_mantenimiento_general_meses": "6"
 }
