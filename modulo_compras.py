@@ -514,6 +514,107 @@ def _corregir_digitos_ocr(token):
     return str(token).translate(tabla)
 
 
+_PALABRAS_NUMERO = {
+    "CERO": 0, "UN": 1, "UNO": 1, "UNA": 1, "DOS": 2, "TRES": 3, "CUATRO": 4, "CINCO": 5, "SEIS": 6,
+    "SIETE": 7, "OCHO": 8, "NUEVE": 9, "DIEZ": 10, "ONCE": 11, "DOCE": 12, "TRECE": 13, "CATORCE": 14,
+    "QUINCE": 15, "DIECISEIS": 16, "DIECISIETE": 17, "DIECIOCHO": 18, "DIECINUEVE": 19, "VEINTE": 20,
+    "VEINTIUNO": 21, "VEINTIDOS": 22, "VEINTITRES": 23, "VEINTICUATRO": 24, "VEINTICINCO": 25,
+    "VEINTISEIS": 26, "VEINTISIETE": 27, "VEINTIOCHO": 28, "VEINTINUEVE": 29, "TREINTA": 30,
+    "CUARENTA": 40, "CINCUENTA": 50, "SESENTA": 60, "SETENTA": 70, "OCHENTA": 80, "NOVENTA": 90,
+    "CIEN": 100, "CIENTO": 100, "DOSCIENTOS": 200, "TRESCIENTOS": 300, "CUATROCIENTOS": 400,
+    "QUINIENTOS": 500, "SEISCIENTOS": 600, "SETECIENTOS": 700, "OCHOCIENTOS": 800, "NOVECIENTOS": 900,
+}
+
+
+def _texto_sin_acentos(texto):
+    """Texto en mayúsculas y sin tildes (para comparar rótulos). Multiplataforma."""
+    import unicodedata
+    base = unicodedata.normalize("NFKD", str(texto or ""))
+    return "".join(c for c in base if not unicodedata.combining(c)).upper()
+
+
+def monto_en_palabras(texto):
+    """Lee el importe escrito en letras ('SON: CIENTO SETENTA Y SIETE CON 0/100 SOLES').
+
+    Devuelve 177.0 en ese ejemplo, o 0.0 si no lo encuentra. Sirve de respaldo
+    cuando el comprobante trae los importes en columnas y no se lee el total.
+    """
+    limpio = _texto_sin_acentos(texto)
+    posicion = limpio.find("SON")
+    if posicion == -1:
+        return 0.0
+    resto = limpio[posicion + 3:]
+    resto = resto.split(chr(10))[0]                     # solo esa linea
+    centimos = 0
+    if " CON " in resto:
+        antes, despues = resto.split(" CON ", 1)
+        resto = antes
+        try:
+            centimos = int(re.findall(r"\d{1,2}", despues)[0])
+        except Exception:
+            centimos = 0
+    palabras = [p for p in re.split(r"[^A-Z]+", resto) if p]
+    total, parcial = 0, 0
+    for palabra in palabras:
+        if palabra in ("Y", "CON", "SOLES", "SOL", "DOLARES", "SON", "DE", "CONFORMADO", "SEUO"):
+            continue
+        if palabra in ("MIL", "MILES"):
+            total += (parcial or 1) * 1000
+            parcial = 0
+            continue
+        if palabra in ("MILLON", "MILLONES"):
+            total += (parcial or 1) * 1000000
+            parcial = 0
+            continue
+        if palabra in _PALABRAS_NUMERO:
+            parcial += _PALABRAS_NUMERO[palabra]
+            continue
+        if parcial or total:
+            break                                      # palabra rara: se corta
+    total += parcial
+    if total <= 0:
+        return 0.0
+    return round(total + centimos / 100.0, 2)
+
+
+def _montos_de_columnas(datos, montos):
+    """Reparte los importes de una fila de tabla (etiquetas en la línea anterior).
+
+    En muchos comprobantes (RIMAC, AFP, servicios) los rótulos van en una línea y
+    los importes en la siguiente, con las casillas vacías sin valor. Se toma el
+    último importe como total y, de los demás, el mayor como base; el IGV sale de
+    la diferencia.
+    """
+    valores = []
+    for texto_monto in montos:
+        try:
+            valor = parsear_monto_texto(texto_monto)
+        except Exception:
+            valor = 0.0
+        if valor and valor > 0:
+            valores.append(round(float(valor), 2))
+    if not valores:
+        return
+    total = valores[-1]
+    if len(valores) == 1:
+        if not datos.get("total"):
+            datos["total"] = total
+            datos["leidos"] = datos.get("leidos", 0) + 1
+        return
+    base = max(valores[:-1])
+    if not datos.get("total"):
+        datos["total"] = total
+        datos["leidos"] = datos.get("leidos", 0) + 1
+    if not datos.get("base"):
+        datos["base"] = base
+        datos["leidos"] = datos.get("leidos", 0) + 1
+    if not datos.get("igv"):
+        igv = round(total - base, 2)
+        if 0 < igv <= total * 0.5:
+            datos["igv"] = igv
+            datos["leidos"] = datos.get("leidos", 0) + 1
+
+
 def extraer_montos_comprobante(texto):
     """Lee base, IGV, recargo al consumo y total de un comprobante peruano.
 
@@ -522,15 +623,30 @@ def extraer_montos_comprobante(texto):
     como el último número de esa fila.
     """
     datos = {"base": 0.0, "igv": 0.0, "recargo": 0.0, "total": 0.0, "leidos": 0}
+    encabezado_de_columnas = False
     for linea in str(texto or "").splitlines():
         fila = linea.replace("S/.", " ").replace("S/", " ")
         corte = re.search(r"\d", fila)
         etiqueta = _normalizar_etiqueta(fila[:corte.start()] if corte else fila)
-        if not etiqueta:
-            continue
         montos = re.findall(r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{1,2}", fila)
-        if not montos:
+
+        # 📊 Tabla en columnas: los rótulos van en una línea y los importes en la
+        #    siguiente (así vienen las facturas de RIMAC, AFP y servicios).
+        if not etiqueta:
+            if montos and encabezado_de_columnas:
+                _montos_de_columnas(datos, montos)
+            encabezado_de_columnas = False
             continue
+
+        if not montos:
+            # ¿Esta línea es el encabezado de una tabla de importes?
+            # Solo con un encabezado inequívoco (IGV / IMPORTE TOTAL / TOTAL A PAGAR):
+            # así una factura normal (rótulo e importe en la misma línea) no entra aquí.
+            encabezado_de_columnas = bool(re.search(
+                r"(IMPORTE\s*TOTAL|TOTAL\s*A\s*PAGAR|I\.?\s*G\.?\s*V|\bIGV\b)",
+                _texto_sin_acentos(etiqueta)))
+            continue
+        encabezado_de_columnas = False
         try:
             valor = parsear_monto_texto(montos[-1])
         except ValueError:
@@ -551,6 +667,22 @@ def extraer_montos_comprobante(texto):
     # Si no se leyó la base pero sí el total y el IGV, se deduce
     if not datos["base"] and datos["total"] and datos["igv"]:
         datos["base"] = round(datos["total"] - datos["recargo"] - datos["igv"], 2)
+
+    # 💬 El importe escrito en letras ("SON: ... CON 0/100 SOLES") es el control final:
+    #    si el total no cuadra con base + IGV + recargo, manda lo que dice en letras.
+    letras = monto_en_palabras(texto)
+    if letras:
+        cuadra = bool(datos["base"]) and abs(
+            datos["base"] + datos["igv"] + datos["recargo"] - datos["total"]) <= 0.05
+        if not datos["total"] or not cuadra or datos["total"] < datos["base"]:
+            datos["total"] = letras
+            datos["leidos"] += 1
+        if datos["base"] and not datos["igv"]:
+            calculado = round(datos["total"] - datos["base"] - datos["recargo"], 2)
+            if 0 < calculado <= datos["total"] * 0.5:
+                datos["igv"] = calculado
+        elif not datos["base"] and datos["igv"]:
+            datos["base"] = round(datos["total"] - datos["igv"] - datos["recargo"], 2)
     return datos
 
 
@@ -1287,9 +1419,12 @@ def construir_condicion_busqueda_compras(filtro):
 # CLASE: CALENDARIO NATIVO
 # =========================================================
 class CalendarioNativo(ctk.CTkToplevel):
-    def __init__(self, parent, target_entry):
+    def __init__(self, parent, target_entry, al_elegir=None):
+        # 'al_elegir' es opcional: al elegir la fecha se avisa (si se pidió).
+        # Todo es Tkinter puro, así funciona igual en Windows y en macOS.
         super().__init__(parent)
         self.target_entry = target_entry
+        self.al_elegir = al_elegir
         self.title("Seleccionar Fecha")
         self.resizable(False, False)
         self.transient(parent)
@@ -1373,6 +1508,11 @@ class CalendarioNativo(ctk.CTkToplevel):
             
         self.target_entry.delete(0, tk.END)
         self.target_entry.insert(0, fecha_seleccionada)
+        if callable(getattr(self, "al_elegir", None)):
+            try:
+                self.al_elegir(fecha_seleccionada)
+            except Exception as e_aviso:
+                print("Aviso - calendario:", e_aviso)
         self.destroy()
 
 _SCHEMA_COMPRAS_OK = False
@@ -1453,6 +1593,202 @@ def sumar_meses_a_fecha(fecha_txt, meses):
     mes = total % 12 + 1
     dia = min(base.day, calendar.monthrange(anio, mes)[1])
     return f"{dia:02d}/{mes:02d}/{anio}"
+
+
+def texto_duracion_meses(meses):
+    """'6 meses' / '1 año' / '2 años' (para los botones de vencimiento)."""
+    try:
+        meses = int(meses)
+    except Exception:
+        return ""
+    if meses % 12 == 0 and meses >= 12:
+        anios = meses // 12
+        return "1 año" if anios == 1 else "%d años" % anios
+    return "%d meses" % meses
+
+
+def abrir_reset_documentos_chofer(parent, chofer_etiqueta="", todos=False, usuario=""):
+    """Ventana para resetear las fechas de los documentos del chofer.
+
+    Se muestran los documentos UNA sola vez: si es para todos los choferes, la misma
+    fecha se aplica a cada uno. Cada documento lleva "Fecha en que se realizó" y
+    "Fecha de vencimiento" (las dos con calendario); el vencimiento se calcula solo al
+    escribir la fecha de realización y queda en el cronograma para avisar.
+    """
+    try:
+        from choferes import (DOCUMENTOS_CHOFER, choferes_activos, documentos_de_chofer,
+                              actualizar_documento_chofer, sumar_meses_fecha)
+    except Exception as e:
+        return messagebox.showerror("Documentos del chofer",
+                                    "No se pudo cargar el módulo de Choferes:\n%s" % e, parent=parent)
+
+    if todos:
+        elegidos = choferes_activos()
+        titulo = "Documentos de TODOS los choferes (%d)" % len(elegidos)
+    else:
+        elegidos = [c for c in choferes_activos() if c.get("etiqueta") == chofer_etiqueta]
+        if not elegidos:
+            return messagebox.showinfo("Documentos del chofer",
+                                       "Elija primero un chofer en la lista (o «Todos los choferes»).",
+                                       parent=parent)
+        titulo = "Documentos de %s" % elegidos[0]["etiqueta"]
+
+    if not elegidos:
+        return messagebox.showinfo("Documentos del chofer",
+                                   "No hay choferes activos para actualizar.", parent=parent)
+
+    # Los documentos se muestran UNA sola vez (la misma fecha para todos)
+    datos_actuales = {} if todos else documentos_de_chofer(elegidos[0]["id"])
+
+    v = ctk.CTkToplevel(parent)
+    v.title("Documentos del Chofer")
+    v.geometry("1000x700")
+    v.transient(parent)
+    try:
+        traer_al_frente(v)
+    except Exception:
+        pass
+
+    ctk.CTkLabel(v, text="📄 %s" % titulo, font=("Arial", 16, "bold"),
+                 text_color="#1f538d").pack(pady=(12, 2))
+    ayuda = ("Marque la fecha en que se realizó cada documento y su vencimiento (el vencimiento "
+             "se calcula solo al escribir la fecha de realización). " +
+             ("Se aplicará la MISMA fecha a los %d choferes." % len(elegidos) if todos else
+              "Quedará avisado en Cronograma y Vencimientos."))
+    ctk.CTkLabel(v, text=ayuda, font=("Arial", 11), text_color="gray",
+                 wraplength=940, justify="left").pack(pady=(0, 8), padx=14)
+
+    contenedor = ctk.CTkScrollableFrame(v, fg_color="transparent")
+    contenedor.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+
+    filas = []
+
+    def _aplicar_duracion(meses, entrada_fecha, entrada_vence, doc, ventana):
+        """Pone el vencimiento = fecha de realización + la duración elegida."""
+        realizado = entrada_fecha.get().strip()
+        if not realizado:
+            messagebox.showwarning(
+                "Falta la fecha",
+                "Primero escriba la «Fecha en que se realizó» de %s y vuelva a pulsar el botón."
+                % doc["etiqueta"], parent=ventana)
+            try:
+                entrada_fecha.focus_set()
+            except Exception:
+                pass
+            return
+        try:
+            entrada_vence.delete(0, "end")
+            entrada_vence.insert(0, sumar_meses_fecha(realizado, meses) or "")
+        except Exception as e:
+            print("Aviso - duración del documento:", e)
+
+    def _calcular(doc, entrada_fecha, entrada_vence):
+        """Calcula el vencimiento sumando la duración del documento."""
+        try:
+            escrito = entrada_fecha.get().strip()
+            if escrito:
+                entrada_vence.delete(0, "end")
+                entrada_vence.insert(0, sumar_meses_fecha(escrito, int(doc.get("meses") or 0)) or "")
+        except Exception:
+            pass
+
+    for doc in DOCUMENTOS_CHOFER:
+        actual = (datos_actuales.get("fechas", {}) or {}).get(doc["clave"], "") or "—"
+        marco = ctk.CTkFrame(contenedor, fg_color="#f7f9fb", corner_radius=8)
+        marco.pack(fill="x", padx=6, pady=5)
+        ctk.CTkLabel(marco, text="📄 %s" % doc["etiqueta"], font=("Arial", 12, "bold"),
+                     anchor="w").pack(fill="x", padx=10, pady=(8, 0))
+        ctk.CTkLabel(marco, text=("Vencimiento actual: %s" % actual if not todos else
+                                  "Se aplicará la misma fecha a todos los choferes"),
+                     font=("Arial", 10), text_color="gray", anchor="w").pack(fill="x", padx=10)
+
+        linea = ctk.CTkFrame(marco, fg_color="transparent")
+        linea.pack(fill="x", padx=10, pady=(4, 9))
+        ctk.CTkLabel(linea, text="Fecha en que se realizó:", font=("Arial", 11, "bold")).pack(side="left")
+        entrada_fecha = ctk.CTkEntry(linea, placeholder_text="DD/MM/AAAA", width=120)
+        entrada_fecha.pack(side="left", padx=(6, 4))
+        ctk.CTkButton(linea, text="[ 📅 ]", width=44, font=("Arial", 11, "bold"),
+                      fg_color="#2980b9", hover_color="#1f6391",
+                      command=lambda e=entrada_fecha, c=doc, vv=None: CalendarioNativo(
+                          v, e, lambda _x=None: _calcular(c, e, entrada_vence))).pack(side="left")
+
+        ctk.CTkLabel(linea, text="Fecha de vencimiento:", font=("Arial", 11, "bold")).pack(
+            side="left", padx=(16, 4))
+        entrada_vence = ctk.CTkEntry(linea, placeholder_text="DD/MM/AAAA", width=120)
+        entrada_vence.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(linea, text="[ 📅 ]", width=44, font=("Arial", 11, "bold"),
+                      fg_color="#2980b9", hover_color="#1f6391",
+                      command=lambda e=entrada_vence: CalendarioNativo(v, e)).pack(side="left")
+
+        entrada_fecha.bind("<KeyRelease>", lambda _e, c=doc, f=entrada_fecha, vv=entrada_vence:
+                           _calcular(c, f, vv))
+        entrada_fecha.bind("<FocusOut>", lambda _e, c=doc, f=entrada_fecha, vv=entrada_vence:
+                           _calcular(c, f, vv))
+
+        # ⏱️ Botones de duración: ponen la fecha de vencimiento a partir de la emisión
+        atajos = ctk.CTkFrame(marco, fg_color="transparent")
+        atajos.pack(fill="x", padx=10, pady=(0, 9))
+        ctk.CTkLabel(atajos, text="Atajos:", font=("Arial", 10, "bold"),
+                     text_color="gray").pack(side="left", padx=(0, 6))
+        duraciones = [int(doc.get("meses") or 0)]
+        for alterno in (6, 12, 24, 36):
+            if alterno not in duraciones:
+                duraciones.append(alterno)
+        for meses in duraciones[:3]:
+            etiqueta_boton = "Vence %s" % texto_duracion_meses(meses)
+            ctk.CTkButton(atajos, text=etiqueta_boton, width=118, height=26,
+                          font=("Arial", 11, "bold"),
+                          fg_color=("#1f538d" if meses == int(doc.get("meses") or 0) else "#5d6d7e"),
+                          hover_color="#163b65",
+                          command=lambda m=meses, f=entrada_fecha, vv=entrada_vence, c=doc:
+                          _aplicar_duracion(m, f, vv, c, v)).pack(side="left", padx=3)
+
+        filas.append((doc, entrada_fecha, entrada_vence))
+
+    def aplicar():
+        aplicados, errores = 0, []
+        for doc, entrada_fecha, entrada_vence in filas:
+            realizado = entrada_fecha.get().strip()
+            vence = entrada_vence.get().strip()
+            if not realizado and not vence:
+                continue
+            for chofer in elegidos:
+                ok, mensaje = actualizar_documento_chofer(
+                    chofer["id"], doc["clave"], fecha_realizado=realizado,
+                    vencimiento=vence, usuario=usuario,
+                    categoria=str(chofer.get("categoria") or ""))
+                if ok:
+                    aplicados += 1
+                else:
+                    errores.append("%s - %s: %s" % (chofer.get("etiqueta", "?"), doc["etiqueta"], mensaje))
+        try:
+            cache_sistema.invalidar()
+        except Exception:
+            pass
+        if errores:
+            messagebox.showwarning("Documentos del chofer",
+                                   "Se aplicaron %d documento(s).\n\nCon problemas:\n%s"
+                                   % (aplicados, chr(10).join(errores[:6])), parent=v)
+        else:
+            messagebox.showinfo("Documentos del chofer",
+                                "Se aplicaron %d documento(s) a %d chofer(es).\n\nLos vencimientos "
+                                "ya están en «Cronograma y Vencimientos»."
+                                % (aplicados, len(elegidos)), parent=v)
+        if aplicados:
+            try:
+                v.destroy()
+            except Exception:
+                pass
+
+    barra = ctk.CTkFrame(v, fg_color="transparent")
+    barra.pack(fill="x", padx=12, pady=(0, 12))
+    ctk.CTkButton(barra, text="✅ Aplicar documentos", height=42, font=("Arial", 13, "bold"),
+                  fg_color="#27ae60", hover_color="#1e8449", command=aplicar).pack(
+        side="left", expand=True, fill="x", padx=(0, 6))
+    ctk.CTkButton(barra, text="✖ Cancelar", height=42, font=("Arial", 13, "bold"),
+                  fg_color="#7f8c8d", hover_color="#616a6b", command=v.destroy).pack(
+        side="left", expand=True, fill="x", padx=(6, 0))
+    return v
 
 
 def abrir_reset_mantenimientos_vehiculo(parent, placa, usuario_activo="", al_terminar=None):
@@ -1747,6 +2083,8 @@ class FacturasRecibidasTab:
                 except: conn.rollback()
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS orden_servicio VARCHAR(120) DEFAULT '';"); conn.commit()
                 except: conn.rollback()
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS chofer_asociado VARCHAR(160) DEFAULT '';"); conn.commit()
+                except: conn.rollback()
                 _SCHEMA_COMPRAS_OK = True
             except Exception: pass
             finally: liberar_conexion(conn)
@@ -1883,10 +2221,15 @@ class FacturasRecibidasTab:
         self.on_tipo_change(self.combo_tipo.get())
 
         # ---- N° de documento ----
-        nro_match = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
-        if nro_match:
+        # Se usa el lector tolerante: el OCR suele leer "F581 08283480" SIN guion
+        # (antes se exigía el guion y el N° no llegaba al formulario).
+        numero_leido = numero_comprobante_desde_texto(texto)
+        if not numero_leido:
+            nro_match = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
+            numero_leido = nro_match.group(1).replace(" ", "") if nro_match else ""
+        if numero_leido:
             self.ent_nro_doc.delete(0, tk.END)
-            self.ent_nro_doc.insert(0, nro_match.group(1).replace(" ", ""))
+            self.ent_nro_doc.insert(0, numero_leido)
 
         # ---- Fecha ----
         fecha_match = re.search(r"Fecha de Emisi[oó]n\s*[:\-]?\s*(\d{2})[/\-.](\d{2})[/\-.](\d{4})",
@@ -2677,7 +3020,8 @@ class FacturasRecibidasTab:
         ctk.CTkLabel(self.f_form, text="Vehículo Asignado (Placa):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         f_veh = ctk.CTkFrame(self.f_form, fg_color="transparent")
         f_veh.pack(fill="x", padx=10, pady=(0, 8))
-        self.combo_evento = ctk.CTkComboBox(f_veh, state="readonly")
+        self.combo_evento = ctk.CTkComboBox(f_veh, state="readonly",
+                                            command=lambda _v: self._sincronizar_vehiculo_chofer("vehiculo"))
         self.combo_evento.pack(side="left", fill="x", expand=True)
         # 🛠️ Si la compra es de un vehículo, desde aquí se resetean sus mantenimientos
         ctk.CTkButton(f_veh, text="🛠️", width=34, font=("Arial", 12, "bold"),
@@ -2685,6 +3029,21 @@ class FacturasRecibidasTab:
                       command=lambda: abrir_reset_mantenimientos_vehiculo(
                           self.main_root, self.combo_evento.get(), self.app_padre.usuario_activo)).pack(
             side="right", padx=(5, 0))
+        ctk.CTkLabel(self.f_form, text="Chofer Asignado:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+        f_cho = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_cho.pack(fill="x", padx=10, pady=(0, 8))
+        self.combo_chofer_factura = ctk.CTkComboBox(f_cho, state="readonly",
+                                                    command=lambda _v: self._sincronizar_vehiculo_chofer("chofer"))
+        self.combo_chofer_factura.pack(side="left", fill="x", expand=True)
+        # 📄 Documentos del chofer: brevete, seguros y carné de sanidad (con su vencimiento)
+        ctk.CTkButton(f_cho, text="🛠️", width=34, font=("Arial", 12, "bold"),
+                      fg_color="#e67e22", hover_color="#ca6f1e",
+                      command=lambda: abrir_reset_documentos_chofer(
+                          self.main_root, self.combo_chofer_factura.get(),
+                          todos=(self.combo_chofer_factura.get() == "Todos los choferes"),
+                          usuario=self.app_padre.usuario_activo)).pack(side="right", padx=(5, 0))
+        self.cargar_choferes_bd()
+
         self.cargar_vehiculos_bd()
 
         # 🎫 CARNET DE SANIDAD: cuando la categoría del gasto es un carné de sanidad
@@ -3263,10 +3622,11 @@ class FacturasRecibidasTab:
                          al_terminar=lambda e: self._aplicar_vehs(e.get("valor") or []))
 
     def _aplicar_vehs(self, vehiculos):
-        lista_vehiculos = ["GENERAL / OFICINA"] + vehiculos
+        lista_vehiculos = ["Ninguno"] + vehiculos
         self.combo_evento.configure(values=lista_vehiculos)
         if self.combo_evento.get() not in lista_vehiculos:
-            self.combo_evento.set("GENERAL / OFICINA")
+            self.combo_evento.set("Ninguno")
+        self._sincronizar_vehiculo_chofer()
 
     # =========================================================================
     # 🎫 CARNET DE SANIDAD: CHOFER + VENCIMIENTO (6 MESES) EN EL CRONOGRAMA
@@ -3321,6 +3681,46 @@ class FacturasRecibidasTab:
         except Exception:
             pass
 
+    def _sincronizar_vehiculo_chofer(self, origen=""):
+        """Placa y chofer son excluyentes: se elige uno u otro, nunca los dos.
+
+        Si hay una placa, el chofer queda en 'Ninguno' y bloqueado (y al revés).
+        """
+        try:
+            combo_veh = getattr(self, "combo_evento", None)
+            combo_cho = getattr(self, "combo_chofer_factura", None)
+            if combo_veh is None or combo_cho is None:
+                return
+            placa = str(combo_veh.get() or "").strip()
+            chofer = str(combo_cho.get() or "").strip()
+            hay_placa = placa not in ("", "Ninguno")
+            hay_chofer = chofer not in ("", "Ninguno")
+
+            if hay_placa and hay_chofer:
+                # El último que se eligió manda
+                if origen == "chofer":
+                    combo_veh.set("Ninguno")
+                    hay_placa = False
+                else:
+                    combo_cho.set("Ninguno")
+                    hay_chofer = False
+            elif hay_placa:
+                combo_cho.set("Ninguno")
+            elif hay_chofer:
+                combo_veh.set("Ninguno")
+
+            # El que no se usa queda bloqueado (y el otro libre)
+            try:
+                combo_cho.configure(state=("disabled" if hay_placa else "readonly"))
+            except Exception:
+                pass
+            try:
+                combo_veh.configure(state=("disabled" if hay_chofer else "readonly"))
+            except Exception:
+                pass
+        except Exception as e:
+            print("Aviso - placa/chofer:", e)
+
     def cargar_choferes_bd(self):
         """Carga los choferes activos para el desplegable del carné de sanidad."""
         choferes = cache_sistema.obtener("lista_choferes_compras")
@@ -3328,7 +3728,10 @@ class FacturasRecibidasTab:
             self._aplicar_choferes(choferes)
             return
 
-        self.combo_chofer.set("Cargando choferes...")
+        # Puede no existir todavía si los choferes se piden al abrir el formulario
+        _combo_carnet = getattr(self, "combo_chofer", None)
+        if _combo_carnet is not None:
+            _combo_carnet.set("Cargando choferes...")
 
         def _leer_choferes(estado):
             lista = []
@@ -3361,9 +3764,21 @@ class FacturasRecibidasTab:
             etiquetas = list(self._mapa_choferes.keys())
             if not etiquetas:
                 etiquetas = ["Sin choferes registrados"]
-            self.combo_chofer.configure(values=etiquetas)
-            # Se deja vacío a propósito: el usuario debe elegir el chofer.
-            self.combo_chofer.set("" if self._mapa_choferes else etiquetas[0])
+            # El combo del carné puede no existir todavía (los choferes se cargan al
+            # abrir el formulario, y el bloque del carné se arma después).
+            combo_carnet = getattr(self, "combo_chofer", None)
+            if combo_carnet is not None:
+                combo_carnet.configure(values=etiquetas)
+                # Se deja vacío a propósito: el usuario debe elegir el chofer.
+                combo_carnet.set("" if self._mapa_choferes else etiquetas[0])
+            # 🚚 Desplegable del formulario de facturas: ninguno / todos / uno en especial
+            combo_factura = getattr(self, "combo_chofer_factura", None)
+            if combo_factura is not None:
+                opciones = ["Ninguno", "Todos los choferes"] + list(self._mapa_choferes.keys())
+                elegido = combo_factura.get()
+                combo_factura.configure(values=opciones)
+                combo_factura.set(elegido if elegido in opciones else "Ninguno")
+            self._sincronizar_vehiculo_chofer()
         except Exception as e:
             print("Aviso - lista de choferes:", e)
 
@@ -3642,7 +4057,7 @@ class FacturasRecibidasTab:
                 try:
                     valores = list(self.combo_evento.cget("values") or [])
                     actual = self.combo_evento.get().strip()
-                    if not actual or actual == "GENERAL / OFICINA":
+                    if not actual or actual in ("GENERAL / OFICINA", "Ninguno"):
                         if orden[3] not in valores:
                             valores.append(orden[3])      # la unidad puede no estar en la lista
                             self.combo_evento.configure(values=valores)
@@ -4013,12 +4428,15 @@ class FacturasRecibidasTab:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc, id_orden_servicio, orden_servicio,
-                                                pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada, comision_interbancaria, es_interbancario)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada, comision_interbancaria, es_interbancario, chofer_asociado)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val, orden_id, orden_txt,
                   cruzada["tercero"] if cruzada["activa"] else "", ruta_soporte_tercero,
-                  bool(cruzada["activa"]), cruzada["comision"], bool(cruzada["interbancario"])))
+                  bool(cruzada["activa"]), cruzada["comision"], bool(cruzada["interbancario"]),
+                  (self.combo_chofer_factura.get() if getattr(self, "combo_chofer_factura", None)
+                  and self.combo_chofer_factura.get() not in ("", "Ninguno") 
+                  and str(self.combo_evento.get() if getattr(self, "combo_evento", None) else "").strip() in ("", "Ninguno") else "")))
             try:
                 id_factura_nueva = int(cursor.fetchone()[0])
             except Exception:

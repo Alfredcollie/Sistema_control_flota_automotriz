@@ -1890,3 +1890,167 @@ class ChoferesApp:
                 messagebox.showerror("Error", str(e))
             finally:
                 liberar_conexion(conn)
+
+
+# =========================================================================
+# 📄 DOCUMENTOS DEL CHOFER (se renuevan desde Compras y avisan en el cronograma)
+# =========================================================================
+DOCUMENTOS_CHOFER = (
+    {"clave": "brevete", "etiqueta": "Brevete (Licencia de Conducir)",
+     "columna": "vencimiento_licencia", "tarea": "Venc. Licencia", "meses": 36},
+    {"clave": "salud", "etiqueta": "Seguro de Salud (EsSalud / EPS)",
+     "columna": "seguro_salud_venc", "tarea": "Venc. Seguro Salud (EsSalud/EPS)", "meses": 12},
+    {"clave": "salud_ley", "etiqueta": "Seguro de Salud de Ley (Vida Ley)",
+     "columna": "seguro_vida_venc", "tarea": "Venc. Seguro Vida Ley", "meses": 12},
+    {"clave": "carnet_sanidad", "etiqueta": "Carné de Sanidad",
+     "columna": "carnet_sanidad_venc", "tarea": "Venc. Carné de Sanidad", "meses": 6},
+)
+
+
+def documento_chofer_por_clave(clave):
+    """Devuelve la ficha del documento pedido (o {} si no existe)."""
+    for doc in DOCUMENTOS_CHOFER:
+        if doc["clave"] == str(clave):
+            return dict(doc)
+    return {}
+
+
+def choferes_activos():
+    """Choferes activos: [{'id', 'nombres', 'dni', 'etiqueta'}]."""
+    lista = []
+    conn = conectar_db()
+    if not conn:
+        return lista
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""SELECT id, COALESCE(nombres, ''), COALESCE(dni, '')
+                          FROM choferes
+                          WHERE COALESCE(estado, 'Activo') <> 'Inactivo'
+                          ORDER BY nombres ASC""")
+        for fila in cursor.fetchall():
+            id_chofer, nombres, dni = (list(fila) + ["", ""])[:3]
+            lista.append({"id": int(id_chofer), "nombres": str(nombres), "dni": str(dni),
+                          "etiqueta": ("%s — %s" % (nombres, dni)).strip(" —")})
+    except Exception as e:
+        print("Aviso - choferes activos:", e)
+    finally:
+        liberar_conexion(conn)
+    return lista
+
+
+def documentos_de_chofer(id_chofer):
+    """Fechas de vencimiento que tiene guardadas el chofer ahora mismo."""
+    datos = {"id": id_chofer, "nombres": "", "dni": "", "categoria": "", "fechas": {}}
+    if not id_chofer:
+        return datos
+    conn = conectar_db()
+    if not conn:
+        return datos
+    try:
+        cursor = conn.cursor()
+        for sentencia in ("ALTER TABLE choferes ADD COLUMN IF NOT EXISTS seguro_salud_venc VARCHAR(20) DEFAULT ''",
+                          "ALTER TABLE choferes ADD COLUMN IF NOT EXISTS seguro_vida_venc VARCHAR(20) DEFAULT ''",
+                          "ALTER TABLE choferes ADD COLUMN IF NOT EXISTS vencimiento_licencia VARCHAR(20) DEFAULT ''",
+                          "ALTER TABLE choferes ADD COLUMN IF NOT EXISTS carnet_sanidad_venc VARCHAR(20) DEFAULT ''"):
+            try:
+                cursor.execute(sentencia); conn.commit()
+            except Exception:
+                conn.rollback()
+        columnas = ", ".join("COALESCE(%s, '')" % d["columna"] for d in DOCUMENTOS_CHOFER)
+        cursor.execute("""SELECT COALESCE(nombres, ''), COALESCE(dni, ''), COALESCE(categoria_licencia, ''),
+                                 %s
+                          FROM choferes WHERE id = %%s""" % columnas, (id_chofer,))
+        fila = cursor.fetchone()
+        if fila:
+            datos["nombres"], datos["dni"], datos["categoria"] = (list(fila) + ["", "", ""])[:3]
+            for indice, doc in enumerate(DOCUMENTOS_CHOFER):
+                try:
+                    datos["fechas"][doc["clave"]] = str(fila[3 + indice] or "")
+                except Exception:
+                    datos["fechas"][doc["clave"]] = ""
+    except Exception as e:
+        print("Aviso - documentos del chofer:", e)
+    finally:
+        liberar_conexion(conn)
+    return datos
+
+
+def actualizar_documento_chofer(id_chofer, clave, fecha_realizado=None, vencimiento=None,
+                                usuario="Sistema", categoria=""):
+    """Guarda la fecha de realización y el vencimiento de un documento del chofer.
+
+    Deja el aviso en el cronograma 'FLOTA | Vencimientos' (la misma tarea que usa el
+    módulo de Choferes, así no se duplican). Si no se indica el vencimiento se calcula
+    sumando la duración del documento a la fecha de realización.
+
+    Devuelve (ok, mensaje): el mensaje es el vencimiento guardado o el motivo del fallo.
+    """
+    doc = documento_chofer_por_clave(clave)
+    if not doc or not id_chofer:
+        return False, "No se indicó el documento o el chofer."
+
+    conn = conectar_db()
+    if not conn:
+        return False, "Sin conexión a la base de datos."
+    try:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("ALTER TABLE choferes ADD COLUMN IF NOT EXISTS %s VARCHAR(20) DEFAULT ''"
+                           % doc["columna"]); conn.commit()
+        except Exception:
+            conn.rollback()
+
+        cursor.execute("""SELECT COALESCE(nombres, ''), COALESCE(dni, ''), COALESCE(%s, '')
+                          FROM choferes WHERE id = %%s""" % doc["columna"], (id_chofer,))
+        fila = cursor.fetchone()
+        if not fila:
+            return False, "El chofer seleccionado ya no existe."
+        nombres, dni, actual = (list(fila) + ["", "", ""])[:3]
+
+        realizado = str(fecha_realizado if fecha_realizado is not None else actual or "").strip()
+        if vencimiento:
+            vence = str(vencimiento).strip()
+        else:
+            vence = sumar_meses_fecha(realizado, int(doc.get("meses") or 0)) if realizado else ""
+
+        cursor.execute("UPDATE choferes SET %s = %%s WHERE id = %%s" % doc["columna"],
+                       (vence, id_chofer))
+        conn.commit()
+
+        # 📅 Cronograma: se reemplaza el aviso anterior de ese documento
+        identificador = "%s (DNI: %s)" % (nombres, dni)
+        nombre_tarea = doc["tarea"]
+        if doc["clave"] == "brevete" and str(categoria or "").strip():
+            nombre_tarea = "%s (%s)" % (doc["tarea"], str(categoria).strip())
+        try:
+            cursor.execute("""DELETE FROM tareas_evento
+                              WHERE evento_asociado = 'FLOTA | Vencimientos' AND responsable = %s
+                                AND nombre_tarea LIKE %s""",
+                           (identificador, doc["tarea"][:14] + "%"))
+            if vence:
+                cursor.execute("SELECT COALESCE(MAX(orden), 0) FROM tareas_evento WHERE evento_asociado = 'FLOTA | Vencimientos'")
+                nuevo_orden = (cursor.fetchone()[0] or 0) + 1
+                cursor.execute("""INSERT INTO tareas_evento
+                                  (evento_asociado, nombre_tarea, responsable, fecha_limite, estado, notas, orden, tipo_pago)
+                                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                               ("FLOTA | Vencimientos", nombre_tarea, identificador, vence, "Pendiente",
+                                "%s de %s (realizado: %s). Alerta automática del sistema de compras."
+                                % (doc["etiqueta"], nombres, realizado or "sin fecha"),
+                                nuevo_orden, "No aplica"))
+            conn.commit()
+        except Exception as e_crono:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            print("Aviso - cronograma de documentos del chofer:", e_crono)
+        return True, vence
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e)
+    finally:
+        liberar_conexion(conn)
+
