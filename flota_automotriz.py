@@ -54,6 +54,24 @@ def limite_km_aceite():
     return 5000.0
 
 
+def limite_km_gas():
+    """Cada cuántos kilómetros toca el mantenimiento del sistema de gas.
+
+    Se configura en Configuración General → Ajustes de Flota Automotriz
+    ('alerta_gas_km'); por defecto 10.000 km.
+    """
+    for clave in ("alerta_gas_km", "alerta_mantenimiento_gas_km"):
+        try:
+            v = str(CONFIG_REGIONAL.get(clave, "") or "").replace(",", ".").strip()
+            if v:
+                n = float(v)
+                if n > 0:
+                    return n
+        except Exception:
+            continue
+    return 10000.0
+
+
 def a_numero(valor):
     """Convierte '45000', '45,000', '45.000 km' o '' a número (0.0 si no se puede)."""
     txt = re.sub(r"[^0-9.,]", "", str(valor or ""))
@@ -105,6 +123,34 @@ def _contexto_ssl_seguro():
 # =========================================================
 # CLASE: MINI CALENDARIO (ACTUALIZADO CON COMBOBOX)
 # =========================================================
+def fechas_de_certificado(texto):
+    """(emision, vencimiento) leídas del texto de un certificado.
+
+    Sirve para el SOAT y para el certificado de extintor: se buscan las fechas
+    dd/mm/aaaa y se toma la menor como emisión y la mayor como vencimiento.
+    Devuelve ("", "") si no encuentra dos fechas coherentes.
+    """
+    import re as _re
+    from datetime import datetime as _dt
+    encontradas = []
+    for m in _re.finditer(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})", str(texto or "")):
+        d, mes, anio = m.groups()
+        try:
+            anio = int(anio) + (2000 if len(anio) == 2 else 0)
+            fecha = _dt(anio, int(mes), int(d))
+        except Exception:
+            continue
+        if 2000 <= fecha.year <= 2100:
+            encontradas.append(fecha)
+    if not encontradas:
+        return "", ""
+    unicas = sorted(set(encontradas))
+    if len(unicas) == 1:
+        return unicas[0].strftime("%d/%m/%Y"), ""
+    # La primera fecha del certificado suele ser la emisión y la última el vencimiento
+    return unicas[0].strftime("%d/%m/%Y"), unicas[-1].strftime("%d/%m/%Y")
+
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry):
         super().__init__(parent)
@@ -262,7 +308,30 @@ class FlotaAutomotrizApp:
                     # 🛢️ Kilometraje del último cambio de aceite (para calcular el próximo).
                     # Son las mismas columnas que usa el Cronograma para sus proyecciones.
                     "ALTER TABLE flota_vehiculos ADD COLUMN km_ultimo_aceite NUMERIC DEFAULT 0",
-                    "ALTER TABLE flota_vehiculos ADD COLUMN fecha_ultimo_aceite VARCHAR(20) DEFAULT ''" 
+                    "ALTER TABLE flota_vehiculos ADD COLUMN fecha_ultimo_aceite VARCHAR(20) DEFAULT ''",
+                    # 📎 Certificados escaneados (SOAT y extintor) guardados como PDF/JPG
+                    "ALTER TABLE flota_vehiculos ADD COLUMN soat_archivo TEXT DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN extintor_archivo TEXT DEFAULT ''",
+                    # 🛡️ N° de póliza del seguro y soportes de RT y de gas
+                    "ALTER TABLE flota_vehiculos ADD COLUMN seguro_num VARCHAR(100) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN rt_archivo TEXT DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN gas_archivo TEXT DEFAULT ''",
+                    # 💨 MANTENIMIENTO del sistema de gas (distinto de la REVISIÓN):
+                    #    fecha de emisión + kilómetros del mantenimiento
+                    "ALTER TABLE flota_vehiculos ADD COLUMN emision_mant_gas VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN km_mant_gas VARCHAR(50) DEFAULT ''",
+                    # 🔋 Marca y modelo de la batería
+                    "ALTER TABLE flota_vehiculos ADD COLUMN bat_marca VARCHAR(60) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN bat_modelo VARCHAR(60) DEFAULT ''",
+                    # 🛞 Neumáticos: marca, modelo, medidas, kilómetros y fecha
+                    "ALTER TABLE flota_vehiculos ADD COLUMN neu_marca VARCHAR(60) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN neu_modelo VARCHAR(60) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN neu_medidas VARCHAR(60) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN neu_km VARCHAR(50) DEFAULT ''",
+                    "ALTER TABLE flota_vehiculos ADD COLUMN neu_fecha VARCHAR(20) DEFAULT ''",
+                    # (renombre por si ya se había creado con el nombre anterior)
+                    "ALTER TABLE flota_vehiculos RENAME COLUMN emision_rev_gas TO emision_mant_gas",
+                    "ALTER TABLE flota_vehiculos RENAME COLUMN km_rev_gas TO km_mant_gas"
                 ]
                 
                 for query in columnas_nuevas:
@@ -326,7 +395,15 @@ class FlotaAutomotrizApp:
 
                 img_b64 = base64.b64encode(img_bytes).decode('utf-8')
 
-                QWEN_API_KEY = "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
+                # 🔑 La clave se puede cambiar en Configuración General → Ajustes (ia_qwen_api_key)
+                QWEN_API_KEY = str(CONFIG_REGIONAL.get("ia_qwen_api_key", "") or "").strip() or "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
+                QWEN_API_URL = (str(CONFIG_REGIONAL.get("ia_qwen_url", "") or "").strip()
+                                or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions")
+                # 🤖 Modelos a intentar en orden: qwen-vl-plus fue RETIRADO (da 404 "Model not exist")
+                _preferido = str(CONFIG_REGIONAL.get("ia_qwen_modelo", "") or "").strip()
+                MODELOS_IA = ([_preferido] if _preferido else []) + [
+                    "qwen3-vl-plus", "qwen-vl-max", "qwen-vl-plus",
+                    "qwen2.5-vl-72b-instruct", "qwen-vl-max-latest"]
                 QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 
                 prompt = """
@@ -351,26 +428,49 @@ class FlotaAutomotrizApp:
                     "Content-Type": "application/json"
                 }
 
-                payload = {
-                    "model": "qwen-vl-plus",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}
-                                },
-                                {"type": "text", "text": prompt}
-                            ]
-                        }
-                    ]
-                }
+                mensajes = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}
+                            },
+                            {"type": "text", "text": prompt}
+                        ]
+                    }
+                ]
 
-                respuesta = requests.post(QWEN_API_URL, headers=headers, json=payload)
-                respuesta.raise_for_status()
+                # 🤖 Se prueban los modelos en orden: si uno no existe (404) o no tiene
+                # permiso/cuota (403), se intenta con el siguiente.
+                datos_respuesta = None
+                problemas = []
+                for modelo in MODELOS_IA:
+                    payload = {"model": modelo, "messages": mensajes}
+                    try:
+                        respuesta = requests.post(QWEN_API_URL, headers=headers, json=payload, timeout=120)
+                    except Exception as e:
+                        problemas.append("%s → no se pudo conectar (%s)" % (modelo, str(e)[:90]))
+                        continue
+                    if respuesta.status_code == 200:
+                        try:
+                            datos_respuesta = respuesta.json()
+                            break
+                        except Exception as e:
+                            problemas.append("%s → respuesta ilegible (%s)" % (modelo, str(e)[:60]))
+                            continue
+                    detalle = ""
+                    try:
+                        detalle = str((respuesta.json() or {}).get("error", {}).get("message", ""))[:150]
+                    except Exception:
+                        detalle = str(respuesta.text or "")[:150]
+                    problemas.append("%s → %s %s" % (modelo, respuesta.status_code, detalle))
+                    if respuesta.status_code in (401, 402):
+                        break   # clave inválida o sin saldo: no tiene sentido seguir probando
 
-                datos_respuesta = respuesta.json()
+                if datos_respuesta is None:
+                    raise RuntimeError("Ningún modelo de IA respondió.\n" + "\n".join(problemas))
+
                 texto_ia = datos_respuesta['choices'][0]['message']['content']
 
                 match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
@@ -382,7 +482,14 @@ class FlotaAutomotrizApp:
 
         def aplicar_resultado(datos):
             if isinstance(datos, Exception):
-                messagebox.showerror("Error IA", f"No se pudo procesar el documento con Inteligencia Artificial.\nDetalle: {datos}")
+                pista = ""
+                txt_err = str(datos)
+                if "quota" in txt_err.lower() or "exhaust" in txt_err.lower():
+                    pista = ("\n\n💡 La cuota gratuita del modelo se agotó. Puede poner su propia clave "
+                             "de Alibaba/DashScope en: Configuración General → Ajustes (campo «Clave IA Qwen»).")
+                elif "404" in txt_err or "not exist" in txt_err.lower():
+                    pista = "\n\n💡 El modelo fue retirado; el sistema ya prueba otros automáticamente."
+                messagebox.showerror("Error IA", f"No se pudo procesar el documento con Inteligencia Artificial.\nDetalle: {datos}{pista}")
                 return
 
             def set_val(entry, clave):
@@ -495,6 +602,232 @@ class FlotaAutomotrizApp:
         if "color" in data: self.ent_color.delete(0, tk.END); self.ent_color.insert(0, data.get("color", ""))
         messagebox.showinfo("Consulta", "Datos obtenidos exitosamente de la base de datos.")
 
+    # =====================================================================
+    # 📎 CERTIFICADOS (SOAT y EXTINTOR): se cargan en PDF o JPG/PNG
+    # =====================================================================
+    def _abrir_archivo_local(self, ruta):
+        """Abre un archivo del equipo (Windows y macOS)."""
+        try:
+            if not ruta or not os.path.exists(ruta):
+                return messagebox.showwarning("Certificado", "El archivo ya no está en esa carpeta.")
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", ruta])
+            elif sys.platform == "win32":
+                os.startfile(ruta)          # noqa: S606 (solo Windows)
+            else:
+                subprocess.Popen(["xdg-open", ruta])
+        except Exception as e:
+            messagebox.showerror("Certificado", "No se pudo abrir el archivo:\n%s" % e)
+
+    def _elegir_certificado(self, tipo):
+        """Pide el PDF/JPG del certificado y devuelve la ruta (o "" si se cancela).
+
+        Si ya había uno cargado, ofrece verlo o reemplazarlo.
+        """
+        ATRIBUTOS = {"soat": ("_soat_archivo", "SOAT"),
+                     "extintor": ("_extintor_archivo", "Certificado de Extintor"),
+                     "rt": ("_rt_archivo", "Revisión Técnica"),
+                     "gas": ("_gas_archivo", "Revisión de Gas")}
+        atributo, etiqueta = ATRIBUTOS.get(tipo, ("_soat_archivo", "Certificado"))
+        actual = str(getattr(self, atributo, "") or "").strip()
+        if actual and os.path.exists(actual):
+            reemplazar = messagebox.askyesno(
+                "Certificado ya cargado",
+                "Ya hay un %s cargado:\n%s\n\n¿Quiere REEMPLAZARLO?\n"
+                "(elija «No» para verlo)" % (etiqueta, os.path.basename(actual)))
+            if not reemplazar:
+                self._abrir_archivo_local(actual)
+                return ""
+        ruta = filedialog.askopenfilename(
+            title="Seleccionar %s (PDF o imagen)" % etiqueta,
+            filetypes=[("PDF o imagen", "*.pdf *.jpg *.jpeg *.png"), ("PDF", "*.pdf"),
+                       ("Imágenes", "*.jpg *.jpeg *.png"), ("Todos", "*.*")])
+        return ruta or ""
+
+    def _texto_de_certificado(self, ruta):
+        """Devuelve el texto del certificado: lo lee del PDF o le hace OCR a la imagen."""
+        texto = ""
+        try:
+            if str(ruta).lower().endswith(".pdf"):
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(ruta) as pdf:
+                        for pagina in pdf.pages:
+                            texto += (pagina.extract_text() or "") + "\n"
+                except Exception:
+                    texto = ""
+                if not texto.strip():
+                    try:
+                        import fitz
+                        doc = fitz.open(ruta)
+                        for pagina in doc:
+                            texto += (pagina.get_text() or "") + "\n"
+                        doc.close()
+                    except Exception:
+                        texto = ""
+            if not texto.strip():
+                import escaner
+                resultado = escaner.ocr_paginas([ruta])
+                if resultado.get("ok"):
+                    texto = "\n".join(str(p.get("texto", "")) for p in (resultado.get("resultados") or []))
+        except Exception as e:
+            print("Aviso - lectura del certificado:", e)
+        return texto or ""
+
+    def _valor(self, nombre):
+        """Valor de un campo del formulario ('' si no existe o falla)."""
+        try:
+            return str(getattr(self, nombre).get()).strip()
+        except Exception:
+            return ""
+
+    def _completar_fechas_del_certificado(self, tipo, ruta):
+        """Lee las fechas del certificado y completa los campos que estén vacíos."""
+        try:
+            texto = self._texto_de_certificado(ruta)
+            if not texto.strip():
+                return "No se pudo leer el texto del certificado (complete las fechas a mano)."
+            emision, vencimiento = fechas_de_certificado(texto)
+            if not emision and not vencimiento:
+                return "No se encontraron fechas en el certificado (complete las a mano)."
+            # Con una sola fecha, para RT/Gas/extintor se toma como VENCIMIENTO
+            if emision and not vencimiento and tipo in ("rt", "gas", "extintor"):
+                vencimiento, emision = emision, ""
+            aplicados = []
+            if tipo == "soat":
+                if emision and not self.ent_emi_soat.get().strip():
+                    self.ent_emi_soat.insert(0, emision); aplicados.append("emisión SOAT " + emision)
+                if vencimiento and not self.ent_soat.get().strip():
+                    self.ent_soat.insert(0, vencimiento); aplicados.append("vencimiento SOAT " + vencimiento)
+            elif tipo == "extintor":
+                if vencimiento and not self.ent_fec_venc_ext.get().strip():
+                    self.ent_fec_venc_ext.insert(0, vencimiento); aplicados.append("vencimiento del extintor " + vencimiento)
+            elif tipo == "rt":
+                if vencimiento and not self.ent_rt.get().strip():
+                    self.ent_rt.insert(0, vencimiento); aplicados.append("vencimiento de la revisión técnica " + vencimiento)
+            elif tipo == "gas":
+                if vencimiento and not self.ent_fec_rev_gas.get().strip():
+                    self.ent_fec_rev_gas.insert(0, vencimiento); aplicados.append("vencimiento de la revisión de gas " + vencimiento)
+            if not aplicados:
+                return "El certificado trae fechas, pero los campos ya tenían valor (no se tocaron)."
+            return "Se completaron las fechas: " + ", ".join(aplicados) + "."
+        except Exception as e:
+            return "No se pudieron leer las fechas del certificado: %s" % e
+
+    def _ver_certificado(self, tipo):
+        """Abre el certificado guardado (SOAT o extintor) tal como se cargó."""
+        ATRIBUTOS = {"soat": ("_soat_archivo", "SOAT", "soat_archivo"),
+                     "extintor": ("_extintor_archivo", "Certificado de Extintor", "extintor_archivo"),
+                     "rt": ("_rt_archivo", "Revisión Técnica", "rt_archivo"),
+                     "gas": ("_gas_archivo", "Revisión de Gas", "gas_archivo")}
+        atributo, etiqueta, columna = ATRIBUTOS.get(tipo, ("_soat_archivo", "Certificado", "soat_archivo"))
+        ruta = str(getattr(self, atributo, "") or "").strip()
+        if not ruta:
+            # Al editar un vehículo ya guardado puede estar en la base
+            try:
+                if getattr(self, "id_edicion", None):
+                    conn = conectar_db()
+                    if conn:
+                        try:
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT COALESCE(%s, '') FROM flota_vehiculos WHERE id = %%s"
+                                           % columna, (self.id_edicion,))
+                            fila = cursor.fetchone()
+                            ruta = str(fila[0] or "") if fila else ""
+                            if ruta:
+                                setattr(self, atributo, ruta)
+                        finally:
+                            liberar_conexion(conn)
+            except Exception as e:
+                print("Aviso - certificado guardado:", e)
+        if not ruta:
+            return messagebox.showinfo("Certificado",
+                                       "Todavía no hay %s cargado.\n\nUse el botón «📎 Cargar %s (PDF/JPG)»."
+                                       % (etiqueta, etiqueta),
+                                       parent=self.winfo_toplevel())
+        self._abrir_archivo_local(ruta)
+
+    def ver_certificado_soat(self):
+        """Abre el SOAT cargado (PDF o imagen)."""
+        return self._ver_certificado("soat")
+
+    def ver_certificado_extintor(self):
+        """Abre el certificado del extintor cargado (PDF o imagen)."""
+        return self._ver_certificado("extintor")
+
+    # 📎 Soportes de Revisión Técnica y de Gas (mismo comportamiento que SOAT/extintor)
+    def cargar_soporte_rt(self):
+        ruta = self._elegir_certificado("rt")
+        if not ruta:
+            return
+        self._rt_archivo = ruta
+        try:
+            self.lbl_rt_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
+        except Exception:
+            pass
+        aviso = self._completar_fechas_del_certificado("rt", ruta)
+        messagebox.showinfo("Revisión Técnica cargada", "%s\n\n%s" % (os.path.basename(ruta), aviso),
+                            parent=self.winfo_toplevel())
+
+    def ver_soporte_rt(self):
+        return self._ver_certificado("rt")
+
+    def cargar_soporte_gas(self):
+        ruta = self._elegir_certificado("gas")
+        if not ruta:
+            return
+        self._gas_archivo = ruta
+        try:
+            self.lbl_gas_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
+        except Exception:
+            pass
+        aviso = self._completar_fechas_del_certificado("gas", ruta)
+        messagebox.showinfo("Revisión de Gas cargada", "%s\n\n%s" % (os.path.basename(ruta), aviso),
+                            parent=self.winfo_toplevel())
+
+    def ver_soporte_gas(self):
+        return self._ver_certificado("gas")
+
+    def cargar_certificado_soat(self):
+        """Carga (o reemplaza) el certificado del SOAT del vehículo seleccionado."""
+        ruta = self._elegir_certificado("soat")
+        if not ruta:
+            return
+        self._soat_archivo = ruta
+        try:
+            self.lbl_soat_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
+        except Exception:
+            pass
+        # 📅 Se leen las fechas del certificado y se completan los campos vacíos
+        aviso = self._completar_fechas_del_certificado("soat", ruta)
+        try:
+            self.actualizar_proximo_aceite() if hasattr(self, "actualizar_proximo_aceite") else None
+        except Exception:
+            pass
+        try:
+            messagebox.showinfo("SOAT cargado", "%s\n\n%s" % (os.path.basename(ruta), aviso),
+                                parent=ventana_para_mensaje(self) if "ventana_para_mensaje" in globals() else None)
+        except Exception:
+            pass
+
+    def cargar_certificado_extintor(self):
+        """Carga (o reemplaza) el certificado del extintor del vehículo seleccionado."""
+        ruta = self._elegir_certificado("extintor")
+        if not ruta:
+            return
+        self._extintor_archivo = ruta
+        try:
+            self.lbl_extintor_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
+        except Exception:
+            pass
+        aviso_ext = self._completar_fechas_del_certificado("extintor", ruta)
+        try:
+            messagebox.showinfo("Certificado de extintor cargado",
+                                "%s\n\n%s" % (os.path.basename(ruta), aviso_ext),
+                                parent=ventana_para_mensaje(self) if "ventana_para_mensaje" in globals() else None)
+        except Exception:
+            pass
+
     def crear_interfaz(self):
         style = ttk.Style()
         style.theme_use("clam")
@@ -577,25 +910,96 @@ class FlotaAutomotrizApp:
         self.ent_kilometraje.bind("<KeyRelease>", lambda e: self.actualizar_proximo_aceite())
         self.ent_fec_correa = crear_campo_fecha("Cambio Correa/Cadena Distribución:")
         self.ent_km_prox_correa = crear_campo("KM Próx. Cambio Correa:", "Ej: 100000")
+        self.ent_bat_marca = crear_campo("Marca de Batería:", "Ej: Bosch")
+        self.ent_bat_modelo = crear_campo("Modelo de Batería:", "Ej: S4 12V 70Ah")
         self.ent_fec_compra_bat = crear_campo_fecha("Compra de Batería:")
         self.ent_fec_venc_bat = crear_campo_fecha("Vencimiento Garantía Batería:")
+
+        # --- 🛞 NEUMÁTICOS ---
+        ctk.CTkLabel(self.f_form, text="--- Neumáticos ---", font=("Arial", 11, "bold"),
+                     text_color="#2c3e50").pack(anchor="w", padx=10, pady=(6, 2))
+        self.ent_neu_marca = crear_campo("Marca de Neumáticos:", "Ej: Michelin")
+        self.ent_neu_modelo = crear_campo("Modelo de Neumáticos:", "Ej: Primacy 4")
+        self.ent_neu_medidas = crear_campo("Medidas:", "Ej: 195/65 R15")
+        self.ent_neu_km = crear_campo("Kilómetros del Cambio:", "Ej: 52000")
+        self.ent_neu_fecha = crear_campo_fecha("Fecha del Cambio de Neumáticos:")
 
         # 4. Seguridad (Extintor)
         ctk.CTkLabel(self.f_form, text="--- Seguridad y Extintores ---", font=("Arial", 11, "bold"), text_color="#c0392b").pack(anchor="w", padx=10, pady=(10,5))
         self.ent_extintor_num = crear_campo("N° Certificado Extintor:")
         self.ent_fec_venc_ext = crear_campo_fecha("Vencimiento del Extintor:")
+        # 📎 Certificado del extintor (PDF o JPG)
+        f_ext_botones = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_ext_botones.pack(fill="x", padx=10, pady=(0, 2))
+        ctk.CTkButton(f_ext_botones, text="📎 Cargar Certificado de Extintor (PDF/JPG)",
+                      fg_color="#c0392b", hover_color="#96281b", font=("Arial", 11, "bold"),
+                      command=self.cargar_certificado_extintor).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(f_ext_botones, text="👁️ Ver", width=64, fg_color="#5d6d7e", hover_color="#4a5967",
+                      font=("Arial", 11, "bold"),
+                      command=self.ver_certificado_extintor).pack(side="left", padx=(4, 0))
+        self.lbl_extintor_archivo = ctk.CTkLabel(self.f_form, text="Sin certificado cargado",
+                                                 font=("Arial", 10), text_color="#999999")
+        self.lbl_extintor_archivo.pack(anchor="w", padx=10, pady=(0, 8))
 
         # 5. SOAT y Seguro
         ctk.CTkLabel(self.f_form, text="--- SOAT y Póliza de Seguro ---", font=("Arial", 11, "bold"), text_color="#27ae60").pack(anchor="w", padx=10, pady=(10,5))
         self.ent_emi_soat = crear_campo_fecha("Emisión SOAT:")
         self.ent_soat = crear_campo_fecha("Vencimiento SOAT:")
+        # 📎 Certificado del SOAT (PDF o JPG)
+        f_soat_botones = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_soat_botones.pack(fill="x", padx=10, pady=(0, 2))
+        ctk.CTkButton(f_soat_botones, text="📎 Cargar SOAT (PDF/JPG)",
+                      fg_color="#27ae60", hover_color="#1e8449", font=("Arial", 11, "bold"),
+                      command=self.cargar_certificado_soat).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(f_soat_botones, text="👁️ Ver", width=64, fg_color="#5d6d7e", hover_color="#4a5967",
+                      font=("Arial", 11, "bold"),
+                      command=self.ver_certificado_soat).pack(side="left", padx=(4, 0))
+        self.lbl_soat_archivo = ctk.CTkLabel(self.f_form, text="Sin SOAT cargado",
+                                             font=("Arial", 10), text_color="#999999")
+        self.lbl_soat_archivo.pack(anchor="w", padx=10, pady=(0, 8))
         self.ent_emi_seguro = crear_campo_fecha("Emisión del Seguro:")
         self.ent_venc_seguro = crear_campo_fecha("Vencimiento del Seguro:")
+        self.ent_seguro_num = crear_campo("N° de Póliza / Seguro:")
         
         # 6. Revisiones y Estado
         ctk.CTkLabel(self.f_form, text="--- Revisiones y Estado ---", font=("Arial", 11, "bold"), text_color="#8e44ad").pack(anchor="w", padx=10, pady=(10,5))
         self.ent_rt = crear_campo_fecha("Venc. Revisión Técnica:")
+        f_rt_botones = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_rt_botones.pack(fill="x", padx=10, pady=(0, 2))
+        ctk.CTkButton(f_rt_botones, text="📎 Cargar Revisión Técnica (PDF/JPG)",
+                      fg_color="#8e44ad", hover_color="#703688", font=("Arial", 11, "bold"),
+                      command=self.cargar_soporte_rt).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(f_rt_botones, text="👁️ Ver", width=64, fg_color="#5d6d7e", hover_color="#4a5967",
+                      font=("Arial", 11, "bold"),
+                      command=self.ver_soporte_rt).pack(side="left", padx=(4, 0))
+        self.lbl_rt_archivo = ctk.CTkLabel(self.f_form, text="Sin soporte cargado",
+                                                  font=("Arial", 10), text_color="#999999")
+        self.lbl_rt_archivo.pack(anchor="w", padx=10, pady=(0, 8))
+        # --- REVISIÓN del sistema de gas (con su certificado) ---
+        ctk.CTkLabel(self.f_form, text="--- Revisión del Sistema de Gas ---", font=("Arial", 11, "bold"),
+                     text_color="#d35400").pack(anchor="w", padx=10, pady=(6, 2))
         self.ent_fec_rev_gas = crear_campo_fecha("Venc. Rev. Sist. Gas:")
+        f_gas_botones = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_gas_botones.pack(fill="x", padx=10, pady=(0, 2))
+        ctk.CTkButton(f_gas_botones, text="📎 Cargar Revisión de Gas (PDF/JPG)",
+                      fg_color="#d35400", hover_color="#a04000", font=("Arial", 11, "bold"),
+                      command=self.cargar_soporte_gas).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(f_gas_botones, text="👁️ Ver", width=64, fg_color="#5d6d7e", hover_color="#4a5967",
+                      font=("Arial", 11, "bold"),
+                      command=self.ver_soporte_gas).pack(side="left", padx=(4, 0))
+        self.lbl_gas_archivo = ctk.CTkLabel(self.f_form, text="Sin soporte cargado",
+                                                  font=("Arial", 10), text_color="#999999")
+        self.lbl_gas_archivo.pack(anchor="w", padx=10, pady=(0, 8))
+
+        # --- MANTENIMIENTO del sistema de gas (emisión + kilómetros) ---
+        ctk.CTkLabel(self.f_form, text="--- Mantenimiento del Sistema de Gas ---", font=("Arial", 11, "bold"),
+                     text_color="#a04000").pack(anchor="w", padx=10, pady=(6, 2))
+        self.ent_emi_rev_gas = crear_campo_fecha("Fecha de Emisión del Mantenimiento:")
+        self.ent_km_rev_gas = crear_campo("Km del Mantenimiento:", "Ej: 52000")
+        self.ent_km_rev_gas.bind("<KeyRelease>", lambda e: self.actualizar_proximo_gas())
+        self.lbl_prox_gas = ctk.CTkLabel(self.f_form, text="", font=("Arial", 11),
+                                         text_color="#a04000", justify="left")
+        self.lbl_prox_gas.pack(fill="x", padx=10, pady=(0, 8))
 
         ctk.CTkLabel(self.f_form, text="Estado Operativo:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.cmb_estado = ctk.CTkComboBox(self.f_form, values=["Operativo", "En Mantenimiento", "Fuera de Servicio", "Vendido"], state="readonly")
@@ -722,8 +1126,20 @@ class FlotaAutomotrizApp:
         self.ent_fec_correa.delete(0, tk.END)
         self.ent_km_prox_correa.delete(0, tk.END)
         self.ent_fec_rev_gas.delete(0, tk.END)
+        try:
+            self.ent_emi_rev_gas.delete(0, tk.END)
+            self.ent_km_rev_gas.delete(0, tk.END)
+            self.lbl_prox_gas.configure(text="")
+        except Exception:
+            pass
         self.ent_fec_compra_bat.delete(0, tk.END)
         self.ent_fec_venc_bat.delete(0, tk.END)
+        for campo in ("ent_bat_marca", "ent_bat_modelo", "ent_neu_marca", "ent_neu_modelo",
+                      "ent_neu_medidas", "ent_neu_km", "ent_neu_fecha"):
+            try:
+                getattr(self, campo).delete(0, tk.END)
+            except Exception:
+                pass
         self.ent_extintor_num.delete(0, tk.END)
         self.ent_fec_venc_ext.delete(0, tk.END)
         self.ent_emi_soat.delete(0, tk.END)
@@ -732,6 +1148,22 @@ class FlotaAutomotrizApp:
         self.ent_venc_seguro.delete(0, tk.END)
         self.ent_rt.delete(0, tk.END)
         self.cmb_estado.set("Operativo")
+        # 📎 Certificados
+        self._soat_archivo = ""
+        self._extintor_archivo = ""
+        self._rt_archivo = ""
+        self._gas_archivo = ""
+        try:
+            self.ent_seguro_num.delete(0, tk.END)
+        except Exception:
+            pass
+        try:
+            self.lbl_soat_archivo.configure(text="Sin SOAT cargado", text_color="#999999")
+            self.lbl_extintor_archivo.configure(text="Sin certificado cargado", text_color="#999999")
+            self.lbl_rt_archivo.configure(text="Sin soporte cargado", text_color="#999999")
+            self.lbl_gas_archivo.configure(text="Sin soporte cargado", text_color="#999999")
+        except Exception:
+            pass
 
     # 🚀 FIX: LAZY LOADING Y CACHÉ
     def cargar_datos(self, reset_pagina=False):
@@ -820,6 +1252,30 @@ class FlotaAutomotrizApp:
         else:
             self.btn_sig.configure(state="disabled")
 
+    def actualizar_proximo_gas(self):
+        """Muestra a cuántos km toca el próximo mantenimiento del sistema de gas."""
+        try:
+            limite = limite_km_gas()
+            km_actual = a_numero(self.ent_kilometraje.get())
+            km_gas = a_numero(self.ent_km_rev_gas.get())
+            if km_gas <= 0:
+                txt = ("💨 Indique los km del mantenimiento de gas para calcular el próximo "
+                       f"(cada {limite:,.0f} km).")
+            else:
+                prox = km_gas + limite
+                txt = f"💨 Próximo mantenimiento de gas: a los {prox:,.0f} km"
+                if km_actual <= 0:
+                    txt += " (registre el kilometraje actual para ver cuánto falta)."
+                else:
+                    faltan = prox - km_actual
+                    if faltan <= 0:
+                        txt += f" · ⚠️ ¡VENCIDO! Ya pasó por {abs(faltan):,.0f} km."
+                    else:
+                        txt += f" · Faltan {faltan:,.0f} km."
+            self.lbl_prox_gas.configure(text=txt)
+        except Exception:
+            pass
+
     def actualizar_proximo_aceite(self):
         """Muestra cuándo toca el próximo cambio de aceite, según los km.
 
@@ -893,8 +1349,21 @@ class FlotaAutomotrizApp:
             except ImportError:
                 pass
             try:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                carpeta_destino = os.path.join(base_dir, "archivos_flota", "tarjetas_propiedad")
+                # 🔗 El archivo va SIEMPRE a la carpeta configurada en
+                # "Configuración General" (la misma que sincroniza Rclone con la
+                # cuenta del equipo principal), NO a la carpeta del programa: así la
+                # tarjeta se ve desde cualquier equipo (Windows y Mac) y se respalda.
+                try:
+                    from politica_almacenamiento import ruta_base_autorizada
+                    ruta_base = ruta_base_autorizada(mostrar_alerta=False)
+                except Exception:
+                    ruta_base = ""
+                if not ruta_base:
+                    return messagebox.showwarning(
+                        "Configuración Requerida",
+                        "No se pudo guardar la Tarjeta de Propiedad:\n"
+                        "no hay una carpeta válida configurada en Configuración General.")
+                carpeta_destino = os.path.join(ruta_base, "archivos_flota", "tarjetas_propiedad")
                 os.makedirs(carpeta_destino, exist_ok=True)
                 
                 ext = os.path.splitext(self.ruta_tarjeta_temp)[1]
@@ -902,6 +1371,13 @@ class FlotaAutomotrizApp:
                 ruta_final_archivo = os.path.join(carpeta_destino, nombre_archivo)
                 
                 shutil.copy2(self.ruta_tarjeta_temp, ruta_final_archivo)
+                # Se guarda la ruta PORTABLE (relativa a la carpeta sincronizada):
+                # sirve igual en Windows y en Mac.
+                try:
+                    from app_paths import ruta_para_guardar
+                    ruta_final_archivo = ruta_para_guardar(ruta_final_archivo)
+                except Exception:
+                    pass
             except Exception as e:
                 return messagebox.showerror("Error de Archivo", f"No se pudo guardar la tarjeta física:\n{e}")
                 
@@ -917,12 +1393,28 @@ class FlotaAutomotrizApp:
                     emision_seguro=%s, vencimiento_seguro=%s, vencimiento_rt=%s, estado=%s,
                     categoria=%s, nro_titulo=%s, fecha_titulo=%s, ruta_tarjeta=%s,
                     fec_aceite=%s, fec_correa=%s, km_prox_correa=%s, fec_rev_gas=%s, fec_compra_bat=%s, fec_venc_bat=%s, 
-                    extintor_num=%s, fec_venc_extintor=%s, km_ultimo_aceite=%s, fecha_ultimo_aceite=%s
+                    extintor_num=%s, fec_venc_extintor=%s, km_ultimo_aceite=%s, fecha_ultimo_aceite=%s,
+                    soat_archivo=%s, extintor_archivo=%s,
+                    seguro_num=%s, rt_archivo=%s, gas_archivo=%s,
+                    emision_mant_gas=%s, km_mant_gas=%s,
+                    bat_marca=%s, bat_modelo=%s,
+                    neu_marca=%s, neu_modelo=%s, neu_medidas=%s, neu_km=%s, neu_fecha=%s
                     WHERE id=%s
                 """, (placa, marca, modelo, anio, color, kilometraje, motor, carroceria, combustible, 
                       emi_soat, venc_soat, emi_seguro, venc_seguro, rt, estado, categoria, titulo, 
                       fecha_titulo, ruta_final_archivo, fec_aceite, fec_correa, km_prox_correa, fec_gas, fec_compra_bat, 
-                      fec_venc_bat, num_extintor, fec_venc_ext, km_aceite, fec_aceite, self.id_edicion))
+                      fec_venc_bat, num_extintor, fec_venc_ext, km_aceite, fec_aceite,
+                      str(getattr(self, "_soat_archivo", "") or ""),
+                      str(getattr(self, "_extintor_archivo", "") or ""),
+                      self.ent_seguro_num.get().strip() if hasattr(self, "ent_seguro_num") else "",
+                      str(getattr(self, "_rt_archivo", "") or ""),
+                      str(getattr(self, "_gas_archivo", "") or ""),
+                      self.ent_emi_rev_gas.get().strip() if hasattr(self, "ent_emi_rev_gas") else "",
+                      self.ent_km_rev_gas.get().strip() if hasattr(self, "ent_km_rev_gas") else "",
+                      self._valor("ent_bat_marca"), self._valor("ent_bat_modelo"),
+                      self._valor("ent_neu_marca"), self._valor("ent_neu_modelo"),
+                      self._valor("ent_neu_medidas"), self._valor("ent_neu_km"), self._valor("ent_neu_fecha"),
+                      self.id_edicion))
                 registrar_auditoria(self.usuario_activo, "Flota", f"Actualizó datos del vehículo placa {placa}")
                 messagebox.showinfo("Éxito", "Vehículo actualizado correctamente.")
             else:
@@ -935,12 +1427,26 @@ class FlotaAutomotrizApp:
                     INSERT INTO flota_vehiculos (placa, marca, modelo, anio, color, kilometraje, serial_motor, serial_carroceria, 
                     tipo_combustible, emision_soat, vencimiento_soat, emision_seguro, vencimiento_seguro, vencimiento_rt, estado, 
                     categoria, nro_titulo, fecha_titulo, ruta_tarjeta, fec_aceite, fec_correa, km_prox_correa, fec_rev_gas, fec_compra_bat, 
-                    fec_venc_bat, extintor_num, fec_venc_extintor, km_ultimo_aceite, fecha_ultimo_aceite) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    fec_venc_bat, extintor_num, fec_venc_extintor, km_ultimo_aceite, fecha_ultimo_aceite,
+                    soat_archivo, extintor_archivo, seguro_num, rt_archivo, gas_archivo,
+                    emision_mant_gas, km_mant_gas,
+                    bat_marca, bat_modelo,
+                    neu_marca, neu_modelo, neu_medidas, neu_km, neu_fecha) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (placa, marca, modelo, anio, color, kilometraje, motor, carroceria, combustible, 
                       emi_soat, venc_soat, emi_seguro, venc_seguro, rt, estado, categoria, titulo, 
                       fecha_titulo, ruta_final_archivo, fec_aceite, fec_correa, km_prox_correa, fec_gas, fec_compra_bat, 
-                      fec_venc_bat, num_extintor, fec_venc_ext, km_aceite, fec_aceite))
+                      fec_venc_bat, num_extintor, fec_venc_ext, km_aceite, fec_aceite,
+                      str(getattr(self, "_soat_archivo", "") or ""),
+                      str(getattr(self, "_extintor_archivo", "") or ""),
+                      self.ent_seguro_num.get().strip() if hasattr(self, "ent_seguro_num") else "",
+                      str(getattr(self, "_rt_archivo", "") or ""),
+                      str(getattr(self, "_gas_archivo", "") or ""),
+                      self.ent_emi_rev_gas.get().strip() if hasattr(self, "ent_emi_rev_gas") else "",
+                      self.ent_km_rev_gas.get().strip() if hasattr(self, "ent_km_rev_gas") else "",
+                      self._valor("ent_bat_marca"), self._valor("ent_bat_modelo"),
+                      self._valor("ent_neu_marca"), self._valor("ent_neu_modelo"),
+                      self._valor("ent_neu_medidas"), self._valor("ent_neu_km"), self._valor("ent_neu_fecha")))
                 registrar_auditoria(self.usuario_activo, "Flota", f"Registró nuevo vehículo placa {placa}")
                 messagebox.showinfo("Éxito", "Vehículo registrado correctamente.")
             
@@ -996,7 +1502,13 @@ class FlotaAutomotrizApp:
                 emision_seguro, vencimiento_seguro, vencimiento_rt, estado,
                 categoria, nro_titulo, fecha_titulo, ruta_tarjeta,
                 fec_aceite, fec_correa, fec_rev_gas, fec_compra_bat, fec_venc_bat, extintor_num, fec_venc_extintor,
-                km_prox_correa, COALESCE(km_ultimo_aceite, 0), COALESCE(fecha_ultimo_aceite, '')
+                km_prox_correa, COALESCE(km_ultimo_aceite, 0), COALESCE(fecha_ultimo_aceite, ''),
+                COALESCE(soat_archivo, ''), COALESCE(extintor_archivo, ''),
+                COALESCE(seguro_num, ''), COALESCE(rt_archivo, ''), COALESCE(gas_archivo, ''),
+                COALESCE(emision_mant_gas, ''), COALESCE(km_mant_gas, ''),
+                COALESCE(bat_marca, ''), COALESCE(bat_modelo, ''),
+                COALESCE(neu_marca, ''), COALESCE(neu_modelo, ''), COALESCE(neu_medidas, ''),
+                COALESCE(neu_km, ''), COALESCE(neu_fecha, '')
                 FROM flota_vehiculos WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -1016,6 +1528,56 @@ class FlotaAutomotrizApp:
                 self.ent_kilometraje.insert(0, r[9] if r[9] else "")
                 self.ent_emi_soat.insert(0, r[10] if r[10] else "")
                 self.ent_soat.insert(0, r[11] if r[11] else "")
+                # 📎 Certificados guardados (índices al final del SELECT)
+                try:
+                    # El SELECT los trae al final: fecha_ultimo_aceite es r[29],
+                    # así que los certificados son r[30] y r[31].
+                    self._soat_archivo = str(r[30] or "")
+                    self._extintor_archivo = str(r[31] or "")
+                    if self._soat_archivo:
+                        self.lbl_soat_archivo.configure(text="📎 %s" % os.path.basename(self._soat_archivo),
+                                                        text_color="#1e8449")
+                    if self._extintor_archivo:
+                        self.lbl_extintor_archivo.configure(
+                            text="📎 %s" % os.path.basename(self._extintor_archivo), text_color="#1e8449")
+                    # 🛡️ N° de seguro y soportes de RT / gas (r[32], r[33], r[34])
+                    try:
+                        if r[32]:
+                            self.ent_seguro_num.insert(0, str(r[32]))
+                    except Exception:
+                        pass
+                    self._rt_archivo = str(r[33] or "")
+                    self._gas_archivo = str(r[34] or "")
+                    if self._rt_archivo:
+                        self.lbl_rt_archivo.configure(text="📎 %s" % os.path.basename(self._rt_archivo),
+                                                      text_color="#1e8449")
+                    if self._gas_archivo:
+                        self.lbl_gas_archivo.configure(text="📎 %s" % os.path.basename(self._gas_archivo),
+                                                       text_color="#1e8449")
+                    # 💨 Mantenimiento del sistema de gas (r[35] y r[36])
+                    try:
+                        if r[35]:
+                            self.ent_emi_rev_gas.insert(0, str(r[35]))
+                        if r[36]:
+                            self.ent_km_rev_gas.insert(0, str(r[36]))
+                    except Exception:
+                        pass
+                    try:
+                        self.actualizar_proximo_gas()
+                    except Exception:
+                        pass
+                    # 🔋 Batería (r[37], r[38]) y 🛞 neumáticos (r[39] a r[43])
+                    for campo, indice in (("ent_bat_marca", 37), ("ent_bat_modelo", 38),
+                                          ("ent_neu_marca", 39), ("ent_neu_modelo", 40),
+                                          ("ent_neu_medidas", 41), ("ent_neu_km", 42),
+                                          ("ent_neu_fecha", 43)):
+                        try:
+                            if r[indice]:
+                                getattr(self, campo).insert(0, str(r[indice]))
+                        except Exception:
+                            continue
+                except Exception as e_cert:
+                    print("Aviso - certificados del vehículo:", e_cert)
                 self.ent_emi_seguro.insert(0, r[12] if r[12] else "")
                 self.ent_venc_seguro.insert(0, r[13] if r[13] else "")
                 self.ent_rt.insert(0, r[14] if r[14] else "")
@@ -1042,7 +1604,16 @@ class FlotaAutomotrizApp:
                     self.ent_fec_aceite.insert(0, r[29])
                 self.actualizar_proximo_aceite()
 
-                if self.ruta_tarjeta_db and os.path.exists(self.ruta_tarjeta_db):
+                # El botón se habilita si la tarjeta se puede encontrar en ESTE equipo
+                # (la ruta guardada puede venir de otro equipo o ser relativa).
+                ruta_tarjeta_real = ""
+                if self.ruta_tarjeta_db:
+                    try:
+                        from app_paths import resolver_ruta_archivo
+                        ruta_tarjeta_real = resolver_ruta_archivo(self.ruta_tarjeta_db) or ""
+                    except Exception:
+                        ruta_tarjeta_real = ""
+                if ruta_tarjeta_real:
                     self.btn_ver_tarjeta.configure(state="normal", fg_color="#27ae60")
                 else:
                     self.btn_ver_tarjeta.configure(state="disabled", fg_color="#34495e")

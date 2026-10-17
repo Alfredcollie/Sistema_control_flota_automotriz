@@ -1586,7 +1586,11 @@ class EstadisticasFinancieraApp:
                                     COALESCE(kilometraje,''), COALESCE(vencimiento_soat,''), COALESCE(vencimiento_rt,''),
                                     COALESCE(vencimiento_seguro,''), COALESCE(fecha_ultimo_aceite,''),
                                     COALESCE(km_ultimo_aceite,0), COALESCE(km_prox_correa,''),
-                                    COALESCE(fec_venc_extintor,''), COALESCE(serial_motor,'')
+                                    COALESCE(fec_venc_extintor,''), COALESCE(fec_rev_gas,''),
+                                    COALESCE(fec_venc_bat,''), COALESCE(fecha_ultimo_general,''),
+                                    COALESCE(km_ultimo_general,''), COALESCE(emision_mant_gas,''),
+                                    COALESCE(km_mant_gas,''), COALESCE(neu_fecha,''), COALESCE(neu_km,''),
+                                    COALESCE(serial_motor,'')
                              FROM flota_vehiculos ORDER BY placa"""):
                 if self._placa_objetivo and norm_placa(fila[0]) != self._placa_objetivo:
                     continue
@@ -1595,12 +1599,18 @@ class EstadisticasFinancieraApp:
                                            str(fila[6] or ""), parse_num(fila[7]), str(fila[8] or ""),
                                            str(fila[9] or ""), str(fila[10] or ""), str(fila[11] or ""),
                                            parse_num(fila[12]), parse_num(fila[13]), str(fila[14] or ""),
-                                           str(fila[15] or "")])
+                                           str(fila[15] or ""), str(fila[16] or ""), str(fila[17] or ""),
+                                           parse_num(fila[18]), str(fila[19] or ""), parse_num(fila[20]),
+                                           str(fila[21] or ""), parse_num(fila[22]), str(fila[23] or "")])
             S["flota"] = {"cols": [("Placa", TXT), ("Marca", TXT), ("Modelo", TXT), ("Año", TXT), ("Categoría", TXT),
                                    ("Estado", TXT), ("Tipo Combustible", TXT), ("Kilometraje", NUM),
                                    ("Venc. SOAT", TXT), ("Venc. Rev. Técnica", TXT), ("Venc. Seguro", TXT),
                                    ("Últ. Cambio Aceite", TXT), ("Km Últ. Aceite", NUM), ("Km Próx. Correa", NUM),
-                                   ("Venc. Extintor", TXT), ("Serial Motor", TXT)],
+                                   ("Venc. Extintor", TXT), ("Venc. Rev. Sist. Gas", TXT),
+                                   ("Venc. Garantía Batería", TXT), ("Últ. Mant. General", TXT),
+                                   ("Km Últ. Mant. General", NUM), ("Emisión Mant. Gas", TXT),
+                                   ("Km Mant. Gas", NUM), ("Cambio Neumáticos", TXT), ("Km Neumáticos", NUM),
+                                   ("Serial Motor", TXT)],
                           "filas": flota_filas_salida}
 
             S["ordenes_servicio"] = {"cols": [("Nº Orden", TXT), ("Placa", TXT), ("Vehículo", TXT), ("Proveedor", TXT),

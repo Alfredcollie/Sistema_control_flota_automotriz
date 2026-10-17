@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 NUBE_ARCHIVOS.PY — Borrado de archivos TAMBIÉN en la carpeta sincronizada
 =========================================================================
 PROBLEMA QUE RESUELVE

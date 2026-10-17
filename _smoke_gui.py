@@ -21,6 +21,9 @@ simpledialog.askstring = lambda *a, **k: None
 
 import modulo_nomina
 import os as _os
+import os as _os
+import tempfile as _tf
+_CARPETA_TEMP = _tf.gettempdir() + _os.sep
 _BASE_PROYECTO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))) if _os.path.basename(_os.path.dirname(_os.path.abspath(__file__))) in ("__dsh_test__", "Programas de pruebas") else _os.path.dirname(_os.path.abspath(__file__))
 
 root = ctk.CTk()
@@ -34,7 +37,7 @@ try:
     p("Constructor OK")
 except Exception:
     p("FALLO EN EL CONSTRUCTOR:\n" + traceback.format_exc())
-    open(r"C:\\Users\\Alberto\\Desktop\\Proyecto Control Flota 140926\_smoke_gui.txt", "w", encoding="utf-8").write(out.getvalue())
+    open(_CARPETA_TEMP + "_smoke_gui.txt", "w", encoding="utf-8").write(out.getvalue())
     sys.exit(1)
 
 def bombear(segundos=1.0):
@@ -140,5 +143,5 @@ try:
     root.destroy()
 except Exception:
     pass
-open(r"C:\\Users\\Alberto\\Desktop\\Proyecto Control Flota 140926\_smoke_gui.txt", "w", encoding="utf-8").write(out.getvalue())
+open(_CARPETA_TEMP + "_smoke_gui.txt", "w", encoding="utf-8").write(out.getvalue())
 print("SMOKE OK")

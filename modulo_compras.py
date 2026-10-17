@@ -60,6 +60,55 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+def _numero_peru(txt):
+    """Convierte '1,340.78' / '1.340,78' / '1340.78' a float (0.0 si no se puede)."""
+    import re as _re
+    t = _re.sub(r"[^\d.,]", "", str(txt or ""))
+    if not t:
+        return 0.0
+    try:
+        if "," in t and "." in t:
+            if t.rfind(",") > t.rfind("."):
+                t = t.replace(".", "").replace(",", ".")
+            else:
+                t = t.replace(",", "")
+        elif "," in t:
+            partes = t.split(",")
+            t = t.replace(",", ".") if len(partes[-1]) <= 2 else t.replace(",", "")
+        elif t.count(".") > 1:
+            partes = t.split(".")
+            t = ("".join(partes[:-1]) + "." + partes[-1]) if len(partes[-1]) <= 2 else "".join(partes)
+        return float(t)
+    except Exception:
+        return 0.0
+
+
+def monto_del_comprobante(texto):
+    """💵 Importe total leído de un comprobante (0.0 si no se encuentra)."""
+    import re as _re
+    try:
+        lineas = [l.strip() for l in str(texto or "").splitlines() if l.strip()]
+        # 1) la línea que dice TOTAL / IMPORTE / MONTO
+        for l in lineas:
+            bajo = l.upper()
+            if "TOTAL" in bajo or "IMPORTE" in bajo or "MONTO" in bajo:
+                nums = _re.findall(r"\d[\d.,]*", l)
+                if nums:
+                    val = _numero_peru(nums[-1])
+                    if val > 0:
+                        return float(val)
+        # 2) el importe más alto del documento
+        candidatos = []
+        for l in lineas:
+            for n in _re.findall(r"\d[\d.,]{2,}", l):
+                v = _numero_peru(n)
+                if 0 < v < 10000000:
+                    candidatos.append(float(v))
+        return max(candidatos) if candidatos else 0.0
+    except Exception:
+        return 0.0
+
+
 def centrar_ventana(ventana, parent, ancho, alto):
     """Calcula la posición centrada de forma segura para Windows y macOS (evitando el Notch y Menú Superior)"""
     ventana.update_idletasks()
@@ -1535,9 +1584,17 @@ MANTENIMIENTOS_VEHICULO = (
      "campos": (("fec_correa", 0),),
      "km": ("km_prox_correa", "Próximo cambio a los (Km)"),
      "actual": ("fec_correa", "km_prox_correa")},
-    {"nombre": "💨 Mantenimiento del Sistema de Gas",
+    {"nombre": "💨 Revisión del Sistema de Gas (con certificado)",
      "campos": (("fec_rev_gas", 0),),
      "actual": ("fec_rev_gas",)},
+    {"nombre": "💨 Mantenimiento del Sistema de Gas",
+     "campos": (("emision_mant_gas", 0),),
+     "km": ("km_mant_gas", "Km del mantenimiento"),
+     "actual": ("emision_mant_gas", "km_mant_gas")},
+    {"nombre": "🛞 Neumáticos / Cauchos",
+     "campos": (("neu_fecha", 0),),
+     "km": ("neu_km", "Km del cambio"),
+     "actual": ("neu_fecha", "neu_km")},
     {"nombre": "🛠️ Mantenimiento Preventivo / General",
      "campos": (("fecha_ultimo_general", 0),),
      "km": ("km_ultimo_general", "Km del servicio"),
@@ -1568,13 +1625,20 @@ ETIQUETAS_MANT = {
     "vencimiento_rt": "Vence RT", "emision_seguro": "Emisión seguro",
     "vencimiento_seguro": "Vence seguro", "fec_compra_bat": "Compra batería",
     "fec_venc_bat": "Vence batería", "fec_venc_extintor": "Vence extintor",
+    "emision_mant_gas": "Emisión mant. gas", "km_mant_gas": "Km mant. gas",
+    "neu_fecha": "Cambio neumáticos", "neu_km": "Km neumáticos",
+    "neu_marca": "Marca neumáticos", "neu_modelo": "Modelo neumáticos",
+    "neu_medidas": "Medidas neumáticos", "bat_marca": "Marca batería",
+    "bat_modelo": "Modelo batería",
 }
 
 COLUMNAS_MANT = ("placa", "marca", "modelo", "kilometraje", "fec_aceite", "fecha_ultimo_aceite",
                  "fec_correa", "fec_rev_gas", "fecha_ultimo_general", "emision_soat",
                  "vencimiento_soat", "vencimiento_rt", "emision_seguro", "vencimiento_seguro",
                  "fec_compra_bat", "fec_venc_bat", "fec_venc_extintor", "km_ultimo_aceite",
-                 "km_prox_correa", "km_ultimo_general")
+                 "km_prox_correa", "km_ultimo_general",
+                 "emision_mant_gas", "km_mant_gas", "neu_fecha", "neu_km",
+                 "neu_marca", "neu_modelo", "neu_medidas", "bat_marca", "bat_modelo")
 
 
 def sumar_meses_a_fecha(fecha_txt, meses):
@@ -2005,6 +2069,58 @@ def abrir_reset_mantenimientos_vehiculo(parent, placa, usuario_activo="", al_ter
                                                                  padx=(5, 0))
 
 
+def _escanear_con_progreso(parent, etiqueta, mod_escaner, *args, **kwargs):
+    """Escanea mostrando el cuadrito "Escaneando…" y lo cierra al terminar.
+
+    El escaneo es sincrónico (así el resultado nunca se pierde); el cuadrito se
+    pinta antes de empezar para que el usuario vea que está trabajando.
+    """
+    try:
+        parent = parent or getattr(tk, "_default_root", None)
+    except Exception:
+        parent = None
+    prog = None
+    try:
+        prog = ctk.CTkToplevel(parent)
+        prog.title("Escaneando")
+        prog.geometry("450x165")
+        try:
+            prog.transient(parent)
+        except Exception:
+            pass
+        try:
+            prog.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(prog, text="🖨️ Escaneando %s..." % (etiqueta or "el documento"),
+                     font=("Arial", 13, "bold"), text_color="#1f538d").pack(pady=(20, 4))
+        ctk.CTkLabel(prog, text="Coloque el documento en el escáner (cristal).\nEspere unos segundos…",
+                     font=("Arial", 10), text_color="gray", justify="center").pack()
+        barra = ctk.CTkProgressBar(prog, width=350, mode="indeterminate")
+        barra.pack(pady=12)
+        barra.start()
+        try:
+            prog.update_idletasks()
+            prog.update()
+        except Exception:
+            pass
+    except Exception as e_prog:
+        print("[Escáner] No se pudo mostrar el progreso:", e_prog)
+        prog = None
+    try:
+        return mod_escaner.escanear(*args, **kwargs)
+    finally:
+        if prog is not None:
+            try:
+                prog.grab_release()
+            except Exception:
+                pass
+            try:
+                prog.destroy()
+            except Exception:
+                pass
+
+
 class FacturasRecibidasTab:
     def __init__(self, tab_frame, main_root, app_padre):
         self.tab_frame = tab_frame
@@ -2185,6 +2301,79 @@ class FacturasRecibidasTab:
                     "Este archivo no tiene texto (es un escaneo o una foto) y no se pudo leer con OCR.\n\n"
                     "El documento quedó ADJUNTO al registro: digite el tipo de documento, el monto base "
                     "(o el total con IGV), el recargo al consumo si lo tuviera y el N° de documento.", parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
+            # 📄 OCR sin N° de comprobante: se adjunta el archivo y se piden los datos
+            try:
+                if not numero_comprobante_desde_texto(texto):
+                    self.ruta_archivo_temp = ruta
+                    try:
+                        self.btn_archivo.configure(text="✅ Adjuntado (digite los datos)",
+                                                   fg_color="#e67e22", hover_color="#b9651a")
+                    except Exception:
+                        pass
+                    self.bloquear_autocompletado_ruc = False
+                    # 📠 Si no tiene la factura escaneada, se ofrece escanearla ahora
+                    _resp_scan = False
+                    try:
+                        _resp_scan = messagebox.askyesno(
+                            "Factura escaneada",
+                            "No se pudieron leer bien los datos del comprobante.\n\n"
+                            "¿Desea ESCANEAR la factura ahora para adjuntarla al registro?\n\n"
+                            "   • Sí  → escanear con la multifuncional y adjuntar\n"
+                            "   • No  → adjuntar solo el archivo que cargó",
+                            parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+                    except Exception as e_preg:
+                        print("[Compras] Aviso - ofrecer escaneo:", e_preg)
+                    if _resp_scan:
+                        try:
+                            import escaner as _esc
+                            _cfg = cargar_configuracion_regional()
+                            _datos = _esc.config_escaner(_cfg)
+                            _res = _escanear_con_progreso(None, "el documento", _esc, 
+                                _esc.carpeta_escaneos(_cfg),
+                                dispositivo=_datos.get("escaner_dispositivo", ""),
+                                dpi=_datos.get("escaner_dpi", "300"),
+                                color=_datos.get("escaner_color", "Escala de grises"),
+                                origen=_datos.get("escaner_origen", "Cristal (una página a la vez)"),
+                                paginas=1,
+                                optimizar=str(_datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+                                modo=_datos.get("escaner_modo", "Automático (sin ventanas)"))
+                            _pags = [p for p in (_res.get("paginas") or []) if os.path.exists(str(p))]
+                            if _pags:
+                                _pdf = os.path.join(
+                                    os.path.dirname(_pags[0]),
+                                    "Factura_Escaneada_%s.pdf" % datetime.now().strftime("%Y%m%d_%H%M%S"))
+                                _esc.imagenes_a_pdf(_pags, _pdf)
+                                self.ruta_archivo_temp = _pdf
+                                try:
+                                    self.btn_archivo.configure(text="✅ Factura escaneada y adjunta",
+                                                               fg_color="#27ae60", hover_color="#1e8449")
+                                except Exception:
+                                    pass
+                                messagebox.showinfo(
+                                    "Factura escaneada",
+                                    "La factura escaneada quedó ADJUNTA al registro:\n"
+                                    + os.path.basename(_pdf)
+                                    + "\n\nComplete a mano el tipo y N° de documento, el proveedor, "
+                                      "el RUC y los montos; luego pulse 💾 Registrar Documento.",
+                                    parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+                                return
+                            messagebox.showerror(
+                                "Escáner", "No se pudo escanear: %s"
+                                % (_res.get("error") or "sin detalle"),
+                                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+                        except Exception as e_esc:
+                            print("[Compras] ERROR al escanear la factura:", e_esc)
+                            messagebox.showerror(
+                                "Escáner", "No se pudo escanear la factura:\n%s" % e_esc,
+                                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+                    return messagebox.showwarning(
+                        "Documento escaneado",
+                        "El documento quedó ADJUNTO: complete a mano el tipo y N° de documento, "
+                        "el proveedor, el RUC y los montos.",
+                        parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+            except Exception as e_guard2:
+                print("[Compras] Aviso - guarda del archivo:", e_guard2)
 
             self._aplicar_texto_comprobante(texto, ruta, leido_con_ocr)
             self.bloquear_autocompletado_ruc = False
@@ -2607,6 +2796,40 @@ class FacturasRecibidasTab:
         lbl_estado = ctk.CTkLabel(ventana, text="", font=("Arial", 10, "bold"), text_color="#1e8449")
 
         def aplicar():
+            # 📄 Si el OCR no reconoció los datos clave (N° de comprobante), se deja
+            #    la factura escaneada ADJUNTA y se piden los datos a mano.
+            try:
+                _nro_ok = bool(str(resultado.get("numero") or "").strip())
+            except Exception:
+                _nro_ok = True
+            if not _nro_ok:
+                try:
+                    if resultado.get("pdf"):
+                        self.ruta_archivo_temp = resultado.get("pdf")
+                        try:
+                            self.btn_archivo.configure(text="✅ Adjuntado (digite los datos)",
+                                                       fg_color="#e67e22", hover_color="#b9651a")
+                        except Exception:
+                            pass
+                except Exception as e_adj:
+                    print("[Compras] No se pudo adjuntar el escaneo:", e_adj)
+                try:
+                    self.bloquear_autocompletado_ruc = False
+                except Exception:
+                    pass
+                messagebox.showinfo(
+                    "Comprobante escaneado",
+                    "No se pudieron leer bien los datos del comprobante con OCR.\n\n"
+                    "La factura escaneada quedó ADJUNTA como soporte:\n"
+                    + os.path.basename(str(resultado.get("pdf") or "")) +
+                    "\n\nComplete a mano el tipo de documento, el N° de documento, el proveedor, "
+                    "el RUC y los montos; luego pulse 💾 Registrar Documento.",
+                    parent=ventana)
+                try:
+                    ventana.destroy()
+                except Exception:
+                    pass
+                return
             if estado_destino == "ajeno":
                 return messagebox.showerror("Comprobante de otra empresa", mensaje_destino, parent=ventana)
             if resultado.get("duplicado"):
@@ -3152,11 +3375,12 @@ class FacturasRecibidasTab:
         self.lbl_cruzada_total.pack(anchor="w", padx=8, pady=(2, 4))
 
         self.btn_soporte_tercero = ctk.CTkButton(
-            self.f_cruzada, text="📎 Adjuntar soporte del pago al tercero",
+            self.f_cruzada, text="🖨️ Escanear comprobante de pago",
             font=("Arial", 11, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
-            command=self.seleccionar_soporte_tercero)
+            command=self.escanear_soporte_tercero)
         self.btn_soporte_tercero.pack(fill="x", padx=8, pady=(0, 8))
         self.ruta_soporte_tercero = ""
+        self._soporte_pago_escaneado = ""
 
         # 💰 El monto se puede digitar SIN IGV (monto base) o CON IGV (total del documento)
         # (esta etiqueta sirve de ancla: el bloque del carné de sanidad se coloca antes)
@@ -3287,6 +3511,7 @@ class FacturasRecibidasTab:
         self.tabla.config(displaycolumns=("num", "fecha", "hora", "nro_doc", "orden", "proveedor", "ruc", "evento", "kilometraje", "cantidad", "desc", "metodo_pago", "neto"))
         self._actualizar_flechas_orden()
         self.tabla.bind("<Double-1>", self.abrir_archivo)
+        self.tabla.bind("<Button-3>", self._menu_contextual_factura)
 
         scroll_y = ttk.Scrollbar(f_tabla, orient="vertical", command=self.tabla.yview)
         self.tabla.configure(yscrollcommand=scroll_y.set)
@@ -3862,6 +4087,43 @@ class FacturasRecibidasTab:
         except Exception:
             pass
 
+    def escanear_soporte_tercero(self):
+        """🖨️ Escanea el comprobante del pago al tercero y lo deja como soporte."""
+        try:
+            import escaner as _esc
+            _cfg = cargar_configuracion_regional()
+            _datos = _esc.config_escaner(_cfg)
+            _res = _escanear_con_progreso(None, "el documento", _esc, 
+                _esc.carpeta_escaneos(_cfg),
+                dispositivo=_datos.get("escaner_dispositivo", ""),
+                dpi=_datos.get("escaner_dpi", "300"),
+                color=_datos.get("escaner_color", "Escala de grises"),
+                origen=_datos.get("escaner_origen", "Cristal (una página a la vez)"),
+                paginas=1,
+                optimizar=str(_datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+                modo=_datos.get("escaner_modo", "Automático (sin ventanas)"))
+            _pags = [p for p in (_res.get("paginas") or []) if os.path.exists(str(p))]
+            if not _pags:
+                return messagebox.showerror(
+                    "Escáner", "No se pudo escanear el comprobante:\n%s"
+                    % (_res.get("error") or "sin detalle"),
+                    parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+            self.ruta_soporte_tercero = _pags[0]
+            try:
+                self.btn_soporte_tercero.configure(
+                    text="✅ Comprobante escaneado (se guardará con la factura)",
+                    fg_color="#27ae60")
+            except Exception:
+                pass
+            messagebox.showinfo(
+                "Comprobante de pago",
+                "Comprobante escaneado y listo para guardarse con la factura:\n\n"
+                + os.path.basename(_pags[0]),
+                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+        except Exception as e:
+            messagebox.showerror("Escáner", "No se pudo escanear el comprobante:\n%s" % e,
+                                 parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
     def seleccionar_soporte_tercero(self):
         """Adjunta el comprobante del pago realizado al tercero."""
         ruta = seleccionar_archivo_dialogo("Seleccionar el soporte del pago al tercero",
@@ -3932,7 +4194,8 @@ class FacturasRecibidasTab:
                     entrada.delete(0, tk.END)
                 self.ent_comision.insert(0, f"{cargar_comision_interbancaria_config():.2f}")
                 self.ruta_soporte_tercero = ""
-                self.btn_soporte_tercero.configure(text="📎 Adjuntar soporte del pago al tercero",
+                self._soporte_pago_escaneado = ""
+                self.btn_soporte_tercero.configure(text="🖨️ Escanear comprobante de pago",
                                                    fg_color="#7f8c8d", hover_color="#606b6b")
                 self._actualizar_bloque_cruzada()
             # 📎 Adjunto manual
@@ -4275,6 +4538,80 @@ class FacturasRecibidasTab:
             self.ruta_archivo_temp = ruta
             self.btn_archivo.configure(text="✅ Archivo Manual Listo", fg_color="#28a745", hover_color="#218838")
 
+    def escanear_comprobante_pago(self, padre, al_terminar):
+        """📠 Delega al escáner del comprobante (vive en CuentasPorPagarTab).
+
+        La pestaña de Facturas Recibidas usa el botón «📠 Escanear comprobante de
+        pago»; el motor de escaneo es el mismo del módulo de Cuentas por Pagar.
+        """
+        try:
+            return CuentasPorPagarTab.escanear_comprobante_pago(self, padre, al_terminar)
+        except Exception as e:
+            try:
+                messagebox.showerror("Escáner", "No se pudo iniciar el escaneo:\n%s" % e, parent=padre)
+            except Exception:
+                pass
+            try:
+                al_terminar("")
+            except Exception:
+                pass
+
+    def escanear_soporte_pago_factura(self):
+        """📠 Escanea el comprobante de pago y lo deja listo como soporte de la factura."""
+        print("[Compras] Botón 'Escanear comprobante de pago' pulsado")
+        ventana = None
+        try:
+            ventana = self.winfo_toplevel()
+        except Exception:
+            ventana = getattr(self, "main_root", None)
+
+        def al_terminar(ruta, numero="", fecha_leida="", monto_leido=0.0):
+            print("[Compras] escaneo terminado ->", ruta)
+            if not ruta:
+                # Respaldo: si no se pudo escanear, se ofrece elegir el archivo
+                try:
+                    from tkinter import filedialog
+                    if messagebox.askyesno(
+                            "Escáner",
+                            "No se pudo escanear el comprobante.\n\n"
+                            "¿Desea cargarlo desde un archivo (PDF/imagen)?",
+                            parent=ventana):
+                        elegido = filedialog.askopenfilename(
+                            parent=ventana, title="Seleccionar el comprobante de pago",
+                            filetypes=[("PDF o imagen", "*.pdf *.jpg *.jpeg *.png"),
+                                       ("Todos los archivos", "*.*")])
+                        if elegido:
+                            al_terminar(elegido)
+                except Exception as e_resp:
+                    print("[Compras] respaldo de archivo:", e_resp)
+                return
+            self._soporte_pago_escaneado = ruta
+            avisos = []
+            try:
+                self.lbl_soporte_pago.configure(text="📎 " + os.path.basename(ruta),
+                                                text_color="#1e8449")
+            except Exception:
+                pass
+            if numero:
+                avisos.append("N° de operación: " + str(numero))
+            if fecha_leida:
+                avisos.append("Fecha: " + str(fecha_leida))
+            if monto_leido:
+                avisos.append("Monto: %.2f" % float(monto_leido))
+            detalle = ("\n\nSe leyó del comprobante: " + " · ".join(avisos)) if avisos else ""
+            messagebox.showinfo("Comprobante de pago",
+                                "Comprobante listo y se guardará con la factura:\n"
+                                + os.path.basename(ruta) + detalle, parent=ventana)
+
+        try:
+            self.escanear_comprobante_pago(self, al_terminar)
+            print("[Compras] escáner iniciado")
+        except Exception as e:
+            print("[Compras] ERROR al iniciar el escáner:", e)
+            messagebox.showerror("Escáner",
+                                 "No se pudo iniciar el escaneo:\n%s\n\n"
+                                 "Puede cargar el comprobante desde un archivo con el botón "
+                                 "«📎 Cargar»." % e, parent=ventana)
     def guardar_registro(self):
         ruta_base = obtener_ruta_base_drive()
         if not ruta_base:
@@ -4432,7 +4769,7 @@ class FacturasRecibidasTab:
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val, orden_id, orden_txt,
-                  cruzada["tercero"] if cruzada["activa"] else "", ruta_soporte_tercero,
+                  cruzada["tercero"] if cruzada["activa"] else "", (ruta_soporte_tercero or getattr(self, "_soporte_pago_escaneado", "")),
                   bool(cruzada["activa"]), cruzada["comision"], bool(cruzada["interbancario"]),
                   (self.combo_chofer_factura.get() if getattr(self, "combo_chofer_factura", None)
                   and self.combo_chofer_factura.get() not in ("", "Ninguno") 
@@ -4442,6 +4779,7 @@ class FacturasRecibidasTab:
             except Exception:
                 id_factura_nueva = 0
             conn.commit()
+
 
             # 💳 Factura cruzada: se registra el pago hecho por el tercero para que la
             #    factura aparezca como PAGADA y su forma de pago muestre la cuenta.
@@ -4712,6 +5050,276 @@ class FacturasRecibidasTab:
         self.lbl_pagina.configure(text=f"Pág {self.pagina_actual} de {self.total_paginas}")
         self.btn_ant.configure(state="normal" if self.pagina_actual > 1 else "disabled")
         self.btn_sig.configure(state="normal" if self.pagina_actual < self.total_paginas else "disabled")
+
+    # =====================================================================
+    # 🖱️ MENÚ CONTEXTUAL de la tabla de facturas (botón derecho)
+    # =====================================================================
+    def _menu_contextual_factura(self, event):
+        """Botón derecho: escanear/anexar, editar o borrar la factura seleccionada."""
+        fila = self.tabla.identify_row(event.y)
+        if not fila:
+            return
+        self.tabla.selection_set(fila)
+        menu = tk.Menu(getattr(self, "main_root", None), tearoff=0)
+        menu.add_command(label="🖨️ Escanear factura (anexar)", command=self._escanear_anexar_factura)
+        menu.add_command(label="✏️ Editar factura", command=self._editar_factura)
+        menu.add_separator()
+        menu.add_command(label="🗑️ Borrar factura", command=self._borrar_factura)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _id_factura_seleccionada(self):
+        sel = self.tabla.selection()
+        if not sel:
+            messagebox.showinfo("Factura", "Seleccione una factura de la lista.",
+                                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+            return None
+        try:
+            return int(self.tabla.item(sel[0], "values")[1])
+        except Exception:
+            return None
+
+    def _config_escaneo(self):
+        try:
+            return cargar_configuracion_regional()
+        except Exception:
+            try:
+                return cargar_configuracion_general()
+            except Exception:
+                return {}
+
+    def _escanear_anexar_factura(self):
+        """🖨️ Escanea la factura y la ANEXA al registro seleccionado (archivo_ruta)."""
+        id_fact = self._id_factura_seleccionada()
+        if not id_fact:
+            return
+        try:
+            import escaner as _esc
+            _cfg = self._config_escaneo()
+            _datos = _esc.config_escaner(_cfg)
+            _res = _escanear_con_progreso(None, "el documento", _esc, 
+                _esc.carpeta_escaneos(_cfg),
+                dispositivo=_datos.get("escaner_dispositivo", ""),
+                dpi=_datos.get("escaner_dpi", "300"),
+                color=_datos.get("escaner_color", "Escala de grises"),
+                origen=_datos.get("escaner_origen", "Cristal (una página a la vez)"),
+                paginas=1,
+                optimizar=str(_datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+                modo=_datos.get("escaner_modo", "Automático (sin ventanas)"))
+            _pags = [p for p in (_res.get("paginas") or []) if os.path.exists(str(p))]
+            if not _pags:
+                return messagebox.showerror(
+                    "Escáner", "No se pudo escanear la factura:\n%s"
+                    % (_res.get("error") or "sin detalle"),
+                    parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+            _pdf = os.path.join(os.path.dirname(_pags[0]),
+                                "Factura_%s_%s.pdf" % (id_fact, datetime.now().strftime("%Y%m%d_%H%M%S")))
+            _esc.imagenes_a_pdf(_pags, _pdf)
+            _ruta_bd = _pdf
+            try:
+                from app_paths import ruta_para_guardar
+                _ruta_bd = ruta_para_guardar(_pdf) or _pdf
+            except Exception:
+                pass
+            conn = conectar_db()
+            if not conn:
+                return
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE facturas_recibidas SET archivo_ruta = %s WHERE id = %s",
+                                (_ruta_bd, id_fact))
+                    cur.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id_factura = %s",
+                                (_ruta_bd, id_fact))
+                conn.commit()
+            finally:
+                liberar_conexion(conn)
+            try:
+                cache_sistema.invalidar()
+            except Exception:
+                pass
+            self.cargar_datos_tabla(reset_pagina=True)
+            messagebox.showinfo(
+                "Factura anexada",
+                "La factura escaneada quedó ANEXADA al registro:\n" + os.path.basename(_pdf),
+                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+        except Exception as e:
+            messagebox.showerror("Escáner", "No se pudo escanear la factura:\n%s" % e,
+                                 parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
+    def _editar_factura(self):
+        """✏️ Ventana para corregir los datos de la factura seleccionada."""
+        id_fact = self._id_factura_seleccionada()
+        if not id_fact:
+            return
+        conn = conectar_db()
+        if not conn:
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT tipo_documento, numero_documento, fecha, proveedor, COALESCE(ruc, ''),
+                                      COALESCE(descripcion, ''), COALESCE(categoria, ''), COALESCE(subtotal, 0),
+                                      COALESCE(impuesto, 0), COALESCE(total, 0)
+                               FROM facturas_recibidas WHERE id = %s""", (id_fact,))
+                fila = cur.fetchone()
+        finally:
+            liberar_conexion(conn)
+        if not fila:
+            return messagebox.showerror("Factura", "No se encontró la factura.",
+                                        parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+        (tipo_i, nro_i, fecha_i, prov_i, ruc_i, desc_i, cat_i, sub_i, imp_i, tot_i) = fila
+
+        v = ctk.CTkToplevel(getattr(self, "main_root", None))
+        v.title("✏️ Editar Factura")
+        v.geometry("520x560")
+        v.transient(getattr(self, "main_root", None))
+        try:
+            v.grab_set()
+        except Exception:
+            pass
+        f = ctk.CTkFrame(v, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=16, pady=12)
+
+        def campo(texto, valor=""):
+            ctk.CTkLabel(f, text=texto, font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
+            e = ctk.CTkEntry(f)
+            e.pack(fill="x", pady=(0, 2))
+            if valor:
+                e.insert(0, str(valor))
+            return e
+
+        e_tipo = campo("Tipo de documento:", tipo_i)
+        e_nro = campo("N° de documento:", nro_i)
+        e_fecha = campo("Fecha (DD/MM/AAAA):", fecha_i)
+        e_prov = campo("Proveedor:", prov_i)
+        e_ruc = campo("RUC:", ruc_i)
+        e_cat = campo("Categoría:", cat_i)
+        e_desc = campo("Concepto / descripción:", desc_i)
+        e_sub = campo("Subtotal (base):", "%.2f" % float(sub_i or 0))
+        e_tot = campo("Total:", "%.2f" % float(tot_i or 0))
+
+        def guardar():
+            try:
+                sub = float(e_sub.get().strip() or 0)
+                tot = float(e_tot.get().strip() or 0)
+            except ValueError:
+                return messagebox.showerror("Error", "Subtotal y Total deben ser numéricos.", parent=v)
+            imp = round(tot - sub, 2)
+            conn = conectar_db()
+            if not conn:
+                return
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""UPDATE facturas_recibidas
+                                   SET tipo_documento=%s, numero_documento=%s, fecha=%s, proveedor=%s, ruc=%s,
+                                       categoria=%s, descripcion=%s, subtotal=%s, impuesto=%s, total=%s
+                                   WHERE id=%s""",
+                                (e_tipo.get().strip(), e_nro.get().strip(), e_fecha.get().strip(),
+                                 e_prov.get().strip(), e_ruc.get().strip(), e_cat.get().strip(),
+                                 e_desc.get().strip(), sub, imp, tot, id_fact))
+                conn.commit()
+            finally:
+                liberar_conexion(conn)
+            try:
+                cache_sistema.invalidar()
+            except Exception:
+                pass
+            try:
+                registrar_auditoria(getattr(getattr(self, "app_padre", None), "usuario_activo", ""),
+                                    "Facturas Recibidas", "Editó la factura ID %s" % id_fact)
+            except Exception:
+                pass
+            self.cargar_datos_tabla(reset_pagina=True)
+            try:
+                v.destroy()
+            except Exception:
+                pass
+            messagebox.showinfo("Éxito", "Factura actualizada.",
+                                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
+        barra = ctk.CTkFrame(v, fg_color="transparent")
+        barra.pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkButton(barra, text="💾 Guardar", height=36, font=("Arial", 12, "bold"),
+                      fg_color="#27ae60", hover_color="#1e8449", command=guardar).pack(
+            side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(barra, text="❌ Cancelar", height=36, font=("Arial", 12, "bold"),
+                      fg_color="#7f8c8d", hover_color="#606b6b", command=v.destroy).pack(
+            side="left", expand=True, fill="x", padx=(6, 0))
+
+    def _borrar_factura(self):
+        """🗑️ Elimina por completo la factura seleccionada (y su pago y su movimiento en Banco)."""
+        id_fact = self._id_factura_seleccionada()
+        if not id_fact:
+            return
+        mov_banco = None
+        try:
+            conn_b = conectar_db(silencioso=True)
+            if conn_b:
+                try:
+                    with conn_b.cursor() as cb:
+                        cb.execute("""SELECT id, COALESCE(banco, ''), COALESCE(cuenta, ''), COALESCE(fecha, ''),
+                                             COALESCE(monto, 0)
+                                      FROM conciliacion_bancaria WHERE id_gasto_compras = %s""", (id_fact,))
+                        mov_banco = cb.fetchone()
+                finally:
+                    liberar_conexion(conn_b)
+        except Exception:
+            mov_banco = None
+
+        aviso = "⚠️ ¿Desea eliminar completamente esta factura?"
+        if mov_banco:
+            etiqueta_b = " - ".join(str(x) for x in (mov_banco[1], mov_banco[2]) if x).strip(" -")
+            aviso += ("\n\n🔗 Esta factura se creó desde el módulo de BANCO:\n"
+                      "     %s | %s | %s"
+                      "\n\nEl movimiento bancario y el pago se eliminarán también."
+                      % (etiqueta_b, mov_banco[3], formatear_moneda(mov_banco[4])))
+        if not messagebox.askyesno("Confirmar Eliminación", aviso,
+                                   parent=ventana_para_mensaje(getattr(self, "main_root", None))):
+            return
+        try:
+            conn = conectar_db()
+            if not conn:
+                return
+            cursor = conn.cursor()
+            cursor.execute("SELECT archivo_ruta FROM facturas_recibidas WHERE id = %s", (id_fact,))
+            row = cursor.fetchone()
+            ruta_archivo = os.path.normpath(row[0]) if row and row[0] else None
+            try:
+                eliminar_archivo(ruta_archivo)
+            except Exception:
+                pass
+            cursor.execute("DELETE FROM pagos_comprobantes WHERE id_factura = %s", (id_fact,))
+            cursor.execute("DELETE FROM facturas_recibidas WHERE id = %s", (id_fact,))
+            mov_borrados = 0
+            if mov_banco:
+                cursor.execute("DELETE FROM conciliacion_bancaria WHERE id_gasto_compras = %s", (id_fact,))
+                mov_borrados = max(cursor.rowcount, 0)
+            conn.commit()
+            liberar_conexion(conn)
+            try:
+                cache_sistema.invalidar()
+            except Exception:
+                pass
+            try:
+                registrar_auditoria(getattr(getattr(self, "app_padre", None), "usuario_activo", ""),
+                                    "Facturas Recibidas", "Eliminó la factura ID %s" % id_fact)
+            except Exception:
+                pass
+            mensaje = "Factura eliminada."
+            if mov_borrados:
+                mensaje += "\n🔗 También se eliminó el movimiento en BANCO."
+            messagebox.showinfo("Éxito", mensaje,
+                                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+            self.cargar_datos_tabla(reset_pagina=True)
+            try:
+                if hasattr(self.app_padre, "app_pagos"):
+                    self.app_padre.app_pagos.cargar_datos_pagar(reset_pagina=True)
+            except Exception:
+                pass
+        except Exception as e:
+            messagebox.showerror("Error", str(e),
+                                 parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
     def abrir_archivo(self, event):
         sel = self.tabla.selection()
@@ -5802,93 +6410,76 @@ class CuentasPorPagarTab:
         buscar_factura()
 
     def escanear_comprobante_pago(self, padre, al_terminar):
-        """Escanea el comprobante de pago en la multifuncional y arma un PDF.
+        """🖨️ Escanea el comprobante de pago y avisa SIEMPRE del resultado.
 
-        El escaneo corre en segundo plano; al terminar se llama a al_terminar(ruta)
-        en el hilo de la interfaz (ruta vacía si no se pudo escanear).
+        Usa el mismo motor directo que la compra cruzada (sin ventanas ni hilos
+        intermedios): así el resultado nunca se pierde. Funciona en Windows y macOS.
         """
         try:
-            import escaner
-        except Exception as e:
-            messagebox.showerror("Escáner", f"No se pudo cargar el módulo de escaneo:\n{e}", parent=padre)
-            return al_terminar("")
-        if not escaner.sistema_soportado():
-            messagebox.showinfo("Escáner", "El escaneo con la multifuncional está disponible en Windows y en macOS (M1/M2).",
-                                parent=padre)
-            return al_terminar("")
-
-        config = cargar_configuracion_regional()
-        prog = ctk.CTkToplevel(padre if padre is not None else self.main_root)
-        prog.title("Escaneando comprobante de pago")
-        prog.geometry("430x150")
-        try:
-            prog.transient(padre if padre is not None else self.main_root)
-            prog.grab_set()
-        except Exception:
-            pass
-        ctk.CTkLabel(prog, text="🖨️ Escaneando el comprobante de pago...", font=("Arial", 12, "bold"),
-                     text_color="#0e7490").pack(pady=(20, 4))
-        ctk.CTkLabel(prog, text="Coloque el comprobante en el escáner (cristal).",
-                     font=("Arial", 10), text_color="gray").pack()
-        barra = ctk.CTkProgressBar(prog, width=330, mode="indeterminate")
-        barra.pack(pady=10)
-        barra.start()
-
-        def tarea():
-            resultado = {"ok": False, "pdf": "", "error": ""}
-            try:
-                datos = escaner.config_escaner(config)
-                carpeta = escaner.carpeta_escaneos(config)
-                esc = escaner.escanear(
-                    carpeta,
-                    dispositivo=datos.get("escaner_dispositivo", ""),
-                    dpi=datos.get("escaner_dpi", "300"),
-                    color=datos.get("escaner_color", "Escala de grises"),
-                    origen=datos.get("escaner_origen", "Cristal (una página a la vez)"),
-                    paginas=1,
-                    optimizar=str(datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
-                    modo=datos.get("escaner_modo", "Automático (sin ventanas)"))
-                if esc.get("ok") and esc.get("paginas"):
-                    marca = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    pdf = os.path.join(os.path.dirname(esc["paginas"][0]),
-                                       f"Comprobante_Pago_{marca}.pdf")
-                    escaner.imagenes_a_pdf(esc["paginas"], pdf)
-                    resultado.update({"ok": True, "pdf": pdf})
-                    # 🧠 OCR del comprobante: se busca el N° de operación / transacción
-                    try:
-                        texto_ocr = leer_ocr_windows(pdf)
-                        resultado["numero_operacion"] = extraer_numero_operacion(texto_ocr)
-                        # 📅 También se lee la fecha del comprobante
-                        resultado["fecha"] = extraer_fecha_comprobante(texto_ocr)
-                    except Exception as e_ocr_op:
-                        print("Aviso - OCR del comprobante de pago:", e_ocr_op)
-                else:
-                    resultado["error"] = esc.get("error") or "No se pudo escanear."
-            except Exception as e:
-                resultado["error"] = str(e)
-
-            def terminar():
+            import escaner as _esc
+            _cfg = cargar_configuracion_regional()
+            _datos = _esc.config_escaner(_cfg)
+            _res = _escanear_con_progreso(None, "el documento", _esc, 
+                _esc.carpeta_escaneos(_cfg),
+                dispositivo=_datos.get("escaner_dispositivo", ""),
+                dpi=_datos.get("escaner_dpi", "300"),
+                color=_datos.get("escaner_color", "Escala de grises"),
+                origen=_datos.get("escaner_origen", "Cristal (una página a la vez)"),
+                paginas=1,
+                optimizar=str(_datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+                modo=_datos.get("escaner_modo", "Automático (sin ventanas)"))
+            _pags = [p for p in (_res.get("paginas") or []) if os.path.exists(str(p))]
+            print("[Escáner comprobante] ok=%s paginas=%d error=%s"
+                  % (bool(_pags), len(_pags), _res.get("error") or "-"))
+            if not _pags:
                 try:
-                    prog.grab_release()
-                    prog.destroy()
+                    messagebox.showerror(
+                        "Escáner", "No se pudo escanear el comprobante:\n%s"
+                        % (_res.get("error") or "sin detalle"), parent=padre)
                 except Exception:
                     pass
-                if not resultado["ok"]:
-                    messagebox.showerror("Escáner", resultado["error"] or "No se pudo escanear.",
-                                         parent=padre)
                 try:
-                    al_terminar(resultado["pdf"], resultado.get("numero_operacion", ""),
-                                resultado.get("fecha", ""))
-                except TypeError:
-                    try:
-                        al_terminar(resultado["pdf"], resultado.get("numero_operacion", ""))
-                    except TypeError:
-                        al_terminar(resultado["pdf"])
+                    al_terminar("")
+                except Exception:
+                    pass
+                return ""
+            _texto_ocr = ""
             try:
-                self.main_root.after(0, terminar)
+                _texto_ocr = _esc.texto_de_resultados(_esc.ocr_paginas(_pags))
+            except Exception as e_ocr:
+                print("[Escáner comprobante] OCR:", e_ocr)
+            _num = _fecha = ""
+            _monto = 0.0
+            try:
+                from modulo_compras import (extraer_numero_operacion, extraer_fecha_comprobante)
+                _num = extraer_numero_operacion(_texto_ocr)
+                _fecha = extraer_fecha_comprobante(_texto_ocr)
             except Exception:
                 pass
-        threading.Thread(target=tarea, daemon=True).start()
+            try:
+                _monto = monto_del_comprobante(_texto_ocr)
+            except Exception:
+                _monto = 0.0
+            try:
+                al_terminar(_pags[0], _num, _fecha, _monto)
+            except TypeError:
+                try:
+                    al_terminar(_pags[0], _num, _fecha)
+                except TypeError:
+                    al_terminar(_pags[0])
+            return _pags[0]
+        except Exception as e:
+            print("[Escáner comprobante] ERROR:", e)
+            try:
+                messagebox.showerror("Escáner", "No se pudo escanear el comprobante:\n%s" % e,
+                                     parent=padre)
+            except Exception:
+                pass
+            try:
+                al_terminar("")
+            except Exception:
+                pass
+            return ""
 
     def cargar_comprobante_pago(self):
         ruta_base = obtener_ruta_base_drive()
@@ -6058,7 +6649,7 @@ class CuentasPorPagarTab:
 
         def escanear_soporte():
             """Escanea el comprobante de pago y lo deja listo como soporte del pago."""
-            def al_terminar(ruta, numero_operacion="", fecha_leida=""):
+            def al_terminar(ruta, numero_operacion="", fecha_leida="", monto_leido=0.0):
                 if not ruta:
                     return
                 self._soporte_escaneado = ruta
@@ -6081,6 +6672,17 @@ class CuentasPorPagarTab:
                         texto_aviso += "   ·   Fecha del comprobante: " + fecha_leida
                 except Exception as e_fe:
                     print("Aviso - fecha del comprobante:", e_fe)
+                try:
+                    # 💵 El importe leído completa el monto si el campo está vacío
+                    if monto_leido and not ent_monto.get().strip():
+                        ent_monto.insert(0, formatear_numero_entrada("%.2f" % float(monto_leido)))
+                        texto_aviso += "   ·   Monto leído: %.2f" % float(monto_leido)
+                        try:
+                            actualizar_totales()
+                        except Exception:
+                            pass
+                except Exception as e_mo:
+                    print("Aviso - monto del comprobante:", e_mo)
                 try:
                     lbl_soporte.configure(text=texto_aviso, text_color="#1e8449")
                 except Exception:
@@ -6246,7 +6848,7 @@ class CuentasPorPagarTab:
 
             v_mod_pago = ctk.CTkToplevel(v_edit)
             v_mod_pago.title("Modificar Pago")
-            centrar_ventana(v_mod_pago, v_edit, 400, 400)
+            centrar_ventana(v_mod_pago, v_edit, 430, 620)
             v_mod_pago.transient(v_edit)
             v_mod_pago.grab_set()
 
@@ -6290,6 +6892,69 @@ class CuentasPorPagarTab:
                          font=("Arial", 9, "italic"), text_color="#7f8c8d", wraplength=400, justify="left").pack(anchor="w", pady=(0, 10))
             if operacion_actual: ent_mod_oper.insert(0, str(operacion_actual))
 
+            # 📎 COMPROBANTE DE PAGO de este pago (cargar / escanear / ver)
+            ruta_comp = {"ruta": ""}
+            try:
+                _c = conectar_db(); _cur = _c.cursor()
+                _cur.execute("SELECT COALESCE(archivo_ruta, '') FROM pagos_comprobantes WHERE id = %s", (id_pago,))
+                _f = _cur.fetchone()
+                liberar_conexion(_c)
+                ruta_comp["ruta"] = str(_f[0] or "") if _f else ""
+            except Exception:
+                pass
+            ctk.CTkLabel(f_form, text="Comprobante de pago:", font=("Arial", 11, "bold")).pack(anchor="w")
+            f_comp = ctk.CTkFrame(f_form, fg_color="transparent")
+            f_comp.pack(fill="x", pady=(0, 4))
+            lbl_comp = ctk.CTkLabel(f_form, text="", font=("Arial", 10), text_color="#999999", anchor="w")
+
+            def _lbl_comp():
+                r = ruta_comp.get("ruta") or ""
+                lbl_comp.configure(text=("📎 " + os.path.basename(r)) if r else "Sin comprobante cargado",
+                                   text_color="#1e8449" if r else "#999999")
+
+            def _cargar_comp():
+                try:
+                    from tkinter import filedialog
+                    r = filedialog.askopenfilename(
+                        parent=v_mod_pago, title="Seleccionar el comprobante de pago",
+                        filetypes=[("PDF o imagen", "*.pdf *.jpg *.jpeg *.png"), ("Todos los archivos", "*.*")])
+                except Exception as e:
+                    return messagebox.showerror("Comprobante", str(e), parent=v_mod_pago)
+                if r:
+                    ruta_comp["ruta"] = r
+                    _lbl_comp()
+
+            def _escanear_comp():
+                def al_terminar(r):
+                    if r:
+                        ruta_comp["ruta"] = r
+                        _lbl_comp()
+                        messagebox.showinfo("Comprobante", "Se escaneó el comprobante:\n" + os.path.basename(r),
+                                            parent=v_mod_pago)
+                self.escanear_comprobante_pago(v_mod_pago, al_terminar)
+
+            def _ver_comp():
+                r = ruta_comp.get("ruta") or ""
+                if r and os.path.isfile(r):
+                    abrir_documento(r)
+                elif r:
+                    messagebox.showwarning("Comprobante", "El archivo ya no está en esa ubicación:\n" + r,
+                                           parent=v_mod_pago)
+                else:
+                    messagebox.showinfo("Comprobante", "Todavía no hay comprobante cargado.", parent=v_mod_pago)
+
+            ctk.CTkButton(f_comp, text="📎 Cargar", height=28, font=("Arial", 11, "bold"),
+                          fg_color="#16a085", hover_color="#11806a",
+                          command=_cargar_comp).pack(side="left", fill="x", expand=True)
+            ctk.CTkButton(f_comp, text="🖨️ Escanear", width=115, height=28, font=("Arial", 11, "bold"),
+                          fg_color="#0e7490", hover_color="#155e75",
+                          command=_escanear_comp).pack(side="left", padx=(5, 0))
+            ctk.CTkButton(f_comp, text="👁️ Ver", width=64, height=28, font=("Arial", 11, "bold"),
+                          fg_color="#5d6d7e", hover_color="#4a5967",
+                          command=_ver_comp).pack(side="left", padx=(5, 0))
+            lbl_comp.pack(anchor="w", pady=(0, 6))
+            _lbl_comp()
+
             def guardar_mod(event=None):
                 nonlocal saldo_actual_global
                 try:
@@ -6326,7 +6991,7 @@ class CuentasPorPagarTab:
                                                     "Si el pago fue en efectivo o con caja chica, seleccione esa cuenta.",
                                                     parent=v_mod_pago)
                     conn = conectar_db(); cursor = conn.cursor()
-                    cursor.execute("UPDATE pagos_comprobantes SET monto_pagado = %s, fecha_pago = %s, cuenta_origen = %s, numero_operacion = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, nueva_oper, id_pago))
+                    cursor.execute("UPDATE pagos_comprobantes SET monto_pagado = %s, fecha_pago = %s, cuenta_origen = %s, numero_operacion = %s, archivo_ruta = COALESCE(NULLIF(%s, ''), archivo_ruta) WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, nueva_oper, ruta_comp["ruta"], id_pago))
                     conn.commit(); liberar_conexion(conn)
                     cache_sistema.invalidar()
                     registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar", f"Modificó el pago ID {id_pago} a {formatear_moneda(nuevo_monto)}")
@@ -6374,6 +7039,46 @@ class CuentasPorPagarTab:
                     refrescar_subtabla(); self.cargar_datos_pagar(reset_pagina=True)
                 except Exception as e: messagebox.showerror("Error", str(e), parent=v_edit)
 
+        def escanear_soporte_pago():
+            """🖨️ Escanea el comprobante y lo deja como soporte del pago seleccionado."""
+            ruta_base = obtener_ruta_base_drive()
+            if not ruta_base:
+                avisar_sin_permiso_guardado(v_edit)
+                return
+            sub_sel = sub_tabla.selection()
+            if not sub_sel:
+                return messagebox.showinfo("Soporte", "Seleccione un pago de la lista.", parent=v_edit)
+
+            def al_terminar(ruta_escaneada):
+                if not ruta_escaneada:
+                    return
+                try:
+                    id_pago_sel = sub_tabla.item(sub_sel[0], "values")[0]
+                    carpeta_comprobantes = os.path.normpath(os.path.join(ruta_base, "comprobantes_egresos"))
+                    if not os.path.exists(carpeta_comprobantes):
+                        os.makedirs(carpeta_comprobantes)
+                    conn = conectar_db(); cursor = conn.cursor()
+                    cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id = %s", (id_pago_sel,))
+                    fila = cursor.fetchone()
+                    antigua = fila[0] if fila else ""
+                    if antigua:
+                        eliminar_archivo(os.path.normpath(antigua))
+                    prov_limpio = re.sub(r'[\/*?:"<>|]', '-', proveedor)
+                    nombre_limpio = "Egreso_Fac_%s_%s_R_%s.pdf" % (id_factura, prov_limpio.replace(' ', '_'), id_pago_sel)
+                    destino = os.path.normpath(os.path.join(carpeta_comprobantes, nombre_limpio))
+                    shutil.copy2(ruta_escaneada, destino)
+                    cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id = %s",
+                                   (ruta_para_guardar(destino), id_pago_sel))
+                    conn.commit(); liberar_conexion(conn)
+                    registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar",
+                                        f"Escaneó el soporte del pago {id_pago_sel}")
+                    messagebox.showinfo("Éxito", "Soporte escaneado y guardado.", parent=v_edit)
+                    refrescar_subtabla(); self.cargar_datos_pagar(reset_pagina=True)
+                except Exception as e:
+                    messagebox.showerror("Error", str(e), parent=v_edit)
+
+            self.escanear_comprobante_pago(v_edit, al_terminar)
+
         def eliminar_soporte():
             sub_sel = sub_tabla.selection()
             if not sub_sel: return
@@ -6419,6 +7124,7 @@ class CuentasPorPagarTab:
         frame_lateral_btns.pack(side="right", fill="y")
         ctk.CTkButton(frame_lateral_btns, text="✏️ Modificar Monto/Cuenta", font=("Arial", 12, "bold"), fg_color="#34495e", hover_color="#2c3e50", command=ejecutar_modificacion).pack(fill="x", pady=3)
         ctk.CTkButton(frame_lateral_btns, text="📂 Cambiar Soporte", font=("Arial", 12, "bold"), fg_color="#7f8c8d", hover_color="#606b6b", command=cambiar_soporte).pack(fill="x", pady=3)
+        ctk.CTkButton(frame_lateral_btns, text="🖨️ Escanear Soporte", font=("Arial", 12, "bold"), fg_color="#0e7490", hover_color="#155e75", command=escanear_soporte_pago).pack(pady=5)
         ctk.CTkButton(frame_lateral_btns, text="🗑️ Eliminar Soporte", font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#922b21", command=eliminar_soporte).pack(fill="x", pady=3)
         ctk.CTkButton(frame_lateral_btns, text="❌ Eliminar Pago Completo", font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#922b21", command=eliminar_pago_completo).pack(fill="x", pady=(15, 3))
 

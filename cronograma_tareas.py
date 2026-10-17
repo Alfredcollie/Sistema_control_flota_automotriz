@@ -321,6 +321,16 @@ class CalendarioDashboard(ctk.CTkToplevel):
                         # 2. 🚀 INYECCIÓN DE PROYECCIONES VIRTUALES 100% SEGURA
                         if filtro_p in ["Todo", "Por Vehículo"]:
                             lim_aceite = int(CONFIG_REGIONAL.get("alerta_aceite_km", "5000"))
+                            # 💨 Cada cuántos km toca el mantenimiento del sistema de gas
+                            try:
+                                lim_gas = int(float(str(CONFIG_REGIONAL.get("alerta_gas_km", "10000")).replace(",", ".")))
+                            except Exception:
+                                lim_gas = 10000
+                            # 🛞 Cada cuántos km toca el cambio de neumáticos
+                            try:
+                                lim_neu = int(float(str(CONFIG_REGIONAL.get("alerta_neumaticos_km", "50000")).replace(",", ".")))
+                            except Exception:
+                                lim_neu = 50000
                             
                             try:
                                 cursor.execute("SELECT placa, marca FROM flota_vehiculos")
@@ -336,12 +346,30 @@ class CalendarioDashboard(ctk.CTkToplevel):
                                         
                                     km_correa_limite = 0.0
                                     km_ultimo_aceite = 0.0
+                                    km_mant_gas = 0.0
+                                    km_neu = 0.0
                                     
                                     # Extraer parámetros seguros (no rompe si faltan)
                                     try:
                                         cursor.execute("SELECT km_prox_correa FROM flota_vehiculos WHERE placa = %s", (placa,))
                                         r_corr = cursor.fetchone()
                                         if r_corr and r_corr[0]: km_correa_limite = float(r_corr[0])
+                                    except Exception: conn.rollback()
+
+                                    # 💨 Kilómetros del último mantenimiento del sistema de gas
+                                    try:
+                                        cursor.execute("SELECT km_mant_gas FROM flota_vehiculos WHERE placa = %s", (placa,))
+                                        r_gas = cursor.fetchone()
+                                        if r_gas and str(r_gas[0] or "").strip():
+                                            km_mant_gas = float(str(r_gas[0]).replace(",", "."))
+                                    except Exception: conn.rollback()
+
+                                    # 🛞 Kilómetros del último cambio de neumáticos
+                                    try:
+                                        cursor.execute("SELECT neu_km FROM flota_vehiculos WHERE placa = %s", (placa,))
+                                        r_neu = cursor.fetchone()
+                                        if r_neu and str(r_neu[0] or "").strip():
+                                            km_neu = float(str(r_neu[0]).replace(",", "."))
                                     except Exception: conn.rollback()
                                     
                                     try:
@@ -473,6 +501,32 @@ class CalendarioDashboard(ctk.CTkToplevel):
                                         dias_correa = int((km_correa_limite - km_fin) / prom_diario)
                                         if dias_correa < 0: dias_correa = 0
                                         fecha_correa = datetime.now() + timedelta(days=dias_correa)
+                                        # 💨 Proyectar Mantenimiento del Sistema de Gas (por kilómetros)
+                                        if km_mant_gas > 0 and lim_gas > 0:
+                                            prox_gas_km = km_mant_gas + lim_gas
+                                            if prox_gas_km > km_fin and prom_diario > 0:
+                                                dias_gas = int((prox_gas_km - km_fin) / prom_diario)
+                                                if dias_gas < 0:
+                                                    dias_gas = 0
+                                                fecha_gas = datetime.now() + timedelta(days=dias_gas)
+                                                datos_db.append(("PROY", fecha_gas.strftime("%d/%m/%Y"),
+                                                                 f"⚠️ Proy. Mant. Gas ({prox_gas_km:,.0f} Km)", evt_name,
+                                                                 "Sistema Automático",
+                                                                 f"Mantenimiento del sistema de gas de {placa} (cada {lim_gas:,.0f} km)",
+                                                                 "Vencimiento", "", "No", "Sin aviso"))
+                                        # 🛞 Proyectar Cambio de Neumáticos (por kilómetros)
+                                        if km_neu > 0 and lim_neu > 0:
+                                            prox_neu_km = km_neu + lim_neu
+                                            if prox_neu_km > km_fin and prom_diario > 0:
+                                                dias_neu = int((prox_neu_km - km_fin) / prom_diario)
+                                                if dias_neu < 0:
+                                                    dias_neu = 0
+                                                fecha_neu = datetime.now() + timedelta(days=dias_neu)
+                                                datos_db.append(("PROY", fecha_neu.strftime("%d/%m/%Y"),
+                                                                 f"⚠️ Proy. Neumáticos ({prox_neu_km:,.0f} Km)", evt_name,
+                                                                 "Sistema Automático",
+                                                                 f"Cambio de neumáticos de {placa} (cada {lim_neu:,.0f} km)",
+                                                                 "Vencimiento", "", "No", "Sin aviso"))
                                         datos_db.append(("PROY", fecha_correa.strftime("%d/%m/%Y"), f"⚠️ Proy. Correa ({km_correa_limite:,.0f} Km)", evt_name, "Sistema Automático", f"Estimación basada en {prom_diario:.1f} Km/día", "Proyección", "", "No", "Sin aviso"))
                             
                             except Exception as e:
