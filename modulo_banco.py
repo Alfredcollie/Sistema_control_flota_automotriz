@@ -81,11 +81,46 @@ def _numero_peru(txt):
 
 
 def monto_del_comprobante(texto):
-    """💵 Importe total leído de un comprobante (0.0 si no se encuentra)."""
+    """💵 Importe leído de un comprobante (0.0 si no se encuentra).
+
+    Prioriza el monto de la transferencia/depósito (una línea «s/ X» sin las
+    palabras total/comisión), para no confundirlo con el «Total cobrado», que
+    incluye la comisión del banco (ej. transferencia 803.23 + comisión 4.80 =
+    «Total cobrado 808.03»).
+    """
     import re as _re
     try:
         lineas = [l.strip() for l in str(texto or "").splitlines() if l.strip()]
-        # 1) la línea que dice TOTAL / IMPORTE / MONTO
+        for l in lineas:
+            bajo = l.lower()
+            if any(p in bajo for p in ("total", "importe", "monto", "comis", "cobrado")):
+                continue
+            m = _re.search(r"s[./]\s*[\d][\d.,]*", bajo)
+            if m:
+                nums = _re.findall(r"\d[\d.,]*", m.group(0))
+                if nums:
+                    v = _numero_peru(nums[-1])
+                    if v > 0:
+                        return float(v)
+        comision = 0.0
+        for l in lineas:
+            if "comis" in l.lower():
+                nums = _re.findall(r"\d[\d.,]*", l)
+                for n in reversed(nums):
+                    c = _numero_peru(n)
+                    if 0 < c < 10000000:
+                        comision = float(c)
+                        break
+                if comision:
+                    break
+        for l in lineas:
+            bajo = l.upper()
+            if ("TOTAL" in bajo or "IMPORTE" in bajo or "MONTO" in bajo) and "COBRADO" in bajo:
+                nums = _re.findall(r"\d[\d.,]*", l)
+                if nums:
+                    v = _numero_peru(nums[-1])
+                    if v > 0:
+                        return float(v) - comision
         for l in lineas:
             bajo = l.upper()
             if "TOTAL" in bajo or "IMPORTE" in bajo or "MONTO" in bajo:
@@ -94,7 +129,6 @@ def monto_del_comprobante(texto):
                     val = _numero_peru(nums[-1])
                     if val > 0:
                         return float(val)
-        # 2) el importe más alto del documento
         candidatos = []
         for l in lineas:
             for n in _re.findall(r"\d[\d.,]{2,}", l):
@@ -104,6 +138,7 @@ def monto_del_comprobante(texto):
         return max(candidatos) if candidatos else 0.0
     except Exception:
         return 0.0
+
 
 
 def cargar_config():
@@ -643,6 +678,17 @@ def normalizar_fecha(s):
         except Exception:
             continue
     return s
+
+
+def fecha_para_mostrar(valor):
+    """Devuelve la fecha como DD/MM/AAAA para mostrarla (aunque venga en ISO)."""
+    f = normalizar_fecha(valor)
+    try:
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", f or ""):
+            return datetime.strptime(f, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        pass
+    return valor or ""
 
 
 def clave_fecha(fecha):
@@ -1709,15 +1755,73 @@ class ModuloBancoApp:
         vsb.pack(side="right", fill="y")
 
         movs = sorted(movs, key=lambda m: (normalizar_fecha(m["fecha"]), m["monto"]))
-        for m in movs:
+        tabla_movs = []
+        for _idx, m in enumerate(movs):
             if m.get("tipo") == "transferencia":
                 tipo_txt = "Transferencia (Ingreso)" if m["monto"] > 0 else "Transferencia (Egreso)"
             else:
                 tipo_txt = "Ingreso (Cobro)" if m["monto"] > 0 else "Egreso (Pago)"
-            tabla.insert("", tk.END, values=(m["fecha"], m.get("documento", ""), m["descripcion"],
-                                             tipo_txt, formatear_monto(m["monto"])))
-        ctk.CTkButton(v, text="Cerrar", width=120, fg_color="#34495e",
-                      command=v.destroy).pack(pady=(0, 15))
+            tabla.insert("", tk.END, iid=str(_idx), values=(fecha_para_mostrar(m["fecha"]),
+                                                           m.get("documento", ""), m["descripcion"],
+                                                           tipo_txt, formatear_monto(m["monto"])))
+            tabla_movs.append(m)
+
+        def eliminar_movimiento():
+            sel = tabla.selection()
+            if not sel:
+                return messagebox.showinfo("Eliminar", "Seleccione un movimiento.", parent=v)
+            try:
+                m = tabla_movs[int(sel[0])]
+            except Exception:
+                return
+            _tabla = str(m.get("tabla") or "")
+            _id = int(m.get("id") or 0)
+            if _tabla not in ("pagos_clientes", "pagos_comprobantes", "transferencias_bancarias") or not _id:
+                return messagebox.showwarning("Eliminar",
+                                              "Este movimiento no se puede eliminar desde aquí.", parent=v)
+            _desc = str(m.get("descripcion") or "")
+            _monto = formatear_monto(m.get("monto", 0))
+            if not messagebox.askyesno(
+                    "Eliminar movimiento",
+                    "¿Eliminar este movimiento del sistema?" + chr(10) + chr(10)
+                    + _desc + "   (" + _monto + ")" + chr(10) + chr(10)
+                    + "Se borrará de la base de datos (" + _tabla + ").",
+                    parent=v):
+                return
+            conn_del = conectar_db()
+            if not conn_del:
+                return
+            try:
+                c_del = conn_del.cursor()
+                c_del.execute("DELETE FROM " + _tabla + " WHERE id = %s", (_id,))
+                conn_del.commit()
+            except Exception as e_del:
+                try:
+                    conn_del.rollback()
+                except Exception:
+                    pass
+                return messagebox.showerror("Eliminar", str(e_del), parent=v)
+            finally:
+                liberar_conexion(conn_del)
+            try:
+                from buffer_memoria import cache_sistema as _cache
+                _cache.invalidar()
+            except Exception:
+                pass
+            try:
+                registrar_auditoria(getattr(self, "usuario_activo", "Sistema"), "Banco",
+                                    "Eliminó movimiento " + _tabla + ": " + _desc[:60])
+            except Exception:
+                pass
+            messagebox.showinfo("Eliminar", "Movimiento eliminado.", parent=v)
+            v.destroy()
+
+        f_botones = ctk.CTkFrame(v, fg_color="transparent")
+        f_botones.pack(pady=(0, 15))
+        ctk.CTkButton(f_botones, text="🗑️ Eliminar movimiento", width=190, fg_color="#c0392b",
+                      hover_color="#922b21", command=eliminar_movimiento).pack(side="left", padx=6)
+        ctk.CTkButton(f_botones, text="Cerrar", width=120, fg_color="#34495e",
+                      command=v.destroy).pack(side="left", padx=6)
 
     # -----------------------------------------------------
     # TAB: TRANSFERENCIAS ENTRE CUENTAS
