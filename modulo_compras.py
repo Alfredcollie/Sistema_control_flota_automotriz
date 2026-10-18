@@ -6418,9 +6418,13 @@ class CuentasPorPagarTab:
                      % len(pendientes), font=("Arial", 12, "bold"), text_color="#1f538d").pack(anchor="w")
 
         ctk.CTkLabel(f, text="Fecha del pago:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
-        ent_fecha = ctk.CTkEntry(f)
-        ent_fecha.pack(fill="x")
+        f_fecha_pago = ctk.CTkFrame(f, fg_color="transparent")
+        f_fecha_pago.pack(fill="x")
+        ent_fecha = ctk.CTkEntry(f_fecha_pago)
+        ent_fecha.pack(side="left", fill="x", expand=True)
         ent_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        ctk.CTkButton(f_fecha_pago, text="📅", width=40, fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(5, 0))
 
         ctk.CTkLabel(f, text="Cuenta / método de pago:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
         cmb_cuenta = ctk.CTkComboBox(f, values=bancos, width=420, state="readonly")
