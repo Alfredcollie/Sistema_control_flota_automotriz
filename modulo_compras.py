@@ -1463,31 +1463,43 @@ def agregar_condicion_ocultar_app(condiciones, params, ocultar):
     params.append("%Ticket_Movil%")
 
 
-def construir_condicion_busqueda_compras(filtro):
-    """Genera cláusula SQL + parámetros para que la búsqueda del módulo de
-    Compras funcione contra CUALQUIER columna de la fila (no solo N° doc,
-    proveedor, vehículo y concepto).
+def _normalizar_numero_busqueda(txt):
+    """Normaliza un monto escrito por el usuario: 'S/ 1,234.56' -> '1234.56'."""
+    t = re.sub(r"[^\d.,]", "", str(txt or ""))
+    if not t:
+        return ""
+    if "," in t and "." in t:
+        t = t.replace(",", "")
+    elif "," in t:
+        partes = t.split(",")
+        if len(partes) == 2 and len(partes[-1]) == 2:
+            t = t.replace(",", ".")
+        else:
+            t = t.replace(",", "")
+    return t
 
-    Cubre: fecha, N° documento, proveedor, RUC, vehículo/placa, kilometraje,
-    cantidad, concepto/descripción (incluye la hora), tipo de documento,
-    categoría, días de crédito, montos (subtotal, IGV, total, detracción),
-    y también la forma de pago / montos pagados en pagos_comprobantes.
-    Retorna (clausula_sql, lista_de_parametros); si el filtro está vacío,
-    retorna ("", []).
+
+def construir_condicion_busqueda_compras(filtro):
+    """Busca en TODAS las columnas de la fila, incluido el MONTO.
+
+    Cubre fecha, N° documento, proveedor, RUC, vehículo, kilometraje, cantidad,
+    concepto, tipo, categoría, días de crédito, subtotal, IGV, total,
+    detracción, neto a pagar, monto pagado y forma de pago.
+    Los montos se comparan normalizados: escribir «S/ 1,234.56», «510.70» o
+    «510.7» encuentra lo mismo.
     """
     if not filtro or not str(filtro).strip():
         return "", []
-    val = f"%{str(filtro).strip()}%"
+    txt = str(filtro).strip()
+    val = f"%{txt}%"
 
-    # Todas las columnas se convierten a texto para que la búsqueda funcione
-    # sin importar el tipo real de la columna (texto, fecha, número, etc.)
     columnas = ("numero_documento", "proveedor", "evento_asociado", "descripcion",
                 "tipo_documento", "categoria", "ruc", "fecha", "dias_credito",
                 "kilometraje", "cantidad_combustible", "subtotal", "impuesto",
                 "total", "det_monto", "orden_servicio")
 
     partes = [f"CAST({c} AS TEXT) ILIKE %s" for c in columnas]
-    cantidad = len(columnas)
+    params = [val] * len(columnas)
 
     # Forma de pago / montos pagados asociados al comprobante (columnas derivadas)
     partes.append(
@@ -1495,9 +1507,28 @@ def construir_condicion_busqueda_compras(filtro):
         "WHERE pc.id_factura = facturas_recibidas.id "
         "AND (pc.cuenta_origen ILIKE %s OR CAST(pc.monto_pagado AS TEXT) ILIKE %s))"
     )
-    cantidad += 2
+    params.extend([val, val])
 
-    return "(" + " OR ".join(partes) + ")", [val] * cantidad
+    # 🔢 Búsqueda por MONTO (aunque escriba 'S/ 1,234.56', '510.70' o el NETO)
+    num = _normalizar_numero_busqueda(txt)
+    if num:
+        n = "%" + num + "%"
+        for col in ("subtotal", "impuesto", "total", "det_monto"):
+            partes.append("TO_CHAR(COALESCE(%s,0), 'FM999999999999990.00') LIKE %%s" % col)
+            params.append(n)
+        # neto a pagar (total - detracción) y neto de recibo 8%
+        partes.append("TO_CHAR(COALESCE(total,0) - COALESCE(det_monto,0), 'FM999999999999990.00') LIKE %s")
+        params.append(n)
+        partes.append("TO_CHAR(COALESCE(total,0) - COALESCE(impuesto,0) - COALESCE(det_monto,0), 'FM999999999999990.00') LIKE %s")
+        params.append(n)
+        # monto pagado en pagos_comprobantes
+        partes.append("EXISTS (SELECT 1 FROM pagos_comprobantes pc2 "
+                      "WHERE pc2.id_factura = facturas_recibidas.id "
+                      "AND TO_CHAR(COALESCE(pc2.monto_pagado,0), 'FM999999999999990.00') LIKE %s)")
+        params.append(n)
+
+    return "(" + " OR ".join(partes) + ")", params
+
 
 # =========================================================
 # CLASE: CALENDARIO NATIVO
@@ -2338,6 +2369,10 @@ class FacturasRecibidasTab:
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS orden_servicio VARCHAR(120) DEFAULT '';"); conn.commit()
                 except: conn.rollback()
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS chofer_asociado VARCHAR(160) DEFAULT '';"); conn.commit()
+                except: conn.rollback()
+                try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS delivery NUMERIC DEFAULT 0;"); conn.commit()
+                except: conn.rollback()
+                try: cursor.execute("ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS comision NUMERIC DEFAULT 0;"); conn.commit()
                 except: conn.rollback()
                 _SCHEMA_COMPRAS_OK = True
             except Exception: pass
@@ -3551,6 +3586,20 @@ class FacturasRecibidasTab:
         self.ent_recargo.insert(0, "0")
         self.ent_recargo.bind("<KeyRelease>", self.actualizar_totales)
 
+        # 🚚 DELIVERY: monto fuera de la factura que SÍ suma al débito
+        f_del = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_del.pack(fill="x", padx=10, pady=(0, 4))
+        self.var_delivery = tk.BooleanVar(value=False)
+        self.chk_delivery = ctk.CTkCheckBox(
+            f_del, text="🚚 Delivery (monto fuera de la factura)", variable=self.var_delivery,
+            font=("Arial", 11, "bold"), checkbox_width=18, checkbox_height=18,
+            command=self._actualizar_bloque_delivery)
+        self.chk_delivery.pack(anchor="w")
+        self.ent_delivery = ctk.CTkEntry(self.f_form, placeholder_text="Monto de delivery (S/.)")
+        self.ent_delivery.insert(0, "0")
+        self.ent_delivery.bind("<KeyRelease>", self.actualizar_totales)
+        self._actualizar_bloque_delivery()
+
         self.lbl_titulo_det = ctk.CTkLabel(self.f_form, text="Detracción (%):", font=("Arial", 11, "bold"))
         self.lbl_titulo_det.pack(anchor="w", padx=10)
         self.ent_detraccion = ctk.CTkEntry(self.f_form)
@@ -3569,6 +3618,9 @@ class FacturasRecibidasTab:
         self.lbl_bruto = ctk.CTkLabel(f_tot, text=f"Total con IGV: {formatear_moneda(0)}", font=("Arial", 11, "bold"), text_color="#1f538d")
         self.lbl_bruto.pack(anchor="w", padx=10, pady=(0, 0))
         self.lbl_detraccion = ctk.CTkLabel(f_tot, text=f"Detracción (0%): -{formatear_moneda(0)}", font=("Arial", 11), text_color="#e74c3c")
+        self.lbl_delivery = ctk.CTkLabel(f_tot, text="", font=("Arial", 11, "bold"),
+                                         text_color="#a04000")
+        self.lbl_delivery.pack(anchor="w", padx=10, pady=(0, 0))
         self.lbl_detraccion.pack(anchor="w", padx=10, pady=(0, 0))
         self.lbl_total = ctk.CTkLabel(f_tot, text=f"Neto a Pagar: {formatear_moneda(0)}", font=("Arial", 13, "bold"), text_color="#1f538d")
         self.lbl_total.pack(anchor="w", padx=10, pady=(2, 5))
@@ -3612,7 +3664,12 @@ class FacturasRecibidasTab:
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="extended")
         
         self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251") 
-        self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c") 
+        self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c")
+
+        # 🎨 Estado de pago: azul (pagada) · rojo (no pagada) · morado (parcial)
+        self.tabla.tag_configure("pagada", background="#d6eaf8", foreground="#1a5276")
+        self.tabla.tag_configure("no_pagada", background="#fadbd8", foreground="#922b21")
+        self.tabla.tag_configure("parcial", background="#e8daef", foreground="#6c3483") 
         
         self.tabla.heading("num", text="N°", anchor="center")
         self.tabla.heading("id", text="ID (Oculto)")
@@ -3666,7 +3723,7 @@ class FacturasRecibidasTab:
         f_btn_tabla = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_btn_tabla.pack(fill="x", pady=(10, 0))
 
-        btn_cols = ctk.CTkButton(f_btn_tabla, text="⚙️ Columnas", width=110, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "compras_facturas"))
+        btn_cols = ctk.CTkButton(f_btn_tabla, text="⚙️ Columnas", width=90, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "compras_facturas"))
         btn_cols.pack(side="left", padx=5, pady=5)
         try:
             aplicar_columnas_visibles(self.tabla, "compras_facturas")
@@ -3691,11 +3748,14 @@ class FacturasRecibidasTab:
         f_leyenda = ctk.CTkFrame(f_btn_tabla, fg_color="transparent")
         f_leyenda.pack(side="left", padx=20)
         
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#c0392b").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Sin Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,10))
-        
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#27ae60").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,5))
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1a5276").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Totalmente pagada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#922b21").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="No pagada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#6c3483").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Parcialmente pagada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
 
         # ✅ Solo los botones: el de Modificar/Eliminar pasa a una fila propia
         # (ancho completo) para que siempre sea visible sin importar el ancho.
@@ -4447,6 +4507,13 @@ class FacturasRecibidasTab:
                 self.main_root.after(4000, lambda: self.cargar_ordenes_servicio(forzar=True))
             except Exception:
                 pass
+        try:
+            if delivery:
+                self.lbl_delivery.configure(text=f"Delivery (fuera de factura): +{formatear_moneda(delivery)}")
+            else:
+                self.lbl_delivery.configure(text="")
+        except Exception:
+            pass
         self._actualizar_cruce_orden()
 
     def orden_servicio_actual(self):
@@ -4635,6 +4702,28 @@ class FacturasRecibidasTab:
         self._refrescar_etiqueta_modo()
         self.actualizar_totales()
 
+    def _delivery_tecleado(self):
+        """Monto de delivery (0 si el check está desmarcado)."""
+        try:
+            if not getattr(self, "var_delivery", None) or not self.var_delivery.get():
+                return 0.0
+            texto = str(self.ent_delivery.get()).strip().replace(",", "")
+            return float(texto or 0)
+        except Exception:
+            return 0.0
+
+    def _actualizar_bloque_delivery(self, *args):
+        try:
+            if getattr(self, "var_delivery", None) and self.var_delivery.get():
+                self.ent_delivery.configure(state="normal")
+            else:
+                self.ent_delivery.configure(state="disabled")
+                self.ent_delivery.delete(0, tk.END)
+                self.ent_delivery.insert(0, "0")
+            self.actualizar_totales()
+        except Exception:
+            pass
+
     def actualizar_totales(self, *args):
         if not hasattr(self, "ent_subtotal"):
             return
@@ -4643,6 +4732,7 @@ class FacturasRecibidasTab:
         try:
             subtotal, igv, total = self._montos_ingresados()
             recargo = self._recargo_tecleado()
+            delivery = self._delivery_tecleado()
             ui_pct = float(self.ent_detraccion.get() or 0)
         except ValueError:
             return
@@ -4650,7 +4740,7 @@ class FacturasRecibidasTab:
         if "Factura" in tipo:
             txt_igv = "10.5%" if "10.5%" in tipo else "18%"
             det = total * (ui_pct / 100.0)
-            neto = total - det
+            neto = total - det + delivery
             self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
             self.lbl_impuesto.configure(text=f"IGV ({txt_igv}): {formatear_moneda(igv)}")
             self.lbl_recargo.configure(text=f"Recargo al consumo: {formatear_moneda(recargo)}")
@@ -4659,7 +4749,7 @@ class FacturasRecibidasTab:
             self.lbl_total.configure(text=f"Neto a Pagar: {formatear_moneda(neto)}")
         elif "Recibo" in tipo:
             ret = subtotal * (ui_pct / 100.0)
-            neto = total - ret
+            neto = total - ret + delivery
             self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
             self.lbl_impuesto.configure(text=f"Retención ({ui_pct:g}%): -{formatear_moneda(ret)}")
             self.lbl_recargo.configure(text=f"Recargo al consumo: {formatear_moneda(recargo)}")
@@ -4669,7 +4759,7 @@ class FacturasRecibidasTab:
         else:
             # Boletas / otros documentos sin IGV
             det = total * (ui_pct / 100.0)
-            neto = total - det
+            neto = total - det + delivery
             self.lbl_base.configure(text=f"Monto Base (Subtotal): {formatear_moneda(subtotal)}")
             self.lbl_impuesto.configure(text=f"IGV (0%): {formatear_moneda(0)}")
             self.lbl_recargo.configure(text=f"Recargo al consumo: {formatear_moneda(recargo)}")
@@ -4916,15 +5006,15 @@ class FacturasRecibidasTab:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc, id_orden_servicio, orden_servicio,
-                                                pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada, comision_interbancaria, es_interbancario, chofer_asociado)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada, comision_interbancaria, es_interbancario, chofer_asociado, delivery)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (tipo, nro_doc, fecha, prov, desc, evento, subtotal, imp, tot_bruto, ruta_para_guardar(ruta_final), dias, det_pct, det_monto, categoria, ruc_val, orden_id, orden_txt,
                   cruzada["tercero"] if cruzada["activa"] else "", (ruta_soporte_tercero or getattr(self, "_soporte_pago_escaneado", "")),
                   bool(cruzada["activa"]), cruzada["comision"], bool(cruzada["interbancario"]),
                   (self.combo_chofer_factura.get() if getattr(self, "combo_chofer_factura", None)
                   and self.combo_chofer_factura.get() not in ("", "Ninguno") 
-                  and str(self.combo_evento.get() if getattr(self, "combo_evento", None) else "").strip() in ("", "Ninguno") else "")))
+                  and str(self.combo_evento.get() if getattr(self, "combo_evento", None) else "").strip() in ("", "Ninguno") else ""), self._delivery_tecleado()))
             try:
                 id_factura_nueva = int(cursor.fetchone()[0])
             except Exception:
@@ -5053,7 +5143,7 @@ class FacturasRecibidasTab:
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
-            self._pintar_datos_tabla(datos["filas"], datos["cuentas"])
+            self._pintar_datos_tabla(datos["filas"], datos["cuentas"], datos.get("pagado", {}))
         else:
             self.tabla.insert("", tk.END, values=("", "", "", "Cargando datos...", "", "", "", "", "", "", "", "", ""))
             
@@ -5069,7 +5159,7 @@ class FacturasRecibidasTab:
                     return
                 try:
                     cursor = conn.cursor()
-                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(orden_servicio, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE) FROM facturas_recibidas"
+                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(orden_servicio, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(delivery, 0) FROM facturas_recibidas"
                     
                     condiciones = []
                     params = []
@@ -5101,10 +5191,20 @@ class FacturasRecibidasTab:
                             if cta not in cuentas_por_factura[id_f]:
                                 cuentas_por_factura[id_f].append(cta)
 
-                    datos_cache = {"filas": datos_db, "cuentas": cuentas_por_factura}
+                    pagado_por_factura = {}
+                    if ids_facturas:
+                        cursor.execute(
+                            "SELECT id_factura, COALESCE(SUM(monto_pagado), 0) FROM pagos_comprobantes "
+                            "WHERE id_factura = ANY(%s) GROUP BY id_factura",
+                            (ids_facturas,))
+                        for id_f, sum_p in cursor.fetchall():
+                            pagado_por_factura[id_f] = float(sum_p or 0)
+
+                    datos_cache = {"filas": datos_db, "cuentas": cuentas_por_factura, "pagado": pagado_por_factura}
                     cache_sistema.guardar(clave_cache, datos_cache)
                     estado["filas"] = datos_db
                     estado["cuentas"] = cuentas_por_factura
+                    estado["pagado"] = pagado_por_factura
                 except Exception as e:
                     print(f"Error cargando tabla de compras: {e}")
                     estado["filas"] = []
@@ -5121,9 +5221,9 @@ class FacturasRecibidasTab:
             return                      # ya hay una búsqueda más nueva en curso
         if estado.get("error"):
             print("[Compras] Error al cargar la tabla:", estado["error"])
-        self._pintar_datos_tabla(estado.get("filas") or [], estado.get("cuentas") or {})
+        self._pintar_datos_tabla(estado.get("filas") or [], estado.get("cuentas") or {}, estado.get("pagado") or {})
 
-    def _pintar_datos_tabla(self, registros, cuentas_por_factura):
+    def _pintar_datos_tabla(self, registros, cuentas_por_factura, pagado_por_factura=None):
         """Construye TODAS las filas, las ordena por la columna activa (todas las
         páginas) y muestra únicamente la página actual."""
         for item in self.tabla.get_children():
@@ -5173,10 +5273,18 @@ class FacturasRecibidasTab:
                     nota += f" · comisión {formatear_moneda(comision_cruz)}"
                 metodo_pago = f"{metodo_pago} · {nota}" if metodo_pago else nota
 
-            if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
-            else: neto = tot_bruto - det_monto
+            _tb, _im, _dm = float(tot_bruto or 0), float(impuesto or 0), float(det_monto or 0)
+            _del = float(r[23] or 0) if len(r) > 23 else 0.0
+            if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = _tb - _im - _dm + _del
+            else: neto = _tb - _dm + _del
                 
-            etiqueta_color = "con_cuenta" if id_factura in cuentas_por_factura else "sin_cuenta"
+            _pagado_f = float((pagado_por_factura or {}).get(id_factura, 0.0))
+            if es_cruzada or (neto <= 0.01) or (_pagado_f >= neto - 0.01):
+                etiqueta_color = "pagada"
+            elif _pagado_f <= 0.01:
+                etiqueta_color = "no_pagada"
+            else:
+                etiqueta_color = "parcial"
 
             row_vals = (
                 0, id_factura, r[1], hora_consumo, r[2] if r[2] else "-", orden_val, r[3], tipo_doc.split(" ")[0], r[5], ruc_val, cat,
@@ -5300,7 +5408,7 @@ class FacturasRecibidasTab:
                                  parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
     def _editar_factura(self):
-        """✏️ Ventana para corregir los datos de la factura seleccionada."""
+        """✏️ Edición completa de la factura (mismos campos que al registrarla)."""
         id_fact = self._id_factura_seleccionada()
         if not id_fact:
             return
@@ -5309,9 +5417,14 @@ class FacturasRecibidasTab:
             return
         try:
             with conn.cursor() as cur:
-                cur.execute("""SELECT tipo_documento, numero_documento, fecha, proveedor, COALESCE(ruc, ''),
-                                      COALESCE(descripcion, ''), COALESCE(categoria, ''), COALESCE(subtotal, 0),
-                                      COALESCE(impuesto, 0), COALESCE(total, 0)
+                cur.execute("""SELECT tipo_documento, numero_documento, fecha, proveedor,
+                                      COALESCE(ruc, ''), COALESCE(descripcion, ''), COALESCE(categoria, ''),
+                                      COALESCE(subtotal, 0), COALESCE(impuesto, 0), COALESCE(total, 0),
+                                      COALESCE(det_porcentaje, 0), COALESCE(det_monto, 0),
+                                      COALESCE(dias_credito, 0), COALESCE(evento_asociado, ''),
+                                      COALESCE(chofer_asociado, ''), COALESCE(kilometraje, ''),
+                                      COALESCE(cantidad_combustible, ''), COALESCE(orden_servicio, ''),
+                                      COALESCE(delivery, 0)
                                FROM facturas_recibidas WHERE id = %s""", (id_fact,))
                 fila = cur.fetchone()
         finally:
@@ -5319,56 +5432,130 @@ class FacturasRecibidasTab:
         if not fila:
             return messagebox.showerror("Factura", "No se encontró la factura.",
                                         parent=ventana_para_mensaje(getattr(self, "main_root", None)))
-        (tipo_i, nro_i, fecha_i, prov_i, ruc_i, desc_i, cat_i, sub_i, imp_i, tot_i) = fila
+        (tipo_i, nro_i, fecha_i, prov_i, ruc_i, desc_i, cat_i, sub_i, imp_i, tot_i,
+         det_pct_i, det_monto_i, dias_i, evento_i, chofer_i, km_i, cant_i, orden_i,
+         delivery_i) = fila
 
         v = ctk.CTkToplevel(getattr(self, "main_root", None))
         v.title("✏️ Editar Factura")
-        v.geometry("520x560")
+        v.geometry("620x760")
         v.transient(getattr(self, "main_root", None))
         try:
             v.grab_set()
         except Exception:
             pass
-        f = ctk.CTkFrame(v, fg_color="transparent")
-        f.pack(fill="both", expand=True, padx=16, pady=12)
+        f = ctk.CTkScrollableFrame(v, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=12, pady=(12, 0))
 
         def campo(texto, valor=""):
             ctk.CTkLabel(f, text=texto, font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
             e = ctk.CTkEntry(f)
             e.pack(fill="x", pady=(0, 2))
-            if valor:
+            if valor not in (None, ""):
                 e.insert(0, str(valor))
             return e
 
-        e_tipo = campo("Tipo de documento:", tipo_i)
+        def combo_campo(texto, valores, valor):
+            ctk.CTkLabel(f, text=texto, font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
+            vals = list(valores or [])
+            c = ctk.CTkComboBox(f, values=vals)
+            c.pack(fill="x", pady=(0, 2))
+            if valor:
+                try:
+                    if valor not in vals:
+                        vals = vals + [str(valor)]
+                        c.configure(values=vals)
+                    c.set(str(valor))
+                except Exception:
+                    pass
+            return c
+
+        tipos_doc = ["Factura (18% IGV)", "Factura (10.5% IGV) Restaurantes",
+                     "Boleta (Sin IGV)", "Recibo por Honorarios (8% Retención)",
+                     "Recibo por Honorarios (Sin Retención)"]
+        c_tipo = combo_campo("Tipo de documento:", tipos_doc, tipo_i)
         e_nro = campo("N° de documento:", nro_i)
-        e_fecha = campo("Fecha (DD/MM/AAAA):", fecha_i)
-        e_prov = campo("Proveedor:", prov_i)
-        e_ruc = campo("RUC:", ruc_i)
-        e_cat = campo("Categoría:", cat_i)
-        e_desc = campo("Concepto / descripción:", desc_i)
+
+        ctk.CTkLabel(f, text="Fecha (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
+        f_fec = ctk.CTkFrame(f, fg_color="transparent")
+        f_fec.pack(fill="x", pady=(0, 2))
+        e_fecha = ctk.CTkEntry(f_fec)
+        e_fecha.pack(side="left", fill="x", expand=True)
+        if fecha_i:
+            e_fecha.insert(0, str(fecha_i))
+        ctk.CTkButton(f_fec, text="[ 📅 ]", width=40, font=("Arial", 12, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, e_fecha)).pack(side="right", padx=(5, 0))
+
+        e_dias = campo("Días de crédito:", dias_i)
+        e_prov = combo_campo("Nombre del proveedor:", self.combo_proveedor.cget("values"), prov_i)
+        e_ruc = campo("R.U.C.:", ruc_i)
+        e_desc = campo("Concepto / Descripción:", desc_i)
+        e_cat = combo_campo("Categoría de Gasto:", self.combo_categoria.cget("values"), cat_i)
+        e_veh = combo_campo("Vehículo Asignado (Placa):", self.combo_evento.cget("values"), evento_i)
+        e_cho = combo_campo("Chofer Asignado:", self.combo_chofer_factura.cget("values"), chofer_i)
+        e_km = campo("Kilometraje:", km_i)
+        e_cant = campo("Galones / Cantidad:", cant_i)
+        e_orden = combo_campo("Orden de Servicio:", self.combo_orden_servicio.cget("values"), orden_i)
+
         e_sub = campo("Subtotal (base):", "%.2f" % float(sub_i or 0))
-        e_tot = campo("Total:", "%.2f" % float(tot_i or 0))
+        e_imp = campo("IGV / Impuesto:", "%.2f" % float(imp_i or 0))
+        e_tot = campo("Total (con IGV):", "%.2f" % float(tot_i or 0))
+        e_detp = campo("Detracción / Retención (%):", "%.2f" % float(det_pct_i or 0))
+        e_detm = campo("Monto de detracción:", "%.2f" % float(det_monto_i or 0))
+
+        f_del = ctk.CTkFrame(f, fg_color="transparent")
+        f_del.pack(fill="x", pady=(8, 0))
+        var_del = tk.BooleanVar(value=float(delivery_i or 0) > 0)
+        ctk.CTkCheckBox(f_del, text="🚚 Delivery (monto fuera de la factura)", variable=var_del,
+                        font=("Arial", 11, "bold"), checkbox_width=18, checkbox_height=18).pack(anchor="w")
+        e_del = campo("Monto de delivery (suma al débito):", "%.2f" % float(delivery_i or 0))
+
+        lbl_neto = ctk.CTkLabel(f, text="", font=("Arial", 12, "bold"), text_color="#1f538d")
+        lbl_neto.pack(anchor="w", pady=(8, 4))
+
+        def _num(e, defecto=0.0):
+            try:
+                return float(str(e.get()).strip().replace(",", "") or defecto)
+            except Exception:
+                return defecto
+
+        def _calc(*_a):
+            try:
+                neto = _num(e_tot) - _num(e_detm) + (_num(e_del) if var_del.get() else 0.0)
+                lbl_neto.configure(text="Neto a Pagar (con delivery si aplica): %s"
+                                        % formatear_moneda(neto))
+            except Exception:
+                pass
+        for _e in (e_tot, e_detm, e_del):
+            _e.bind("<KeyRelease>", _calc)
+        try:
+            var_del.trace_add("write", lambda *a: _calc())
+        except Exception:
+            pass
+        _calc()
 
         def guardar():
-            try:
-                sub = float(e_sub.get().strip() or 0)
-                tot = float(e_tot.get().strip() or 0)
-            except ValueError:
-                return messagebox.showerror("Error", "Subtotal y Total deben ser numéricos.", parent=v)
-            imp = round(tot - sub, 2)
+            sub, imp, tot = _num(e_sub), _num(e_imp), _num(e_tot)
+            detp, detm = _num(e_detp), _num(e_detm)
+            delivery = _num(e_del) if var_del.get() else 0.0
             conn = conectar_db()
             if not conn:
                 return
             try:
                 with conn.cursor() as cur:
-                    cur.execute("""UPDATE facturas_recibidas
-                                   SET tipo_documento=%s, numero_documento=%s, fecha=%s, proveedor=%s, ruc=%s,
-                                       categoria=%s, descripcion=%s, subtotal=%s, impuesto=%s, total=%s
-                                   WHERE id=%s""",
-                                (e_tipo.get().strip(), e_nro.get().strip(), e_fecha.get().strip(),
-                                 e_prov.get().strip(), e_ruc.get().strip(), e_cat.get().strip(),
-                                 e_desc.get().strip(), sub, imp, tot, id_fact))
+                    cur.execute("""UPDATE facturas_recibidas SET
+                        tipo_documento=%s, numero_documento=%s, fecha=%s, proveedor=%s, ruc=%s,
+                        categoria=%s, descripcion=%s, evento_asociado=%s, chofer_asociado=%s,
+                        kilometraje=%s, cantidad_combustible=%s, orden_servicio=%s,
+                        dias_credito=%s, subtotal=%s, impuesto=%s, total=%s,
+                        det_porcentaje=%s, det_monto=%s, delivery=%s
+                        WHERE id=%s""",
+                        (c_tipo.get().strip(), e_nro.get().strip(), e_fecha.get().strip(),
+                         e_prov.get().strip(), e_ruc.get().strip(), e_cat.get().strip(),
+                         e_desc.get().strip(), e_veh.get().strip(), e_cho.get().strip(),
+                         e_km.get().strip(), e_cant.get().strip(), e_orden.get().strip(),
+                         int(_num(e_dias)), sub, imp, tot, detp, detm, delivery, id_fact))
                 conn.commit()
             finally:
                 liberar_conexion(conn)
@@ -5390,7 +5577,7 @@ class FacturasRecibidasTab:
                                 parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
         barra = ctk.CTkFrame(v, fg_color="transparent")
-        barra.pack(fill="x", padx=16, pady=(0, 12))
+        barra.pack(fill="x", padx=16, pady=10)
         ctk.CTkButton(barra, text="💾 Guardar", height=36, font=("Arial", 12, "bold"),
                       fg_color="#27ae60", hover_color="#1e8449", command=guardar).pack(
             side="left", expand=True, fill="x", padx=(0, 6))
@@ -6087,14 +6274,14 @@ class CuentasPorPagarTab:
         frame_acciones = ctk.CTkFrame(self.tab_frame, corner_radius=8, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
         frame_acciones.pack(fill="x", padx=15, pady=(10, 10), ipady=5)
 
-        btn_cols = ctk.CTkButton(frame_acciones, text="⚙️ Columnas", width=110, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "compras_cuentas_pagar"))
+        btn_cols = ctk.CTkButton(frame_acciones, text="⚙️ Columnas", width=90, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "compras_cuentas_pagar"))
         btn_cols.pack(side="left", padx=5, pady=5)
         try:
             aplicar_columnas_visibles(self.tabla, "compras_cuentas_pagar")
         except Exception:
             pass
         # 🚀 OPCIÓN UNIFICADA: Reporte de Totales y Resumen por Proveedor
-        btn_reporte = ctk.CTkButton(frame_acciones, text="📊 Reporte de Totales y Proveedores", font=("Arial", 12, "bold"), command=self.mostrar_reporte_totales, fg_color="#1f538d", hover_color="#163b65")
+        btn_reporte = ctk.CTkButton(frame_acciones, text="📊 Reporte de Totales", font=("Arial", 12, "bold"), command=self.mostrar_reporte_totales, fg_color="#1f538d", hover_color="#163b65")
         btn_reporte.pack(side="left", padx=5, pady=5)
 
         btn_pago = ctk.CTkButton(frame_acciones, text="🧾 Registrar Pago", font=("Arial", 12, "bold"), command=self.cargar_comprobante_pago, fg_color="#27ae60", hover_color="#1e8449")
@@ -6102,12 +6289,12 @@ class CuentasPorPagarTab:
         btn_editar = ctk.CTkButton(frame_acciones, text="✏️ Editar Pagos", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50")
         btn_editar.pack(side="left", padx=5, pady=5)
 
-        btn_varias = ctk.CTkButton(frame_acciones, text="🧾 Pagar Varias Facturas (1 comprobante)",
+        btn_varias = ctk.CTkButton(frame_acciones, text="🧾 Pagar Varias",
                                     font=("Arial", 12, "bold"), fg_color="#b9770e", hover_color="#8e5e0a",
                                     command=self.pagar_varias_facturas)
         btn_varias.pack(side="left", padx=5, pady=5)
 
-        btn_mant = ctk.CTkButton(frame_acciones, text="🛠️ Resetear Mantenimientos", font=("Arial", 12, "bold"), command=self.resetear_mantenimientos_vehiculo, fg_color="#e67e22", hover_color="#ca6f1e")
+        btn_mant = ctk.CTkButton(frame_acciones, text="🛠️ Resetear Mant.", font=("Arial", 12, "bold"), command=self.resetear_mantenimientos_vehiculo, fg_color="#e67e22", hover_color="#ca6f1e")
         btn_mant.pack(side="left", padx=5, pady=5)
 
         btn_refresh = ctk.CTkButton(frame_acciones, text="🔄 Actualizar", font=("Arial", 12, "bold"), command=lambda: self.cargar_datos_pagar(reset_pagina=True), fg_color="#7f8c8d", hover_color="#606b6b")
@@ -6143,6 +6330,11 @@ class CuentasPorPagarTab:
         
         self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251") 
         self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c") 
+
+        # 🎨 Estado de pago: azul (pagada) · rojo (no pagada) · morado (parcial)
+        self.tabla.tag_configure("pagada", background="#d6eaf8", foreground="#1a5276")
+        self.tabla.tag_configure("no_pagada", background="#fadbd8", foreground="#922b21")
+        self.tabla.tag_configure("parcial", background="#e8daef", foreground="#6c3483")
 
         self.tabla.heading("num", text="N°")
         self.tabla.heading("id_factura", text="ID (Oculto)")
@@ -6219,11 +6411,14 @@ class CuentasPorPagarTab:
         f_leyenda = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
         f_leyenda.pack(side="left", padx=30)
         
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#c0392b").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Sin Cuenta Asignada / Pendiente", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,10))
-        
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#27ae60").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,5))
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1a5276").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Totalmente pagada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#922b21").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="No pagada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#6c3483").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Parcialmente pagada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
 
         self.lbl_total_general = ctk.CTkLabel(self.frame_bottom, text="Total Pendiente General por Pagar: 0.00", font=("Arial", 12, "bold"), text_color="#c0392b")
         self.lbl_total_general.pack(side="right")
@@ -6711,7 +6906,7 @@ class CuentasPorPagarTab:
 
                     # Se traen TODOS los comprobantes del filtro/mes (sin LIMIT) para
                     # poder ordenar por cualquier columna en todas las páginas
-                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE) FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
+                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(delivery, 0) FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
                     registros = cursor.fetchall()
                     
                     ids_actuales = [r[0] for r in registros]
@@ -6730,7 +6925,7 @@ class CuentasPorPagarTab:
                         (id_factura, fecha, nro_doc, proveedor, evento, concepto, subtotal, impuesto,
                          tot_bruto, det_monto, tipo_doc, km_val, cant_val, ruc_db,
                          tercero, es_cruzada, soporte_cruzada,
-                         comision_cruz, interbancario_cruz) = reg
+                         comision_cruz, interbancario_cruz, delivery_val) = reg
                         tercero = str(tercero or "")
                         es_cruzada = bool(es_cruzada)
                         soporte_cruzada = str(soporte_cruzada or "")
@@ -6739,10 +6934,11 @@ class CuentasPorPagarTab:
                         tot_bruto_val = float(tot_bruto or 0.0)
                         det_monto_val = float(det_monto or 0.0)
                         
+                        delivery_val = float(delivery_val or 0)
                         if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc:
-                            neto_facturado = tot_bruto_val - imp_val - det_monto_val
+                            neto_facturado = tot_bruto_val - imp_val - det_monto_val + delivery_val
                         else:
-                            neto_facturado = tot_bruto_val - det_monto_val
+                            neto_facturado = tot_bruto_val - det_monto_val + delivery_val
                         
                         pagos_factura = mapa_detalle_pagos.get(id_factura, [])
                         monto_pagado = 0.0
@@ -6834,7 +7030,17 @@ class CuentasPorPagarTab:
                 for parte in partes[1:]:
                     if parte.startswith("Hora: "): hora_consumo = parte.replace("Hora: ", "").strip()
 
-            etiqueta_color = "con_cuenta" if f['tiene_cuenta'] else "sin_cuenta"
+            try:
+                _neto_p = float(f.get('neto_facturado') or 0)
+                _pag_p = float(f.get('monto_pagado') or 0)
+            except Exception:
+                _neto_p, _pag_p = 0.0, 0.0
+            if f.get('es_cruzada') or (_neto_p <= 0.01) or (_pag_p >= _neto_p - 0.01):
+                etiqueta_color = "pagada"
+            elif _pag_p <= 0.01:
+                etiqueta_color = "no_pagada"
+            else:
+                etiqueta_color = "parcial"
 
             row_vals = (
                 0, f['id_factura'], f['fecha'], hora_consumo, f['nro_doc'] if f['nro_doc'] else "S/N", f['proveedor'], ruc_str, f['evento'], km_str, cant_str, concepto_limpio, metodo_pago,
@@ -7108,25 +7314,65 @@ class CuentasPorPagarTab:
         ent_monto.insert(0, f"{pendiente_total:.2f}")
         lbl_calc = ctk.CTkLabel(f_form, text="", font=("Arial", 11, "bold"), text_color="#555555")
 
+        # 🏦 Comisión interbancaria: se puede ADICIONAR al pago (el banco la cobra aparte)
+        fila_com = ctk.CTkFrame(f_form, fg_color="transparent")
+        fila_com.pack(fill="x", pady=(0, 4))
+        var_comision = tk.BooleanVar(value=False)
+        ent_comision = ctk.CTkEntry(fila_com, width=90, placeholder_text="0.00")
+        try:
+            ent_comision.insert(0, "%.2f" % float(cargar_comision_interbancaria_config()))
+        except Exception:
+            ent_comision.insert(0, "0.00")
+
+        def _comision_manual():
+            try:
+                if not var_comision.get():
+                    return 0.0
+                return max(0.0, float(str(ent_comision.get()).strip().replace(",", "") or 0))
+            except Exception:
+                return 0.0
+
+        def _total_a_pagar():
+            return max(0.0, pendiente_total + _comision_manual())
+
+        def _aplicar_comision():
+            try:
+                ent_monto.delete(0, "end")
+                ent_monto.insert(0, "%.2f" % _total_a_pagar())
+                actualizar_calc()
+            except Exception:
+                pass
+
+        ctk.CTkCheckBox(fila_com, text="🏦 Adicionar comisión interbancaria",
+                        variable=var_comision, font=("Arial", 11, "bold"),
+                        checkbox_width=18, checkbox_height=18,
+                        command=_aplicar_comision).pack(side="left")
+        ctk.CTkLabel(fila_com, text="S/", font=("Arial", 11, "bold")).pack(side="left", padx=(8, 2))
+        ent_comision.pack(side="left")
+
         def actualizar_calc(event=None):
             try:
                 _monto = float(ent_monto.get().strip() or 0)
             except ValueError:
                 _monto = 0.0
-            _diff = round(_monto - pendiente_total, 2)
+            _total = _total_a_pagar()
+            _com = _comision_manual()
+            _txt_com = ("   ·   incluye comisión %s" % formatear_moneda(_com)) if _com else ""
+            _diff = round(_monto - _total, 2)
             if _diff < -0.005:
-                lbl_calc.configure(text="Total a pagar: %s   ·   Falta: %s"
-                                   % (formatear_moneda(pendiente_total), formatear_moneda(abs(_diff))),
+                lbl_calc.configure(text="Total a pagar: %s%s   ·   Falta: %s"
+                                   % (formatear_moneda(_total), _txt_com, formatear_moneda(abs(_diff))),
                                    text_color="#c0392b")
             elif _diff > 0.005:
-                lbl_calc.configure(text="Total a pagar: %s   ·   Sobra: %s"
-                                   % (formatear_moneda(pendiente_total), formatear_moneda(_diff)),
+                lbl_calc.configure(text="Total a pagar: %s%s   ·   Sobra: %s"
+                                   % (formatear_moneda(_total), _txt_com, formatear_moneda(_diff)),
                                    text_color="#b9770e")
             else:
-                lbl_calc.configure(text="Total a pagar: %s   ·   Exacto"
-                                   % formatear_moneda(pendiente_total), text_color="#1e8449")
+                lbl_calc.configure(text="Total a pagar: %s%s   ·   Exacto"
+                                   % (formatear_moneda(_total), _txt_com), text_color="#1e8449")
 
         ent_monto.bind("<KeyRelease>", actualizar_calc)
+        ent_comision.bind("<KeyRelease>", lambda _e: _aplicar_comision())
         lbl_calc.pack(anchor="w", pady=(2, 6))
         actualizar_calc()
 
@@ -7153,12 +7399,16 @@ class CuentasPorPagarTab:
             if monto_val <= 0:
                 return messagebox.showerror("Error", "El monto debe ser mayor a 0.", parent=v_pago)
             # Se admite hasta el pendiente total (saldo de la factura + comisión interbancaria)
-            if monto_val > (pendiente_total + 0.01):
+            _tope = _total_a_pagar()
+            if monto_val > (_tope + 0.01):
                 mensaje = "El monto supera el saldo pendiente."
                 if comision_factura > 0:
                     mensaje += (f"\n\nEsta factura cruzada incluye la comisión interbancaria de "
-                                f"{formatear_moneda(comision_factura)}: el máximo a pagar es "
-                                f"{formatear_moneda(pendiente_total)}.")
+                                f"{formatear_moneda(comision_factura)}.")
+                if _comision_manual() > 0:
+                    mensaje += (f"\n\nIncluye la comisión interbancaria de "
+                                f"{formatear_moneda(_comision_manual())}: el máximo a pagar es "
+                                f"{formatear_moneda(_tope)}.")
                 return messagebox.showerror("Error", mensaje, parent=v_pago)
 
             fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
@@ -7181,7 +7431,8 @@ class CuentasPorPagarTab:
             v_pago.destroy()
             self.main_root.after(150, lambda: self._guardar_pago_con_soporte(
                 id_factura, nro_doc, proveedor, monto_val, fecha_val, cuenta_val, ruta_base,
-                operacion_val, ruta_soporte=getattr(self, "_soporte_escaneado", "")))
+                operacion_val, ruta_soporte=getattr(self, "_soporte_escaneado", ""),
+                comision=_comision_manual()))
 
         ent_monto.bind("<Return>", procesar_pago)
         ent_fecha.bind("<Return>", procesar_pago)
@@ -7323,7 +7574,8 @@ class CuentasPorPagarTab:
         ent_monto.focus()
 
     def _guardar_pago_con_soporte(self, id_factura, nro_doc, proveedor, monto_val, fecha_val,
-                                  cuenta_val, ruta_base, numero_operacion="", ruta_soporte=""):
+                                  cuenta_val, ruta_base, numero_operacion="", ruta_soporte="",
+                                  comision=0.0):
         """Abre el diálogo para elegir el soporte y guarda el pago.
 
         Si ruta_soporte trae el comprobante ya ESCANEADO, se usa ese archivo y no
@@ -7354,9 +7606,9 @@ class CuentasPorPagarTab:
                 categoria_db = cat_res[0] if cat_res and cat_res[0] else "GENERAL"
 
                 cursor.execute("""
-                    INSERT INTO pagos_comprobantes (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen, numero_operacion) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (id_factura, monto_val, ruta_para_guardar(ruta_destino), proveedor, fecha_val, categoria_db, nro_doc, cuenta_val, numero_operacion))
+                    INSERT INTO pagos_comprobantes (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen, numero_operacion, comision) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (id_factura, monto_val, ruta_para_guardar(ruta_destino), proveedor, fecha_val, categoria_db, nro_doc, cuenta_val, numero_operacion, float(comision or 0)))
                 conn.commit()
                 cache_sistema.invalidar()
                 registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Pagar", f"Pagó {formatear_moneda(monto_val)} a Fac. {nro_doc} desde {cuenta_val}")
@@ -7408,7 +7660,7 @@ class CuentasPorPagarTab:
         if not sel: return messagebox.showwarning("Selección", "Seleccione la factura para editar sus pagos.", parent=ventana_para_mensaje(getattr(self, "main_root", None)))
         valores = self.tabla.item(sel[0], "values")
         id_factura, nro_doc, proveedor = valores[1], valores[4], valores[5] 
-        saldo_actual_global = desformatear_numero(valores[17]) 
+        saldo_actual_global = float(desformatear_numero(valores[17]) or 0) 
 
         v_edit = ctk.CTkToplevel(self.main_root)
         v_edit.title(f"✏️ Gestión de Pagos - Fac. {nro_doc}")

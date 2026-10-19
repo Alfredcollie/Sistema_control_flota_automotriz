@@ -10,13 +10,10 @@ Funcionalidades:
    unidad maneja sus propios precios (Día Normal, Domingo, Feriado)
    y su cantidad de horas al día (jornada).
 3. Selecciona mes, año y quincena (1ª: del 1 al 15 / 2ª: del 16 al fin).
-4. Busca en internet los feriados oficiales de Perú del año (API pública
-   de feriados Nager.Date y respaldo Google Calendar ICS); si no hay
-   internet usa la lista local de feriados peruanos (Ley 31822 + Semana
-   Santa móvil) y guarda caché local para próximas consultas.
-5. Clasifica cada día de la quincena en 3 categorías: Día Normal (Lunes a
-   Sábado), Domingo y Feriado (los feriados se pueden marcar/desmarcar
-   manualmente).
+4. Clasifica cada día de la quincena en Día Normal (Lunes a Sábado),
+   Domingo o FERIADO (según la lista de Perú local/internet). El feriado
+   SE MUESTRA en la quincena pero NO se cobra el día: solo suman las
+   «horas extras feriado» que se registren a mano.
 6. Cálculo con desglose POR UNIDAD: cada unidad aporta su base
    (días × sus precios) menos sus deducciones (horas/minutos de servicio
    no prestado, o viajes según el plan). El total del cliente es la suma
@@ -522,11 +519,16 @@ def feriados_locales(anio):
 # =========================================================
 # 🚀 CLASIFICACIÓN DE DÍAS DE LA QUINCENA
 # =========================================================
-def clasificar_dia(fecha, feriados):
-    if fecha in feriados:
-        return "feriado"
+def clasificar_dia(fecha, feriados=None):
+    """Clasifica el día: domingo, feriado (según la lista de Perú) o normal.
+
+    El feriado SE MUESTRA en la quincena (para que se vea en la tabla y en el
+    PDF) pero NO se cobra el día: solo suman las «horas extras feriado».
+    """
     if fecha.weekday() == 6:  # Domingo
         return "domingo"
+    if feriados and fecha in feriados:
+        return "feriado"
     return "normal"  # Lunes a sábado
 
 
@@ -1135,7 +1137,7 @@ class CalculoCobranzaApp:
                                 hover_color="#d35400", command=self.toggle_feriado)
         btn_fer.pack(side="right", padx=(5, 0))
         # ⏱️ Las horas de feriado se cargan en «Horas Extras» con la fecha del feriado
-        ctk.CTkLabel(f_dias_tool, text="(las horas de feriado se registran en Horas Extras)",
+        ctk.CTkLabel(f_dias_tool, text="(el feriado se cobra solo con las Horas Extras marcadas como Feriado)",
                      font=(familia_fuente, 10, "italic"), text_color="#7f8c8d").pack(
             side="right", padx=(5, 5))
         btn_rest = ctk.CTkButton(f_dias_tool, text="♻️ Restablecer (internet)", width=170,
@@ -2198,16 +2200,17 @@ class CalculoCobranzaApp:
             if not extras_del_u:
                 # Registros antiguos: los asientos mixtos viven en ded_asientos
                 extras_del_u = [a for a in (u.get("ded_asientos") or [])
-                                if str(a.get("tipo") or "").upper() == "EXTRA"]
+                                if str(a.get("tipo") or "").upper() in ("EXTRA", "FERIADO")]
             horas_feriados_u = (self.horas_feriado_de_extras(extras_del_u)
                                 if hasattr(self, "horas_feriado_de_extras") else 0.0)
 
             for clave, _ in CATEGORIAS:
                 cant = c[clave]
                 precio = precio_cat[clave]
-                if clave == "feriado" and horas_feriados_u:
-                    # Se cobra por las horas reales de cada feriado (no un promedio)
-                    base_cat = precio * horas_feriados_u
+                if clave == "feriado":
+                    # 📅 El feriado aparece en la quincena pero NO se cobra el día:
+                    #    solo suman las horas extras de feriado que se registren.
+                    base_cat = precio * horas_feriados_u if horas_feriados_u else 0.0
                 else:
                     base_cat = cant * precio * horas_dia  # Por Hora: precio × horas del día
                 monto_cat_u[clave] = base_cat
@@ -2248,11 +2251,12 @@ class CalculoCobranzaApp:
                 cat_a = a.get("categoria") if a.get("categoria") in precio_cat else "normal"
                 # Si la fecha es feriado, esas horas YA se facturan en el cobro del
                 # feriado: no se cuentan otra vez como extra (evita duplicarlas).
-                es_feriado_a = False
-                try:
-                    es_feriado_a = self.categoria_de_fecha(a.get("fecha")) == "feriado"
-                except Exception:
-                    es_feriado_a = (cat_a == "feriado")
+                es_feriado_a = (cat_a == "feriado")
+                if not es_feriado_a:
+                    try:
+                        es_feriado_a = self.categoria_de_fecha(a.get("fecha")) == "feriado"
+                    except Exception:
+                        pass
                 monto_a = horas_a * precio_cat[cat_a]
                 if not es_feriado_a:
                     horas_extras_u += horas_a
@@ -2761,14 +2765,18 @@ class CalculoCobranzaApp:
             liberar_conexion(conn)
 
         # Deducciones y horas extras por separado (cada una con su cuadro en el PDF)
-        def _es_extra(fila):
+        def _tipo_asiento(fila):
             try:
-                return str(fila[12] or "DEDUCCION").upper() == "EXTRA"
+                return str(fila[12] or "DEDUCCION").upper()
             except Exception:
-                return False
+                return "DEDUCCION"
 
-        deducciones_pdf = [f for f in asientos_pdf if not _es_extra(f)]
-        extras_pdf = [f for f in asientos_pdf if _es_extra(f)]
+        # ⏱️ Tres bloques separados: deducciones, horas extras y HORAS DE FERIADO.
+        #    Las de feriado YA están incluidas en el precio feriado (base), así que
+        #    se detallan aparte: NO son deducción ni un extra que se suma.
+        deducciones_pdf = [f for f in asientos_pdf if _tipo_asiento(f) == "DEDUCCION"]
+        extras_pdf = [f for f in asientos_pdf if _tipo_asiento(f) == "EXTRA"]
+        feriados_pdf = [f for f in asientos_pdf if _tipo_asiento(f) == "FERIADO"]
         # Horas y monto de horas extras por unidad (para el cuadro de cobro)
         extras_por_unidad_pdf = {}
         for fila in extras_pdf:
@@ -2920,14 +2928,14 @@ class CalculoCobranzaApp:
             (10.0, 13.0, 6.5, 12.0, 16.0),   # mínimo
             (8.4, 11.5, 6.0, 11.0, 14.0),    # cargado (muchos asientos)
         )
-        filas_tablas = len(unidades) + len(deducciones_pdf) + len(extras_pdf)
+        filas_tablas = len(unidades) + len(deducciones_pdf) + len(extras_pdf) + len(feriados_pdf)
         if viajes_pdf:
             filas_tablas += len(viajes_pdf) * 2     # tabla de viajes + no realizados
         plan_hoja = _PLANES_HOJA[-1]
         for _plan in _PLANES_HOJA:
             # Filas + encabezados + títulos, subtotales, TOTAL y notas
             _y_tablas = (y_cli - 44.0) - 2 * _plan[3] - _plan[4]
-            _necesario = filas_tablas * _plan[0] + 3 * (_plan[1] + 14.0) + 165.0
+            _necesario = filas_tablas * _plan[0] + 4 * (_plan[1] + 14.0) + 165.0
             if _necesario <= (_y_tablas - 58.0):
                 plan_hoja = _plan
                 break
@@ -3234,6 +3242,8 @@ class CalculoCobranzaApp:
                         deducciones_pdf, "TOTAL ASIENTOS DE DEDUCCIÓN", "- ", float(m_ded or 0))
         _tabla_asientos("DETALLE DE HORAS EXTRAS (ASIENTOS CON FECHA)",
                         extras_pdf, "TOTAL HORAS EXTRAS", "+ ")
+        _tabla_asientos("DETALLE DE HORAS DE FERIADO (YA INCLUIDAS EN EL PRECIO FERIADO)",
+                        feriados_pdf, "TOTAL HORAS DE FERIADO", "= ")
 
         # ---- Total ----
         c.setFillColorRGB(0.9, 0.97, 0.93)
@@ -3316,16 +3326,21 @@ class CalculoCobranzaApp:
     def horas_feriado_de_extras(self, asientos):
         """Horas de FERIADO registradas como HORAS EXTRAS (solo esas se facturan).
 
-        Cada asiento de horas extras cuya fecha sea feriado aporta sus horas al
-        cobro del feriado; los demás asientos se tratan como extras normales.
+        Solo cuentan las horas extras cuyo «Tipo de día» sea Feriado (elegido a
+        mano) o cuya fecha esté marcada como feriado en la quincena. El calendario
+        de feriados ya no interviene.
         """
         total = 0.0
         for a in (asientos or []):
             try:
-                fecha = a.get("fecha")
-                if not fecha or self.categoria_de_fecha(fecha) != "feriado":
+                if str(a.get("categoria") or "normal") == "feriado":
+                    total += float(a.get("horas") or 0) + float(a.get("minutos") or 0) / 60.0
                     continue
-                total += float(a.get("horas") or 0) + float(a.get("minutos") or 0) / 60.0
+                fecha = a.get("fecha")
+                if not fecha:
+                    continue
+                if self.categoria_de_fecha(fecha) == "feriado":
+                    total += float(a.get("horas") or 0) + float(a.get("minutos") or 0) / 60.0
             except Exception:
                 continue
         return round(total, 3)
@@ -3635,7 +3650,7 @@ class CalculoCobranzaApp:
             # Recupera los asientos de deducción con fecha (cantidad no realizada por rango)
             for (plan_d, unidad_d, fecha_s, cat_d, horas_d, min_d, cant_d,
                  desde_d, hasta_d, precio_d, motivo_d, monto_d, tipo_d) in deducciones_rows:
-                if str(tipo_d or "DEDUCCION").upper() == "EXTRA":
+                if str(tipo_d or "DEDUCCION").upper() in ("EXTRA", "FERIADO"):
                     continue  # el plan por viajes no usa horas extras
                 idx = next((i for i, rg in enumerate(self.rangos_viaje)
                             if abs(rg["distancia_desde"] - float(desde_d or 0)) < 0.001
@@ -3723,7 +3738,7 @@ class CalculoCobranzaApp:
                 except Exception:
                     fecha_dt = None
                 asiento = nuevo_asiento_deduccion(fecha_dt, cat_d, horas_d, min_d, 0.0, motivo_d)
-                if str(tipo_d or "DEDUCCION").upper() == "EXTRA":
+                if str(tipo_d or "DEDUCCION").upper() in ("EXTRA", "FERIADO"):
                     extras_por_unidad.setdefault(str(unidad_d or ""), []).append(asiento)
                 else:
                     ded_por_unidad.setdefault(str(unidad_d or ""), []).append(asiento)
@@ -3815,10 +3830,13 @@ class DialogoUnidad(ctk.CTkToplevel):
         self.familia_fuente = familia_fuente
 
         self.title("Editar Unidad" if con_deducciones else "Configurar Unidad")
-        ancho = 780 if con_deducciones else 440
-        alto = 760 if con_deducciones else 380
+        # 📐 La ventana se ajusta a la pantalla y se puede agrandar: con muchos
+        #    asientos el contenido no cabe en un alto fijo.
+        _sw, _sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        ancho = min(780, max(660, _sw - 80)) if con_deducciones else 440
+        alto = min(760, max(520, _sh - 120)) if con_deducciones else 380
         self.geometry(f"{ancho}x{alto}")
-        self.resizable(False, False)
+        self.resizable(bool(con_deducciones), bool(con_deducciones))
         self.transient(parent)
         try:
             self.grab_set()
@@ -3899,8 +3917,25 @@ class DialogoUnidad(ctk.CTkToplevel):
                                  font=(familia_fuente, 10, "bold"),
                                  text_color="#7f8c8d").grid(row=0, column=col, padx=3, sticky="w")
 
-                contenedor = ctk.CTkFrame(f_asi, fg_color="transparent")
-                contenedor.pack(fill="x", padx=12, pady=(2, 4))
+                # 📜 Caja de altura FIJA con desplazamiento propio: así se ven TODOS
+                #    los asientos aunque haya muchos (la ventana no crece sin fin).
+                caja_asientos = ctk.CTkFrame(f_asi, fg_color="transparent", height=150)
+                caja_asientos.pack(fill="x", padx=12, pady=(2, 4))
+                try:
+                    caja_asientos.pack_propagate(False)
+                except Exception:
+                    pass
+                # 📜 Barra vertical bien visible para navegar por los asientos
+                contenedor = ctk.CTkScrollableFrame(
+                    caja_asientos, fg_color="transparent",
+                    scrollbar_button_color="#1f538d",
+                    scrollbar_button_hover_color="#163b65",
+                    scrollbar_fg_color="#e8eef5")
+                contenedor.pack(fill="both", expand=True)
+                try:
+                    contenedor._scrollbar.configure(width=18)
+                except Exception:
+                    pass
 
                 f_acc = ctk.CTkFrame(f_asi, fg_color="transparent")
                 f_acc.pack(fill="x", padx=12, pady=(2, 4))
@@ -3923,14 +3958,14 @@ class DialogoUnidad(ctk.CTkToplevel):
             self.frame_asientos, self.lbl_total_ded = _crear_seccion(
                 "➖ DEDUCCIONES DE LA QUINCENA (asientos con fecha)",
                 ("Registre uno o varios asientos: fecha, horas y minutos no prestados y el motivo.\n"
-                 "El tipo de día (Normal / Domingo / Feriado) se pone solo al elegir la fecha (no se puede cambiar).\n"
+                 "El tipo de día se sugiere según la fecha y se puede cambiar a mano.\n"
                  "Estos asientos se RESTAN del cobro y se detallan en el PDF."),
                 "#c0392b", "ded")
 
             self.frame_extras, self.lbl_total_extras = _crear_seccion(
                 "⏱️ HORAS EXTRAS DE LA QUINCENA (asientos con fecha)",
                 ("Registre las horas trabajadas de más: fecha, horas/minutos extras y el motivo.\n"
-                 "Se valorizan al precio por hora de la unidad según el tipo de día de la fecha (automático)\n"
+                 "Se valorizan al precio por hora de la unidad según el tipo de día (Normal/Domingo/Feriado)\n"
                  "y SUMAN al cobro: subtotal = base − deducciones + horas extras."),
                 "#27ae60", "ext")
 
@@ -3982,18 +4017,25 @@ class DialogoUnidad(ctk.CTkToplevel):
             return "normal"
 
     def _sincronizar_tipo(self, item):
-        """Pone el tipo de día del asiento según la FECHA (el usuario no lo elige)."""
+        """Sugiere el tipo de día según la FECHA, pero respeta el «Feriado» elegido a mano."""
         try:
             fecha = datetime.strptime(item["fecha"].get().strip(), "%d/%m/%Y").date()
         except Exception:
             return
+        actual = ""
         try:
-            item["tipo"].set(ETIQUETAS_CORTAS.get(self._categoria_para_fecha(fecha), "Normal"))
+            actual = item["tipo"].get()
         except Exception:
             pass
-        # 🔒 Siempre bloqueado: el tipo de día depende solo de la fecha
+        # Si ya está marcado como Feriado a mano, no se lo cambiamos
+        if actual == ETIQUETAS_CORTAS.get("feriado", "Feriado"):
+            try:
+                self._actualizar_total_asientos(item.get("destino", "ded"))
+            except Exception:
+                pass
+            return
         try:
-            item["tipo"].configure(state="disabled")
+            item["tipo"].set(ETIQUETAS_CORTAS.get(self._categoria_para_fecha(fecha), "Normal"))
         except Exception:
             pass
         try:
@@ -4040,9 +4082,9 @@ class DialogoUnidad(ctk.CTkToplevel):
                       command=lambda it=item: self._abrir_calendario_asiento(it)).grid(
             row=0, column=1, padx=3)
 
-        # 🔒 El tipo de día lo pone la FECHA (no se puede cambiar a mano)
+        # ✏️ El tipo de día se puede cambiar a mano (p. ej. marcar «Feriado» en Horas Extras)
         combo = ctk.CTkOptionMenu(fila, values=list(ETIQUETAS_CORTAS.values()), width=118,
-                                  font=(fam, 11), state="disabled",
+                                  font=(fam, 11), state="normal",
                                   command=lambda _v, d=destino: self._actualizar_total_asientos(d))
         combo.grid(row=0, column=2, padx=3, sticky="w")
         item["tipo"] = combo
@@ -5797,14 +5839,22 @@ class AsistenteCobranza(ctk.CTkToplevel):
                      font=(self.familia, 11, "bold"), text_color="#c0392b").pack(
             anchor="w", padx=15, pady=(8, 2))
         cols = ("unidad", "fecha", "dia", "horas", "min", "motivo", "monto")
-        self.tabla_du = ttk.Treeview(g, columns=cols, show="headings", height=4, style="Treeview")
+        f_tab_du = ctk.CTkFrame(g, fg_color="transparent")
+        f_tab_du.pack(fill="x", padx=15, pady=(0, 4))
+        f_tab_du.columnconfigure(0, weight=1)
+        self.tabla_du = ttk.Treeview(f_tab_du, columns=cols, show="headings", height=4, style="Treeview")
         for col, txt, w, anc in (("unidad", "Unidad", 220, "w"), ("fecha", "Fecha", 90, "center"),
                                  ("dia", "Día", 85, "center"), ("horas", "Horas", 55, "center"),
                                  ("min", "Min", 50, "center"), ("motivo", "Motivo", 240, "w"),
                                  ("monto", "Monto", 100, "center")):
             self.tabla_du.heading(col, text=txt, anchor="center")
             self.tabla_du.column(col, width=w, anchor=anc)
-        self.tabla_du.pack(fill="x", padx=15, pady=(0, 4))
+        self.tabla_du.grid(row=0, column=0, sticky="nsew")
+        scr_du = ttk.Scrollbar(f_tab_du, orient="vertical", command=self.tabla_du.yview)
+        self.tabla_du.configure(yscrollcommand=scr_du.set)
+        scr_du.grid(row=0, column=1, sticky="ns")
+        for _ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.tabla_du.bind(_ev, lambda e, tb=self.tabla_du: self._rueda_tabla(e, tb))
         f_d = ctk.CTkFrame(g, fg_color="transparent")
         f_d.pack(fill="x", padx=15, pady=(0, 6))
         ctk.CTkButton(f_d, text="➖ Quitar deducción seleccionada", width=250,
@@ -5821,14 +5871,22 @@ class AsistenteCobranza(ctk.CTkToplevel):
         ctk.CTkLabel(g, text="➕ HORAS EXTRAS REGISTRADAS (se suman al cobro)",
                      font=(self.familia, 11, "bold"), text_color="#27ae60").pack(
             anchor="w", padx=15, pady=(6, 2))
-        self.tabla_ex = ttk.Treeview(g, columns=cols, show="headings", height=4, style="Treeview")
+        f_tab_ex = ctk.CTkFrame(g, fg_color="transparent")
+        f_tab_ex.pack(fill="x", padx=15, pady=(0, 4))
+        f_tab_ex.columnconfigure(0, weight=1)
+        self.tabla_ex = ttk.Treeview(f_tab_ex, columns=cols, show="headings", height=4, style="Treeview")
         for col, txt, w, anc in (("unidad", "Unidad", 220, "w"), ("fecha", "Fecha", 90, "center"),
                                  ("dia", "Día", 85, "center"), ("horas", "Horas", 55, "center"),
                                  ("min", "Min", 50, "center"), ("motivo", "Motivo", 240, "w"),
                                  ("monto", "Monto", 100, "center")):
             self.tabla_ex.heading(col, text=txt, anchor="center")
             self.tabla_ex.column(col, width=w, anchor=anc)
-        self.tabla_ex.pack(fill="x", padx=15, pady=(0, 4))
+        self.tabla_ex.grid(row=0, column=0, sticky="nsew")
+        scr_ex = ttk.Scrollbar(f_tab_ex, orient="vertical", command=self.tabla_ex.yview)
+        self.tabla_ex.configure(yscrollcommand=scr_ex.set)
+        scr_ex.grid(row=0, column=1, sticky="ns")
+        for _ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.tabla_ex.bind(_ev, lambda e, tb=self.tabla_ex: self._rueda_tabla(e, tb))
         f_e = ctk.CTkFrame(g, fg_color="transparent")
         f_e.pack(fill="x", padx=15, pady=(0, 10))
         ctk.CTkButton(f_e, text="➖ Quitar horas extras seleccionadas", width=270,
@@ -5849,6 +5907,20 @@ class AsistenteCobranza(ctk.CTkToplevel):
         self._mapa_du = []
         self._mapa_ex = []
         self._refrescar_ded_uni()
+
+    def _rueda_tabla(self, event, tabla):
+        """Rueda del mouse sobre una tabla (Windows, macOS y Linux)."""
+        try:
+            num = getattr(event, "num", 0)
+            if num == 4:
+                tabla.yview_scroll(-3, "units")
+            elif num == 5:
+                tabla.yview_scroll(3, "units")
+            else:
+                tabla.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except Exception:
+            pass
+        return "break"
 
     def _tarjeta_resumen_dias(self):
         """Crea la tabla de resumen día por día (deducciones y horas extras)."""

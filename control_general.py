@@ -143,6 +143,68 @@ def sincronizar_botones_pantalla_completa(ventana, activa=None):
     return activa
 
 
+def _ventana_raiz(ventana):
+    """Sube por los 'master' hasta la ventana principal (Tk)."""
+    actual = ventana
+    try:
+        while getattr(actual, "master", None) is not None:
+            actual = actual.master
+    except Exception:
+        pass
+    return actual
+
+
+def _toplevels_visibles(padre):
+    """Recorre el árbol y devuelve los Toplevel visibles (los módulos)."""
+    encontrados = []
+    try:
+        hijos = padre.winfo_children()
+    except Exception:
+        return encontrados
+    for w in hijos:
+        try:
+            if isinstance(w, tk.Toplevel):
+                if w.winfo_exists() and w.winfo_viewable():
+                    encontrados.append(w)
+                continue
+        except Exception:
+            continue
+        encontrados.extend(_toplevels_visibles(w))
+    return encontrados
+
+
+def ventana_al_frente(root):
+    """Ventana que está DELANTE: el módulo o diálogo que el usuario tiene a la vista."""
+    if root is None:
+        return None
+    # 1) Orden de apilamiento REAL del sistema (de abajo hacia arriba). Sirve
+    #    aunque el módulo se cree dentro de un frame y no sea hijo directo.
+    try:
+        orden = list(root.tk.splitlist(root.tk.eval("wm stackorder %s" % root._w)))
+    except Exception:
+        orden = []
+    for nombre in reversed(orden):
+        if nombre == str(root._w):
+            continue
+        try:
+            w = root.nametowidget(nombre)
+        except Exception:
+            continue
+        try:
+            if w.winfo_exists() and w.winfo_viewable():
+                return w
+        except Exception:
+            continue
+    # 2) Respaldo: el último Toplevel visible del árbol
+    try:
+        visibles = _toplevels_visibles(root)
+        if visibles:
+            return visibles[-1]
+    except Exception:
+        pass
+    return root
+
+
 def alternar_pantalla_completa(ventana, boton=None):
     """Alterna la ventana entre pantalla completa y su tamaño normal.
 
@@ -157,14 +219,20 @@ def alternar_pantalla_completa(ventana, boton=None):
                 ventana.attributes("-fullscreen", False)
             except Exception:
                 pass
+            try:
+                ventana.update_idletasks()
+            except Exception:
+                pass
             geometria = getattr(ventana, "_geometria_previa", "")
             if geometria:
                 try:
                     ventana.geometry(geometria)
                 except Exception:
                     pass
-            # El sistema siempre trabaja con la ventana maximizada
-            maximizar_ventana(ventana)
+            # La ventana PRINCIPAL siempre trabaja maximizada; un MÓDULO vuelve a
+            # su tamaño anterior (si no, al salir con Escape queda gigante).
+            if ventana is _ventana_raiz(ventana):
+                maximizar_ventana(ventana)
             ventana._pantalla_completa_activa = False
             accion_barra = getattr(ventana, "_alternar_barra_lateral", None)
             if callable(accion_barra):
@@ -185,6 +253,13 @@ def alternar_pantalla_completa(ventana, boton=None):
                 alto = ventana.winfo_screenheight()
                 ventana.geometry("%dx%d+0+0" % (ancho, alto))
             ventana._pantalla_completa_activa = True
+            # En un módulo (ventana secundaria) Escape la devuelve a su tamaño
+            # normal: la barra lateral de la ventana principal queda detrás.
+            if ventana is not _ventana_raiz(ventana):
+                try:
+                    ventana.bind("<Escape>", lambda _e, v=ventana: alternar_pantalla_completa(v))
+                except Exception:
+                    pass
         # Los botones del sistema se ocultan en pantalla completa para ganar espacio
         accion_barra = getattr(ventana, "_alternar_barra_lateral", None)
         if callable(accion_barra):
@@ -192,6 +267,14 @@ def alternar_pantalla_completa(ventana, boton=None):
                 accion_barra(bool(getattr(ventana, "_pantalla_completa_activa", False)))
             except Exception as e:
                 print("Aviso - barra lateral:", e)
+        # 🪟 El módulo que está ADELANTE se estira al área visible al entrar en
+        # pantalla completa y vuelve a su tamaño al salir.
+        accion_modulo = getattr(ventana, "_alternar_modulo_pantalla", None)
+        if callable(accion_modulo):
+            try:
+                accion_modulo(bool(getattr(ventana, "_pantalla_completa_activa", False)))
+            except Exception as e:
+                print("Aviso - módulo en pantalla completa:", e)
     except Exception as e:
         print("Aviso - Pantalla completa:", e)
 
@@ -203,7 +286,9 @@ def alternar_pantalla_completa(ventana, boton=None):
                             hover_color="#b9640f" if activa else "#2c3e50")
         except Exception:
             pass
-    return sincronizar_botones_pantalla_completa(ventana, activa)
+    raiz = _ventana_raiz(ventana)
+    sincronizar_botones_pantalla_completa(ventana, activa)
+    return sincronizar_botones_pantalla_completa(raiz, activa)
 
 
 def maximizar_ventana(ventana):
@@ -1507,7 +1592,7 @@ class ControlGeneralEventos:
         btn_cambio.pack(side="bottom", pady=(2, 5))
 
         # Pantalla completa: útil para las tablas anchas (matriz de asistencia, libros, etc.)
-        self.btn_pantalla_completa = ctk.CTkButton(frame_bottom_sidebar, text="⛶ Pantalla completa", command=lambda: alternar_pantalla_completa(self.root, self.btn_pantalla_completa), width=240, height=30, font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50")
+        self.btn_pantalla_completa = ctk.CTkButton(frame_bottom_sidebar, text="⛶ Pantalla completa", command=lambda: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa), width=240, height=30, font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50")
         # La marca permite que los demás botones de pantalla completa se sincronicen solos
         self.btn_pantalla_completa._boton_pantalla_completa = True
         self.btn_pantalla_completa.pack(side="bottom", pady=(2, 5))
@@ -1517,17 +1602,18 @@ class ControlGeneralEventos:
         self.btn_flotante_salir = ctk.CTkButton(
             self.root, text="🗗 Salir de pantalla completa", width=215, height=28,
             font=("Arial", 10, "bold"), fg_color="#e67e22", hover_color="#b9640f",
-            command=lambda: alternar_pantalla_completa(self.root, self.btn_pantalla_completa))
+            command=lambda: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa))
 
         # Ganchos en la ventana: cualquier módulo puede pedir ocultar la barra lateral
         self.root._alternar_barra_lateral = self.alternar_barra_lateral
+        self.root._alternar_modulo_pantalla = self._acomodar_modulo_pantalla_completa
         self.root._boton_flotante_salir = self.btn_flotante_salir
         self.root._barra_lateral = self.sidebar
 
         # Los atajos viven en la ventana principal (siguen funcionando con cualquier
         # módulo abierto y no dejan enlaces huérfanos al cerrarlos).
         try:
-            self.root.bind("<F11>", lambda _e: alternar_pantalla_completa(self.root, self.btn_pantalla_completa))
+            self.root.bind("<F11>", lambda _e: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa))
             self.root.bind("<Escape>", self.salir_pantalla_completa)
         except Exception:
             pass
@@ -1808,6 +1894,39 @@ class ControlGeneralEventos:
             pass
         info["contenedor"].place(x=int(x), y=int(y))
         info["geometria"] = {"x": int(x), "y": int(y), "ancho": ancho, "alto": alto}
+
+    def _acomodar_modulo_pantalla_completa(self, activa):
+        """Módulo de adelante: se estira en pantalla completa y vuelve al salir."""
+        try:
+            self.root.after(180, lambda: self._aplicar_acomodo_modulo(bool(activa)))
+        except Exception:
+            self._aplicar_acomodo_modulo(activa)
+
+    def _aplicar_acomodo_modulo(self, activa):
+        clave = getattr(self, "_clave_activa", None)
+        info = (getattr(self, "ventanas_modulos", None) or {}).get(clave) if clave else None
+        if not info:
+            return
+        try:
+            if activa:
+                if not info.get("maximizada"):
+                    info["geometria_previa"] = self._geometria_actual(info) or info.get("geometria")
+                    self.escritorio.update_idletasks()
+                    self._ubicar_ventana(info, 0, 0,
+                                         self.escritorio.winfo_width(),
+                                         self.escritorio.winfo_height())
+                    info["maximizada"] = True
+                    info["_maximizada_por_pantalla"] = True
+            else:
+                if info.get("_maximizada_por_pantalla"):
+                    geo = info.get("geometria_previa") or info.get("geometria") or {}
+                    self._ubicar_ventana(info, geo.get("x") or 0, geo.get("y") or 0,
+                                         geo.get("ancho") or 800, geo.get("alto") or 600)
+                    info["geometria_previa"] = None
+                    info["maximizada"] = False
+                    info["_maximizada_por_pantalla"] = False
+        except Exception as e:
+            print("Aviso - módulo en pantalla completa:", e)
 
     def _traer_al_frente(self, clave):
         """La ventana indicada pasa al frente de todas las demás."""

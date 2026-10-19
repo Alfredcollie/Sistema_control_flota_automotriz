@@ -1681,6 +1681,9 @@ class FacturasEmitidasTab:
 
         columnas = ("num", "id", "fecha", "nro_doc", "dias", "tipo", "cliente", "concepto", "subtotal", "impuesto", "total", "detraccion", "neto", "estado_sunat", "archivo")
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="extended")
+        self.tabla.tag_configure("pagada", background="#d6eaf8", foreground="#1a5276")
+        self.tabla.tag_configure("no_pagada", background="#fadbd8", foreground="#922b21")
+        self.tabla.tag_configure("parcial", background="#e8daef", foreground="#6c3483")
         self.tabla.heading("num", text="N°", anchor="center")
         self.tabla.heading("id", text="ID (Oculto)")
         self.tabla.heading("fecha", text="Fecha ↕", command=lambda: self.ordenar_por_columna("fecha", False))
@@ -1721,7 +1724,7 @@ class FacturasEmitidasTab:
         f_btn_tabla = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_btn_tabla.pack(fill="x", pady=(10, 0))
 
-        btn_cols = ctk.CTkButton(f_btn_tabla, text="⚙️ Columnas", width=110, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "ventas_facturas"))
+        btn_cols = ctk.CTkButton(f_btn_tabla, text="⚙️ Columnas", width=90, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "ventas_facturas"))
         btn_cols.pack(side="left", padx=5, pady=5)
         try:
             aplicar_columnas_visibles(self.tabla, "ventas_facturas")
@@ -2296,7 +2299,7 @@ class FacturasEmitidasTab:
                 if not conn: return
                 try:
                     cursor = conn.cursor()
-                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, cliente, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, enlace_pdf_sunat, estado_sunat FROM facturas_emitidas"
+                    query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, cliente, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, enlace_pdf_sunat, estado_sunat, COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_clientes p WHERE p.id_factura = facturas_emitidas.id), 0) AS cobrado FROM facturas_emitidas"
                     
                     condiciones = []
                     params = []
@@ -2334,8 +2337,9 @@ class FacturasEmitidasTab:
         for r in datos:
             tiene_arch = "✅ Ver" if r[12] else "❌ No"
             tipo_doc = r[4]; impuesto = r[9]; tot_bruto = r[10]; det_monto = r[11]
-            if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
-            else: neto = tot_bruto - det_monto
+            _tb, _im, _dm = float(tot_bruto or 0), float(impuesto or 0), float(det_monto or 0)
+            if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = _tb - _im - _dm
+            else: neto = _tb - _dm
             
             estado_db = r[14]
             if estado_db and "Anulada" in estado_db:
@@ -2348,7 +2352,17 @@ class FacturasEmitidasTab:
                 r[7].split(" | ")[0] if " | " in r[7] else r[7], r[8], formatear_moneda(impuesto), formatear_moneda(tot_bruto), formatear_moneda(det_monto), formatear_moneda(neto), estado_sunat_str, tiene_arch
             )
             
-            self.tabla.insert("", tk.END, values=row_vals)
+            try:
+                _cobrado_f = float(r[15] or 0) if len(r) > 15 else 0.0
+            except Exception:
+                _cobrado_f = 0.0
+            if (neto <= 0.01) or (_cobrado_f >= neto - 0.01):
+                _etiqueta = "pagada"
+            elif _cobrado_f <= 0.01:
+                _etiqueta = "no_pagada"
+            else:
+                _etiqueta = "parcial"
+            self.tabla.insert("", tk.END, values=row_vals, tags=(_etiqueta,))
             contador += 1
             
         if self.pagina_actual > 1:
@@ -2963,7 +2977,7 @@ class CuentasPorCobrarTab:
         frame_acciones = ctk.CTkFrame(self.tab_frame, corner_radius=8, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
         frame_acciones.pack(fill="x", padx=15, pady=(10, 10), ipady=5)
 
-        btn_cols = ctk.CTkButton(frame_acciones, text="⚙️ Columnas", width=110, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "ventas_cuentas_cobrar"))
+        btn_cols = ctk.CTkButton(frame_acciones, text="⚙️ Columnas", width=90, font=("Arial", 12, "bold"), fg_color="#6c757d", hover_color="#565e64", command=lambda: menu_columnas(self.tabla, "ventas_cuentas_cobrar"))
         btn_cols.pack(side="left", padx=5, pady=5)
         try:
             aplicar_columnas_visibles(self.tabla, "ventas_cuentas_cobrar")
@@ -2972,7 +2986,7 @@ class CuentasPorCobrarTab:
         btn_resumen_cli = ctk.CTkButton(frame_acciones, text="📊 Resumen por Cliente", font=("Arial", 12, "bold"), command=self.mostrar_resumen_clientes, fg_color="#1f538d", hover_color="#163b65")
         btn_resumen_cli.pack(side="left", padx=5, pady=5)
 
-        btn_reporte = ctk.CTkButton(frame_acciones, text="📈 Reporte de Totales Avanzado", font=("Arial", 12, "bold"), command=self.mostrar_reporte_totales, fg_color="#34495e", hover_color="#2c3e50")
+        btn_reporte = ctk.CTkButton(frame_acciones, text="📈 Reporte Avanzado", font=("Arial", 12, "bold"), command=self.mostrar_reporte_totales, fg_color="#34495e", hover_color="#2c3e50")
         btn_reporte.pack(side="left", padx=5, pady=5)
 
         btn_comprobante = ctk.CTkButton(frame_acciones, text="🧾 Registrar Cobro", font=("Arial", 12, "bold"), command=self.cargar_comprobante_cobro, fg_color="#1f538d", hover_color="#163b65")
@@ -2980,7 +2994,7 @@ class CuentasPorCobrarTab:
         btn_editar = ctk.CTkButton(frame_acciones, text="✏️ Editar Cobros", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50")
         btn_editar.pack(side="left", padx=5, pady=5)
 
-        btn_varias = ctk.CTkButton(frame_acciones, text="🧾 Cobrar Varias Facturas (1 comprobante)",
+        btn_varias = ctk.CTkButton(frame_acciones, text="🧾 Cobrar Varias",
                                     font=("Arial", 12, "bold"), fg_color="#b9770e", hover_color="#8e5e0a",
                                     command=self.cobrar_varias_facturas)
         btn_varias.pack(side="left", padx=5, pady=5)
@@ -2989,7 +3003,7 @@ class CuentasPorCobrarTab:
                                      command=self.abrir_registrar_adelanto)
         btn_adelanto.pack(side="left", padx=5, pady=5)
 
-        btn_aplicar = ctk.CTkButton(frame_acciones, text="🧩 Asociar Adelanto a Factura", font=("Arial", 12, "bold"),
+        btn_aplicar = ctk.CTkButton(frame_acciones, text="🧩 Asociar Adelanto", font=("Arial", 12, "bold"),
                                     fg_color="#16a085", hover_color="#11806a",
                                     command=self.abrir_asociar_adelanto)
         btn_aplicar.pack(side="left", padx=5, pady=5)
@@ -3021,6 +3035,11 @@ class CuentasPorCobrarTab:
 
         self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251") 
         self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c") 
+
+        # 🎨 Estado de cobro: azul (cobrada) · rojo (no cobrada) · morado (parcial)
+        self.tabla.tag_configure("pagada", background="#d6eaf8", foreground="#1a5276")
+        self.tabla.tag_configure("no_pagada", background="#fadbd8", foreground="#922b21")
+        self.tabla.tag_configure("parcial", background="#e8daef", foreground="#6c3483")
 
         self.tabla.heading("num", text="N°")
         self.tabla.heading("id_factura", text="ID (Oculto)")
@@ -3083,11 +3102,14 @@ class CuentasPorCobrarTab:
         f_leyenda = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
         f_leyenda.pack(side="left", padx=30)
         
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#c0392b").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Sin Cuenta Asignada / Pendiente", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,10))
-        
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#27ae60").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,5))
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1a5276").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Totalmente cobrada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#922b21").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="No cobrada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#6c3483").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Parcialmente cobrada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
         # ---------------
 
         self.lbl_total_general = ctk.CTkLabel(self.frame_bottom, text="Total Pendiente General por Cobrar: 0.00", font=("Arial", 12, "bold"), text_color="#c0392b")
@@ -3643,7 +3665,17 @@ class CuentasPorCobrarTab:
         contador = 1
         for f in filas:
             txt_adjuntos = f"📁 {f['cant_archivos']} archivo(s)" if f['cant_archivos'] > 0 else "❌ Sin adjuntos"
-            etiqueta_color = "con_cuenta" if f['id_factura'] in facturas_con_cuenta else "sin_cuenta"
+            try:
+                _neto_c = float(f.get('neto_facturado') or 0)
+                _cobr = float(f.get('monto_cobrado') or 0)
+            except Exception:
+                _neto_c, _cobr = 0.0, 0.0
+            if (_neto_c <= 0.01) or (_cobr >= _neto_c - 0.01):
+                etiqueta_color = "pagada"
+            elif _cobr <= 0.01:
+                etiqueta_color = "no_pagada"
+            else:
+                etiqueta_color = "parcial"
 
             row_vals = (
                 contador, f['id_factura'], f['fecha'], f['nro_doc'] if f['nro_doc'] else "S/N", f['cliente'] if f['cliente'] else "Cliente Sin Nombre", f['concepto'], 
@@ -4231,7 +4263,7 @@ class CuentasPorCobrarTab:
         if not sel: return messagebox.showwarning("Selección", "Seleccione la factura para editar sus cobros.")
         valores = self.tabla.item(sel[0], "values")
         id_factura, nro_doc, cliente = valores[1], valores[3], valores[4] 
-        saldo_actual_global = desformatear_numero(valores[11]) 
+        saldo_actual_global = float(desformatear_numero(valores[11]) or 0) 
 
         v_edit = ctk.CTkToplevel(self.main_root)
         v_edit.title(f"✏️ Gestión de Cobros - Fac. {nro_doc}")
@@ -4267,13 +4299,15 @@ class CuentasPorCobrarTab:
             if not sub_sel: return
             id_pago = sub_tabla.item(sub_sel[0], "values")[0]
             conn = conectar_db(); cursor = conn.cursor()
-            cursor.execute("SELECT monto_pagado, fecha_pago, cuenta_destino FROM pagos_clientes WHERE id = %s", (id_pago,))
-            monto_actual, fecha_actual, cuenta_actual = cursor.fetchone()
+            cursor.execute("SELECT monto_pagado, fecha_pago, cuenta_destino, COALESCE(numero_operacion, '') FROM pagos_clientes WHERE id = %s", (id_pago,))
+            _fila_mod = cursor.fetchone()
+            monto_actual, fecha_actual, cuenta_actual = _fila_mod[0], _fila_mod[1], _fila_mod[2]
+            oper_actual = _fila_mod[3] if len(_fila_mod) > 3 else ""
             liberar_conexion(conn)
 
             v_mod_cobro = ctk.CTkToplevel(v_edit)
             v_mod_cobro.title("Modificar Cobro")
-            v_mod_cobro.geometry("400x320")
+            v_mod_cobro.geometry("400x430")
             v_mod_cobro.transient(v_edit)
             v_mod_cobro.grab_set()
 
@@ -4314,6 +4348,12 @@ class CuentasPorCobrarTab:
                 pass
             ent_mod_fecha.insert(0, _fech_mod)
 
+            ctk.CTkLabel(f_form, text="N° de Operación / Comprobante:", font=("Arial", 11, "bold")).pack(anchor="w")
+            ent_mod_oper = ctk.CTkEntry(f_form, placeholder_text="N° de operación del banco")
+            ent_mod_oper.pack(fill="x", pady=(0, 10))
+            if oper_actual:
+                ent_mod_oper.insert(0, str(oper_actual))
+
             def guardar_mod(event=None):
                 nonlocal saldo_actual_global
                 try:
@@ -4340,7 +4380,7 @@ class CuentasPorCobrarTab:
                     nueva_fecha = ent_mod_fecha.get().strip() or fecha_actual
                     nueva_cuenta = ent_mod_cuenta.get().strip()
                     conn = conectar_db(); cursor = conn.cursor()
-                    cursor.execute("UPDATE pagos_clientes SET monto_pagado = %s, fecha_pago = %s, cuenta_destino = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, id_pago))
+                    cursor.execute("UPDATE pagos_clientes SET monto_pagado = %s, fecha_pago = %s, cuenta_destino = %s, numero_operacion = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, id_pago, ent_mod_oper.get().strip()))
                     conn.commit(); liberar_conexion(conn)
                     cache_sistema.invalidar()
                     registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar", f"Modificó el cobro ID {id_pago} a {formatear_moneda(nuevo_monto)}")
