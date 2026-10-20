@@ -33,7 +33,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF==1.28.0 requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography
 
     - name: Descargar rclone (Windows)
       run: |
@@ -43,7 +43,7 @@ jobs:
         Add-Content -Path $env:GITHUB_ENV -Value "RCLONE_BIN=$RCLONE_BIN"
 
     - name: Compilar con PyInstaller (Windows)
-      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.Windows control_general.py
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-data "INSTRUCTIVO_MODULO_NOMINA.pdf;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all pymupdf --hidden-import keyring.backends.Windows --hidden-import escaner control_general.py
 
     - name: Inyectar credenciales de Supabase (config_db.json)
       shell: pwsh
@@ -126,7 +126,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF==1.28.0 requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography pyobjc-framework-Vision pyobjc-framework-Quartz
 
     - name: Descargar rclone (macOS)
       run: |
@@ -143,7 +143,7 @@ jobs:
         echo "RCLONE_BIN=$RCLONE_BIN" >> "$GITHUB_ENV"
 
     - name: Compilar con PyInstaller (macOS)
-      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --hidden-import keyring.backends.macOS control_general.py
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-data "INSTRUCTIVO_MODULO_NOMINA.pdf:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all pymupdf --hidden-import keyring.backends.macOS --hidden-import escaner control_general.py --hidden-import Vision --hidden-import Quartz --hidden-import objc --hidden-import objc._objc
 
     - name: Inyectar credenciales de Supabase (config_db.json)
       run: |
