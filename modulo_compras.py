@@ -354,6 +354,180 @@ def ventana_para_mensaje(principal=None):
     return principal
 
 
+def _texto_bancario_limpio(valor):
+    """Quita los textos de relleno de los combos de la ficha del proveedor."""
+    texto = str(valor or "").strip()
+    if texto.lower() in ("no seleccionada", "seleccione banco", "ninguno", "none", "-", "nan"):
+        return ""
+    return texto
+
+
+def obtener_datos_bancarios_proveedor(nombre_proveedor):
+    """Devuelve la ficha bancaria del proveedor (tabla 'proveedores') o None."""
+    nombre = str(nombre_proveedor or "").strip()
+    if not nombre:
+        return None
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return None
+    columnas = """SELECT ruc, nombre, banco_1, cuenta_1, cci_1, banco_2, cuenta_2, cci_2,
+                         cuenta_detraccion, porcentaje_detraccion, contacto, whatsapp, correo
+                  FROM proveedores"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(columnas + " WHERE TRIM(UPPER(nombre)) = TRIM(UPPER(%s)) LIMIT 1", (nombre,))
+        fila = cursor.fetchone()
+        if not fila:
+            cursor.execute(columnas + " WHERE nombre ILIKE %s ORDER BY id LIMIT 1", (f"%{nombre}%",))
+            fila = cursor.fetchone()
+        return fila
+    except Exception:
+        return None
+    finally:
+        liberar_conexion(conn)
+
+
+def mostrar_datos_bancarios_proveedor(parent, proveedor, datos, factura_txt="", reutilizar=None):
+    """🧾 Ventana con los datos bancarios del proveedor y botones para copiarlos."""
+    datos = list(datos or []) + [""] * 13
+    (ruc, nombre, b1, c1, cc1, b2, c2, cc2,
+     cdet, pdet, contacto, whatsapp, correo) = datos[:13]
+    b1, c1, cc1 = _texto_bancario_limpio(b1), _texto_bancario_limpio(c1), _texto_bancario_limpio(cc1)
+    b2, c2, cc2 = _texto_bancario_limpio(b2), _texto_bancario_limpio(c2), _texto_bancario_limpio(cc2)
+    cdet, pdet = _texto_bancario_limpio(cdet), _texto_bancario_limpio(pdet)
+    nombre = str(nombre or proveedor or "").strip()
+
+    ventana = reutilizar
+    if ventana is None:
+        ventana = ctk.CTkToplevel(parent)
+        ventana.transient(parent)
+    for hijo in ventana.winfo_children():
+        hijo.destroy()
+    ventana.title(f"🏦 Datos bancarios - {nombre}")
+    ventana.geometry("620x560")
+    ventana.minsize(560, 420)
+
+    ctk.CTkLabel(ventana, text="🏦 DATOS BANCARIOS DEL PROVEEDOR",
+                 font=("Arial", 15, "bold"), text_color="#1f538d").pack(pady=(14, 2))
+    ctk.CTkLabel(ventana, text=nombre or "(sin nombre)", font=("Arial", 13, "bold")).pack()
+    if ruc:
+        ctk.CTkLabel(ventana, text=f"RUC: {ruc}", font=("Arial", 11, "bold"),
+                     text_color="#7f8c8d").pack(pady=(0, 4))
+    if factura_txt:
+        ctk.CTkLabel(ventana, text=factura_txt, font=("Arial", 11, "italic"),
+                     text_color="#7f8c8d").pack(pady=(0, 6))
+
+    lbl_estado = ctk.CTkLabel(ventana, text="", font=("Arial", 11, "bold"), text_color="#1e8449")
+    lbl_estado.pack(pady=(0, 4))
+
+    def copiar(texto, etiqueta="Dato"):
+        texto = str(texto or "").strip()
+        if not texto:
+            return lbl_estado.configure(text="⚠️ No hay dato para copiar.", text_color="#c0392b")
+        try:
+            ventana.clipboard_clear()
+            ventana.clipboard_append(texto)
+            ventana.update_idletasks()
+            lbl_estado.configure(text=f"✅ Copiado: {texto}", text_color="#1e8449")
+        except Exception as e:
+            lbl_estado.configure(text=f"⚠️ No se pudo copiar: {e}", text_color="#c0392b")
+
+    cuerpo = ctk.CTkScrollableFrame(ventana, fg_color="transparent")
+    cuerpo.pack(fill="both", expand=True, padx=14, pady=6)
+
+    def ficha(titulo, contenido):
+        marco = ctk.CTkFrame(cuerpo, fg_color="#f8f9fa", corner_radius=8,
+                             border_width=1, border_color="#e0e0e0")
+        marco.pack(fill="x", pady=6)
+        ctk.CTkLabel(marco, text=titulo, font=("Arial", 12, "bold"),
+                     text_color="#1f538d", anchor="w").pack(fill="x", padx=12, pady=(8, 2))
+        for etiqueta, valor in contenido:
+            valor = str(valor or "").strip()
+            if not valor:
+                continue
+            fila = ctk.CTkFrame(marco, fg_color="transparent")
+            fila.pack(fill="x", padx=12, pady=2)
+            ctk.CTkLabel(fila, text=etiqueta, width=120, anchor="w",
+                         font=("Arial", 11, "bold")).pack(side="left")
+            ctk.CTkLabel(fila, text=valor, anchor="w", font=("Arial", 12)).pack(side="left", padx=(0, 6))
+            ctk.CTkButton(fila, text="📋 Copiar", width=84, height=24, font=("Arial", 10, "bold"),
+                          fg_color="#1f538d", hover_color="#163b65",
+                          command=lambda v=valor, e=etiqueta: copiar(v, e)).pack(side="right", padx=(6, 0))
+        return marco
+
+    hay_cuenta = False
+    if b1 or c1 or cc1:
+        hay_cuenta = True
+        ficha("💳 Cuenta bancaria 1", [("Banco:", b1), ("N° de cuenta:", c1), ("CCI:", cc1)])
+    if b2 or c2 or cc2:
+        hay_cuenta = True
+        ficha("💳 Cuenta bancaria 2", [("Banco:", b2), ("N° de cuenta:", c2), ("CCI:", cc2)])
+    if cdet or pdet:
+        hay_cuenta = True
+        ficha("🧾 Cuenta de detracción", [("N° de cuenta:", cdet), ("Porcentaje:", pdet)])
+
+    if hay_cuenta:
+        contacto_txt = [("Contacto:", contacto), ("WhatsApp:", whatsapp), ("Correo:", correo)]
+        if any(str(v or "").strip() for _, v in contacto_txt):
+            ficha("📞 Contacto del proveedor", contacto_txt)
+
+        def copiar_todo():
+            lineas = [f"PROVEEDOR: {nombre}"]
+            if ruc:
+                lineas.append(f"RUC: {ruc}")
+            if b1 or c1 or cc1:
+                lineas += ["", "CUENTA 1:",
+                           f"  Banco: {b1 or '-'}", f"  N° de cuenta: {c1 or '-'}", f"  CCI: {cc1 or '-'}"]
+            if b2 or c2 or cc2:
+                lineas += ["", "CUENTA 2:",
+                           f"  Banco: {b2 or '-'}", f"  N° de cuenta: {c2 or '-'}", f"  CCI: {cc2 or '-'}"]
+            if cdet or pdet:
+                lineas += ["", f"DETRACCIÓN: {cdet or '-'}" + (f"  ({pdet})" if pdet else "")]
+            copiar(chr(10).join(lineas), "Todos los datos")
+
+        ctk.CTkButton(ventana, text="📋 Copiar todos los datos", height=34,
+                      font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449",
+                      command=copiar_todo).pack(fill="x", padx=14, pady=(4, 2))
+        ctk.CTkLabel(ventana, text="Los datos se toman de la ficha del proveedor (módulo Proveedores).",
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d").pack(pady=(0, 2))
+    else:
+        ctk.CTkLabel(cuerpo, text="⚠️ Este proveedor todavía no tiene datos bancarios registrados en su ficha.",
+                     font=("Arial", 12, "bold"), text_color="#c0392b").pack(pady=18)
+        ctk.CTkLabel(cuerpo, text="Regístralos en el módulo 📦 Proveedores → Editar → Banco 1 / Cuenta 1 / CCI 1.",
+                     font=("Arial", 11), text_color="#7f8c8d", justify="center").pack(pady=(0, 10))
+
+    ctk.CTkButton(ventana, text="❌ Cerrar", width=140, height=30, font=("Arial", 11, "bold"),
+                  fg_color="#7f8c8d", hover_color="#606b6b",
+                  command=ventana.destroy).pack(pady=(4, 12))
+    try:
+        ventana.bind("<Escape>", lambda _e: ventana.destroy(), add="+")
+        ventana.lift()
+        ventana.focus_force()
+    except Exception:
+        pass
+    return ventana
+
+
+def _fecha_dd_mm_aaaa(fecha):
+    """Devuelve la fecha en DD/MM/AAAA (acepta ISO, dd/mm o mm/dd)."""
+    import re as _re
+    texto = str(fecha or "").strip()
+    if not texto:
+        return ""
+    m = _re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(.*)$", texto)
+    if m:
+        anio, mes, dia, resto = m.groups()
+        return "%02d/%02d/%s%s" % (int(dia), int(mes), anio, resto)
+    m = _re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(.*)$", texto)
+    if m:
+        a, b, anio, resto = m.groups()
+        dia, mes = int(a), int(b)
+        if mes > 12 and dia <= 12:
+            dia, mes = mes, dia
+        return "%02d/%02d/%s%s" % (dia, mes, anio, resto)
+    return texto
+
+
 def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
@@ -3707,6 +3881,8 @@ class FacturasRecibidasTab:
         self._actualizar_flechas_orden()
         self.tabla.bind("<Double-1>", self.abrir_archivo)
         self.tabla.bind("<Button-3>", self._menu_contextual_factura)
+        # 🖱️ macOS: el botón derecho llega como Button-2
+        self.tabla.bind("<Button-2>", self._menu_contextual_factura)
 
         scroll_y = ttk.Scrollbar(f_tabla, orient="vertical", command=self.tabla.yview)
         scroll_x = ttk.Scrollbar(f_tabla, orient="horizontal", command=self.tabla.xview)
@@ -3757,12 +3933,6 @@ class FacturasRecibidasTab:
         ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#6c3483").pack(side="left", padx=(5,2))
         ctk.CTkLabel(f_leyenda, text="Parcialmente pagada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
 
-        # ✅ Solo los botones: el de Modificar/Eliminar pasa a una fila propia
-        # (ancho completo) para que siempre sea visible sin importar el ancho.
-        f_gestion = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
-        f_gestion.pack(fill="x", pady=(8, 0))
-        btn_gestionar = ctk.CTkButton(f_gestion, text="⚙️ Modificar o Eliminar Registro Seleccionado", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50", height=36)
-        btn_gestionar.pack(fill="x")
 
         # Descarga de tickets al abrir el módulo (en segundo plano, aviso en el hilo principal)
         ejecutar_en_hilo(
@@ -5313,21 +5483,163 @@ class FacturasRecibidasTab:
     # =====================================================================
     # 🖱️ MENÚ CONTEXTUAL de la tabla de facturas (botón derecho)
     # =====================================================================
-    def _menu_contextual_factura(self, event):
-        """Botón derecho: escanear/anexar, editar o borrar la factura seleccionada."""
-        fila = self.tabla.identify_row(event.y)
-        if not fila:
+    def _datos_bancarios_factura(self, id_factura=None):
+        """🏦 Datos bancarios del proveedor de la factura (funciona desde el menú)."""
+        id_fact = id_factura or self._id_factura_seleccionada()
+        if not id_fact:
             return
-        self.tabla.selection_set(fila)
+        proveedor, detalle = "", ""
+        try:
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    with conn.cursor() as c:
+                        c.execute("""SELECT COALESCE(proveedor, ''), COALESCE(numero_documento, ''),
+                                            COALESCE(fecha, '')
+                                     FROM facturas_recibidas WHERE id = %s""", (id_fact,))
+                        f = c.fetchone()
+                        if f:
+                            proveedor = str(f[0] or "")
+                            detalle = "Factura %s   ·   Fecha: %s" % (f[1] or "", f[2] or "")
+                finally:
+                    liberar_conexion(conn)
+        except Exception as e:
+            print("Aviso - datos bancarios:", e)
+        if not proveedor.strip():
+            return messagebox.showinfo("Datos bancarios",
+                                       "Esta factura no tiene proveedor registrado.",
+                                       parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+        cache = getattr(self, "_ventanas_bancarias", None)
+        if cache is None:
+            cache = self._ventanas_bancarias = {}
+        previa = cache.get(proveedor)
+        try:
+            if previa is not None and not previa.winfo_exists():
+                previa = None
+        except Exception:
+            previa = None
+        if previa is not None:
+            try:
+                for hijo in previa.winfo_children():
+                    hijo.destroy()
+            except Exception:
+                previa = None
+        try:
+            datos = obtener_datos_bancarios_proveedor(proveedor)
+            ventana = mostrar_datos_bancarios_proveedor(
+                self.main_root, proveedor, datos, factura_txt=detalle, reutilizar=previa)
+            cache[proveedor] = ventana
+            return ventana
+        except Exception as e:
+            print("Aviso - ventana de datos bancarios:", e)
+            return messagebox.showerror("Datos bancarios",
+                                        "No se pudo abrir la ventana: %s" % e,
+                                        parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
+    def _primera_ruta_existente(self, candidatas):
+        """Devuelve la primera ruta de la lista que exista en este equipo."""
+        for ruta in (candidatas or []):
+            ruta = str(ruta or "").strip()
+            if not ruta:
+                continue
+            try:
+                resuelta = resolver_ruta_archivo(ruta)
+            except Exception:
+                resuelta = ""
+            if resuelta and os.path.exists(resuelta):
+                return resuelta
+        return ""
+
+    def _ruta_factura(self, id_factura):
+        """Ruta del archivo de la FACTURA (o el soporte del pago a tercero)."""
+        if not id_factura:
+            return ""
+        candidatas = []
+        try:
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    with conn.cursor() as c:
+                        c.execute("""SELECT COALESCE(archivo_ruta, ''), COALESCE(soporte_pago_tercero, '')
+                                     FROM facturas_recibidas WHERE id = %s""", (id_factura,))
+                        f = c.fetchone()
+                        if f:
+                            candidatas.extend([f[0], f[1]])
+                finally:
+                    liberar_conexion(conn)
+        except Exception:
+            return ""
+        return self._primera_ruta_existente(candidatas)
+
+    def _ruta_comprobante_pago(self, id_factura):
+        """Ruta del COMPROBANTE de pago registrado para la factura."""
+        if not id_factura:
+            return ""
+        candidatas = []
+        try:
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    with conn.cursor() as c:
+                        c.execute("""SELECT COALESCE(archivo_ruta, '') FROM pagos_comprobantes
+                                     WHERE id_factura = %s ORDER BY id DESC""", (id_factura,))
+                        candidatas.extend([r[0] for r in c.fetchall()])
+                finally:
+                    liberar_conexion(conn)
+        except Exception:
+            return ""
+        return self._primera_ruta_existente(candidatas)
+
+    def _mostrar_menu_factura(self, id_factura, event, es_pagos=False):
+        """Menú de clic derecho de una factura (lo usan las DOS pestañas)."""
         menu = tk.Menu(getattr(self, "main_root", None), tearoff=0)
-        menu.add_command(label="🖨️ Escanear factura (anexar)", command=self._escanear_anexar_factura)
-        menu.add_command(label="✏️ Editar factura", command=self._editar_factura)
+        if es_pagos:
+            pagos = getattr(self.app_padre, "app_pagos", None)
+            if pagos is not None:
+                menu.add_command(label="🧾 Registrar Pago",
+                                 command=pagos.cargar_comprobante_pago)
+                menu.add_command(label="✏️ Editar Pagos",
+                                 command=pagos.abrir_ventana_edicion)
+                menu.add_separator()
+        menu.add_command(label="🖨️ Escanear factura (anexar)",
+                         command=lambda: self._escanear_anexar_factura(id_factura))
+        menu.add_command(label="✏️ Editar factura (todos los campos)",
+                         command=lambda: self._editar_factura(id_factura))
+        menu.add_command(label="🏦 Datos bancarios del proveedor",
+                         command=lambda: self._datos_bancarios_factura(id_factura))
+        # 📄 Ver FACTURA (opción propia)
+        ruta_f = self._ruta_factura(id_factura)
+        if ruta_f:
+            menu.add_command(label="📄 Ver factura",
+                             command=lambda r=ruta_f: abrir_documento(r))
+        else:
+            menu.add_command(label="📄 Ver factura (sin archivo)", state="disabled")
+        # 🧾 Ver COMPROBANTE DE PAGO (opción propia)
+        ruta_c = self._ruta_comprobante_pago(id_factura)
+        if ruta_c:
+            menu.add_command(label="🧾 Ver comprobante de pago",
+                             command=lambda r=ruta_c: abrir_documento(r))
+        else:
+            menu.add_command(label="🧾 Ver comprobante de pago (sin archivo)", state="disabled")
         menu.add_separator()
-        menu.add_command(label="🗑️ Borrar factura", command=self._borrar_factura)
+        menu.add_command(label="🗑️ Borrar factura",
+                         command=lambda: self._borrar_factura(id_factura))
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _menu_contextual_factura(self, event):
+        """Botón derecho: menú de acciones de la factura seleccionada."""
+        try:
+            fila = self.tabla.identify_row(event.y)
+            if not fila:
+                return
+            self.tabla.selection_set(fila)
+            id_fact = int(self.tabla.item(fila, "values")[1])
+        except Exception:
+            return
+        self._mostrar_menu_factura(id_fact, event)
 
     def _id_factura_seleccionada(self):
         sel = self.tabla.selection()
@@ -5349,9 +5661,9 @@ class FacturasRecibidasTab:
             except Exception:
                 return {}
 
-    def _escanear_anexar_factura(self):
+    def _escanear_anexar_factura(self, id_factura=None):
         """🖨️ Escanea la factura y la ANEXA al registro seleccionado (archivo_ruta)."""
-        id_fact = self._id_factura_seleccionada()
+        id_fact = id_factura or self._id_factura_seleccionada()
         if not id_fact:
             return
         try:
@@ -5407,11 +5719,35 @@ class FacturasRecibidasTab:
             messagebox.showerror("Escáner", "No se pudo escanear la factura:\n%s" % e,
                                  parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
-    def _editar_factura(self):
+    def _editar_factura(self, id_factura=None):
         """✏️ Edición completa de la factura (mismos campos que al registrarla)."""
-        id_fact = self._id_factura_seleccionada()
+        id_fact = id_factura or self._id_factura_seleccionada()
         if not id_fact:
             return
+        # 🧱 Asegura las columnas opcionales: en bases antiguas puede que
+        #    todavía no existan (kilometraje, cantidad, orden, chofer). Así el
+        #    editor abre siempre, sin importar la antigüedad de la base.
+        try:
+            _conn_prep = conectar_db(silencioso=True)
+            if _conn_prep:
+                try:
+                    with _conn_prep.cursor() as _c_prep:
+                        for _sql in (
+                            "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS kilometraje VARCHAR(50)",
+                            "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS cantidad_combustible VARCHAR(50)",
+                            "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS orden_servicio VARCHAR(120) DEFAULT ''",
+                            "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS chofer_asociado VARCHAR(160) DEFAULT ''",
+                        ):
+                            try:
+                                _c_prep.execute(_sql)
+                                _conn_prep.commit()
+                            except Exception:
+                                _conn_prep.rollback()
+                finally:
+                    liberar_conexion(_conn_prep)
+        except Exception:
+            pass
+
         conn = conectar_db()
         if not conn:
             return
@@ -5438,10 +5774,30 @@ class FacturasRecibidasTab:
 
         v = ctk.CTkToplevel(getattr(self, "main_root", None))
         v.title("✏️ Editar Factura")
-        v.geometry("620x760")
+        # 📐 Se abre PEGADA ARRIBA y con el alto justo para que se vea completa
+        #    (en pantallas de 768 px, 760 + barra de título se salía por abajo).
+        try:
+            _sw = v.winfo_screenwidth()
+            _sh = v.winfo_screenheight()
+            _ancho = min(620, max(520, _sw - 60))
+            _alto = min(760, max(480, _sh - 90))
+            _x = max(0, (_sw - _ancho) // 2)
+            _y = 0 if _sh >= 800 else 2
+        except Exception:
+            _ancho, _alto, _x, _y = 620, 740, 60, 0
+        v.geometry("%dx%d+%d+%d" % (_ancho, _alto, _x, _y))
         v.transient(getattr(self, "main_root", None))
         try:
             v.grab_set()
+        except Exception:
+            pass
+        try:
+            v.resizable(True, True)
+        except Exception:
+            pass
+        try:
+            v.lift()
+            v.focus_force()
         except Exception:
             pass
         f = ctk.CTkScrollableFrame(v, fg_color="transparent")
@@ -5585,9 +5941,9 @@ class FacturasRecibidasTab:
                       fg_color="#7f8c8d", hover_color="#606b6b", command=v.destroy).pack(
             side="left", expand=True, fill="x", padx=(6, 0))
 
-    def _borrar_factura(self):
+    def _borrar_factura(self, id_factura=None):
         """🗑️ Elimina por completo la factura seleccionada (y su pago y su movimiento en Banco)."""
-        id_fact = self._id_factura_seleccionada()
+        id_fact = id_factura or self._id_factura_seleccionada()
         if not id_fact:
             return
         mov_banco = None
@@ -6284,10 +6640,6 @@ class CuentasPorPagarTab:
         btn_reporte = ctk.CTkButton(frame_acciones, text="📊 Reporte de Totales", font=("Arial", 12, "bold"), command=self.mostrar_reporte_totales, fg_color="#1f538d", hover_color="#163b65")
         btn_reporte.pack(side="left", padx=5, pady=5)
 
-        btn_pago = ctk.CTkButton(frame_acciones, text="🧾 Registrar Pago", font=("Arial", 12, "bold"), command=self.cargar_comprobante_pago, fg_color="#27ae60", hover_color="#1e8449")
-        btn_pago.pack(side="left", padx=5, pady=5)
-        btn_editar = ctk.CTkButton(frame_acciones, text="✏️ Editar Pagos", font=("Arial", 12, "bold"), command=self.abrir_ventana_edicion, fg_color="#34495e", hover_color="#2c3e50")
-        btn_editar.pack(side="left", padx=5, pady=5)
 
         btn_varias = ctk.CTkButton(frame_acciones, text="🧾 Pagar Varias",
                                     font=("Arial", 12, "bold"), fg_color="#b9770e", hover_color="#8e5e0a",
@@ -6377,6 +6729,10 @@ class CuentasPorPagarTab:
         self.tabla.config(displaycolumns=("num", "fecha", "hora", "nro_doc", "proveedor", "ruc", "evento", "kilometraje", "cantidad", "concepto", "metodo_pago", "neto_facturado", "pagado", "saldo", "archivos"))
         self._actualizar_flechas_orden()
         self.tabla.bind("<Double-1>", self.abrir_todos_los_archivos)
+        # 🖱️ Clic derecho: el MISMO menú de la pestaña de facturas (botón 3 y 2)
+        self.tabla.bind("<Button-3>", self._menu_contextual_factura, add="+")
+        self.tabla.bind("<Button-2>", self._menu_contextual_factura, add="+")
+        self._ventanas_bancarias = {}
         
         scroll_y = ctk.CTkScrollbar(f_tabla, orientation="vertical", command=self.tabla.yview)
         scroll_x = ctk.CTkScrollbar(f_tabla, orientation="horizontal", command=self.tabla.xview)
@@ -6784,7 +7140,7 @@ class CuentasPorPagarTab:
         resumen = ctk.CTkLabel(f, text=resumen_texto, font=("Arial", 10), justify="left", text_color="#555555")
 
         def guardar():
-            fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
+            fecha_val = _fecha_dd_mm_aaaa(ent_fecha.get().strip()) or datetime.now().strftime("%d/%m/%Y")
             cuenta = cmb_cuenta.get().strip()
             oper = ent_oper.get().strip()
             if not cuenta:
@@ -7411,7 +7767,7 @@ class CuentasPorPagarTab:
                                 f"{formatear_moneda(_tope)}.")
                 return messagebox.showerror("Error", mensaje, parent=v_pago)
 
-            fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
+            fecha_val = _fecha_dd_mm_aaaa(ent_fecha.get().strip()) or datetime.now().strftime("%d/%m/%Y")
             cuenta_val = cmb_cuenta.get().strip()
 
             # 🏦 El N° de operación bancaria es OBLIGATORIO (en efectivo/caja chica se guarda "EFECTIVO")
@@ -7622,6 +7978,20 @@ class CuentasPorPagarTab:
                 liberar_conexion(conn)
         except Exception as e:
             messagebox.showerror("Error", str(e), parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
+    def _menu_contextual_factura(self, event):
+        """Botón derecho en Control de Pagos: el MISMO menú que la pestaña de facturas."""
+        try:
+            fila = self.tabla.identify_row(event.y)
+            if not fila:
+                return
+            self.tabla.selection_set(fila)
+            id_fact = int(self.tabla.item(fila, "values")[1])
+        except Exception:
+            return
+        facturas = getattr(self.app_padre, "app_facturas", None)
+        if facturas is not None and hasattr(facturas, "_mostrar_menu_factura"):
+            facturas._mostrar_menu_factura(id_fact, event, es_pagos=True)
 
     def abrir_todos_los_archivos(self, event):
         seleccion = self.tabla.selection()

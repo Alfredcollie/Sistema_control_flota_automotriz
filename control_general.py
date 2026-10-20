@@ -2899,6 +2899,139 @@ class ControlGeneralEventos:
         else:
             agregar_fila_banco()
 
+        # ==================================================
+        # 🗑️ BORRAR FACTURAS DE COMPRA Y VENTA HASTA EL SALDO INICIAL
+        # ==================================================
+        def _fecha_de_config(texto):
+            """Convierte la fecha escrita en la configuración a date (o None)."""
+            texto = str(texto or "").strip()
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y", "%Y/%m/%d"):
+                try:
+                    return datetime.strptime(texto, fmt).date()
+                except Exception:
+                    continue
+            return None
+
+        def borrar_facturas_hasta_saldo_inicial():
+            """Elimina las facturas de COMPRA y VENTA anteriores a la fecha del saldo inicial."""
+            _nl = chr(10)
+            fechas = []
+            for b in (cargar_bancos() or []):
+                f = _fecha_de_config(b.get("fecha", ""))
+                if f:
+                    fechas.append(f)
+            if not fechas:
+                return messagebox.showwarning(
+                    "Saldo inicial",
+                    "Primero indique la FECHA del saldo inicial en las cuentas bancarias.",
+                    parent=v_conf)
+            corte = min(fechas)
+            corte_txt = corte.strftime("%d/%m/%Y")
+
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                return messagebox.showerror("Sin conexión",
+                                            "No se pudo conectar a la base de datos.", parent=v_conf)
+            compras, ventas = [], []
+            try:
+                with conn.cursor() as c:
+                    for tabla, lista in (("facturas_recibidas", compras), ("facturas_emitidas", ventas)):
+                        try:
+                            c.execute('SELECT id, COALESCE(fecha, \'\') FROM "%s"' % tabla)
+                            for idf, f_txt in c.fetchall():
+                                f = _fecha_de_config(f_txt)
+                                if f and f < corte:
+                                    lista.append(int(idf))
+                        except Exception:
+                            conn.rollback()
+            finally:
+                liberar_conexion(conn)
+
+            if not compras and not ventas:
+                return messagebox.showinfo(
+                    "Sin facturas",
+                    "No hay facturas de compra ni de venta con fecha hasta el %s." % corte_txt,
+                    parent=v_conf)
+
+            if not messagebox.askyesno(
+                    "Eliminar facturas",
+                    _nl.join([
+                        "Se eliminarán DEFINITIVAMENTE las facturas con fecha ANTERIOR al %s "
+                        "(fecha del saldo inicial):" % corte_txt,
+                        "",
+                        "  • Facturas de COMPRA: %d" % len(compras),
+                        "  • Facturas de VENTA:  %d" % len(ventas),
+                        "",
+                        "También se borrarán sus pagos y cobros vinculados.",
+                        "",
+                        "¿Desea continuar?",
+                    ]),
+                    parent=v_conf):
+                return
+
+            borradas_c = borradas_v = 0
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                return
+            try:
+                with conn.cursor() as c:
+                    if compras:
+                        try:
+                            c.execute("DELETE FROM pagos_comprobantes WHERE id_factura = ANY(%s)", (compras,))
+                        except Exception:
+                            conn.rollback()
+                        try:
+                            c.execute("DELETE FROM conciliacion_bancaria WHERE id_gasto_compras = ANY(%s)",
+                                      (compras,))
+                        except Exception:
+                            conn.rollback()
+                        c.execute("DELETE FROM facturas_recibidas WHERE id = ANY(%s)", (compras,))
+                        borradas_c = c.rowcount
+                        conn.commit()
+                    if ventas:
+                        try:
+                            c.execute("DELETE FROM pagos_clientes WHERE id_factura = ANY(%s)", (ventas,))
+                        except Exception:
+                            conn.rollback()
+                        c.execute("DELETE FROM facturas_emitidas WHERE id = ANY(%s)", (ventas,))
+                        borradas_v = c.rowcount
+                        conn.commit()
+            except Exception as e:
+                conn.rollback()
+                return messagebox.showerror("Error",
+                                            "No se pudieron eliminar las facturas:" + _nl + str(e),
+                                            parent=v_conf)
+            finally:
+                liberar_conexion(conn)
+
+            try:
+                cache_sistema.invalidar()
+            except Exception:
+                pass
+            try:
+                registrar_auditoria(self.usuario_activo, "Configuración",
+                                    "Eliminó facturas hasta el %s (compras %d, ventas %d)"
+                                    % (corte_txt, borradas_c, borradas_v))
+            except Exception:
+                pass
+            messagebox.showinfo(
+                "Listo",
+                _nl.join([
+                    "Facturas eliminadas hasta el %s:" % corte_txt,
+                    "",
+                    "  • Compras: %d" % borradas_c,
+                    "  • Ventas:  %d" % borradas_v,
+                ]),
+                parent=v_conf)
+
+        ctk.CTkButton(f_empresa, text="🗑️ Borrar facturas de compra y venta hasta el saldo inicial",
+                      font=("Arial", 11, "bold"), width=440, fg_color="#c0392b", hover_color="#922b21",
+                      command=borrar_facturas_hasta_saldo_inicial).pack(anchor="w", padx=15, pady=(12, 2))
+        ctk.CTkLabel(f_empresa, text="Elimina las facturas de COMPRA y VENTA con fecha ANTERIOR a la "
+                                     "fecha del saldo inicial de las cuentas bancarias.",
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d",
+                     wraplength=620, justify="left").pack(anchor="w", padx=15, pady=(0, 8))
+
         cuenta_grifo_guardada = config_actual.get("cuenta_grifo_pagos", "")
         actualizar_cmb_grifo(preservar=False)
         if cuenta_grifo_guardada and cuenta_grifo_guardada in _opciones_cuentas_grifo():
