@@ -1191,19 +1191,25 @@ class EstadisticasFinancieraApp:
 
             # ---------------- TRANSFERENCIAS ----------------
             transf_filas = []
-            for (bo, co, bd, cd, fecha, desc, monto) in q(
-                """SELECT COALESCE(banco_origen,''), COALESCE(cuenta_origen,''), COALESCE(banco_destino,''),
-                          COALESCE(cuenta_destino,''), COALESCE(fecha,''), COALESCE(descripcion,''),
-                          COALESCE(monto,0)
-                   FROM transferencias_bancarias"""):
+            # Fuente completa para el saldo actual; no reutilizar el historial filtrado.
+            try:
+                cur.execute("""SELECT COALESCE(banco_origen,''), COALESCE(cuenta_origen,''), COALESCE(banco_destino,''),
+                                      COALESCE(cuenta_destino,''), COALESCE(fecha,''), COALESCE(descripcion,''),
+                                      COALESCE(monto,0), COALESCE(comision,0)
+                               FROM transferencias_bancarias""")
+                transferencias_todas = cur.fetchall()
+            except Exception as exc:
+                conn.rollback()
+                raise RuntimeError("No se pudieron leer transferencias/comisiones; verifique el esquema del Banco.") from exc
+            for (bo, co, bd, cd, fecha, desc, monto, comision) in transferencias_todas:
                 et_origen = f"{bo} - {co}".strip(" -")
                 et_destino = f"{bd} - {cd}".strip(" -")
                 if f["banco"] != "Todas las Cuentas" and not (
-                        self._mismo_banco(et_origen, f["banco"]) or self._mismo_banco(et_destino, f["banco"])):
+                        norm_txt(et_origen) == norm_txt(f["banco"]) or norm_txt(et_destino) == norm_txt(f["banco"])):
                     continue
                 if not fecha_en_periodo(fecha):
                     continue
-                transf_filas.append([fecha, bo, co, bd, cd, parse_num(monto), desc])
+                transf_filas.append([fecha, bo, co, bd, cd, parse_num(monto), parse_num(comision), desc])
 
             # ---------------- CUENTAS / BANCOS ----------------
             fuentes_cuentas = {}
@@ -1233,6 +1239,20 @@ class EstadisticasFinancieraApp:
                 if et:
                     fuentes_cuentas[et]["egresos"] += parse_num(monto)
                     fuentes_cuentas[et]["n"] += 1
+
+            # Asientos internos: origen -monto -comisión; destino +monto.
+            # No sumar conciliaciones: son marcas del mismo movimiento, no otra fuente.
+            for bo, co, bd, cd, fecha, desc, monto, comision in transferencias_todas:
+                for nombre, cuenta, campo, importe in (
+                        (bo, co, "egresos", parse_num(monto) + parse_num(comision)),
+                        (bd, cd, "ingresos", parse_num(monto))):
+                    if not str(cuenta or "").strip():
+                        continue
+                    etiqueta_tx = f"{str(nombre).strip()} - {str(cuenta).strip()}".strip(" -")
+                    et = next((e for e in fuentes_cuentas if norm_txt(e) == norm_txt(etiqueta_tx)), etiqueta_tx)
+                    fuentes_cuentas.setdefault(et, {"saldo_inicial": 0.0, "ingresos": 0.0, "egresos": 0.0, "n": 0})
+                    fuentes_cuentas[et][campo] += importe
+                    fuentes_cuentas[et]["n"] += 1 + int(campo == "egresos" and parse_num(comision) > 0)
 
             cuentas_filas = []
             saldo_total_bancos = 0.0
@@ -1625,7 +1645,7 @@ class EstadisticasFinancieraApp:
 
             S["transferencias"] = {"cols": [("Fecha", TXT), ("Banco Origen", TXT), ("Cuenta Origen", TXT),
                                             ("Banco Destino", TXT), ("Cuenta Destino", TXT), ("Monto", MON),
-                                            ("Descripción", TXT)],
+                                            ("Comisión", MON), ("Descripción", TXT)],
                                    "filas": transf_filas}
 
             S["impuestos"] = {"cols": [("Periodo", TXT), ("Ventas Netas", MON), ("IGV Ventas", MON),
