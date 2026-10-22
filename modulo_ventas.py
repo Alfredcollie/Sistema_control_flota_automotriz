@@ -3450,8 +3450,7 @@ class CuentasPorCobrarTab:
         ent_oper = ctk.CTkEntry(f)
         ent_oper.pack(fill="x")
 
-        ctk.CTkLabel(f, text="💰 Monto recibido del cliente (neto, sin el impuesto):",
-                     font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        ctk.CTkLabel(f, text="💰 Monto recibido:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
         ent_monto = ctk.CTkEntry(f)
         ent_monto.pack(fill="x")
         _total_pendiente = sum(max(0.0, p["saldo"]) for p in pendientes)
@@ -3476,7 +3475,6 @@ class CuentasPorCobrarTab:
                                    text_color="#1e8449")
 
         ent_monto.bind("<KeyRelease>", actualizar_calc)
-        ent_impuestos.bind("<KeyRelease>", actualizar_calc)
         lbl_calc.pack(anchor="w", pady=(2, 0))
         actualizar_calc()
 

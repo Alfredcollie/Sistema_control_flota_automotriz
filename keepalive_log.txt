@@ -1,0 +1,234 @@
+2026-09-30 20:03:41 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-09-30 20:03:42 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-09-30 20:03:43 | Consulta 1/3 OK -> 2026-10-01 01:03:43 UTC (usuario postgres)
+2026-09-30 20:03:45 | Consulta 2/3 OK -> 2026-10-01 01:03:46 UTC (usuario postgres)
+2026-09-30 20:03:47 | Consulta 3/3 OK -> 2026-10-01 01:03:48 UTC (usuario postgres)
+2026-09-30 20:03:47 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-01 08:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-01 08:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-01 08:00:04 | Consulta 1/3 OK -> 2026-10-01 13:00:04 UTC (usuario postgres)
+2026-10-01 08:00:06 | Consulta 2/3 OK -> 2026-10-01 13:00:06 UTC (usuario postgres)
+2026-10-01 08:00:08 | Consulta 3/3 OK -> 2026-10-01 13:00:08 UTC (usuario postgres)
+2026-10-01 08:00:08 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-01 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-01 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-01 20:00:05 | Consulta 1/3 OK -> 2026-10-02 01:00:06 UTC (usuario postgres)
+2026-10-01 20:00:07 | Consulta 2/3 OK -> 2026-10-02 01:00:08 UTC (usuario postgres)
+2026-10-01 20:00:09 | Consulta 3/3 OK -> 2026-10-02 01:00:10 UTC (usuario postgres)
+2026-10-01 20:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-02 08:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-02 08:00:05 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-02 08:00:05 | Consulta 1/3 OK -> 2026-10-02 13:00:05 UTC (usuario postgres)
+2026-10-02 08:00:08 | Consulta 2/3 OK -> 2026-10-02 13:00:08 UTC (usuario postgres)
+2026-10-02 08:00:10 | Consulta 3/3 OK -> 2026-10-02 13:00:10 UTC (usuario postgres)
+2026-10-02 08:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-03 08:36:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-03 08:36:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-03 08:36:05 | Consulta 1/3 OK -> 2026-10-03 13:36:06 UTC (usuario postgres)
+2026-10-03 08:36:08 | Consulta 2/3 OK -> 2026-10-03 13:36:09 UTC (usuario postgres)
+2026-10-03 08:36:11 | Consulta 3/3 OK -> 2026-10-03 13:36:12 UTC (usuario postgres)
+2026-10-03 08:36:12 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-03 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-03 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-03 20:00:05 | Consulta 1/3 OK -> 2026-10-04 01:00:06 UTC (usuario postgres)
+2026-10-03 20:00:07 | Consulta 2/3 OK -> 2026-10-04 01:00:09 UTC (usuario postgres)
+2026-10-03 20:00:09 | Consulta 3/3 OK -> 2026-10-04 01:00:11 UTC (usuario postgres)
+2026-10-03 20:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-04 08:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-04 08:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-04 08:00:05 | Consulta 1/3 OK -> 2026-10-04 13:00:05 UTC (usuario postgres)
+2026-10-04 08:00:08 | Consulta 2/3 OK -> 2026-10-04 13:00:08 UTC (usuario postgres)
+2026-10-04 08:00:10 | Consulta 3/3 OK -> 2026-10-04 13:00:10 UTC (usuario postgres)
+2026-10-04 08:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-04 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-04 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-04 20:00:05 | Consulta 1/3 OK -> 2026-10-05 01:00:06 UTC (usuario postgres)
+2026-10-04 20:00:07 | Consulta 2/3 OK -> 2026-10-05 01:00:08 UTC (usuario postgres)
+2026-10-04 20:00:10 | Consulta 3/3 OK -> 2026-10-05 01:00:11 UTC (usuario postgres)
+2026-10-04 20:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-05 17:36:47 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-05 17:36:47 | AVISO: certifi no validó el certificado (could not translate host name "aws-0-us-east-2.pooler.supabase.com" to address: ); reintentando con sslmode=require.
+2026-10-05 17:36:47 | ERROR de conexión: could not translate host name "aws-0-us-east-2.pooler.supabase.com" to address: Name or service not known
+
+2026-10-05 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-05 20:00:05 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-05 20:00:06 | Consulta 1/3 OK -> 2026-10-06 01:00:06 UTC (usuario postgres)
+2026-10-05 20:00:08 | Consulta 2/3 OK -> 2026-10-06 01:00:08 UTC (usuario postgres)
+2026-10-05 20:00:10 | Consulta 3/3 OK -> 2026-10-06 01:00:10 UTC (usuario postgres)
+2026-10-05 20:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-06 08:00:07 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-06 08:00:08 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-06 08:00:09 | Consulta 1/3 OK -> 2026-10-06 13:00:10 UTC (usuario postgres)
+2026-10-06 08:00:12 | Consulta 2/3 OK -> 2026-10-06 13:00:12 UTC (usuario postgres)
+2026-10-06 08:00:15 | Consulta 3/3 OK -> 2026-10-06 13:00:15 UTC (usuario postgres)
+2026-10-06 08:00:15 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-06 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-06 20:00:18 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-06 20:00:23 | Consulta 1/3 OK -> 2026-10-07 01:00:24 UTC (usuario postgres)
+2026-10-06 20:00:26 | Consulta 2/3 OK -> 2026-10-07 01:00:26 UTC (usuario postgres)
+2026-10-06 20:00:28 | Consulta 3/3 OK -> 2026-10-07 01:00:28 UTC (usuario postgres)
+2026-10-06 20:00:28 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-07 08:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-07 08:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-07 08:00:05 | Consulta 1/3 OK -> 2026-10-07 13:00:05 UTC (usuario postgres)
+2026-10-07 08:00:07 | Consulta 2/3 OK -> 2026-10-07 13:00:07 UTC (usuario postgres)
+2026-10-07 08:00:09 | Consulta 3/3 OK -> 2026-10-07 13:00:09 UTC (usuario postgres)
+2026-10-07 08:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-07 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-07 20:00:07 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-07 20:00:12 | Consulta 1/3 OK -> 2026-10-08 01:00:12 UTC (usuario postgres)
+2026-10-07 20:00:14 | Consulta 2/3 OK -> 2026-10-08 01:00:14 UTC (usuario postgres)
+2026-10-07 20:00:16 | Consulta 3/3 OK -> 2026-10-08 01:00:17 UTC (usuario postgres)
+2026-10-07 20:00:16 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-08 08:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-08 08:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-08 08:00:04 | Consulta 1/3 OK -> 2026-10-08 13:00:04 UTC (usuario postgres)
+2026-10-08 08:00:06 | Consulta 2/3 OK -> 2026-10-08 13:00:06 UTC (usuario postgres)
+2026-10-08 08:00:09 | Consulta 3/3 OK -> 2026-10-08 13:00:09 UTC (usuario postgres)
+2026-10-08 08:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-09 06:59:38 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-09 06:59:58 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-09 07:00:00 | Consulta 1/3 OK -> 2026-10-09 12:00:01 UTC (usuario postgres)
+2026-10-09 07:00:04 | Consulta 2/3 OK -> 2026-10-09 12:00:05 UTC (usuario postgres)
+2026-10-09 07:00:09 | Consulta 3/3 OK -> 2026-10-09 12:00:08 UTC (usuario postgres)
+2026-10-09 07:00:12 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-09 08:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-09 08:00:05 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-09 08:00:06 | Consulta 1/3 OK -> 2026-10-09 13:00:06 UTC (usuario postgres)
+2026-10-09 08:00:08 | Consulta 2/3 OK -> 2026-10-09 13:00:08 UTC (usuario postgres)
+2026-10-09 08:00:10 | Consulta 3/3 OK -> 2026-10-09 13:00:10 UTC (usuario postgres)
+2026-10-09 08:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-09 20:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-09 20:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-09 20:00:04 | Consulta 1/3 OK -> 2026-10-10 01:00:05 UTC (usuario postgres)
+2026-10-09 20:00:06 | Consulta 2/3 OK -> 2026-10-10 01:00:07 UTC (usuario postgres)
+2026-10-09 20:00:08 | Consulta 3/3 OK -> 2026-10-10 01:00:09 UTC (usuario postgres)
+2026-10-09 20:00:08 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-10 08:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-10 08:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-10 08:00:05 | Consulta 1/3 OK -> 2026-10-10 13:00:05 UTC (usuario postgres)
+2026-10-10 08:00:07 | Consulta 2/3 OK -> 2026-10-10 13:00:07 UTC (usuario postgres)
+2026-10-10 08:00:09 | Consulta 3/3 OK -> 2026-10-10 13:00:09 UTC (usuario postgres)
+2026-10-10 08:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-10 20:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-10 20:00:57 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-10 20:01:42 | ERROR de conexión: connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), port 6543 failed: timeout expired
+connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), port 6543 failed: timeout expired
+connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), port 6543 failed: timeout expired
+
+2026-10-12 09:00:05 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-12 09:00:06 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-12 09:00:09 | Consulta 1/3 OK -> 2026-10-12 14:00:10 UTC (usuario postgres)
+2026-10-12 09:00:12 | Consulta 2/3 OK -> 2026-10-12 14:00:12 UTC (usuario postgres)
+2026-10-12 09:00:15 | Consulta 3/3 OK -> 2026-10-12 14:00:16 UTC (usuario postgres)
+2026-10-12 09:00:15 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-12 20:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-12 20:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-12 20:00:04 | Consulta 1/3 OK -> 2026-10-13 01:00:03 UTC (usuario postgres)
+2026-10-12 20:00:06 | Consulta 2/3 OK -> 2026-10-13 01:00:06 UTC (usuario postgres)
+2026-10-12 20:00:08 | Consulta 3/3 OK -> 2026-10-13 01:00:08 UTC (usuario postgres)
+2026-10-12 20:00:08 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-13 08:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-13 08:00:02 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-13 08:00:03 | Consulta 1/3 OK -> 2026-10-13 13:00:04 UTC (usuario postgres)
+2026-10-13 08:00:05 | Consulta 2/3 OK -> 2026-10-13 13:00:06 UTC (usuario postgres)
+2026-10-13 08:00:07 | Consulta 3/3 OK -> 2026-10-13 13:00:08 UTC (usuario postgres)
+2026-10-13 08:00:07 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-13 20:32:50 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-13 20:32:54 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-14 08:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-14 08:00:02 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-14 08:00:03 | Consulta 1/3 OK -> 2026-10-14 13:00:05 UTC (usuario postgres)
+2026-10-14 08:00:05 | Consulta 2/3 OK -> 2026-10-14 13:00:07 UTC (usuario postgres)
+2026-10-14 08:00:08 | Consulta 3/3 OK -> 2026-10-14 13:00:10 UTC (usuario postgres)
+2026-10-14 08:00:11 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-15 19:54:17 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-15 19:54:29 | AVISO: certifi no validó el certificado (could not translate host name "aws-0-us-east-2.pooler.supabase.com" to address: ); reintentando con sslmode=require.
+2026-10-15 19:54:36 | Consulta 1/3 OK -> 2026-10-16 00:54:38 UTC (usuario postgres)
+2026-10-15 19:54:40 | Consulta 2/3 OK -> 2026-10-16 00:54:41 UTC (usuario postgres)
+2026-10-15 19:54:44 | Consulta 3/3 OK -> 2026-10-16 00:54:45 UTC (usuario postgres)
+2026-10-15 19:54:45 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-15 20:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-15 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-15 20:00:06 | Consulta 1/3 OK -> 2026-10-16 01:00:07 UTC (usuario postgres)
+2026-10-15 20:00:09 | Consulta 2/3 OK -> 2026-10-16 01:00:09 UTC (usuario postgres)
+2026-10-15 20:00:12 | Consulta 3/3 OK -> 2026-10-16 01:00:12 UTC (usuario postgres)
+2026-10-15 20:00:12 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-16 08:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-16 08:00:05 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-16 08:00:06 | Consulta 1/3 OK -> 2026-10-16 13:00:07 UTC (usuario postgres)
+2026-10-16 08:00:08 | Consulta 2/3 OK -> 2026-10-16 13:00:09 UTC (usuario postgres)
+2026-10-16 08:00:11 | Consulta 3/3 OK -> 2026-10-16 13:00:11 UTC (usuario postgres)
+2026-10-16 08:00:11 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-16 20:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-16 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-16 20:00:05 | Consulta 1/3 OK -> 2026-10-17 01:00:07 UTC (usuario postgres)
+2026-10-16 20:00:07 | Consulta 2/3 OK -> 2026-10-17 01:00:09 UTC (usuario postgres)
+2026-10-16 20:00:09 | Consulta 3/3 OK -> 2026-10-17 01:00:11 UTC (usuario postgres)
+2026-10-16 20:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-17 08:37:23 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-17 08:37:23 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-17 08:37:26 | Consulta 1/3 OK -> 2026-10-17 13:37:27 UTC (usuario postgres)
+2026-10-17 08:37:28 | Consulta 2/3 OK -> 2026-10-17 13:37:29 UTC (usuario postgres)
+2026-10-17 08:37:30 | Consulta 3/3 OK -> 2026-10-17 13:37:32 UTC (usuario postgres)
+2026-10-17 08:37:30 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-17 20:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-17 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-17 20:00:05 | Consulta 1/3 OK -> 2026-10-18 01:00:05 UTC (usuario postgres)
+2026-10-17 20:00:07 | Consulta 2/3 OK -> 2026-10-18 01:00:07 UTC (usuario postgres)
+2026-10-17 20:00:09 | Consulta 3/3 OK -> 2026-10-18 01:00:10 UTC (usuario postgres)
+2026-10-17 20:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-18 08:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-18 08:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-18 08:00:05 | Consulta 1/3 OK -> 2026-10-18 13:00:05 UTC (usuario postgres)
+2026-10-18 08:00:08 | Consulta 2/3 OK -> 2026-10-18 13:00:08 UTC (usuario postgres)
+2026-10-18 08:00:10 | Consulta 3/3 OK -> 2026-10-18 13:00:10 UTC (usuario postgres)
+2026-10-18 08:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-18 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-18 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-18 20:00:06 | Consulta 1/3 OK -> 2026-10-19 01:00:05 UTC (usuario postgres)
+2026-10-18 20:00:08 | Consulta 2/3 OK -> 2026-10-19 01:00:07 UTC (usuario postgres)
+2026-10-18 20:00:10 | Consulta 3/3 OK -> 2026-10-19 01:00:09 UTC (usuario postgres)
+2026-10-18 20:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-19 08:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-19 08:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-19 08:00:05 | Consulta 1/3 OK -> 2026-10-19 13:00:05 UTC (usuario postgres)
+2026-10-19 08:00:07 | Consulta 2/3 OK -> 2026-10-19 13:00:07 UTC (usuario postgres)
+2026-10-19 08:00:09 | Consulta 3/3 OK -> 2026-10-19 13:00:09 UTC (usuario postgres)
+2026-10-19 08:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-19 20:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-19 20:00:06 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-19 20:00:13 | Consulta 1/3 OK -> 2026-10-20 01:00:13 UTC (usuario postgres)
+2026-10-19 20:00:15 | Consulta 2/3 OK -> 2026-10-20 01:00:16 UTC (usuario postgres)
+2026-10-19 20:00:17 | Consulta 3/3 OK -> 2026-10-20 01:00:18 UTC (usuario postgres)
+2026-10-19 20:00:17 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-20 08:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-20 08:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.139.14.59), por); reintentando con sslmode=require.
+2026-10-20 08:00:04 | Consulta 1/3 OK -> 2026-10-20 13:00:04 UTC (usuario postgres)
+2026-10-20 08:00:06 | Consulta 2/3 OK -> 2026-10-20 13:00:06 UTC (usuario postgres)
+2026-10-20 08:00:08 | Consulta 3/3 OK -> 2026-10-20 13:00:09 UTC (usuario postgres)
+2026-10-20 08:00:08 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-20 20:00:04 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-20 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-20 20:00:05 | Consulta 1/3 OK -> 2026-10-21 01:00:06 UTC (usuario postgres)
+2026-10-20 20:00:07 | Consulta 2/3 OK -> 2026-10-21 01:00:09 UTC (usuario postgres)
+2026-10-20 20:00:10 | Consulta 3/3 OK -> 2026-10-21 01:00:11 UTC (usuario postgres)
+2026-10-20 20:00:10 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-21 08:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-21 08:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-21 08:00:04 | Consulta 1/3 OK -> 2026-10-21 13:00:06 UTC (usuario postgres)
+2026-10-21 08:00:06 | Consulta 2/3 OK -> 2026-10-21 13:00:08 UTC (usuario postgres)
+2026-10-21 08:00:08 | Consulta 3/3 OK -> 2026-10-21 13:00:10 UTC (usuario postgres)
+2026-10-21 08:00:08 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-21 20:00:03 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-21 20:00:04 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (13.59.95.192), po); reintentando con sslmode=require.
+2026-10-21 20:00:05 | Consulta 1/3 OK -> 2026-10-22 01:00:05 UTC (usuario postgres)
+2026-10-21 20:00:07 | Consulta 2/3 OK -> 2026-10-22 01:00:07 UTC (usuario postgres)
+2026-10-21 20:00:09 | Consulta 3/3 OK -> 2026-10-22 01:00:09 UTC (usuario postgres)
+2026-10-21 20:00:09 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.
+2026-10-22 08:00:02 | Conectando a aws-0-us-east-2.pooler.supabase.com:6543 (proyecto lnmuzwlx...)
+2026-10-22 08:00:03 | AVISO: certifi no validó el certificado (connection to server at "aws-0-us-east-2.pooler.supabase.com" (3.13.175.194), po); reintentando con sslmode=require.
+2026-10-22 08:00:04 | Consulta 1/3 OK -> 2026-10-22 13:00:04 UTC (usuario postgres)
+2026-10-22 08:00:06 | Consulta 2/3 OK -> 2026-10-22 13:00:06 UTC (usuario postgres)
+2026-10-22 08:00:08 | Consulta 3/3 OK -> 2026-10-22 13:00:08 UTC (usuario postgres)
+2026-10-22 08:00:08 | Proyecto ACTIVO: la actividad quedó registrada en Supabase.

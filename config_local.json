@@ -16,7 +16,7 @@
     "proveedor_fe": "Nubefact",
     "url_api_fe": "",
     "token_api_fe": "",
-    "ultimo_factura": "F001-0",
+    "ultimo_factura": "E001-50",
     "ultimo_boleta": "F001-0",
     "ultimo_recibo": "E001-13",
     "usuario_sol": "",
@@ -38,6 +38,10 @@
     "dias_alerta_vencimiento": "30",
     "alerta_aceite_km": "5000",
     "alerta_aceite_meses": "3",
+    "alerta_gas_km": "10000",
+    "alerta_neumaticos_km": "50000",
+    "ia_qwen_api_key": "",
+    "ia_qwen_modelo": "",
     "alerta_mantenimiento_general_km": "5000",
     "color_menu_fondo": "#000000",
     "color_menu_btn": "#4b4b4b",
@@ -100,7 +104,7 @@
         "usuarios",
         "bitacora"
     ],
-    "comision_interbancaria": "0.00",
+    "comision_interbancaria": "4.80",
     "categorias_gastos": {
         "Gastos Fijos": [
             "Alquiler",
@@ -111,7 +115,8 @@
             "Gastos de oficina",
             "Inspeccion vehicular",
             "Carnet de sanidad",
-            "Impuestos / otros"
+            "Impuestos / otros",
+            "Servicio contable"
         ],
         "Gastos Operativos": [
             "Combustible",
@@ -124,7 +129,9 @@
             "Auto-Lavado",
             "Articulos de oficina",
             "Tegnologia",
-            "Mermas/incidentes"
+            "Mermas/incidentes",
+            "Estacionamiento",
+            "Articulos oficina cocina"
         ],
         "Ingresos": [
             "Cobro de cliente",
@@ -138,5 +145,7 @@
     "banco_esquema_ok_v1": "ok",
     "banco_esquema_ok_v2": "ok",
     "banco_esquema_ok_v3": "ok",
-    "alerta_mantenimiento_general_meses": "6"
+    "alerta_mantenimiento_general_meses": "6",
+    "banco_permisos_ok_v1": "ok",
+    "banco_esquema_ok_v4": "ok"
 }

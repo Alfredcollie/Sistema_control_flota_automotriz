@@ -876,58 +876,91 @@ def _montos_de_columnas(datos, montos):
 def extraer_montos_comprobante(texto):
     """Lee base, IGV, recargo al consumo y total de un comprobante peruano.
 
-    Funciona igual con el texto de un PDF que con el texto reconstruido por OCR:
-    los rótulos se comparan de forma tolerante y el importe de cada fila se toma
-    como el último número de esa fila.
+    Soporta los tres formatos habituales:
+      · rótulo e importe en la MISMA línea      (Total 24.80)
+      · rótulo y el importe en la línea SIGUIENTE (Importe Total / 24.80 / S/)
+      · tabla en columnas                        (encabezados y luego los montos)
+    El importe en letras («SON: ...») se usa como control final del total.
     """
     datos = {"base": 0.0, "igv": 0.0, "recargo": 0.0, "total": 0.0, "leidos": 0}
-    encabezado_de_columnas = False
+    pendiente = None          # grupo que espera su importe en la línea siguiente
+    columnas = []             # grupos de un encabezado de tabla
+
+    def _asignar(grupo, valor):
+        if grupo and not datos.get(grupo) and valor:
+            datos[grupo] = valor
+            datos["leidos"] += 1
+            return True
+        return False
+
     for linea in str(texto or "").splitlines():
         fila = linea.replace("S/.", " ").replace("S/", " ")
         corte = re.search(r"\d", fila)
         etiqueta = _normalizar_etiqueta(fila[:corte.start()] if corte else fila)
         montos = re.findall(r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{1,2}", fila)
 
-        # 📊 Tabla en columnas: los rótulos van en una línea y los importes en la
-        #    siguiente (así vienen las facturas de RIMAC, AFP y servicios).
-        if not etiqueta:
-            if montos and encabezado_de_columnas:
-                _montos_de_columnas(datos, montos)
-            encabezado_de_columnas = False
+        # 1) ¿La línea es solo un importe y hay un rótulo esperándolo?
+        if montos and not etiqueta:
+            valor = None
+            try:
+                valor = parsear_monto_texto(montos[-1])
+            except ValueError:
+                valor = None
+            if pendiente and _asignar(pendiente, valor):
+                pendiente = None
+                continue
+            if columnas and valor:
+                for grupo in columnas:
+                    if _asignar(grupo, valor):
+                        break
+                columnas = []
+            pendiente = None
             continue
 
-        if not montos:
-            # ¿Esta línea es el encabezado de una tabla de importes?
-            # Solo con un encabezado inequívoco (IGV / IMPORTE TOTAL / TOTAL A PAGAR):
-            # así una factura normal (rótulo e importe en la misma línea) no entra aquí.
-            encabezado_de_columnas = bool(re.search(
-                r"(IMPORTE\s*TOTAL|TOTAL\s*A\s*PAGAR|I\.?\s*G\.?\s*V|\bIGV\b)",
-                _texto_sin_acentos(etiqueta)))
+        if not etiqueta:
             continue
-        encabezado_de_columnas = False
-        try:
-            valor = parsear_monto_texto(montos[-1])
-        except ValueError:
+
+        # 2) ¿Trae el/los importe(s) en la misma línea?
+        #    Puede haber varios pares: "Subtotal 100.00 IGV 18.00 Total 118.00"
+        if montos:
+            asignado = False
+            ultimo = 0
+            for marca in re.finditer(r"\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|\d+[.,]\d{1,2}", fila):
+                trozo = _normalizar_etiqueta(fila[ultimo:marca.start()]) or etiqueta
+                ultimo = marca.end()
+                try:
+                    valor = parsear_monto_texto(marca.group(0))
+                except ValueError:
+                    continue
+                for grupo in ("recargo", "total", "base", "igv"):
+                    if _etiqueta_reconocida(trozo, grupo) and _asignar(grupo, valor):
+                        asignado = True
+                        break
+            pendiente = None if asignado else pendiente
+            columnas = []
             continue
-        for grupo in ("recargo", "total", "base", "igv"):
-            if datos[grupo]:
-                continue
-            if _etiqueta_reconocida(etiqueta, grupo):
-                datos[grupo] = valor
-                datos["leidos"] += 1
-                break
+
+        # 3) Rótulo sin importe: se recuerda para la línea siguiente
+        grupos = [g for g in ("recargo", "total", "base", "igv")
+                  if not datos[g] and _etiqueta_reconocida(etiqueta, g)]
+        if grupos:
+            pendiente = grupos[0]
+            columnas = grupos
+        else:
+            pendiente = None
+            columnas = []
 
     # El recargo al consumo puede no haberse leído: se deduce de la diferencia
     if datos["base"] and datos["igv"] and datos["total"] and not datos["recargo"]:
         diferencia = round(datos["total"] - datos["base"] - datos["igv"], 2)
         if 0.02 <= diferencia <= datos["total"] * 0.35:
             datos["recargo"] = diferencia
-    # Si no se leyó la base pero sí el total y el IGV, se deduce
     if not datos["base"] and datos["total"] and datos["igv"]:
         datos["base"] = round(datos["total"] - datos["recargo"] - datos["igv"], 2)
+    if not datos["total"] and datos["base"] and datos["igv"]:
+        datos["total"] = round(datos["base"] + datos["igv"] + datos["recargo"], 2)
 
-    # 💬 El importe escrito en letras ("SON: ... CON 0/100 SOLES") es el control final:
-    #    si el total no cuadra con base + IGV + recargo, manda lo que dice en letras.
+    # 💬 El importe en letras manda si no cuadra («SON: VEINTICUATRO CON 80/100»)
     letras = monto_en_palabras(texto)
     if letras:
         cuadra = bool(datos["base"]) and abs(
@@ -1824,7 +1857,7 @@ MANTENIMIENTOS_VEHICULO = (
      "campos": (("fec_correa", 0),),
      "km": ("km_prox_correa", "Próximo cambio a los (Km)"),
      "actual": ("fec_correa", "km_prox_correa")},
-    {"nombre": "💨 Revisión del Sistema de Gas (con certificado)",
+    {"nombre": "💨 Revisión del Sistema de Gas (con certificado)", "doc": "revision_gas",
      "campos": (("fec_rev_gas", 0),),
      "actual": ("fec_rev_gas",)},
     {"nombre": "💨 Mantenimiento del Sistema de Gas",
@@ -1839,10 +1872,10 @@ MANTENIMIENTOS_VEHICULO = (
      "campos": (("fecha_ultimo_general", 0),),
      "km": ("km_ultimo_general", "Km del servicio"),
      "actual": ("fecha_ultimo_general", "km_ultimo_general")},
-    {"nombre": "📄 SOAT (emisión → vence en 1 año)",
+    {"nombre": "📄 SOAT (emisión → vence en 1 año)", "doc": "soat",
      "campos": (("emision_soat", 0), ("vencimiento_soat", 12)),
      "actual": ("emision_soat", "vencimiento_soat")},
-    {"nombre": "🔍 Revisión Técnica (realizada → vence en 1 año)",
+    {"nombre": "🔍 Revisión Técnica (realizada → vence en 1 año)", "doc": "revision_tecnica",
      "campos": (("vencimiento_rt", 12),),
      "actual": ("vencimiento_rt",)},
     {"nombre": "🛡️ Póliza de Seguro (emisión → vence en 1 año)",
@@ -1851,7 +1884,7 @@ MANTENIMIENTOS_VEHICULO = (
     {"nombre": "🔋 Batería (compra → vence en 2 años)",
      "campos": (("fec_compra_bat", 0), ("fec_venc_bat", 24)),
      "actual": ("fec_compra_bat", "fec_venc_bat")},
-    {"nombre": "🧯 Extintor (recarga → vence en 1 año)",
+    {"nombre": "🧯 Extintor (recarga → vence en 1 año)", "doc": "extintor",
      "campos": (("fec_venc_extintor", 12),),
      "actual": ("fec_venc_extintor",)},
 )
@@ -1909,6 +1942,148 @@ def texto_duracion_meses(meses):
         anios = meses // 12
         return "1 año" if anios == 1 else "%d años" % anios
     return "%d meses" % meses
+
+
+# =========================================================
+# 📎 ADJUNTOS (escaneo / PDF / ver) DE VEHÍCULOS Y CHOFERES
+# =========================================================
+def escanear_documento_pdf(parent, destino_pdf, etiqueta="documento"):
+    """Escanea una hoja con la multifuncional y la guarda como PDF.
+
+    Devuelve la ruta del PDF creado, o "" si no se pudo.
+    """
+    try:
+        import escaner
+    except Exception as e:
+        messagebox.showerror("Escáner", "No se pudo cargar el módulo de escaneo:\n%s" % e, parent=parent)
+        return ""
+    if not escaner.sistema_soportado():
+        messagebox.showinfo("Escáner",
+                            "El escaneo con la multifuncional está disponible en Windows y macOS.",
+                            parent=parent)
+        return ""
+    config = cargar_configuracion_regional()
+    datos = escaner.config_escaner(config)
+    aviso = ctk.CTkToplevel(parent)
+    aviso.title("Escaneando")
+    aviso.geometry("440x120")
+    aviso.transient(parent)
+    try:
+        aviso.grab_set()
+    except Exception:
+        pass
+    ctk.CTkLabel(aviso, text="🖨️ Escaneando %s..." % etiqueta,
+                 font=("Arial", 12, "bold")).pack(pady=(14, 2))
+    ctk.CTkLabel(aviso, text="Coloque la hoja en el escáner (cristal).",
+                 font=("Arial", 10), text_color="#555555").pack()
+    try:
+        aviso.update()
+    except Exception:
+        pass
+    pdf = ""
+    try:
+        carpeta = escaner.carpeta_escaneos(config)
+        escaneo = escaner.escanear(
+            carpeta,
+            dispositivo=datos.get("escaner_dispositivo", ""),
+            dpi=datos.get("escaner_dpi", "300"),
+            color=datos.get("escaner_color", "Escala de grises"),
+            origen=datos.get("escaner_origen", "Cristal (una página a la vez)"),
+            paginas=1,
+            optimizar=str(datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+            modo=datos.get("escaner_modo", "Automático (sin ventanas)"))
+        if not escaneo.get("ok"):
+            messagebox.showerror("Escáner", escaneo.get("error") or "No se pudo escanear.", parent=parent)
+        else:
+            paginas = [str(p) for p in (escaneo.get("paginas") or []) if os.path.exists(str(p))]
+            if paginas:
+                carpeta_dest = os.path.dirname(destino_pdf)
+                if carpeta_dest:
+                    os.makedirs(carpeta_dest, exist_ok=True)
+                escaner.imagenes_a_pdf(paginas, destino_pdf)
+                pdf = destino_pdf
+    except Exception as e:
+        messagebox.showerror("Escáner", "No se pudo escanear:\n%s" % e, parent=parent)
+    finally:
+        try:
+            aviso.grab_release()
+            aviso.destroy()
+        except Exception:
+            pass
+    return pdf
+
+
+def fila_documento_adjunto(parent, tipo, entidad, documento, etiqueta):
+    """Fila [Cargar PDF] [Escanear] [Ver] [Quitar] para un documento concreto."""
+    try:
+        import documentos_adjuntos as adj
+    except Exception as e:
+        ctk.CTkLabel(parent, text="⚠️ Adjuntos no disponibles: %s" % e,
+                     font=("Arial", 10), text_color="#c0392b").pack(anchor="w", padx=30, pady=(0, 6))
+        return None
+
+    marco = ctk.CTkFrame(parent, fg_color="#eef6ff", corner_radius=6,
+                         border_width=1, border_color="#aed6f1")
+    marco.pack(fill="x", padx=30, pady=(0, 6))
+    lbl = ctk.CTkLabel(marco, text="", font=("Arial", 10), text_color="#7f8c8d",
+                       anchor="w", wraplength=430, justify="left")
+    lbl.pack(side="left", padx=(8, 6), pady=4, fill="x", expand=True)
+
+    def _pintar():
+        archivo = adj.obtener(tipo, entidad, documento)
+        if archivo:
+            lbl.configure(text="📎 " + os.path.basename(archivo), text_color="#1e8449")
+        else:
+            lbl.configure(text="Sin archivo adjunto (opcional)", text_color="#999999")
+
+    def _cargar():
+        archivo = seleccionar_archivo_dialogo("Seleccionar %s" % etiqueta,
+                                              [("PDF e imágenes", "*.pdf;*.png;*.jpg;*.jpeg")])
+        if not archivo:
+            return
+        if adj.guardar(tipo, entidad, documento, archivo):
+            _pintar()
+        else:
+            messagebox.showerror("Adjunto", "No se pudo guardar el archivo.", parent=parent)
+
+    def _escanear():
+        destino = adj.ruta_destino(tipo, entidad, documento)
+        pdf = escanear_documento_pdf(parent, destino, etiqueta)
+        if pdf and adj.guardar(tipo, entidad, documento, pdf):
+            _pintar()
+
+    def _ver():
+        archivo = adj.obtener(tipo, entidad, documento)
+        if not archivo:
+            messagebox.showinfo("Adjunto",
+                                "Este documento todavía no tiene un archivo cargado.",
+                                parent=parent)
+            return
+        try:
+            abrir_documento(archivo)
+        except Exception as e:
+            messagebox.showerror("Adjunto", "No se pudo abrir el archivo:\n%s" % e, parent=parent)
+
+    def _quitar():
+        if not messagebox.askyesno("Adjunto", "¿Quitar el archivo de %s?" % etiqueta, parent=parent):
+            return
+        adj.quitar(tipo, entidad, documento)
+        _pintar()
+
+    ctk.CTkButton(marco, text="📎 Cargar PDF", width=108, height=26,
+                  font=("Arial", 10, "bold"), fg_color="#1f538d", hover_color="#163b65",
+                  command=_cargar).pack(side="left", padx=2)
+    ctk.CTkButton(marco, text="🖨️ Escanear", width=98, height=26,
+                  font=("Arial", 10, "bold"), fg_color="#e67e22", hover_color="#ca6f1e",
+                  command=_escanear).pack(side="left", padx=2)
+    ctk.CTkButton(marco, text="👁 Ver", width=68, height=26,
+                  font=("Arial", 10, "bold"), fg_color="#27ae60", hover_color="#1e8449",
+                  command=_ver).pack(side="left", padx=2)
+    ctk.CTkButton(marco, text="🗑", width=30, height=26,
+                  font=("Arial", 10, "bold"), fg_color="#7f8c8d", hover_color="#5d6d6e",
+                  command=_quitar).pack(side="left", padx=(2, 6))
+    _pintar()
+    return marco
 
 
 def abrir_reset_documentos_chofer(parent, chofer_etiqueta="", todos=False, usuario=""):
@@ -2046,6 +2221,15 @@ def abrir_reset_documentos_chofer(parent, chofer_etiqueta="", todos=False, usuar
                           hover_color="#163b65",
                           command=lambda m=meses, f=entrada_fecha, vv=entrada_vence, c=doc:
                           _aplicar_duracion(m, f, vv, c, v)).pack(side="left", padx=3)
+
+        # 📎 Brevete: escanear / cargar PDF / ver (solo cuando es UN chofer)
+        if str(doc.get("clave")) == "brevete":
+            if todos:
+                ctk.CTkLabel(marco, text="📎 Para adjuntar el brevete abra un chofer específico.",
+                             font=("Arial", 10), text_color="#999999").pack(anchor="w", padx=10, pady=(0, 8))
+            else:
+                fila_documento_adjunto(marco, "chofer", str(elegidos[0]["id"]),
+                                       doc["clave"], doc["etiqueta"])
 
         filas.append((doc, entrada_fecha, entrada_vence))
 
@@ -2222,6 +2406,11 @@ def abrir_reset_mantenimientos_vehiculo(parent, placa, usuario_activo="", al_ter
         lbl_prox = ctk.CTkLabel(card, text="", font=("Arial", 10, "bold"), text_color="#27ae60",
                                 wraplength=560, justify="left")
         lbl_prox.pack(anchor="w", padx=30, pady=(0, 8))
+
+        # 📎 Certificado / comprobante del documento (escanear, cargar PDF o ver)
+        if item.get("doc"):
+            fila_documento_adjunto(card, "vehiculo", vehiculo.get("placa", ""),
+                                   item["doc"], item["nombre"])
 
         filas.append({"item": item, "var": var, "ent_f": ent_f, "ent_km": ent_km, "lbl": lbl_prox})
 
@@ -5059,6 +5248,17 @@ class FacturasRecibidasTab:
         except ValueError:
             return messagebox.showerror("Error", "El monto ingresado no es válido.", parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
+        # 🚫 Una factura sin monto quedaría como "ya cancelada" y no se podría pagar
+        if not total_calculado or total_calculado <= 0:
+            return messagebox.showerror(
+                "Monto en cero",
+                "El monto del documento es 0." + chr(10) + chr(10) +
+                "Revise el importe antes de registrar: una factura sin monto no aparece "
+                "en Cuentas por Pagar y no se puede cancelar." + chr(10) + chr(10) +
+                "Si el importe no se leyó del PDF, vuelva a cargarlo con «📄 Desde PDF» "
+                "o escríbalo a mano.",
+                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
         if not prov or not ruc_val: return messagebox.showwarning("Atención", "Llene los campos obligatorios.", parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
         if es_carnet_sanidad and not self.combo_chofer.get().strip():
@@ -7465,13 +7665,20 @@ class CuentasPorPagarTab:
                         pass
         except Exception as e_mes:
             print("Aviso - mes de la factura:", e_mes)
+        # 👁️ Se quita el filtro «Ocultar facturas de la App»: si la factura es de la
+        #    app del grifo quedaría escondida y no se podría pagar.
+        try:
+            if hasattr(self, "var_ocultar_app") and self.var_ocultar_app.get():
+                self.var_ocultar_app.set(False)
+        except Exception:
+            pass
         try:
             self.cargar_datos_pagar(reset_pagina=True)
         except Exception:
             pass
 
-        def buscar_factura(intento=1):
-            """Busca la fila de la factura; reintenta porque la lista carga en segundo plano."""
+        def _seleccionar_si_esta():
+            """Marca la fila y abre el pago si la factura está en la página visible."""
             for item in self.tabla.get_children():
                 valores = self.tabla.item(item, "values")
                 if len(valores) > 1 and str(valores[1]) == str(id_factura):
@@ -7479,7 +7686,37 @@ class CuentasPorPagarTab:
                     self.tabla.see(item)
                     self._escanear_soporte_pendiente = bool(escanear)
                     self.cargar_comprobante_pago()
+                    return True
+            return False
+
+        def buscar_factura(intento=1):
+            """Busca la fila de la factura en TODAS las páginas (no solo la visible).
+
+            La lista se pagina: si la factura está en la página 2 en adelante, antes
+            aparecía el aviso de que «todavía no está en Cuentas por Pagar».
+            """
+            if _seleccionar_si_esta():
+                return
+            try:
+                total_paginas = int(getattr(self, "total_paginas", 1) or 1)
+            except Exception:
+                total_paginas = 1
+            original = getattr(self, "pagina_actual", 1)
+            for pagina in range(1, min(total_paginas, 60) + 1):
+                if pagina == original:
+                    continue
+                try:
+                    self.pagina_actual = pagina
+                    self.cargar_datos_pagar()
+                except Exception:
+                    continue
+                if _seleccionar_si_esta():
                     return
+            try:
+                self.pagina_actual = original
+                self.cargar_datos_pagar()
+            except Exception:
+                pass
             if intento < 4:
                 try:
                     self.cargar_datos_pagar(reset_pagina=True)
