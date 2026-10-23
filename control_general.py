@@ -1219,7 +1219,8 @@ class ControlGeneralEventos:
             "configuracion": "⚙️ Configuración General",
             "usuarios": "🛠️ Configurar Usuarios",
             "bitacora": "📜 Bitácora de Auditoría",
-            "inspeccion_vehicular": "🔍 Inspección Vehicular"
+            "inspeccion_vehicular": "🔍 Inspección Vehicular",
+            "amonestaciones": "📋 Amonestaciones y Suspensiones"
         }
         self.funciones_modulos = {
             "clientes": self.abrir_modulo_clientes,
@@ -1241,7 +1242,8 @@ class ControlGeneralEventos:
             "configuracion": self.abrir_configuracion_general,
             "usuarios": self.abrir_gestion_usuarios,
             "bitacora": self.abrir_modulo_bitacora,
-            "inspeccion_vehicular": self.abrir_modulo_inspeccion_vehicular
+            "inspeccion_vehicular": self.abrir_modulo_inspeccion_vehicular,
+            "amonestaciones": self.abrir_modulo_amonestaciones
         }
         self.root.withdraw()
         self.abrir_ventana_login()
@@ -2660,6 +2662,21 @@ class ControlGeneralEventos:
                                 "Accedió al módulo de Inspección Vehicular")
             return app
         self.abrir_ventana_modulo("inspeccion_vehicular", self._titulo_modulo("inspeccion_vehicular"), construir)
+
+    def abrir_modulo_amonestaciones(self):
+        """📋 Amonestaciones y Suspensiones del personal de conducción."""
+        if not self.tiene_permiso("amonestaciones"):
+            return messagebox.showerror("Denegado", "No tiene permisos para este módulo.")
+        def construir(cuerpo):
+            import modulo_amonestaciones
+            importlib.reload(modulo_amonestaciones)
+            app = modulo_amonestaciones.AmonestacionesApp(cuerpo, self.usuario_activo)
+            registrar_auditoria(self.usuario_activo, "Amonestaciones",
+                                "Accedió al módulo de Amonestaciones y Suspensiones")
+            return app
+        self.abrir_ventana_modulo("amonestaciones",
+                                  self._titulo_modulo("amonestaciones"),
+                                  construir)
 
     # =======================================================
     # CONFIGURACIÓN GENERAL (CROSS-PLATFORM)

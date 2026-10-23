@@ -83,7 +83,7 @@ SUBCARPETAS_CONOCIDAS = (
     "comprobantes_impuestos", "ordenes_generadas", "ordenes_anuladas", "ordenes_compra_recibidas",
     "cobranzas_generadas", "Inspecciones", "Inspecciones_PDF", "archivos_flota",
     "Cotizaciones", "soportes_pagos_terceros", "cartas_eventos", "formularios_proveedores",
-    "Pautas_Eventos", "tarjetas_propiedad", "expedientes_choferes",
+    "Pautas_Eventos", "tarjetas_propiedad", "expedientes_choferes", "amonestaciones",
 )
 
 

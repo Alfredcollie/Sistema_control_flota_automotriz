@@ -5,18 +5,19 @@
   "c"
  ],
  "compras_facturas": [
+  "num",
   "fecha",
   "nro_doc",
+  "orden",
   "proveedor",
   "ruc",
-  "evento",
   "desc",
   "metodo_pago",
   "neto"
  ],
  "compras_cuentas_pagar": [
+  "num",
   "fecha",
-  "hora",
   "nro_doc",
   "proveedor",
   "ruc",
@@ -25,6 +26,7 @@
   "metodo_pago",
   "neto_facturado",
   "pagado",
-  "saldo"
+  "saldo",
+  "archivos"
  ]
 }
