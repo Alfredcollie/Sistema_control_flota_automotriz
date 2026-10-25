@@ -43,7 +43,7 @@ jobs:
         Add-Content -Path $env:GITHUB_ENV -Value "RCLONE_BIN=$RCLONE_BIN"
 
     - name: Compilar con PyInstaller (Windows)
-      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-data "INSTRUCTIVO_MODULO_NOMINA.pdf;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all pymupdf --hidden-import keyring.backends.Windows --hidden-import escaner control_general.py
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.ico" --add-data "logo.png;." --add-data "Logo_Collie_Software.png;." --add-data "feriados_peru.json;." --add-data "manuales/INSTRUCTIVO_MODULO_NOMINA.pdf;." --add-binary "$env:RCLONE_BIN;." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all pymupdf --hidden-import keyring.backends.Windows --hidden-import escaner control_general.py
 
     - name: Inyectar credenciales de Supabase (config_db.json)
       shell: pwsh
@@ -156,7 +156,7 @@ jobs:
         echo "RCLONE_BIN=$RCLONE_BIN" >> "$GITHUB_ENV"
 
     - name: Compilar con PyInstaller (macOS)
-      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-data "INSTRUCTIVO_MODULO_NOMINA.pdf:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all pymupdf --hidden-import keyring.backends.macOS --hidden-import escaner control_general.py --hidden-import Vision --hidden-import Quartz --hidden-import objc --hidden-import objc._objc
+      run: pyinstaller --noconfirm --windowed --name "ControlFlota" --icon "Ico_Collie_Software.icns" --add-data "logo.png:." --add-data "Logo_Collie_Software.png:." --add-data "feriados_peru.json:." --add-data "manuales/INSTRUCTIVO_MODULO_NOMINA.pdf:." --add-binary "${RCLONE_BIN}:." --collect-all customtkinter --collect-all keyring --collect-all certifi --collect-all pymupdf --hidden-import keyring.backends.macOS --hidden-import escaner control_general.py --hidden-import Vision --hidden-import Quartz --hidden-import objc --hidden-import objc._objc
 
     - name: Inyectar credenciales de Supabase (config_db.json)
       run: |
@@ -324,4 +324,5 @@ jobs:
           release-assets/*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
