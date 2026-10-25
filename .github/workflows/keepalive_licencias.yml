@@ -1,0 +1,50 @@
+name: Mantener activo Supabase (Licencias Colliesoftware)
+
+# Ping periódico a la base de datos de LICENCIAS para que NO se pause por
+# inactividad (Supabase pausa los proyectos Free tras ~7 días sin actividad).
+#
+# Credenciales (en orden):
+#   1) Secrets del repositorio: LICENCIAS_DB_HOST / _PORT / _NAME / _USER / _PASSWORD
+#      (Settings > Secrets and variables > Actions)
+#   2) Si no existen, el script usa config_licencia.json del repositorio.
+#
+# Horarios (UTC): 12:30 = 07:30 en Perú · 00:30 = 19:30 en Perú (día anterior).
+
+on:
+  schedule:
+    - cron: '30 12 * * *'
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keepalive-licencias
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Clonar el repositorio
+      uses: actions/checkout@v4
+
+    - name: Configurar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Instalar dependencias
+      run: pip install psycopg2-binary certifi
+
+    - name: Ping a la base de licencias (genera actividad de usuario)
+      env:
+        LICENCIAS_DB_HOST: ${{ secrets.LICENCIAS_DB_HOST }}
+        LICENCIAS_DB_PORT: ${{ secrets.LICENCIAS_DB_PORT }}
+        LICENCIAS_DB_NAME: ${{ secrets.LICENCIAS_DB_NAME }}
+        LICENCIAS_DB_USER: ${{ secrets.LICENCIAS_DB_USER }}
+        LICENCIAS_DB_PASSWORD: ${{ secrets.LICENCIAS_DB_PASSWORD }}
+      run: python keepalive_licencias.py

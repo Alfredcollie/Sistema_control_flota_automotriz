@@ -1,0 +1,10 @@
+# Dependencias de la API Flota Automotriz (Render / FastAPI)
+fastapi
+uvicorn
+psycopg2-binary
+python-multipart
+Pillow
+google-genai
+keyring
+certifi
+cryptography

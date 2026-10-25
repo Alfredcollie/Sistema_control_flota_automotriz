@@ -1,0 +1,32 @@
+{
+ "prueba": [
+  "a",
+  "b",
+  "c"
+ ],
+ "compras_facturas": [
+  "num",
+  "fecha",
+  "nro_doc",
+  "orden",
+  "proveedor",
+  "ruc",
+  "desc",
+  "metodo_pago",
+  "neto"
+ ],
+ "compras_cuentas_pagar": [
+  "num",
+  "fecha",
+  "nro_doc",
+  "proveedor",
+  "ruc",
+  "evento",
+  "concepto",
+  "metodo_pago",
+  "neto_facturado",
+  "pagado",
+  "saldo",
+  "archivos"
+ ]
+}

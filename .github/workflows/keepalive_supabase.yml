@@ -1,0 +1,49 @@
+name: Mantener activo Supabase (anti-pausa)
+
+# Ping periodico a la base de datos del proyecto gratuito de Supabase para que
+# NO se pause por inactividad (Supabase pausa los proyectos Free tras 7 dias
+# sin actividad de usuario en la base de datos).
+#
+# No necesita secretos nuevos: reutiliza los mismos SUPABASE_DB_* que ya usa
+# "compilar_windows_mac.yml" (Settings > Secrets and variables > Actions).
+#
+# Horarios (UTC): 12:00 = 07:00 en Peru, 00:00 = 19:00 en Peru (dia anterior).
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keepalive-supabase
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Clonar el repositorio
+      uses: actions/checkout@v4
+
+    - name: Configurar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Instalar dependencias
+      run: pip install psycopg2-binary certifi
+
+    - name: Ping a la base de datos (genera actividad de usuario)
+      env:
+        SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
+        SUPABASE_DB_PORT: ${{ secrets.SUPABASE_DB_PORT }}
+        SUPABASE_DB_NAME: ${{ secrets.SUPABASE_DB_NAME }}
+        SUPABASE_DB_USER: ${{ secrets.SUPABASE_DB_USER }}
+        SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      run: python keepalive_supabase.py
