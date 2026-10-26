@@ -1168,8 +1168,13 @@ def inicializar_seguridad_db():
         liberar_conexion(conn)
 
 
+# 🪟 Instancia activa del sistema (para que otros módulos refresquen ventanas)
+INSTANCIA_ACTIVA = None
+
 class ControlGeneralEventos:
     def __init__(self, root):
+        global INSTANCIA_ACTIVA
+        INSTANCIA_ACTIVA = self
         self.root = root
         self.root.title("SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ")
         self.root.protocol("WM_DELETE_WINDOW", self.confirmar_salida)
@@ -1774,6 +1779,7 @@ class ControlGeneralEventos:
         if info and info["contenedor"].winfo_exists():
             self.restaurar_ventana(clave)
             self._traer_al_frente(clave)
+            self._refrescar_modulo(clave)      # 🔄 datos al día
             return info.get("app")
 
         contenedor = ctk.CTkFrame(escritorio, corner_radius=8, fg_color="#ffffff",
@@ -1935,6 +1941,34 @@ class ControlGeneralEventos:
         except Exception as e:
             print("Aviso - módulo en pantalla completa:", e)
 
+    def _refrescar_modulo(self, clave):
+        """🔄 Vuelve a leer los datos del módulo (por si cambiaron en otro módulo)."""
+        info = self.ventanas_modulos.get(clave) or {}
+        app = info.get("app")
+        if app is None:
+            return
+        metodos = ("cargar_datos", "cargar_datos_tabla", "cargar_tabla", "refrescar_datos",
+                   "actualizar_tabla", "refrescar", "cargar_vehiculos", "cargar_clientes_tabla",
+                   "cargar_proveedores_tabla", "refrescar_saldos", "cargar_datos_pagar",
+                   "cargar_datos_cobrar", "refrescar_tree", "cargar_historial")
+        for nombre in metodos:
+            metodo = getattr(app, nombre, None)
+            if not callable(metodo):
+                continue
+            try:
+                metodo()
+                return
+            except TypeError:
+                pass
+            except Exception as e:
+                print("Aviso - refrescando módulo:", e)
+                return
+            try:
+                metodo(reset_pagina=False)
+            except Exception as e:
+                print("Aviso - refrescando módulo:", e)
+            return
+
     def _traer_al_frente(self, clave):
         """La ventana indicada pasa al frente de todas las demás."""
         info = self.ventanas_modulos.get(clave)
@@ -1967,6 +2001,7 @@ class ControlGeneralEventos:
             if self.ventanas_modulos.get(clave, {}).get("minimizada"):
                 return
             self._traer_al_frente(clave)
+            self._refrescar_modulo(clave)      # 🔄 datos al día
         except Exception:
             pass
 

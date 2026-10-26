@@ -3041,6 +3041,18 @@ def abrir_reset_documentos_chofer(parent, chofer_etiqueta="", todos=False, usuar
     return v
 
 
+def _refrescar_flota_abierta():
+    """Refresca la ventana de Flota Automotriz si está abierta (tras un mantenimiento)."""
+    try:
+        import control_general
+        instancia = getattr(control_general, "INSTANCIA_ACTIVA", None)
+        if instancia is None:
+            return
+        instancia._refrescar_modulo("flota")
+    except Exception as e:
+        print("Aviso - refrescando Flota:", e)
+
+
 def abrir_reset_mantenimientos_vehiculo(parent, placa, usuario_activo="", al_terminar=None):
     """Ventana con CHECK por mantenimiento para registrar el servicio hecho a una unidad.
 
@@ -3233,6 +3245,11 @@ def abrir_reset_mantenimientos_vehiculo(parent, placa, usuario_activo="", al_ter
             # para que las fechas nuevas se vean de inmediato en el calendario.
             try:
                 cache_sistema.invalidar()
+            except Exception:
+                pass
+            # 🔄 Si el módulo Flota Automotriz está abierto, se refresca en el acto
+            try:
+                _refrescar_flota_abierta()
             except Exception:
                 pass
             try:
