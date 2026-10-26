@@ -1,94 +1,128 @@
 # -*- coding: utf-8 -*-
 """
-CONTROL_GENERAL.PY - SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ (v2 SEGURO Y MULTIPLATAFORMA)
-Optimizado para máximo rendimiento y compatibilidad nativa en Windows y macOS.
-- bcrypt (sin claves planas), sin usuarios hardcoded, migración automática.
-- Usuarios con activo / intentos_fallidos, protección del Super Admin único.
-- Config con ruta absoluta (app_paths), menú con módulos dinámicos.
-- Integración Rclone Inteligente con Sincronización Automática en Segundo Plano.
-- Soporte nativo para pantallas Retina (Mac) y High-DPI (Windows).
+CONTROL_GENERAL.PY - SISTEMA DE CONTROL GENERAL DE EVENTOS (ENTERPRISE)
+- 100% Compatibilidad macOS / Windows / Linux.
+- 7 Secciones completas de Configuración General.
+- Sincronización Nube <-> Local con protección de rutas de disco.
+- Verificador de Actualizaciones y Consulta SUNAT con SSL tolerante para macOS.
+- Carga Asíncrona de Alertas y Listas.
 """
-
-# =========================================================
-# REGISTRO DE ERRORES DE INICIO
-# Captura fallas silenciosas en apps empaquetadas (p. ej. el
-# .app de macOS) y las escribe en un archivo de log para
-# poder diagnosticarlas desde la Terminal o compartirlas.
-# =========================================================
-import sys
-import os
-import traceback
-
-_RUTA_LOG_ERROR = None
-
-
-def _excepthook(tipo, valor, tb):
-    global _RUTA_LOG_ERROR
-    detalle = "".join(traceback.format_exception(tipo, valor, tb))
-    try:
-        if _RUTA_LOG_ERROR is None:
-            try:
-                from app_paths import DATA_DIR
-                _RUTA_LOG_ERROR = str(DATA_DIR / "error_inicio.log")
-            except Exception:
-                _RUTA_LOG_ERROR = os.path.join(os.path.expanduser("~"), "ControlFlota_error_inicio.log")
-        with open(_RUTA_LOG_ERROR, "w", encoding="utf-8") as f:
-            f.write(detalle)
-    except Exception:
-        pass
-    sys.__excepthook__(tipo, valor, tb)
-
-
-sys.excepthook = _excepthook
-
-import psycopg2
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import messagebox, filedialog, ttk, colorchooser
-import subprocess
 import sys
+import ctypes
 import os
-import shutil
+import time
 import json
 import importlib
+import inspect
 import urllib.request
-import urllib.error
 import ssl
 import bcrypt
+import subprocess
+import shutil
 import threading
+import webbrowser
 from datetime import datetime, timedelta
+
+VERSION_ACTUAL = "v1.5.6"
+
+
+def _version_a_tupla(v):
+    """Convierte 'v1.5.6' en (1, 5, 6) para comparar versiones numéricamente."""
+    v = (v or "").strip().lstrip("vV")
+    partes = []
+    for segmento in v.split("."):
+        digitos = ""
+        for c in segmento:
+            if c.isdigit():
+                digitos += c
+            else:
+                break
+        if not digitos:
+            break
+        partes.append(int(digitos))
+    return tuple(partes)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
-from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo, seleccionar_carpeta_dialogo
-from app_paths import CONFIG_FILE, DATA_DIR, obtener_device_id
+from app_paths import CONFIG_FILE, cargar_config_local, DATA_DIR, obtener_device_id
 from tareas_seguras import ejecutar_en_hilo
-from config_nube import (cargar_bancos, guardar_bancos, cargar_cuenta_grifo,
-                         guardar_cuenta_grifo, clave_existe_en_nube,
-                         cargar_rclone_sync, registrar_rclone_sync, borrar_rclone_sync,
-                         guardar_rclone_token, obtener_rclone_token, borrar_rclone_token)
+from config_nube import (cargar_rclone_sync, registrar_rclone_sync, borrar_rclone_sync,
+                         obtener_rclone_token, guardar_rclone_token, borrar_rclone_token,
+                         actualizar_cuenta_remotos, sobrescribir_rclone_sync,
+                         liberar_rclone_sync)
 
-if sys.platform == "win32":
-    import ctypes
+# 🏦 Cuentas bancarias del sistema (las comparten Configuración General,
+# el módulo de Bancos y el registro de cobros de Ventas).
+try:
+    from bancos import cargar_bancos, guardar_bancos, normalizar_cuenta, CLAVE_CUENTAS
+except Exception:
+    CLAVE_CUENTAS = "cuentas_bancarias"
+    def cargar_bancos(usar_nube=True): return []
+    def guardar_bancos(cuentas, sincronizar_nube=True): return False
+    def normalizar_cuenta(cuenta): return dict(cuenta or {})
+
+# 🚀 Fecha de Comienzo del Sistema (corte de compras y ventas)
+try:
+    from fecha_sistema import (
+        obtener_fecha_comienzo, purgar_anteriores, resumen_purga,
+        parsear_fecha as parsear_fecha_corte, CLAVE_FECHA_COMIENZO,
+    )
+    FECHA_SISTEMA_DISPONIBLE = True
+except Exception:
+    FECHA_SISTEMA_DISPONIBLE = False
+
+
+def decidir_limpieza_por_corte(ventana, config_actual, fecha_corte_nueva):
+    """¿Hay que ofrecer la limpieza de compras/ventas anteriores al corte?
+
+    🆕 Solo se PREGUNTA cuando la Fecha de Comienzo CAMBIA respecto de la que ya
+    estaba guardada. Si se vuelve a guardar la configuración con la misma fecha,
+    no se pregunta nada (la limpieza queda disponible en el botón rojo).
+
+    Devuelve:
+        "no-aplica"  : no hay fecha de corte (o el sistema no soporta el corte)
+        "sin-cambio" : la fecha es la misma que ya estaba -> no se pregunta
+        "purgar"     : la fecha cambió y el usuario pidió eliminar
+        "omitir"     : la fecha cambió y el usuario prefirió no eliminar ahora
+    """
+    if not fecha_corte_nueva or not FECHA_SISTEMA_DISPONIBLE:
+        return "no-aplica"
+    try:
+        fecha_previa = obtener_fecha_comienzo(config_actual)
+    except Exception:
+        fecha_previa = None
+    if fecha_previa == fecha_corte_nueva:
+        return "sin-cambio"                     # 🚫 No cambió: no se pregunta
+    aviso_cambio = ("La fecha de comienzo cambió de "
+                    f"{fecha_previa.strftime('%d/%m/%Y') if fecha_previa else 'Sin definir'} a "
+                    f"{fecha_corte_nueva.strftime('%d/%m/%Y')}.\n\n")
+    elimina = messagebox.askyesno(
+        "Aplicar corte de compras y ventas",
+        aviso_cambio +
+        f"¿Deseas eliminar ahora todas las COMPRAS y VENTAS anteriores al "
+        f"{fecha_corte_nueva.strftime('%d/%m/%Y')}?\n\n"
+        "La eliminación es definitiva (facturas recibidas, emitidas, pagos y notas de crédito).\n\n"
+        "Si eliges 'No', la fecha quedará guardada y podrás ejecutar la limpieza después con el botón rojo.",
+        parent=ventana)
+    return "purgar" if elimina else "omitir"
+
 
 try:
     from PIL import Image
-    RESAMPLE_FILTER = getattr(Image, "Resampling", Image).LANCZOS if hasattr(Image, "Resampling") else getattr(Image, "LANCZOS", Image.ANTIALIAS)
     PIL_DISPONIBLE = True
 except ImportError:
     PIL_DISPONIBLE = False
-    RESAMPLE_FILTER = None
-
-try:
-    from validacion_licencia import comprobar_acceso
-except ImportError:
-    comprobar_acceso = None
 
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
-# =========================================================
-# MULTIPLATAFORMA: Ocultar consola solo en Windows
-# =========================================================
 if sys.platform == "win32":
     try:
         hwnd_cmd = ctypes.windll.kernel32.GetConsoleWindow()
@@ -97,61 +131,39 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+def ajustar_al_area_de_trabajo(ventana):
+    """🪟 En Windows, si la ventana maximizada sobresale del área de trabajo (la
+    barra de tareas tapa el borde inferior), se ajusta para que se vea completa:
+    así la barra de pestañas de abajo nunca queda oculta."""
+    if sys.platform != "win32":
+        return
+    try:
+        u = ctypes.windll.user32
 
-def _quitar_imagen_label(lbl):
-    """Quita la imagen que muestra una CTkLabel.
+        class RECT(ctypes.Structure):
+            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                        ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
 
-    ⚠️ customtkinter NO limpia la imagen cuando recibe image=None (su
-    _update_image() solo actúa si HAY imagen), así que al quitar un logo la
-    vista previa seguía mostrando el anterior. Hay que limpiar la etiqueta Tk
-    interna además de pasar image=None.
-    """
-    interior = getattr(lbl, "_label", None)
-    if interior is not None:
-        try:
-            interior.configure(image="")
+        area = RECT()
+        if not u.SystemParametersInfoW(0x0030, 0, ctypes.byref(area), 0):   # SPI_GETWORKAREA
             return
-        except Exception:
-            pass
-    try:
-        lbl.configure(image="")
+        class PUNTO(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        hwnd = u.GetParent(ventana.winfo_id()) or ventana.winfo_id()
+        cliente = RECT()
+        u.GetClientRect(hwnd, ctypes.byref(cliente))
+        origen = PUNTO(0, 0)
+        u.ClientToScreen(hwnd, ctypes.byref(origen))
+        x1, y1 = origen.x, origen.y
+        x2, y2 = x1 + cliente.right, y1 + cliente.bottom
+        if x1 >= area.left and y1 >= area.top and x2 <= area.right and y2 <= area.bottom:
+            return                       # ya entra completo: no se toca
+        ancho = area.right - area.left
+        alto = area.bottom - area.top
+        ventana.geometry(f"{ancho}x{alto}+{area.left}+{area.top}")
     except Exception:
         pass
-
-
-def sincronizar_botones_pantalla_completa(ventana, activa=None):
-    """Pone el mismo texto y color a TODOS los botones de pantalla completa.
-
-    Recorre la ventana y actualiza cualquier widget marcado con
-    '_boton_pantalla_completa = True' (el de la barra lateral y el del módulo
-    de Nómina), así los dos botones nunca quedan desfasados.
-    """
-    if activa is None:
-        activa = bool(getattr(ventana, "_pantalla_completa_activa", False))
-    texto = "🗗 Salir de pantalla completa" if activa else "⛶ Pantalla completa"
-    color = "#e67e22" if activa else "#34495e"
-    hover = "#b9640f" if activa else "#2c3e50"
-    pendientes = [ventana]
-    while pendientes:
-        widget = pendientes.pop()
-        try:
-            if getattr(widget, "_boton_pantalla_completa", False):
-                widget.configure(text=texto, fg_color=color, hover_color=hover)
-            pendientes.extend(widget.winfo_children())
-        except Exception:
-            pass
-    return activa
-
-
-def _ventana_raiz(ventana):
-    """Sube por los 'master' hasta la ventana principal (Tk)."""
-    actual = ventana
-    try:
-        while getattr(actual, "master", None) is not None:
-            actual = actual.master
-    except Exception:
-        pass
-    return actual
 
 
 def _toplevels_visibles(padre):
@@ -205,107 +217,19 @@ def ventana_al_frente(root):
     return root
 
 
-def alternar_pantalla_completa(ventana, boton=None):
-    """Alterna la ventana entre pantalla completa y su tamaño normal.
-
-    El estado se guarda en la propia ventana ('_pantalla_completa_activa') para
-    que la barra lateral y los módulos (por ejemplo Nómina) compartan el mismo
-    estado y no se desincronicen. Devuelve True si quedó en pantalla completa.
-    """
-    activa = bool(getattr(ventana, "_pantalla_completa_activa", False))
-    try:
-        if activa:
-            try:
-                ventana.attributes("-fullscreen", False)
-            except Exception:
-                pass
-            try:
-                ventana.update_idletasks()
-            except Exception:
-                pass
-            geometria = getattr(ventana, "_geometria_previa", "")
-            if geometria:
-                try:
-                    ventana.geometry(geometria)
-                except Exception:
-                    pass
-            # La ventana PRINCIPAL siempre trabaja maximizada; un MÓDULO vuelve a
-            # su tamaño anterior (si no, al salir con Escape queda gigante).
-            if ventana is _ventana_raiz(ventana):
-                maximizar_ventana(ventana)
-            ventana._pantalla_completa_activa = False
-            accion_barra = getattr(ventana, "_alternar_barra_lateral", None)
-            if callable(accion_barra):
-                try:
-                    accion_barra(False)
-                except Exception as e:
-                    print("Aviso - barra lateral:", e)
-        else:
-            try:
-                ventana._geometria_previa = ventana.geometry()
-            except Exception:
-                ventana._geometria_previa = ""
-            try:
-                ventana.attributes("-fullscreen", True)
-            except Exception:
-                # macOS / Linux: respaldo por geometría si -fullscreen no está soportado
-                ancho = ventana.winfo_screenwidth()
-                alto = ventana.winfo_screenheight()
-                ventana.geometry("%dx%d+0+0" % (ancho, alto))
-            ventana._pantalla_completa_activa = True
-            # En un módulo (ventana secundaria) Escape la devuelve a su tamaño
-            # normal: la barra lateral de la ventana principal queda detrás.
-            if ventana is not _ventana_raiz(ventana):
-                try:
-                    ventana.bind("<Escape>", lambda _e, v=ventana: alternar_pantalla_completa(v))
-                except Exception:
-                    pass
-        # Los botones del sistema se ocultan en pantalla completa para ganar espacio
-        accion_barra = getattr(ventana, "_alternar_barra_lateral", None)
-        if callable(accion_barra):
-            try:
-                accion_barra(bool(getattr(ventana, "_pantalla_completa_activa", False)))
-            except Exception as e:
-                print("Aviso - barra lateral:", e)
-        # 🪟 El módulo que está ADELANTE se estira al área visible al entrar en
-        # pantalla completa y vuelve a su tamaño al salir.
-        accion_modulo = getattr(ventana, "_alternar_modulo_pantalla", None)
-        if callable(accion_modulo):
-            try:
-                accion_modulo(bool(getattr(ventana, "_pantalla_completa_activa", False)))
-            except Exception as e:
-                print("Aviso - módulo en pantalla completa:", e)
-    except Exception as e:
-        print("Aviso - Pantalla completa:", e)
-
-    activa = bool(getattr(ventana, "_pantalla_completa_activa", False))
-    if boton is not None and not getattr(boton, "_boton_pantalla_completa", False):
-        try:
-            boton.configure(text="🗗 Salir de pantalla completa" if activa else "⛶ Pantalla completa",
-                            fg_color="#e67e22" if activa else "#34495e",
-                            hover_color="#b9640f" if activa else "#2c3e50")
-        except Exception:
-            pass
-    raiz = _ventana_raiz(ventana)
-    sincronizar_botones_pantalla_completa(ventana, activa)
-    return sincronizar_botones_pantalla_completa(raiz, activa)
-
-
 def maximizar_ventana(ventana):
-    """Maximiza la ventana de forma nativa según el sistema operativo."""
+    """Maximiza ventanas sin errores en macOS ni Windows."""
     try:
         if sys.platform == "win32":
             ventana.state("zoomed")
-        elif sys.platform == "darwin":  # macOS no soporta -zoomed
-            ventana.update_idletasks()
+            try:
+                ventana.after(150, lambda v=ventana: ajustar_al_area_de_trabajo(v))
+            except Exception:
+                pass
+        else:
             w = ventana.winfo_screenwidth()
             h = ventana.winfo_screenheight()
-            ventana.geometry(f"{w}x{h-30}+0+0")
-        else:  # Linux
-            try:
-                ventana.attributes("-zoomed", True)
-            except Exception:
-                ventana.state("zoomed")
+            ventana.geometry(f"{w}x{h}+0+0")
     except Exception:
         try:
             w = ventana.winfo_screenwidth()
@@ -314,67 +238,153 @@ def maximizar_ventana(ventana):
         except Exception:
             pass
 
+def traer_al_frente(ventana, retrasos=(60, 260, 700, 1150)):
+    """🪟 Deja la ventana DELANTE de la ventana principal.
 
-def instalar_manejador_dock_mac(root, callback):
-    """macOS: hace que el clic en el icono del Dock vuelva a mostrar las ventanas.
-
-    En macOS Tk responde NO a "applicationShouldHandleReopen:" (ver
-    tkMacOSXWindowEvent.c) y delega todo en un comando Tcl llamado
-    ::tk::mac::ReopenApplication. Si ese comando NO existe, Tk no hace
-    absolutamente nada: la ventana minimizada se queda en el Dock y el clic
-    en el icono del programa no responde. Aquí registramos ese comando
-    apuntando a nuestro propio manejador para que sí restaure la ventana.
-    Devuelve True si el manejador quedó instalado.
+    CustomTkinter oculta y vuelve a mostrar cada ventana nueva para pintarle la
+    barra de título (y a los 1000 ms vuelve a ajustar el tamaño mínimo): esos
+    ciclos hacen que la ventana termine DETRÁS de la principal. Por eso se trae al
+    frente varias veces, con un 'topmost' momentáneo que se suelta enseguida.
     """
-    if sys.platform != "darwin":
-        return False
     try:
-        # El namespace ::tk::mac existe en macOS, pero lo aseguramos por si acaso
-        root.tk.eval("namespace eval ::tk::mac {}")
+        ventana._windows_set_titlebar_color = lambda *a, **k: None
     except Exception:
         pass
+
+    def _soltar_topmost():
+        try:
+            if ventana.winfo_exists():
+                ventana.attributes("-topmost", False)
+        except Exception:
+            pass
+
+    def _traer():
+        try:
+            if not ventana.winfo_exists():
+                return
+            ventana.deiconify()
+            ventana.lift()
+            try:
+                ventana.attributes("-topmost", True)
+                ventana.after(450, _soltar_topmost)
+            except Exception:
+                pass
+            ventana.focus_force()
+        except Exception:
+            pass
+
+    for retardo in retrasos:
+        try:
+            ventana.after(retardo, _traer)
+        except Exception:
+            pass
+
+
+# ==========================================================
+# 🪟 AYUDAS DE LAS VENTANAS DE MÓDULOS
+# ==========================================================
+# Métodos que vuelven a traer los datos de un módulo desde la base de datos.
+# El sistema los usa cuando se abre un módulo que YA estaba abierto, para que la
+# ventana que se trae al frente muestre la información actualizada.
+METODOS_RECARGA_MODULOS = (
+    "cargar_datos_tabla", "cargar_datos_cobrar", "cargar_datos_pagar", "cargar_datos_nc",
+    "cargar_clientes_tabla", "cargar_proveedores_tabla", "cargar_tabla",
+    "cargar_historial_ordenes", "cargar_historial", "cargar_registros",
+    "cargar_solicitudes_tab", "cargar_datos_diario", "cargar_datos_mayor", "cargar_datos_db",
+    "cargar_kpis", "cargar_categorias", "cargar_combos",
+    "refrescar_saldos", "refrescar_transferencias", "refrescar_tree",
+    "refrescar_tabla_categorias", "refrescar_datos", "actualizar_tabla", "recargar_datos",
+)
+
+
+def _acepta_reset_pagina(metodo):
+    """¿El método de recarga acepta el argumento reset_pagina?"""
     try:
-        root.createcommand("::tk::mac::ReopenApplication", callback)
-        return True
+        return "reset_pagina" in inspect.signature(metodo).parameters
     except Exception:
         return False
+
+
+def _buscar_metodos_recarga(objeto, encontrados, vistos, profundidad=0):
+    """Busca (sin repetir) los métodos de recarga dentro de un módulo abierto.
+
+    Entra también en los paneles internos (las pestañas del módulo) pero nunca en
+    los widgets: sus métodos no recargan datos y son cientos.
+    """
+    if objeto is None or id(objeto) in vistos or profundidad > 2:
+        return
+    vistos.add(id(objeto))
+    for nombre in dir(objeto):
+        if nombre.startswith("_"):
+            continue
+        try:
+            valor = getattr(objeto, nombre)
+        except Exception:
+            continue
+        if callable(valor):
+            if nombre in METODOS_RECARGA_MODULOS:
+                encontrados.append(valor)
+        elif not isinstance(valor, (str, bytes, int, float, bool, list, tuple, dict, set)):
+            if not isinstance(valor, tk.Misc):
+                _buscar_metodos_recarga(valor, encontrados, vistos, profundidad + 1)
+
+
+def refrescar_instancia_modulo(instancia):
+    """🔄 Vuelve a cargar los datos de un módulo abierto.
+
+    Devuelve cuántos apartados se recargaron (0 si el módulo no expone ninguno).
+    """
+    encontrados = []
+    try:
+        _buscar_metodos_recarga(instancia, encontrados, set())
+    except Exception:
+        return 0
+    ejecutados = 0
+    for metodo in encontrados:
+        try:
+            if _acepta_reset_pagina(metodo):
+                metodo(reset_pagina=True)
+            else:
+                metodo()
+            ejecutados += 1
+        except Exception:
+            pass
+    return ejecutados
+
+
+def poner_ventana_en_barra_tareas(ventana):
+    """🪟 En Windows asegura que la ventana del módulo tenga su propio botón en la
+    barra de tareas: así se puede minimizar, restaurar y cerrar desde ahí."""
+    if sys.platform != "win32":
+        return
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetParent(ventana.winfo_id()) or ventana.winfo_id()
+        GWL_EXSTYLE, WS_EX_APPWINDOW = -20, 0x00040000
+        estilo = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, estilo | WS_EX_APPWINDOW)
+        SWP = 0x0020 | 0x0002 | 0x0001 | 0x0004      # FRAMECHANGED | NOMOVE | NOSIZE | NOZORDER
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP)
+    except Exception:
+        pass
 
 
 def ruta_recurso(ruta_relativa):
-    """Ruta absoluta válida en desarrollo y compilado (.exe / .app)."""
     try:
         ruta_base = sys._MEIPASS
     except Exception:
-        ruta_base = os.path.abspath(".")
-    return os.path.normpath(os.path.join(ruta_base, ruta_relativa))
+        ruta_base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(ruta_base, ruta_relativa)
 
-
-def _contexto_ssl_seguro():
-    """Contexto SSL que funciona en Windows y macOS.
-
-    En macOS, Python (instalado desde python.org o dentro de un .app de
-    PyInstaller) no tiene el bundle de certificados raíz y urllib lanza:
-        CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
-    Por eso usamos certifi (incluido con 'requests'), que trae su propio
-    bundle de CAs. Si certifi no está disponible, se desactiva la
-    verificación como último recurso.
-    """
-    try:
-        import certifi
-        return ssl.create_default_context(cafile=certifi.where())
-    except Exception:
+def aplicar_icono_ventana(ventana):
+    if sys.platform == "win32":
         try:
-            return ssl._create_unverified_context()
-        except AttributeError:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            return ctx
+            ruta_ico = ruta_recurso("Ico_Collie_Software.ico")
+            if os.path.exists(ruta_ico):
+                ventana.iconbitmap(ruta_ico)
+        except Exception:
+            pass
 
-
-# =========================================================
-# FUNCIONES GLOBALES DE RCLONE (Sincronización Silenciosa)
-# =========================================================
 # =========================================================
 # 🔗 RCLONE: VINCULACION DE GOOGLE DRIVE (Windows y macOS)
 # =========================================================
@@ -565,36 +575,20 @@ def vincular_rclone_drive(cmd_rclone, argumentos_config, remote, kwargs=None, se
 
 
 def obtener_comando_rclone():
-    """Detecta rclone en Windows, macOS (Intel y Apple Silicon) y Linux."""
     nombre_ejecutable = "rclone.exe" if sys.platform == "win32" else "rclone"
-    
     if hasattr(sys, '_MEIPASS'):
         ruta_bundle = os.path.join(sys._MEIPASS, nombre_ejecutable)
         if os.path.exists(ruta_bundle):
             return ruta_bundle
-            
     ruta_local = os.path.join(os.path.dirname(os.path.abspath(__file__)), nombre_ejecutable)
     if os.path.exists(ruta_local):
         return ruta_local
-
-    en_path = shutil.which("rclone")
-    if en_path:
-        return en_path
-
+    rutas_mac = ["/opt/homebrew/bin/rclone", "/usr/local/bin/rclone", "/usr/bin/rclone"]
     if sys.platform != "win32":
-        rutas_unix = [
-            "/opt/homebrew/bin/rclone",      # Mac Apple Silicon (M1/M2/M3/M4)
-            "/usr/local/bin/rclone",         # Mac Intel / Linux local
-            "/opt/local/bin/rclone",         # MacPorts
-            os.path.expanduser("~/.local/bin/rclone"),
-            "/usr/bin/rclone"
-        ]
-        for r in rutas_unix:
+        for r in rutas_mac:
             if os.path.exists(r):
                 return r
-                
     return "rclone"
-
 
 # =========================================================
 # CONFIG Y TOKEN DE RCLONE COMPARTIDO (cifrado en Supabase)
@@ -624,14 +618,54 @@ def _asegurar_config_rclone():
         pass
     if not _config_rclone_asegurada:
         _config_rclone_asegurada = True
-        if not ruta.exists():
-            origen = _ruta_config_rclone_por_defecto()
-            if origen and os.path.exists(origen):
+        origen = _ruta_config_rclone_por_defecto()
+        if origen and os.path.exists(origen):
+            try:
+                with open(origen, "r", encoding="utf-8", errors="ignore") as f:
+                    origen_txt = f.read()
+            except Exception:
+                origen_txt = ""
+            necesita = not ruta.exists()
+            if not necesita:
+                try:
+                    actual = ruta.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    actual = ""
+                # Si el archivo de la app quedo SIN token (una vinculacion a medias
+                # lo deja vacio) se recupera la cuenta del rclone.conf del sistema.
+                if "token" not in actual.lower() and "token" in origen_txt.lower():
+                    necesita = True
+            if necesita and origen_txt:
                 try:
                     shutil.copy2(origen, str(ruta))
                 except Exception:
                     pass
     return str(ruta)
+
+
+def _remoto_configurado_con_token(remote):
+    """¿El rclone.conf de la app tiene un token valido para ese remote?
+
+    rclone puede devolver codigo 0 en 'config create' SIN dejar token: en ese
+    caso la cuenta NO esta vinculada y el equipo no debe registrarse.
+    """
+    remote = str(remote or "").strip().strip(":").lower()
+    if not remote:
+        return False
+    try:
+        with open(_asegurar_config_rclone(), "r", encoding="utf-8", errors="ignore") as f:
+            texto = f.read()
+    except Exception:
+        return False
+    dentro = False
+    for linea in texto.splitlines():
+        s = linea.strip()
+        if s.startswith("["):
+            dentro = s.strip("[]").strip().lower() == remote
+            continue
+        if dentro and s.lower().startswith("token") and "=" in s:
+            return len(s.split("=", 1)[1].strip()) > 10
+    return False
 
 
 def _argumentos_config_rclone():
@@ -690,6 +724,110 @@ def subir_token_rclone_nube():
         return False
 
 
+def tomar_control_cuenta_principal():
+    """Convierte ESTE equipo en el PRINCIPAL (dueño) de la cuenta Rclone.
+
+    Sirve cuando el equipo que figura como dueño ya no es el que debe compartir
+    la cuenta (por ejemplo, al pasar el mando a un Mac): deja el registro con el
+    identificador de este equipo y publica su rclone.conf cifrado para los demás.
+    """
+    try:
+        from politica_almacenamiento import leer_rclone_local, identidad_remotos
+    except Exception as e:
+        return False, "No se pudo leer la configuración de Rclone: %s" % e
+
+    texto = leer_rclone_local() or ""
+    if not texto.strip() or "[" not in texto:
+        return False, ("Este equipo todavía no tiene una cuenta de Google vinculada en Rclone."
+                       + chr(10) + chr(10) +
+                       "Pulse «Vinculación automática de la cuenta» (Vincular Cuenta Auto) y reintente.")
+    identidad = identidad_remotos(texto) or {}
+    if not identidad:
+        return False, "Este equipo no tiene ninguna cuenta de Rclone vinculada."
+
+    registro = cargar_rclone_sync() or {}
+    datos = dict(registro)
+    datos["rclone_remote"] = str(datos.get("rclone_remote") or "gdrive:").strip()
+    if not datos.get("rclone_ruta_nube"):
+        datos["rclone_ruta_nube"] = str(cargar_config_local().get("rclone_ruta_nube", "") or "").strip()
+    datos["linked_by_device"] = obtener_device_id()
+    datos["linked_at"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    datos["cuenta_remotos"] = identidad
+    # Escritura con 2 intentos (en macOS la red puede tardar en despertar).
+    guardado = None
+    for intento in (1, 2):
+        try:
+            guardado = sobrescribir_rclone_sync(datos)
+        except Exception as e:
+            global _ULTIMO_ERROR_TOMAR
+            _ULTIMO_ERROR_TOMAR = "excepcion: %s" % str(e)[:200]
+            guardado = None
+        if guardado:
+            break
+        try:
+            time.sleep(1.5)
+        except Exception:
+            pass
+    if not guardado:
+        motivo = ""
+        try:
+            from config_nube import ULTIMO_ERROR_SYNC as _err
+            motivo = str(_err or "")
+        except Exception:
+            pass
+        if not motivo:
+            motivo = str(globals().get("_ULTIMO_ERROR_TOMAR", "") or "")
+        # Se deja constancia en un archivo para poder revisarlo con calma.
+        try:
+            ruta_log = os.path.join(str(DATA_DIR), "error_principal_nube.txt")
+            with open(ruta_log, "w", encoding="utf-8") as f:
+                f.write("Equipo: %s\nFecha: %s\nMotivo: %s\nRegistro intentado: %s\n"
+                        % (obtener_device_id(), datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+                           motivo or "(sin detalle)", str(datos)))
+        except Exception:
+            pass
+        return False, ("No se pudo guardar el registro en la nube."
+                       + chr(10) + chr(10) + (motivo or "Revise la conexión a Internet (Supabase)."))
+
+    if not subir_token_rclone_nube():
+        return False, ("Se asignó este equipo como principal, pero no se pudo publicar la cuenta."
+                       + chr(10) + "Revise que Rclone esté configurado en este equipo.")
+    try:
+        sincronizar_token_rclone_local()
+    except Exception:
+        pass
+    return True, ("✅ Este equipo es ahora el PRINCIPAL de la cuenta Rclone."
+                  + chr(10) + chr(10) +
+                  "Los demás equipos deben pulsar «Usar la cuenta del equipo principal» "
+                  "para quedar sincronizados.")
+
+
+def dejar_de_ser_principal():
+    """Este equipo deja de ser el PRINCIPAL (sin borrar la configuración).
+
+    Se conserva el remote, la carpeta de la nube y la cuenta compartida; queda
+    libre para que otro equipo (por ejemplo el Mac) tome el mando.
+    """
+    registro = cargar_rclone_sync() or {}
+    if not registro:
+        return False, "Todavía no hay un registro de nube creado."
+    if (registro.get("linked_by_device") or "") != obtener_device_id():
+        return False, "Este equipo no es el principal; no hay nada que liberar."
+    if not liberar_rclone_sync():
+        motivo = ""
+        try:
+            from config_nube import ULTIMO_ERROR_SYNC as _err
+            motivo = str(_err or "")
+        except Exception:
+            pass
+        return False, ("No se pudo liberar el mando en la nube."
+                       + chr(10) + chr(10) + (motivo or "Revise la conexión a Internet (Supabase)."))
+    return True, ("✅ Este equipo YA NO es el principal." + chr(10) + chr(10) +
+                  "Ahora, en el Mac: Configuración General → Sincronización en la Nube → "
+                  "«👑 Usar este equipo como PRINCIPAL». Después, aquí, pulsa "
+                  "«Usar la cuenta del equipo principal» si te lo pide.")
+
+
 def normalizar_ruta_local(ruta):
     """Convierte rutas locales a una ruta válida del sistema actual.
 
@@ -726,162 +864,6 @@ def _carpeta_archivos_programa(ruta_drive=""):
             except Exception:
                 pass
     return os.path.dirname(os.path.abspath(__file__))
-
-
-def guardar_logo_en_programa(ruta_origen, ruta_drive=""):
-    """Copia el logo a la carpeta de archivos del programa y devuelve la ruta
-    canónica. Así el logo vive junto a los demás archivos (se sincroniza con la
-    nube) y no depende de una ruta externa temporal."""
-    try:
-        if not ruta_origen or not os.path.isfile(ruta_origen):
-            return ruta_origen or ""
-        # 🔒 Política de almacenamiento: sin autorización no se copia ningún archivo
-        try:
-            from politica_almacenamiento import puede_guardar_archivos
-            if not puede_guardar_archivos()[0]:
-                return ruta_origen
-        except ImportError:
-            pass
-        carpeta = _carpeta_archivos_programa(ruta_drive)
-        ext = os.path.splitext(ruta_origen)[1].lower()
-        if ext not in (".png", ".jpg", ".jpeg"):
-            ext = ".png"
-        destino = os.path.join(carpeta, f"logo_encabezado{ext}")
-        if os.path.abspath(ruta_origen) == os.path.abspath(destino):
-            return destino
-        shutil.copy2(ruta_origen, destino)
-        return destino
-    except Exception:
-        return ruta_origen or ""
-
-
-def cargar_configuracion_general():
-    config = {
-        "ruta_drive": "",
-        "rclone_remote": "gdrive:",
-        "rclone_ruta_nube": "BlackCube",
-        "impresora": "",
-        "simbolo_moneda": "S/.",
-        "formato_numero": "1,000.00",
-        "formato_fecha": "DD/MM/AAAA",
-        "cuentas_bancarias": [],
-        "cuenta_grifo_pagos": "",
-        "ruc_empresa": "",
-        "razon_social_empresa": "",
-        "igv_porcentaje": "0",
-        "detraccion_porcentaje": "12",
-        "renta_mensual_porcentaje": "0",
-        "renta_anual_porcentaje": "0",
-        "regimen_empresa": "MYPE Tributario",
-        "proveedor_fe": "Nubefact",
-        "url_api_fe": "",
-        "token_api_fe": "",
-        "ultimo_factura": "F001-0",
-        "ultimo_boleta": "B001-0",
-        "ultimo_recibo": "E001-0",
-        "usuario_sol": "",
-        "clave_sol": "",
-        "client_id_sire": "",
-        "client_secret_sire": "",
-        "2fa_metodo": "Inactivo",
-        "tel_bot_token": "",
-        "tel_chat_id": "",
-        "email_smtp": "smtp.gmail.com",
-        "email_port": "587",
-        "email_user": "",
-        "email_pass": "",
-        "email_dest": "",
-        "twi_sid": "",
-        "twi_token": "",
-        "twi_from": "",
-        "twi_to": "",
-        "dias_alerta_vencimiento": "30",
-        "alerta_aceite_km": "5000",
-        "alerta_aceite_meses": "6",
-    "alerta_gas_km": "10000",
-    "alerta_neumaticos_km": "50000",
-    "ia_qwen_api_key": "",
-    "ia_qwen_modelo": "",
-        "alerta_mantenimiento_general_km": "10000",
-        "color_menu_fondo": "#1a252c",
-        "color_menu_btn": "#1f538d",
-        "color_menu_hover": "#163b65",
-        "color_menu_texto": "white",
-        # 🖨️ Escáner de comprobantes (WIA + OCR) — propio de cada equipo
-        "escaner_dispositivo": "", "escaner_dpi": "300", "escaner_color": "Escala de grises",
-        "escaner_origen": "Cristal (una página a la vez)", "escaner_paginas": "1",
-        "escaner_ocr": "Sí", "escaner_idioma_ocr": "Automático", "escaner_optimizar": "Sí",
-        "escaner_modo": "Automático (sin ventanas)", "escaner_carpeta": "",
-        "orden_operativos": ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"],
-        "orden_finanzas": ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard", "banco", "nomina"],
-        "orden_ajustes": ["configuracion", "usuarios", "bitacora"]
-    }
-    try:
-        if os.path.exists(str(CONFIG_FILE)):
-            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
-                config.update(json.load(f))
-    except Exception:
-        pass
-    # Los datos bancarios y la cuenta del App Grifo viven en Supabase (nube),
-    # no en el archivo local. Solo se toma la nube como fuente de verdad cuando
-    # la clave ya existe allí (así no se pisa el dato local durante la migración).
-    try:
-        if clave_existe_en_nube("cuentas_bancarias"):
-            config["cuentas_bancarias"] = cargar_bancos()
-        if clave_existe_en_nube("cuenta_grifo_pagos"):
-            config["cuenta_grifo_pagos"] = cargar_cuenta_grifo()
-    except Exception:
-        pass
-    # La sincronización en la nube (remote y carpeta de la nube) también vive en
-    # Supabase: el PRIMER equipo que la registra queda como fuente de verdad
-    # ("el de siempre") para todos. La carpeta LOCAL sigue siendo por equipo.
-    try:
-        sync = cargar_rclone_sync()
-        if sync:
-            if sync.get("rclone_remote"):
-                config["rclone_remote"] = sync["rclone_remote"]
-            if sync.get("rclone_ruta_nube"):
-                config["rclone_ruta_nube"] = sync["rclone_ruta_nube"]
-    except Exception:
-        pass
-    return config
-
-
-def ejecutar_sincronizacion_silenciosa():
-    """Ejecuta una copia bilateral sin bloquear el programa principal."""
-    config = cargar_configuracion_general()
-    local = os.path.expanduser(normalizar_ruta_local(config.get("ruta_drive", "")))
-    remote = config.get("rclone_remote", "gdrive:").strip()
-    nube = config.get("rclone_ruta_nube", "BlackCube").strip()
-
-    if not local or not remote or not nube or not os.path.exists(local):
-        return
-
-    # Asegura que el token compartido (del equipo propietario) esté en el
-    # rclone.conf local antes de sincronizar.
-    sincronizar_token_rclone_local()
-
-    cmd = obtener_comando_rclone()
-    args_cfg = _argumentos_config_rclone()
-    ruta_remota = f"{remote}{nube}" if remote.endswith(":") else f"{remote}:{nube}"
-
-    kwargs = {}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = 0x08000000
-
-    # Se excluyen los archivos basura de macOS (.DS_Store y AppleDouble "._"):
-    # son miles de archivos que ralentizan muchísimo el listado y la sincronización.
-    exclusiones = ["--exclude", ".DS_Store*", "--exclude", "._*"]
-
-    try:
-        subprocess.run([cmd, *args_cfg, "copy", ruta_remota, local, "--update", "--quiet", *exclusiones], timeout=600, **kwargs)
-        subprocess.run([cmd, *args_cfg, "copy", local, ruta_remota, "--update", "--quiet", *exclusiones], timeout=600, **kwargs)
-    except Exception:
-        pass
-
-
-def lanzar_sync_background():
-    threading.Thread(target=ejecutar_sincronizacion_silenciosa, daemon=True).start()
 
 
 def limpiar_basura_macos(ruta_drive="", borrar_nube=True):
@@ -1071,29 +1053,153 @@ def verificar_sincronizacion_carpeta():
                   f"Verificación en {segundos:.1f} s{detalle_cuota}")
 
 
-# =========================================================
-# SEGURIDAD: HASH DE CONTRASEÑAS (BCRYPT)
-# =========================================================
+def crear_contexto_ssl_seguro():
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+def cargar_configuracion_general():
+    config = {
+        "ruta_drive": "", "rclone_remote": "gdrive:", "rclone_ruta_nube": "BlackCube",
+        "impresora": "", "simbolo_moneda": "S/.", "formato_numero": "1,000.00",
+        "formato_fecha": "DD/MM/AAAA", "ruta_logo_cotizacion": "",
+        "color_primario": "#eb337a", "color_secundario": "#000000", "color_franja": "#eb337a",
+        "ruc_empresa": "", "razon_social_empresa": "", "igv_porcentaje": "0",
+        "detraccion_porcentaje": "12",
+        "renta_mensual_porcentaje": "0", "renta_anual_porcentaje": "0",
+        "regimen_empresa": "MYPE Tributario", "nombre_cliente_cotizacion": "Razón Social",
+        "proveedor_fe": "Nubefact", "url_api_fe": "", "token_api_fe": "",
+        "ultimo_factura": "F001-0", "ultimo_boleta": "B001-0", "ultimo_recibo": "E001-0",
+        "usuario_sol": "", "clave_sol": "", "client_id_sire": "", "client_secret_sire": "",
+        "2fa_metodo": "Inactivo", "tel_bot_token": "", "tel_chat_id": "",
+        "email_smtp": "smtp.gmail.com", "email_port": "587", "email_user": "", "email_pass": "", "email_dest": "",
+        "twi_sid": "", "twi_token": "", "twi_from": "", "twi_to": "",
+        "color_menu_fondo": "#1a252c", "color_menu_btn": "#1f538d",
+        "color_menu_hover": "#163b65", "color_menu_texto": "white",
+        "terminos_cotizacion": "Precios no incluyen IGV.\nCotización válida por 7 días. Posterior a ello podría haber cambios en el presupuesto.\nPenalidad: Si el presupuesto es aprobado y finalmente el proyecto no se lleva a cabo, se facturará al cliente un 10% del valor total como compensación por gastos administrativos.",
+        "fecha_comienzo_sistema": "",
+        # 🖨️ Escáner de facturas de compras (WIA + OCR)
+        "escaner_dispositivo": "", "escaner_dpi": "300", "escaner_color": "Escala de grises",
+        "escaner_origen": "Cristal (una página a la vez)", "escaner_paginas": "1",
+        "escaner_ocr": "Sí", "escaner_idioma_ocr": "Automático", "escaner_optimizar": "Sí",
+        "escaner_modo": "Automático (sin ventanas)", "escaner_carpeta": "",
+        "cuentas_bancarias": [],
+        "orden_operativos": ["clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "inventario", "locaciones"],
+        "orden_finanzas": ["ventas", "compras", "bancos", "libro_diario", "libro_mayor", "impuestos", "dashboard"],
+        "orden_ajustes": ["configuracion", "usuarios", "bitacora"]
+    }
+    
+    try:
+        if os.path.exists(str(CONFIG_FILE)):
+            with open(str(CONFIG_FILE), "r", encoding="utf-8") as f:
+                config.update(json.load(f))
+    except Exception:
+        pass
+        
+    conn = conectar_db(silencioso=True)
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT data FROM configuracion_sistema WHERE id = 1")
+            res = cursor.fetchone()
+            if res and res[0]:
+                config_nube = res[0]
+                impresora_local = config.get("impresora", "")
+                ruta_drive_local = config.get("ruta_drive", "")
+                rclone_remote_local = config.get("rclone_remote", "gdrive:")
+                ruta_logo_local = config.get("ruta_logo_cotizacion", "")
+                escaner_local = config.get("escaner_dispositivo", "")
+                carpeta_escaner_local = config.get("escaner_carpeta", "")
+                
+                config.update(config_nube)
+                
+                if impresora_local: config["impresora"] = impresora_local
+                if ruta_drive_local: config["ruta_drive"] = ruta_drive_local
+                if rclone_remote_local != "gdrive:": config["rclone_remote"] = rclone_remote_local
+                if ruta_logo_local: config["ruta_logo_cotizacion"] = ruta_logo_local
+                # 🖨️ El escáner depende de cada equipo: se respeta el de esta PC
+                if escaner_local: config["escaner_dispositivo"] = escaner_local
+                if carpeta_escaner_local: config["escaner_carpeta"] = carpeta_escaner_local
+                
+                with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=4)
+        except Exception as e:
+            print("No se pudo sincronizar config desde la nube:", e)
+        finally:
+            liberar_conexion(conn)
+            
+    return config
+
+def ejecutar_sincronizacion_silenciosa():
+    """Ejecuta una copia bilateral sin bloquear el programa principal."""
+    config = cargar_configuracion_general()
+    local = os.path.expanduser(normalizar_ruta_local(config.get("ruta_drive", "")))
+    remote = config.get("rclone_remote", "gdrive:").strip()
+    nube = config.get("rclone_ruta_nube", "BlackCube").strip()
+
+    if not local or not remote or not nube or not os.path.exists(local):
+        return
+
+    # Asegura que el token compartido (del equipo propietario) esté en el
+    # rclone.conf local antes de sincronizar.
+    sincronizar_token_rclone_local()
+
+    cmd = obtener_comando_rclone()
+    args_cfg = _argumentos_config_rclone()
+    ruta_remota = f"{remote}{nube}" if remote.endswith(":") else f"{remote}:{nube}"
+
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x08000000
+
+    # Se excluyen los archivos basura de macOS (.DS_Store y AppleDouble "._"):
+    # son miles de archivos que ralentizan muchísimo el listado y la sincronización.
+    # Basura de macOS + restos del código fuente que no deben bajarse a la carpeta
+    # de trabajo (el equipo antiguo tenía la carpeta del programa como carpeta local).
+    exclusiones = ["--exclude", ".DS_Store*", "--exclude", "._*",
+                   "--exclude", ".git/**", "--exclude", ".github/**",
+                   "--exclude", "__pycache__/**", "--exclude", "*.pyc",
+                   "--exclude", "tests/**", "--exclude", "__dsh_test__/**",
+                   "--exclude", "Archivo Exe/**"]
+
+    try:
+        subprocess.run([cmd, *args_cfg, "copy", ruta_remota, local, "--update", "--quiet", *exclusiones], timeout=600, **kwargs)
+        subprocess.run([cmd, *args_cfg, "copy", local, ruta_remota, "--update", "--quiet", *exclusiones], timeout=600, **kwargs)
+    except Exception:
+        pass
+
+
+def lanzar_sync_background():
+    threading.Thread(target=ejecutar_sincronizacion_silenciosa, daemon=True).start()
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-
 def verify_password(password: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
-        return False
+    try: return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception: return False
 
+_SCHEMA_SEGURIDAD_OK = False
 
-# =========================================================
-# INICIALIZACIÓN DE TABLAS + MIGRACIÓN
-# =========================================================
 def inicializar_seguridad_db():
-    conn = conectar_db(silencioso=True)
-    if not conn:
-        return
-    try:
-        with conn.cursor() as cursor:
+    global _SCHEMA_SEGURIDAD_OK
+    if _SCHEMA_SEGURIDAD_OK: return
+    
+    def tarea_init():
+        global _SCHEMA_SEGURIDAD_OK
+        conn = conectar_db(silencioso=True)
+        if not conn: return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS configuracion_sistema (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                data JSONB NOT NULL,
+                actualizado_el TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT unica_config CHECK (id = 1)
+            )
+            """)
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id SERIAL PRIMARY KEY,
@@ -1106,211 +1212,154 @@ def inicializar_seguridad_db():
                 intentos_fallidos INTEGER DEFAULT 0
             )
             """)
-            upgrades = [
+            for sql in (
                 "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS clave_hash TEXT",
                 "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS permisos TEXT DEFAULT '{}'",
                 "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS activo BOOLEAN DEFAULT TRUE",
                 "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS intentos_fallidos INTEGER DEFAULT 0",
                 "ALTER TABLE usuarios ALTER COLUMN clave DROP NOT NULL",
-            ]
-            for sql in upgrades:
-                try:
-                    cursor.execute(sql)
-                except Exception:
-                    conn.rollback()
-
+            ):
+                try: cursor.execute(sql)
+                except Exception: conn.rollback()
+                
             try:
                 cursor.execute("SELECT id, clave FROM usuarios WHERE clave IS NOT NULL AND (clave_hash IS NULL OR clave_hash = '')")
                 for uid, clave_plana in cursor.fetchall():
                     if clave_plana:
                         cursor.execute("UPDATE usuarios SET clave_hash = %s, clave = NULL WHERE id = %s", (hash_password(clave_plana), uid))
                 conn.commit()
-            except Exception:
-                conn.rollback()
-
+            except Exception: conn.rollback()
+            
+            cursor.execute("SELECT COUNT(*) FROM usuarios")
+            if cursor.fetchone()[0] == 0:
+                todos_permisos = json.dumps({k: True for k in (
+                    "clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores",
+                    "inventario", "locaciones", "bandeja", "ventas", "compras", "bancos",
+                    "libro_diario", "libro_mayor",
+                    "impuestos", "dashboard", "configuracion", "usuarios", "bitacora", "solicitud_proveedor")})
+                cursor.execute(
+                    "INSERT INTO usuarios (usuario, clave, clave_hash, rol, permisos) VALUES (%s, NULL, %s, %s, %s)",
+                    ("alfred", hash_password("admin123"), "Super Administrador", todos_permisos)
+                )
+                conn.commit()
+                
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS bitacora_auditoria (
-                id SERIAL PRIMARY KEY,
-                fecha VARCHAR(20),
-                hora VARCHAR(20),
-                usuario VARCHAR(100),
-                modulo VARCHAR(100),
-                accion TEXT
-            )
-            """)
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS configuracion_geocerca (
-                id SERIAL PRIMARY KEY,
-                latitud NUMERIC,
-                longitud NUMERIC,
-                radio NUMERIC,
-                estado VARCHAR(20) DEFAULT 'Activo'
-            )
-            """)
-            cursor.execute("SELECT COUNT(*) FROM configuracion_geocerca")
-            if cursor.fetchone()[0] == 0:
-                cursor.execute("INSERT INTO configuracion_geocerca (latitud, longitud, radio) VALUES (-12.046374, -77.042793, 100.0)")
-
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS registro_asistencia (
-                id SERIAL PRIMARY KEY,
-                placa VARCHAR(50),
-                fecha VARCHAR(20),
-                hora_entrada VARCHAR(20),
-                hora_salida VARCHAR(20),
-                estado VARCHAR(50)
+                id SERIAL PRIMARY KEY, fecha VARCHAR(20), hora VARCHAR(20),
+                usuario VARCHAR(100), modulo VARCHAR(100), accion TEXT
             )
             """)
             conn.commit()
-    except Exception as e:
-        print("Error inicializando seguridad y GPS:", e)
-    finally:
-        liberar_conexion(conn)
+            _SCHEMA_SEGURIDAD_OK = True
+        except Exception as e: print("Error inicializando seguridad:", e)
+        finally: liberar_conexion(conn)
 
+    threading.Thread(target=tarea_init, daemon=True).start()
 
 class ControlGeneralEventos:
     def __init__(self, root):
         self.root = root
-        self.root.title("SISTEMA DE CONTROL DE FLOTA AUTOMOTRIZ")
+        # 🪟 CustomTkinter "repinta" la barra de título de la ventana principal
+        # ocultándola y mostrándola otra vez cada vez que recibe el foco. Ese ciclo
+        # hacía que, al pulsar cualquier botón de un módulo, la ventana principal
+        # subiera DELANTE y la del módulo (p. ej. Ventas → Registrar factura) quedara
+        # detrás. Se anula ese repintado: es solo cosmético.
+        try:
+            self.root._windows_set_titlebar_color = lambda *a, **k: None
+        except Exception:
+            pass
+        self.root.title("SISTEMA DE CONTROL GENERAL DE EVENTOS")
+        aplicar_icono_ventana(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.confirmar_salida)
-        self._avisos_error_mostrados = 0
-        self._instalar_aviso_de_errores()
-
-        # 🍏 macOS: si el programa se minimiza, el clic en su icono del Dock debe
-        # devolverlo a pantalla (ver instalar_manejador_dock_mac).
-        self.login_en_pantalla = False
-        self.dashboard_listo = False
-        self.manejador_dock_mac = instalar_manejador_dock_mac(self.root, self.restaurar_ventanas_desde_dock)
-
-        # 🔒 Verificación de licencia al entrar al sistema
-        if comprobar_acceso is not None:
-            try:
-                if not comprobar_acceso():
-                    # La pantalla de bloqueo ya se mostró; se cierra la aplicación
-                    try:
-                        self.root.destroy()
-                    except Exception:
-                        pass
-                    sys.exit(0)
-            except Exception as e:
-                print(f"[Licencia Error] {e}")
-
         inicializar_seguridad_db()
         self.usuario_activo = "No autenticado"
         self.rol_activo = "Ninguno"
         self.permisos_activos = {}
+        
         self.modulos_sistema = {
             "clientes": "👥 Gestión de Clientes",
+            "cotizaciones": "🧾 Generador de Cotizaciones",
+            "pautas": "🕒 Pautas de Evento",
             "ordenes_cliente": "📥 Órdenes de Cliente",
-            "cronograma": "📅 Cronograma y Vencimientos",
+            "cronograma": "📅 Cronograma (Gantt)",
             "ordenes": "📝 Órdenes de Servicio / Compra",
             "proveedores": "📦 Gestión de Proveedores",
-            "flota": "🚙 Flota Automotriz",
-            "choferes": "👤 Control de Choferes",
+            "inventario": "📋 Inventario y Almacén",
+            "locaciones": "📍 Inventario de Locaciones",
+            "bandeja": "📥 Bandeja de Entrada",
             "ventas": "💼 Ventas (Facturas y Cobros)",
             "compras": "🛒 Compras (Facturas y Pagos)",
+            "bancos": "🏦 Bancos (Saldos y Conciliación)",
             "libro_diario": "📖 Libro Diario General",
             "libro_mayor": "📊 Libro Mayor Analítico",
             "impuestos": "🧮 Cálculo de Impuestos",
-            "cobranza": "💰 Cálculo de Cobranza",
             "dashboard": "📈 Dashboard Gerencial",
-            "banco": "🏦 Banco (Saldos y Conciliación)",
-            "nomina": "🧾 Nómina y Asistencia",
             "configuracion": "⚙️ Configuración General",
             "usuarios": "🛠️ Configurar Usuarios",
             "bitacora": "📜 Bitácora de Auditoría",
-            "inspeccion_vehicular": "🔍 Inspección Vehicular",
-            "amonestaciones": "📋 Amonestaciones y Suspensiones"
+            "solicitud_proveedor": "📨 Solicitud a Proveedores",
         }
+        # Cada módulo se abre en SU PROPIA VENTANA (sistema multi-ventana).
+        # Estas funciones construyen el contenido del módulo dentro del marco que
+        # les pasa 'abrir_ventana_modulo' (para Configuración y Usuarios, que ya
+        # abren su propia ventana, se llaman directamente).
         self.funciones_modulos = {
-            "clientes": self.abrir_modulo_clientes,
-            "ordenes_cliente": self.abrir_modulo_ordenes_cliente,
-            "cronograma": self.abrir_modulo_cronograma,
-            "ordenes": self.abrir_modulo_ordenes,
-            "proveedores": self.abrir_modulo_proveedores,
-            "flota": self.abrir_modulo_flota,
-            "choferes": self.abrir_modulo_choferes,
-            "ventas": self.abrir_modulo_ventas,
-            "compras": self.abrir_modulo_compras,
-            "libro_diario": self.abrir_modulo_libro_diario,
-            "libro_mayor": self.abrir_modulo_libro_mayor,
-            "impuestos": self.abrir_calculo_impuestos,
-            "cobranza": self.abrir_modulo_cobranza,
-            "dashboard": self.abrir_estadisticas_financiera,
-            "banco": self.abrir_modulo_banco,
-            "nomina": self.abrir_modulo_nomina,
+            "clientes": self._crear_modulo_clientes,
+            "cotizaciones": self._crear_modulo_cotizaciones,
+            "pautas": self._crear_modulo_pautas,
+            "ordenes_cliente": self._crear_modulo_ordenes_cliente,
+            "cronograma": self._crear_modulo_cronograma,
+            "ordenes": self._crear_modulo_ordenes,
+            "proveedores": self._crear_modulo_proveedores,
+            "inventario": self._crear_modulo_inventario,
+            "locaciones": self._crear_modulo_locaciones,
+            "bandeja": self._crear_modulo_bandeja,
+            "ventas": self._crear_modulo_ventas,
+            "compras": self._crear_modulo_compras,
+            "bancos": self._crear_modulo_bancos,
+            "libro_diario": self._crear_modulo_libro_diario,
+            "libro_mayor": self._crear_modulo_libro_mayor,
+            "impuestos": self._crear_calculo_impuestos,
+            "dashboard": self._crear_estadisticas_financiera,
             "configuracion": self.abrir_configuracion_general,
             "usuarios": self.abrir_gestion_usuarios,
-            "bitacora": self.abrir_modulo_bitacora,
-            "inspeccion_vehicular": self.abrir_modulo_inspeccion_vehicular,
-            "amonestaciones": self.abrir_modulo_amonestaciones
+            "bitacora": self._crear_modulo_bitacora,
+            "solicitud_proveedor": self._crear_modulo_solicitud_proveedor,
         }
+        # 🪟 Ventanas de módulos abiertas: {clave_modulo: ventana}
+        self.ventanas_modulos = {}
+        # 🪟 Instancia de cada módulo abierto: sirve para ACTUALIZAR sus datos
+        # cuando se vuelve a pulsar el módulo en el menú lateral.
+        self.instancias_modulos = {}
         self.root.withdraw()
         self.abrir_ventana_login()
-
-    def _instalar_aviso_de_errores(self):
-        """Registra y avisa cuando algo falla dentro de un botón o ventana.
-
-        Sin esto, cualquier error en un botón (por ejemplo una función que no
-        existe) se perdía en silencio: el usuario veía que "no hacía nada".
-        """
-        def _reportar(tipo, valor, traza):
-            detalle = "".join(traceback.format_exception(tipo, valor, traza))
-            try:
-                with open(str(DATA_DIR / "error_aplicacion.log"), "a", encoding="utf-8") as archivo:
-                    archivo.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] {detalle}")
-            except Exception:
-                pass
-            print(detalle)
-            # No se saturan los avisos: se muestran los primeros 5 de la sesión
-            if self._avisos_error_mostrados >= 5:
-                return
-            self._avisos_error_mostrados += 1
-            try:
-                messagebox.showerror(
-                    "Error inesperado",
-                    f"Ocurrió un error y la operación no se completó:\n\n{valor}\n\n"
-                    "El detalle se guardó en 'error_aplicacion.log'.")
-            except Exception:
-                pass
-
-        try:
-            self.root.report_callback_exception = _reportar
-        except Exception:
-            pass
 
     def tiene_permiso(self, modulo_key):
         if self.rol_activo == "Super Administrador":
             return True
         return self.permisos_activos.get(modulo_key, False)
 
-    # =======================================================
-    # LOGIN SEGURO
-    # =======================================================
     def abrir_ventana_login(self):
         self.v_login = ctk.CTkToplevel(self.root)
-        self.login_en_pantalla = True
         self.v_login.title("Acceso Seguro")
-        ancho_ventana = 400
-        alto_ventana = 520
+        aplicar_icono_ventana(self.v_login)
+        ancho_ventana, alto_ventana = 400, 520
         self.v_login.geometry(f"{ancho_ventana}x{alto_ventana}")
         self.v_login.resizable(False, False)
-        self.v_login.protocol("WM_DELETE_WINDOW", self.root.quit)
-        
-        self.v_login.update_idletasks()
-        x = max(0, (self.v_login.winfo_screenwidth() // 2) - (ancho_ventana // 2))
-        y = max(0, (self.v_login.winfo_screenheight() // 2) - (alto_ventana // 2))
-        self.v_login.geometry(f"{ancho_ventana}x{alto_ventana}+{x}+{y}")
-        self.v_login.lift()
-        self.v_login.focus_force()
         self.v_login.grab_set()
-
+        self.v_login.protocol("WM_DELETE_WINDOW", self.root.quit)
+        self.v_login.attributes("-topmost", True)
+        self.v_login.update()
+        self.v_login.attributes("-topmost", False)
+        self.v_login.focus_force()
+        self.v_login.update_idletasks()
+        x = (self.v_login.winfo_screenwidth() // 2) - (ancho_ventana // 2)
+        y = (self.v_login.winfo_screenheight() // 2) - (alto_ventana // 2)
+        self.v_login.geometry(f"{ancho_ventana}x{alto_ventana}+{x}+{y}")
         frame_log = ctk.CTkFrame(self.v_login, corner_radius=15, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
         frame_log.pack(fill="both", expand=True, padx=20, pady=20)
-        
         self.lbl_logo = ctk.CTkLabel(frame_log, text="")
         self.lbl_logo.pack(pady=(20, 5))
-        
         if PIL_DISPONIBLE:
             ruta_logo = ruta_recurso("Logo_Collie_Software.png")
             if os.path.exists(ruta_logo):
@@ -1322,8 +1371,6 @@ class ControlGeneralEventos:
                     self.fase_animacion = "creciendo"
 
                     def animar_logo():
-                        if not self.v_login.winfo_exists():
-                            return
                         if self.fase_animacion == "creciendo":
                             self.tamanio_actual += 15
                             if self.tamanio_actual >= self.tamanio_maximo:
@@ -1333,16 +1380,10 @@ class ControlGeneralEventos:
                             if self.tamanio_actual <= self.tamanio_final:
                                 self.fase_animacion = "terminado"
                                 self.tamanio_actual = self.tamanio_final
-                                
-                        img_animada = ctk.CTkImage(
-                            light_image=imagen_original,
-                            dark_image=imagen_original,
-                            size=(self.tamanio_actual, self.tamanio_actual)
-                        )
+                        img_animada = ctk.CTkImage(light_image=imagen_original, dark_image=imagen_original, size=(self.tamanio_actual, self.tamanio_actual))
                         self.lbl_logo.configure(image=img_animada)
                         if self.fase_animacion != "terminado":
-                            self.v_login.after(16, animar_logo)
-
+                            self.v_login.after(20, animar_logo)
                     animar_logo()
                 except Exception:
                     self.lbl_logo.configure(text="[ Error cargando logo ]", font=("Arial", 10))
@@ -1350,14 +1391,12 @@ class ControlGeneralEventos:
                 self.lbl_logo.configure(text="[ Logo no encontrado ]", font=("Arial", 12, "italic"))
         else:
             self.lbl_logo.configure(text="[ Instalar Pillow para ver logo ]", font=("Arial", 10))
-
-        ctk.CTkLabel(frame_log, text="SISTEMA DE CONTROL DE FLOTA", font=("Arial", 16, "bold"), text_color="#1f538d").pack(pady=(0, 0))
+        ctk.CTkLabel(frame_log, text="SISTEMA DE CONTROL DE EVENTOS", font=("Arial", 15, "bold"), text_color="#1f538d").pack(pady=(0, 0))
         ctk.CTkLabel(frame_log, text="Inicio de Sesión", font=("Arial", 11, "italic"), text_color="#7f8c8d").pack(pady=(0, 20))
         ctk.CTkLabel(frame_log, text="Usuario:", font=("Arial", 11, "bold")).pack(anchor="w", padx=30, pady=2)
         ent_user = ctk.CTkEntry(frame_log, width=300, font=("Arial", 12))
         ent_user.pack(pady=(0, 15))
         ent_user.focus()
-        
         ctk.CTkLabel(frame_log, text="Contraseña:", font=("Arial", 11, "bold")).pack(anchor="w", padx=30, pady=2)
         ent_pass = ctk.CTkEntry(frame_log, width=300, font=("Arial", 12), show="*")
         ent_pass.pack(pady=(0, 25))
@@ -1371,217 +1410,266 @@ class ControlGeneralEventos:
             if not conn:
                 messagebox.showinfo(
                     "📡 MODO LECTURA OFFLINE ACTIVADO",
-                    "Sin conexión a Internet.\n\nIniciando en MODO LECTURA:\n• Podrás revisar clientes, cronograma y flota.\n• No se permitirán modificaciones hasta reconectarte."
+                    "Sin conexión a Internet.\n\nIniciando en MODO LECTURA:\n"
+                    "• Podrás revisar clientes, cotizaciones y eventos.\n"
+                    "• No se permitirán modificaciones hasta reconectarte."
                 )
                 self.usuario_activo = user if user else "Invitado"
                 self.rol_activo = "Invitado Offline"
-                self.permisos_activos = {"clientes": True, "cronograma": True, "flota": True}
-                if hasattr(cache_sistema, "cargar_copia_local"):
-                    cache_sistema.cargar_copia_local()
+                self.permisos_activos = {"clientes": True, "cotizaciones": True, "cronograma": True}
+                if hasattr(cache_sistema, "cargar_copia_local"): cache_sistema.cargar_copia_local()
                 cache_sistema.modo_lectura = True
                 self.v_login.destroy()
                 self.construir_dashboard_spa()
                 return
-
             try:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT rol, permisos, clave_hash, activo FROM usuarios WHERE usuario = %s", (user,))
-                    resultado = cursor.fetchone()
-                    if not resultado:
-                        messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
-                        registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido (usuario no existe)")
-                        ent_pass.delete(0, tk.END)
-                        ent_user.focus()
-                        return
-                        
-                    rol_db, permisos_str, clave_hash, activo = resultado
-                    if not activo:
-                        messagebox.showerror("Acceso Denegado", "Este usuario está desactivado.\nContacta al administrador.")
-                        registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión con usuario desactivado")
-                        return
-                        
-                    if not clave_hash or not verify_password(clave, clave_hash):
-                        messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
-                        registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido")
-                        ent_pass.delete(0, tk.END)
-                        ent_user.focus()
-                        return
-                        
-                    self.usuario_activo = user
-                    self.rol_activo = str(rol_db).strip()
-                    try:
-                        self.permisos_activos = json.loads(permisos_str) if permisos_str else {}
-                    except Exception:
-                        self.permisos_activos = {}
-                        
-                    registrar_auditoria(self.usuario_activo, "Seguridad", "Inicio de sesión exitoso")
-                    self.v_login.destroy()
-                    self.construir_dashboard_spa()
+                cursor = conn.cursor()
+                cursor.execute("SELECT rol, permisos, clave_hash, activo FROM usuarios WHERE usuario = %s", (user,))
+                resultado = cursor.fetchone()
+                if not resultado:
+                    messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
+                    registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido (usuario no existe)")
+                    ent_pass.delete(0, tk.END); ent_user.focus()
+                    return
+                rol_db, permisos_str, clave_hash, activo = resultado
+                if not activo:
+                    messagebox.showerror("Acceso Denegado", "Este usuario está desactivado.\nContacta al administrador.")
+                    registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión con usuario desactivado")
+                    return
+                if not clave_hash or not verify_password(clave, clave_hash):
+                    messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
+                    registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido")
+                    ent_pass.delete(0, tk.END); ent_user.focus()
+                    return
+                self.usuario_activo = user
+                self.rol_activo = str(rol_db).strip()
+                try: self.permisos_activos = json.loads(permisos_str) if permisos_str else {}
+                except Exception: self.permisos_activos = {}
+                registrar_auditoria(self.usuario_activo, "Seguridad", "Inicio de sesión exitoso")
+                self.v_login.destroy()
+                self.construir_dashboard_spa()
             except Exception as e:
                 messagebox.showerror("Error Crítico", f"Ocurrió un problema en el sistema:\n{e}")
             finally:
                 liberar_conexion(conn)
 
-        btn_entrar = ctk.CTkButton(
-            frame_log,
-            text="Ingresar al Sistema",
-            width=200,
-            height=35,
-            font=("Arial", 12, "bold"),
-            fg_color="#1f538d",
-            hover_color="#163b65",
-            command=verificar_credenciales
-        )
+        btn_entrar = ctk.CTkButton(frame_log, text="Ingresar al Sistema", width=200, height=35, font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=verificar_credenciales)
         btn_entrar.pack(pady=5)
 
-    # =======================================================
-    # macOS: CLIC EN EL ICONO DEL DOCK (VENTANAS MINIMIZADAS)
-    # =======================================================
-    def _ventanas_secundarias(self):
-        """Lista las ventanas Toplevel abiertas (login, diálogos, asistentes)."""
-        encontradas = []
-
-        def recorrer(widget):
-            try:
-                hijos = widget.winfo_children()
-            except Exception:
-                return
-            for hijo in hijos:
-                if isinstance(hijo, tk.Toplevel):
-                    encontradas.append(hijo)
-                recorrer(hijo)
-
-        try:
-            recorrer(self.root)
-        except Exception:
-            pass
-        return encontradas
-
-    def restaurar_ventanas_desde_dock(self):
-        """Devuelve a pantalla el programa cuando se pulsa su icono en el Dock.
-
-        En macOS Tk entrega el Apple Event "rapp" a este método (registrado como
-        ::tk::mac::ReopenApplication). Sin él, Tk no restauraba nada y la ventana
-        minimizada se quedaba en el Dock al hacer clic en el icono inferior.
-        """
-        if sys.platform != "darwin":
-            return
-        try:
-            # 1) Cualquier ventana que estuviera minimizada vuelve a pantalla
-            for ventana in self._ventanas_secundarias():
-                try:
-                    if ventana.winfo_exists() and ventana.state() == "iconic":
-                        ventana.deiconify()
-                except Exception:
-                    pass
-
-            # 2) En la pantalla de acceso, la ventana que debe subir es el login
-            if getattr(self, "login_en_pantalla", False):
-                try:
-                    if self.v_login.winfo_exists():
-                        if self.v_login.state() == "iconic":
-                            self.v_login.deiconify()
-                        self.v_login.lift()
-                        self.v_login.focus_force()
-                        try:
-                            self.v_login.grab_set()
-                        except Exception:
-                            pass
-                        return
-                except Exception:
-                    pass
-
-            # 3) Ventana principal (dashboard ya construido)
-            if getattr(self, "dashboard_listo", False):
-                self.root.deiconify()
-                self.root.lift()
-                try:
-                    self.root.focus_force()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    # =======================================================
-    # DASHBOARD PRINCIPAL Y CICLO DE SINCRONIZACIÓN
-    # =======================================================
     def construir_dashboard_spa(self):
+        # 🪟 Al volver a entrar (o cambiar de usuario) se cierran las ventanas de módulos
+        self.cerrar_todas_las_ventanas()
         for widget in self.root.winfo_children():
             widget.destroy()
-            
+        # ⛶ Se vuelve al modo normal (el menú lateral siempre debe estar visible al entrar)
+        try:
+            self.root.attributes("-fullscreen", False)
+        except Exception:
+            pass
+        self.modo_pantalla_completa = False
         config = cargar_configuracion_general()
         c_fondo = config.get("color_menu_fondo", "#1a252c")
         c_btn = config.get("color_menu_btn", "#1f538d")
         c_hover = config.get("color_menu_hover", "#163b65")
         c_texto = config.get("color_menu_texto", "white")
         fondo_seguro = c_fondo if str(c_fondo).startswith("#") else "#1a252c"
-        
-        orden_ops = config.get("orden_operativos", ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"])
-        orden_fin = config.get("orden_finanzas", ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "cobranza", "dashboard", "banco"])
+        default_fin = ["ventas", "compras", "bancos", "libro_diario", "libro_mayor", "impuestos", "dashboard"]
+        orden_ops = config.get("orden_operativos", ["clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "inventario", "locaciones"])
+        orden_fin = config.get("orden_finanzas", list(default_fin))
         orden_aju = config.get("orden_ajustes", ["configuracion", "usuarios", "bitacora"])
-        # Los módulos Banco y Nómina siempre se ubican en Finanzas y Reportes
-        orden_ops = [m for m in orden_ops if m not in ("banco", "nomina")]
-        for modulo_fin in ("banco", "nomina"):
-            if modulo_fin not in orden_fin:
-                orden_fin.append(modulo_fin)
-        todas = orden_ops + orden_fin + orden_aju
+        todas_las_ordenes = orden_ops + orden_fin + orden_aju
+        # Los módulos nuevos que aún no están en la configuración guardada se colocan
+        # en su grupo natural (Bancos va en Finanzas, justo después de Compras, y no
+        # en Operativos). Al guardar la Configuración General el orden queda fijo.
         for k in self.modulos_sistema:
-            if k not in todas:
-                orden_ops.append(k)
-
-        self.login_en_pantalla = False
-        self.dashboard_listo = True
+            if k not in todas_las_ordenes:
+                grupo = orden_fin if k in default_fin else orden_ops
+                if k == "bancos" and "compras" in grupo:
+                    grupo.insert(grupo.index("compras") + 1, k)
+                else:
+                    grupo.append(k)
         self.root.deiconify()
         maximizar_ventana(self.root)
         cache_sistema.iniciar_ciclo()
         
         self.root.after(5000, self.ciclo_sincronizacion_nube)
-        self.root.lift()
+        self.buscar_actualizaciones_github()
+        
+        def pre_cargar_listas():
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("SELECT nombre_empresa FROM clientes ORDER BY nombre_empresa ASC")
+                    cache_sistema.guardar('lista_clientes_combobox', [str(r[0]).strip() for r in c.fetchall() if r[0]])
+                    
+                    c.execute("SELECT nombre FROM proveedores ORDER BY nombre ASC")
+                    cache_sistema.guardar('lista_proveedores_combobox', [str(r[0]).strip() for r in c.fetchall() if r[0]])
+                    
+                    c.execute("SELECT codigo_cotizacion, nombre_evento FROM cotizaciones WHERE status = 'Aprobada' ORDER BY id DESC")
+                    evs = [f"{r[0]} | {r[1]}" for r in c.fetchall()]
+                    evs.insert(0, "OFICINA | Trabajos Internos")
+                    cache_sistema.guardar('lista_eventos_aprobados', evs)
+                    
+                    c.execute("SELECT numero_oc FROM ordenes_compra_clientes ORDER BY id DESC")
+                    cache_sistema.guardar('lista_ocs_combobox', ["--- Sin Orden de Compra ---"] + [r[0] for r in c.fetchall()])
+                except Exception: pass
+                finally: liberar_conexion(conn)
+            # 🏦 Las cuentas bancarias se leen de la base de datos una vez al entrar:
+            # así los combos de Bancos, Ventas y Compras se abren al instante.
+            try:
+                cargar_bancos(usar_cache=False)
+            except Exception:
+                pass
+        threading.Thread(target=pre_cargar_listas, daemon=True).start()
+        
+        self.root.attributes("-topmost", True); self.root.update(); self.root.attributes("-topmost", False)
         self.root.focus_force()
-        
         self.sidebar = ctk.CTkFrame(self.root, width=280, corner_radius=0, fg_color=fondo_seguro)
-        self.sidebar.pack(side="left", fill="y")
-        self.sidebar.pack_propagate(False)
-        
+        self.sidebar.pack(side="left", fill="y"); self.sidebar.pack_propagate(False)
         self.contenedor_central = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
         self.contenedor_central.pack(side="right", fill="both", expand=True)
 
-        # 🪟 ESCRITORIO MULTIVENTANA: aquí se abren los módulos (varios a la vez)
-        self._construir_escritorio()
-
+        # ==================================================
+        # 🪟 PESTAÑAS DE LOS MÓDULOS ABIERTOS (parte de abajo)
+        # Cada módulo abierto aparece aquí como una pestaña: al pulsarla se trae al
+        # frente y se actualiza; con su ✖ se cierra. Se arma sola.
+        # ==================================================
+        # Línea superior: separa visualmente la barra de pestañas del contenido
+        self.linea_pestanas = ctk.CTkFrame(self.contenedor_central, height=2, corner_radius=0,
+                                           fg_color=c_btn)
+        self.linea_pestanas.pack(side="bottom", fill="x")
+        self.barra_pestanas = ctk.CTkFrame(self.contenedor_central, corner_radius=0,
+                                           fg_color=fondo_seguro, height=42)
+        self.barra_pestanas.pack(side="bottom", fill="x")
+        self.barra_pestanas.pack_propagate(False)
+        self.lbl_pestanas = ctk.CTkLabel(self.barra_pestanas, text="🪟 Módulos abiertos: (ninguno)",
+                                         font=("Arial", 10, "bold"), text_color="#7fb3d5")
+        self.lbl_pestanas.pack(side="left", padx=(12, 6))
+        # 🖱️ Aquí se dibujan las pestañas. Es un marco normal (no un CTkScrollableFrame):
+        # dentro de una barra con pack_propagate(False) el marco con scroll se aplastaba
+        # y las pestañas quedaban de 7 píxeles (invisibles).
+        self.pestanas_area = ctk.CTkFrame(self.barra_pestanas, fg_color="transparent")
+        self.pestanas_area.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=4)
+        # 🖱️ Pestañas dibujadas: {clave_modulo: marco de la pestaña}
+        self.pestanas_modulos = {}
+        # 🪟 Módulo que tiene el foco (su pestaña se pinta resaltada)
+        self._modulo_activo = None
         frame_top_sidebar = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         frame_top_sidebar.pack(side="top", fill="x", pady=(10, 5))
-        
-        ruta_logo_sidebar = ruta_recurso("Logo.png")
+        ruta_logo_sidebar = ruta_recurso("logo.png")
         if os.path.exists(ruta_logo_sidebar):
             try:
-                if PIL_DISPONIBLE:
-                    img_raw = Image.open(ruta_logo_sidebar)
-                    self.img_sidebar_ctk = ctk.CTkImage(light_image=img_raw, dark_image=img_raw, size=(120, 50))
-                    lbl_img = ctk.CTkLabel(frame_top_sidebar, image=self.img_sidebar_ctk, text="")
-                    lbl_img.pack(pady=(15, 10))
-                else:
-                    self.logo_img = tk.PhotoImage(file=ruta_logo_sidebar)
-                    tk.Label(frame_top_sidebar, image=self.logo_img, bg=fondo_seguro).pack(pady=(15, 10))
+                self.logo_img = tk.PhotoImage(file=ruta_logo_sidebar)
+                tk.Label(frame_top_sidebar, image=self.logo_img, bg=fondo_seguro).pack(pady=(15, 10))
+            except Exception: pass
+        ctk.CTkLabel(frame_top_sidebar, text=f"👤 {self.usuario_activo.upper()}", font=("Arial", 11, "bold"), text_color="#28a745").pack(pady=(0, 2))
+        ctk.CTkLabel(frame_top_sidebar, text=f"Rol: {self.rol_activo}", font=("Arial", 10), text_color="white").pack(pady=(0, 5))
+        frame_bottom_sidebar = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        frame_bottom_sidebar.pack(side="bottom", fill="x", pady=(5, 10))
+        lbl_firma_sidebar = ctk.CTkLabel(frame_bottom_sidebar, text=f"Software desarrollado por Alfred Collie\nVersión {VERSION_ACTUAL} © 2026", font=("Arial", 9, "italic"), text_color="#7f8c8d")
+        lbl_firma_sidebar.pack(side="bottom", pady=(2, 5))
+
+
+        # ==================================================
+        # ⛶ PANTALLA COMPLETA (oculta todo el menú de la izquierda)
+        # ==================================================
+        self.modo_pantalla_completa = False
+
+        def _salir_de_pantalla_completa():
+            """Restaura el menú lateral y el tamaño normal de la ventana."""
+            self.modo_pantalla_completa = False
+            try:
+                self.root.attributes("-fullscreen", False)
+            except Exception:
+                pass
+            try:
+                self.btn_volver_pantalla.place_forget()
+            except Exception:
+                pass
+            try:
+                self.sidebar.pack(side="left", fill="y", before=self.contenedor_central)
+                self.sidebar.pack_propagate(False)
+            except Exception:
+                pass
+            try:
+                self.btn_pantalla_completa.configure(text="⛶ Pantalla Completa")
+            except Exception:
+                pass
+            maximizar_ventana(self.root)
+
+        def alternar_pantalla_completa():
+            """⛶ Pone a pantalla completa la ventana que está ADELANTE.
+
+            Si hay un módulo abierto (ventana secundaria), se maximiza ESE; si no,
+            se usa la ventana principal y se esconde el menú lateral.
+            """
+            destino = ventana_al_frente(self.root)
+            if destino is not None and destino is not self.root:
+                try:
+                    activo = bool(destino.attributes("-fullscreen"))
+                except Exception:
+                    activo = bool(getattr(destino, "_pantalla_completa_activa", False))
+                try:
+                    if not activo:
+                        destino._geometria_previa = destino.geometry()
+                        destino.attributes("-fullscreen", True)
+                        destino._pantalla_completa_activa = True
+                        destino.bind("<Escape>", lambda _e: alternar_pantalla_completa())
+                    else:
+                        destino.attributes("-fullscreen", False)
+                        try:
+                            destino.update_idletasks()
+                        except Exception:
+                            pass
+                        geo = getattr(destino, "_geometria_previa", "")
+                        if geo:
+                            destino.geometry(geo)
+                        destino._pantalla_completa_activa = False
+                except Exception:
+                    maximizar_ventana(destino)
+                return
+            if getattr(self, "modo_pantalla_completa", False):
+                _salir_de_pantalla_completa()
+                return
+            self.modo_pantalla_completa = True
+            try:
+                self.sidebar.pack_forget()          # se elimina todo el menú lateral
+            except Exception:
+                pass
+            try:
+                self.root.attributes("-fullscreen", True)
+            except Exception:
+                maximizar_ventana(self.root)
+            try:
+                self.btn_volver_pantalla.place(relx=1.0, y=10, x=-14, anchor="ne")
+                self.btn_volver_pantalla.lift()
+            except Exception:
+                pass
+            try:
+                self.btn_pantalla_completa.configure(text="⛶ Salir de Pantalla Completa")
             except Exception:
                 pass
 
-        ctk.CTkLabel(frame_top_sidebar, text=f"👤 {self.usuario_activo.upper()}", font=("Arial", 11, "bold"), text_color="#28a745").pack(pady=(0, 2))
-        ctk.CTkLabel(frame_top_sidebar, text=f"Rol: {self.rol_activo}", font=("Arial", 10), text_color="white").pack(pady=(0, 5))
-        
-        frame_bottom_sidebar = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        frame_bottom_sidebar.pack(side="bottom", fill="x", pady=(5, 10))
-        
-        lbl_firma_sidebar = ctk.CTkLabel(frame_bottom_sidebar, text="Software desarrollado por Alfred Collie\nVersión 1.5.4 © 2026", font=("Arial", 9, "italic"), text_color="#7f8c8d")
-        lbl_firma_sidebar.pack(side="bottom", pady=(2, 5))
+        # Botón flotante: es la única forma de volver mientras el menú está oculto
+        self.btn_volver_pantalla = ctk.CTkButton(
+            self.root, text="⛶ Salir de Pantalla Completa", command=alternar_pantalla_completa,
+            height=28, font=("Arial", 11, "bold"), fg_color="#2c3e50", hover_color="#1b2631")
+        try:
+            self.root.bind("<F11>", lambda _e: alternar_pantalla_completa())
+            self.root.bind("<Escape>", lambda _e: _salir_de_pantalla_completa()
+                           if getattr(self, "modo_pantalla_completa", False) else None)
+        except Exception:
+            pass
 
         def cerrar_sistema():
             registrar_auditoria(self.usuario_activo, "Seguridad", "Cerró el sistema")
-            self.root.quit()
-            self.root.destroy()
+            self.cerrar_todas_las_ventanas()      # 🪟 se cierran los módulos abiertos
+            self.root.quit(); self.root.destroy()
 
         def cambiar_usuario():
             registrar_auditoria(self.usuario_activo, "Seguridad", "Cerró sesión para cambiar de usuario")
+            self.cerrar_todas_las_ventanas()      # 🪟 se cierran los módulos abiertos
             self.usuario_activo = "No autenticado"
             self.rol_activo = "Ninguno"
             self.permisos_activos = {}
@@ -1592,37 +1680,13 @@ class ControlGeneralEventos:
         btn_salir.pack(side="bottom", pady=(2, 5))
         btn_cambio = ctk.CTkButton(frame_bottom_sidebar, text="🔄 Cambiar Usuario", command=cambiar_usuario, width=240, height=30, font=("Arial", 11, "bold"), fg_color="#555555", hover_color="#333333")
         btn_cambio.pack(side="bottom", pady=(2, 5))
-
-        # Pantalla completa: útil para las tablas anchas (matriz de asistencia, libros, etc.)
-        self.btn_pantalla_completa = ctk.CTkButton(frame_bottom_sidebar, text="⛶ Pantalla completa", command=lambda: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa), width=240, height=30, font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50")
-        # La marca permite que los demás botones de pantalla completa se sincronicen solos
-        self.btn_pantalla_completa._boton_pantalla_completa = True
+        # ⛶ Queda arriba del botón "Cambiar Usuario"
+        self.btn_pantalla_completa = ctk.CTkButton(
+            frame_bottom_sidebar, text="⛶ Pantalla Completa", command=alternar_pantalla_completa,
+            width=240, height=30, font=("Arial", 11, "bold"), fg_color="#2c3e50", hover_color="#1b2631")
         self.btn_pantalla_completa.pack(side="bottom", pady=(2, 5))
-
-        # Botón flotante de escape: aparece solo cuando la barra lateral está oculta
-        # (pantalla completa), para no dejar al usuario sin forma visible de volver.
-        self.btn_flotante_salir = ctk.CTkButton(
-            self.root, text="🗗 Salir de pantalla completa", width=215, height=28,
-            font=("Arial", 10, "bold"), fg_color="#e67e22", hover_color="#b9640f",
-            command=lambda: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa))
-
-        # Ganchos en la ventana: cualquier módulo puede pedir ocultar la barra lateral
-        self.root._alternar_barra_lateral = self.alternar_barra_lateral
-        self.root._alternar_modulo_pantalla = self._acomodar_modulo_pantalla_completa
-        self.root._boton_flotante_salir = self.btn_flotante_salir
-        self.root._barra_lateral = self.sidebar
-
-        # Los atajos viven en la ventana principal (siguen funcionando con cualquier
-        # módulo abierto y no dejan enlaces huérfanos al cerrarlos).
-        try:
-            self.root.bind("<F11>", lambda _e: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa))
-            self.root.bind("<Escape>", self.salir_pantalla_completa)
-        except Exception:
-            pass
-        
         linea_separadora = ctk.CTkFrame(frame_bottom_sidebar, height=2, fg_color="#34495e")
         linea_separadora.pack(side="bottom", fill="x", padx=20, pady=(5, 5))
-        
         self.menu_scrollable = ctk.CTkScrollableFrame(self.sidebar, fg_color="transparent", scrollbar_button_color="#34495e")
         self.menu_scrollable.pack(side="top", fill="both", expand=True, padx=5, pady=0)
 
@@ -1643,570 +1707,444 @@ class ControlGeneralEventos:
                 ctk.CTkLabel(self.menu_scrollable, text=titulo_grupo, font=("Arial", 9, "bold"), text_color="#7f8c8d").pack(anchor="w", padx=15, pady=(espaciado_sup, 2))
                 for key in modulos_permitidos:
                     if key in self.modulos_sistema and key in self.funciones_modulos:
-                        crear_btn_menu(self.modulos_sistema[key], self.funciones_modulos[key])
-                        
+                        # 🪟 Cada módulo se abre en su propia ventana (y si ya está
+                        # abierto, esa ventana se trae al frente)
+                        crear_btn_menu(self.modulos_sistema[key],
+                                       lambda k=key: self.abrir_ventana_modulo(k))
         self.mostrar_pantalla_bienvenida()
-
-    def alternar_barra_lateral(self, ocultar):
-        """Oculta o vuelve a mostrar el menú lateral (se usa en pantalla completa).
-
-        En pantalla completa se quitan los botones del sistema para que el módulo
-        aproveche todo el ancho; queda un botón flotante para poder salir.
-        """
-        try:
-            if ocultar:
-                self.sidebar.pack_forget()
-                try:
-                    self.btn_flotante_salir.place(relx=1.0, rely=1.0, x=-16, y=-16, anchor="se")
-                    self.btn_flotante_salir.lift()
-                except Exception:
-                    pass
-            else:
-                try:
-                    self.btn_flotante_salir.place_forget()
-                except Exception:
-                    pass
-                # Se vuelven a empaquetar ambos en el orden original para que la barra
-                # lateral recupere su ancho y el contenido el resto de la ventana.
-                self.contenedor_central.pack_forget()
-                self.sidebar.pack(side="left", fill="y")
-                self.contenedor_central.pack(side="right", fill="both", expand=True)
-        except Exception as e:
-            print("Aviso - barra lateral en pantalla completa:", e)
-
-    def salir_pantalla_completa(self, evento=None):
-        """Sale de pantalla completa con la tecla Esc (si estaba activa)."""
-        if getattr(self.root, "_pantalla_completa_activa", False):
-            alternar_pantalla_completa(self.root, getattr(self, "btn_pantalla_completa", None))
 
     def ciclo_sincronizacion_nube(self):
         lanzar_sync_background()
-        self.root.after(600000, self.ciclo_sincronizacion_nube)
+        self.root.after(600000, self.ciclo_sincronizacion_nube) 
 
-    # =======================================================
-    # ESCRITORIO MULTIVENTANA (VARIOS MÓDULOS A LA VEZ)
-    # Cada módulo se abre en su propia ventana dentro del escritorio:
-    # se puede mover, redimensionar, minimizar (barra de tareas),
-    # maximizar y cerrar. La ventana que se abre queda al frente.
-    # =======================================================
-    def _construir_escritorio(self):
-        """Crea el escritorio (área de trabajo) y la barra de tareas."""
-        self.ventanas_modulos = {}
-        self._clave_activa = None
-        self._contador_cascada = 0
-        self._arrastre = None
+    # ==========================================================
+    # 🪟 SISTEMA MULTI-VENTANA: una ventana por módulo
+    # ==========================================================
+    def abrir_ventana_modulo(self, clave):
+        """Abre el módulo elegido en SU PROPIA VENTANA.
 
-        # Barra de tareas: siempre visible al pie del área de trabajo
-        self.barra_tareas = ctk.CTkFrame(self.contenedor_central, height=34, corner_radius=0, fg_color="#1a252c")
-        self.barra_tareas.pack(side="bottom", fill="x")
-        self.barra_tareas.pack_propagate(False)
+        El sistema es MULTI-VENTANA: cada módulo queda abierto en una ventana
+        independiente (se pueden tener varios a la vez, incluso de módulos
+        distintos) y solo se cierra cuando el usuario pulsa la X de esa ventana.
+        Si el módulo ya está abierto, su ventana se trae al frente en lugar de
+        abrirse dos veces.
+        """
+        if not self.tiene_permiso(clave):
+            return messagebox.showerror("Acceso Denegado", "No tiene permisos para este módulo.")
 
-        ctk.CTkLabel(self.barra_tareas, text="🗂️ Módulos abiertos:", font=("Arial", 10, "bold"),
-                     text_color="#bdc3c7").pack(side="left", padx=(10, 4))
+        # Configuración General y Usuarios ya abren su propia ventana: si esa
+        # ventana ya está abierta se trae al frente en lugar de abrir otra.
+        if clave in ("configuracion", "usuarios"):
+            if self._ventana_viva(self.ventanas_modulos.get(clave)):
+                return self.traer_al_frente_ventana_modulo(clave)
+            self.ventanas_modulos.pop(clave, None)
+            abridor = self.funciones_modulos.get(clave)
+            if abridor is not None:
+                abridor()
+            return
 
-        self.frame_botones_tareas = ctk.CTkFrame(self.barra_tareas, fg_color="transparent")
-        self.frame_botones_tareas.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        # ¿Ya está abierto? -> se trae al frente y se ACTUALIZA la información
+        if self._ventana_viva(self.ventanas_modulos.get(clave)):
+            self.traer_al_frente_ventana_modulo(clave)
+            self.refrescar_ventana_modulo(clave)
+            return
+        self.ventanas_modulos.pop(clave, None)
+        self.instancias_modulos.pop(clave, None)
 
-        ctk.CTkButton(self.barra_tareas, text="🧹 Cerrar todos", width=110, height=24,
-                      font=("Arial", 10, "bold"), fg_color="#c0392b", hover_color="#922b21",
-                      command=self.cerrar_todas_las_ventanas).pack(side="right", padx=8, pady=5)
+        creador = self.funciones_modulos.get(clave)
+        if creador is None:
+            return messagebox.showerror("Error", "Este módulo no está disponible.")
 
-        self._lbl_sin_ventanas = ctk.CTkLabel(self.frame_botones_tareas, text="(ninguno abierto)",
-                                              font=("Arial", 10, "italic"), text_color="#7f8c8d")
-        self._lbl_sin_ventanas.pack(side="left", padx=6)
+        titulo_modulo = self.modulos_sistema.get(clave, clave)
+        ventana = ctk.CTkToplevel(self.root)
+        ventana.title(f"{titulo_modulo}  |  Sistema de Control de Eventos")
+        aplicar_icono_ventana(ventana)
 
-        # Escritorio: las ventanas de los módulos se colocan aquí con place()
-        self.escritorio = ctk.CTkFrame(self.contenedor_central, corner_radius=0, fg_color="#e9edf2")
-        self.escritorio.pack(side="top", fill="both", expand=True)
-        self.escritorio.bind("<Configure>", self._al_redimensionar_escritorio)
-
-        # Un clic en cualquier punto de una ventana la trae al frente
-        # (se engancha una sola vez aunque se reconstruya el dashboard)
+        # 🪟 La ventana del módulo debe quedar DELANTE de la ventana principal.
+        # CustomTkinter oculta y vuelve a mostrar la ventana para pintar la barra de
+        # título (y a los 1000 ms vuelve a ajustar el tamaño): esos ciclos hacían que
+        # el módulo quedara detrás. Por eso se trae al frente varias veces.
+        # 🪟 OJO: no se usa 'transient' a propósito. Las ventanas de los módulos son
+        # ventanas independientes y normales: así conservan sus botones de MINIMIZAR,
+        # maximizar y cerrar (Windows les quita minimizar a las ventanas dependientes).
         try:
-            if not getattr(self.root, "_mdi_clic_enganchado", False):
-                self.root.bind_all("<Button-1>", self._traer_ventana_del_clic, add="+")
-                self.root._mdi_clic_enganchado = True
+            ventana.resizable(True, True)
         except Exception:
             pass
 
-    def _preparar_contenedor_modulo(self, widget):
-        """Prepara el marco que recibe un módulo.
+        # 📐 Tamaño y posición: en cascada, para que no queden una encima de otra
+        pantalla_w = ventana.winfo_screenwidth()
+        pantalla_h = ventana.winfo_screenheight()
+        ancho = min(1260, max(900, pantalla_w - 90))
+        alto = min(800, max(600, pantalla_h - 110))
+        posicion = len(self.ventanas_modulos)
+        x = max(0, min(40 + posicion * 32, pantalla_w - ancho - 30))
+        y = max(0, min(20 + posicion * 28, pantalla_h - alto - 60))
+        ventana.geometry(f"{ancho}x{alto}+{x}+{y}")
+        try:
+            ventana._modulo_geometria_previa = f"{ancho}x{alto}+{x}+{y}"
+        except Exception:
+            pass
+        try:
+            ventana.minsize(880, 560)
+        except Exception:
+            pass
 
-        Algunos módulos llaman métodos propios de una ventana (title, geometry...)
-        sobre el contenedor que reciben. Como aquí el contenedor es un marco del
-        escritorio, esos métodos se dejan como "sin efecto" en vez de fallar.
-        """
+        # ==================================================
+        # 🪟 BARRA DE LA VENTANA: actualizar, minimizar, expandir y cerrar
+        # (además de los botones normales de la barra de título del sistema)
+        # ==================================================
+        barra = ctk.CTkFrame(ventana, corner_radius=0, fg_color="#1a252c", height=34)
+        barra.pack(side="top", fill="x")
+        ctk.CTkLabel(barra, text=f"🪟 {titulo_modulo}", font=("Arial", 11, "bold"),
+                     text_color="white", anchor="w").pack(side="left", padx=(10, 6), pady=5)
+
+        def _cerrar(c=clave): self.cerrar_ventana_modulo(c)
+        def _minimizar(c=clave): self.minimizar_ventana_modulo(c)
+        def _expandir(c=clave): self.alternar_maximizar_ventana_modulo(c)
+        def _actualizar(c=clave): self.refrescar_ventana_modulo(c, aviso=True)
+
+        ctk.CTkButton(barra, text="✖ Cerrar", width=86, height=24, font=("Arial", 10, "bold"),
+                      fg_color="#c0392b", hover_color="#922b21", command=_cerrar
+                      ).pack(side="right", padx=(2, 8), pady=5)
+        btn_expandir = ctk.CTkButton(barra, text="🗖 Expandir", width=98, height=24, font=("Arial", 10, "bold"),
+                                     fg_color="#34495e", hover_color="#2c3e50", command=_expandir)
+        btn_expandir.pack(side="right", padx=2, pady=5)
+        ctk.CTkButton(barra, text="🗕 Minimizar", width=100, height=24, font=("Arial", 10, "bold"),
+                      fg_color="#34495e", hover_color="#2c3e50", command=_minimizar
+                      ).pack(side="right", padx=2, pady=5)
+        ctk.CTkButton(barra, text="🔄 Actualizar", width=105, height=24, font=("Arial", 10, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65", command=_actualizar
+                      ).pack(side="right", padx=2, pady=5)
+        ctk.CTkLabel(barra, text="Atajos: F5 actualizar · F11 expandir",
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d").pack(side="right", padx=10)
+
+        contenedor = ctk.CTkFrame(ventana, corner_radius=0, fg_color="transparent")
+        contenedor.pack(fill="both", expand=True)
+        # Compatibilidad: algunos módulos llaman a estos métodos del marco contenedor
         def dummy(*args, **kwargs): pass
-        for metodo in ("title", "geometry", "resizable", "iconbitmap", "state",
-                       "attributes", "maxsize", "minsize", "deiconify", "withdraw"):
-            if not hasattr(widget, metodo):
-                try: setattr(widget, metodo, dummy)
-                except Exception: pass
-        return widget
+        for metodo in ("title", "geometry", "resizable", "iconbitmap"):
+            if not hasattr(contenedor, metodo):
+                setattr(contenedor, metodo, dummy)
 
-    def _titulo_modulo(self, clave, respaldo=""):
-        """Nombre visible del módulo (para la barra de título y la barra de tareas)."""
-        return self.modulos_sistema.get(clave) or respaldo or clave
+        self.ventanas_modulos[clave] = ventana
+        ventana._btn_expandir = btn_expandir          # para cambiar su texto al expandir
+        # 🖥️ Los módulos se abren MAXIMIZADOS (el botón permite restaurar)
+        ventana._modulo_maximizado = True
+        try:
+            ventana.after(120, lambda v=ventana: maximizar_ventana(v))
+            ventana.after(200, lambda b=btn_expandir: b.configure(text="🗗 Restaurar"))
+        except Exception:
+            pass
+        # La X de la ventana cierra el módulo y lo quita de la lista de abiertos
+        ventana.protocol("WM_DELETE_WINDOW", lambda c=clave: self.cerrar_ventana_modulo(c))
+        ventana.bind("<Destroy>", lambda e, c=clave: self._al_destruir_ventana(e, c), add="+")
+        # ⌨️ Atajos de la ventana del módulo: F5 actualiza · F11 expande o restaura
+        ventana.bind("<F5>", lambda _e, c=clave: self.refrescar_ventana_modulo(c, aviso=True), add="+")
+        ventana.bind("<F11>", lambda _e, c=clave: self.alternar_maximizar_ventana_modulo(c), add="+")
+        # 🪟 Al usar esta ventana, su pestaña de abajo queda resaltada
+        ventana.bind("<FocusIn>", lambda _e, c=clave: self._marcar_modulo_activo(c), add="+")
+
+        try:
+            # La función creadora devuelve la instancia del módulo: se guarda para
+            # poder ACTUALIZAR sus datos cuando se vuelva a abrir el módulo.
+            instancia = creador(contenedor)
+            if instancia is not None:
+                self.instancias_modulos[clave] = instancia
+        except Exception as e:
+            messagebox.showerror("Error", f"Fallo al abrir {titulo_modulo}:\n{e}")
+            self.cerrar_ventana_modulo(clave)
+            return
+
+        # 🪟 Botón propio en la barra de tareas (Windows), ventana al frente y
+        # pestaña del módulo en la barra de abajo.
+        poner_ventana_en_barra_tareas(ventana)
+        traer_al_frente(ventana)
+        self._modulo_activo = clave          # su pestaña queda resaltada
+
+        # 🪟 Red de seguridad: si la ventana principal recibe el foco (al pulsar un
+        # botón, abrir un diálogo, etc.) la ventana del módulo se vuelve a poner
+        # delante, para que no quede tapada.
+        def _subir_modulo(_evento=None, c=clave):
+            v = self.ventanas_modulos.get(c)
+            if not self._ventana_viva(v):
+                return
+            try:
+                if str(v.state()) == "iconic":
+                    return          # el usuario la minimizó a propósito: no se restaura
+                if str(v.state()) == "normal":
+                    v.lift()
+            except Exception:
+                pass
+        try:
+            self.root.bind("<FocusIn>", _subir_modulo, add="+")
+        except Exception:
+            pass
+        self._actualizar_pestanas_modulos()
+
+        registrar_auditoria(self.usuario_activo, "Sistema", f"Abrió el módulo {titulo_modulo}")
+
+    # ------------------------------------------------------------------
+    # 🪟 ACCIONES SOBRE LAS VENTANAS DE LOS MÓDULOS
+    # ------------------------------------------------------------------
+    def _ventana_viva(self, ventana):
+        """¿La ventana existe todavía?"""
+        if ventana is None:
+            return False
+        try:
+            return bool(ventana.winfo_exists())
+        except Exception:
+            return False
+
+    def traer_al_frente_ventana_modulo(self, clave):
+        """🪟 Restaura (si estaba minimizada), trae al frente y enfoca la ventana."""
+        ventana = self.ventanas_modulos.get(clave)
+        if not self._ventana_viva(ventana):
+            return
+        try:
+            if str(ventana.state()) == "iconic":
+                ventana.deiconify()          # estaba minimizada: se restaura
+        except Exception:
+            pass
+        try:
+            ventana.deiconify()
+        except Exception:
+            pass
+        try:
+            ventana.lift()
+        except Exception:
+            pass
+        # Un 'topmost' momentáneo: garantiza que quede delante de la ventana
+        # principal (CustomTkinter repinta la barra de título y la manda atrás).
+        def _soltar():
+            try:
+                if self._ventana_viva(ventana):
+                    ventana.attributes("-topmost", False)
+            except Exception:
+                pass
+        try:
+            ventana.attributes("-topmost", True)
+            ventana.after(400, _soltar)
+        except Exception:
+            pass
+        try:
+            ventana.focus_force()
+        except Exception:
+            pass
+
+    def refrescar_ventana_modulo(self, clave, aviso=False):
+        """🔄 Vuelve a cargar los datos del módulo abierto.
+
+        Se llama al pulsar otra vez el módulo en el menú lateral (o el botón
+        '🔄 Actualizar' de la ventana), para que la información esté al día.
+        """
+        instancia = self.instancias_modulos.get(clave)
+        if instancia is None:
+            if aviso:
+                messagebox.showinfo("Actualizar", "Este módulo no tiene datos para actualizar.")
+            return 0
+
+        def _hacer():
+            recargados = refrescar_instancia_modulo(instancia)
+            if aviso:
+                if recargados:
+                    messagebox.showinfo("Actualizar", "✅ Información actualizada.")
+                else:
+                    messagebox.showinfo("Actualizar",
+                                        "El módulo ya está al día (usa sus propios botones de actualizar).")
+
+        try:
+            self.root.after(60, _hacer)      # se deja que la ventana pinte primero
+        except Exception:
+            _hacer()
+        return True
+
+    def minimizar_ventana_modulo(self, clave):
+        """🗕 Minimiza la ventana del módulo (queda en la barra de tareas)."""
+        ventana = self.ventanas_modulos.get(clave)
+        if not self._ventana_viva(ventana):
+            return
+        try:
+            ventana.iconify()
+        except Exception:
+            pass
+
+    def alternar_maximizar_ventana_modulo(self, clave):
+        """🗖 Expande la ventana del módulo a toda la pantalla y la vuelve a su
+        tamaño anterior si ya estaba expandida."""
+        ventana = self.ventanas_modulos.get(clave)
+        if not self._ventana_viva(ventana):
+            return
+        boton = getattr(ventana, "_btn_expandir", None)
+        if getattr(ventana, "_modulo_maximizado", False):
+            # 🔽 Restaurar: se vuelve al tamaño y posición que tenía antes
+            try:
+                if sys.platform == "win32":
+                    ventana.state("normal")
+            except Exception:
+                pass
+            geometria = getattr(ventana, "_modulo_geometria_previa", None)
+            if geometria:
+                try:
+                    ventana.geometry(geometria)
+                except Exception:
+                    pass
+            ventana._modulo_maximizado = False
+            try:
+                if boton is not None:
+                    boton.configure(text="🗖 Expandir")
+            except Exception:
+                pass
+        else:
+            try:
+                ventana._modulo_geometria_previa = ventana.geometry()
+            except Exception:
+                pass
+            maximizar_ventana(ventana)
+            ventana._modulo_maximizado = True
+            try:
+                if boton is not None:
+                    boton.configure(text="🗗 Restaurar")
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # 🪟 PESTAÑAS DE MÓDULOS ABIERTOS (parte inferior de la ventana)
+    # ------------------------------------------------------------------
+    def _etiqueta_corta_modulo(self, clave):
+        """Nombre corto del módulo para la pestaña: '💼 Ventas (Facturas y Cobros)' -> 'Ventas'."""
+        titulo = str(self.modulos_sistema.get(clave, clave) or clave).strip()
+        partes = titulo.split(" ", 1)
+        if len(partes) == 2 and not partes[0][:1].isalnum():
+            titulo = partes[1]          # se quita el icono del principio
+        if "(" in titulo:
+            titulo = titulo.split("(")[0]
+        titulo = titulo.strip() or clave
+        if len(titulo) > 16:                 # los nombres largos se abrevian
+            titulo = titulo[:15].rstrip() + "…"
+        return titulo
+
+    def _actualizar_pestanas_modulos(self):
+        """Redibuja las pestañas de los módulos abiertos (parte de abajo)."""
+        contenedor = getattr(self, "pestanas_area", None)
+        if contenedor is None:
+            return
+        try:
+            for widget in contenedor.winfo_children():
+                widget.destroy()
+            self.pestanas_modulos = {}
+
+            abiertos = [(c, v) for c, v in (getattr(self, "ventanas_modulos", {}) or {}).items()
+                        if self._ventana_viva(v)]
+            try:
+                if abiertos:
+                    self.lbl_pestanas.configure(text=f"🪟 Módulos abiertos ({len(abiertos)}):")
+                else:
+                    self.lbl_pestanas.configure(text="🪟 Módulos abiertos: (ninguno)")
+            except Exception:
+                pass
+
+            # 📐 Ancho de cada pestaña: se reparte el espacio disponible para que
+            # TODAS se vean, aunque haya muchos módulos abiertos.
+            ancho_area = contenedor.winfo_width()
+            if ancho_area < 120:                 # todavía no se dibujó el área
+                try:
+                    ancho_area = max(420, self.root.winfo_width() - 300)
+                except Exception:
+                    ancho_area = 800
+            cuantas = max(1, len(abiertos))
+            ancho_fila = max(46, (ancho_area - 12) // cuantas - 6)
+            mostrar_cerrar = ancho_fila >= 104   # en pestañas angostas no cabe la ✖
+            ancho_boton = max(28, ancho_fila - (30 if mostrar_cerrar else 10))
+            # Cuántos caracteres caben en el nombre (letra de 10 px ≈ 7,2 px por carácter)
+            limite_txt = max(3, int(ancho_boton / 7.2) - 1)
+
+            activo = getattr(self, "_modulo_activo", None)
+            for clave, _ventana in abiertos:
+                es_activo = (clave == activo)
+                color_fondo = "#1f538d" if es_activo else "#22303a"
+                color_hover = "#163b65" if es_activo else "#34495e"
+                titulo = self._etiqueta_corta_modulo(clave)
+                if len(titulo) > limite_txt:
+                    titulo = titulo[:limite_txt].rstrip() + "…"
+                fila = ctk.CTkFrame(contenedor, fg_color=color_fondo, corner_radius=6,
+                                    width=ancho_fila, height=30)
+                fila.pack(side="left", padx=3, pady=2)
+                fila.pack_propagate(False)
+                ctk.CTkButton(fila, text=titulo, width=ancho_boton, height=26, corner_radius=4,
+                              font=("Arial", 10, "bold"), fg_color="transparent", text_color="white",
+                              hover_color=color_hover, anchor="w",
+                              command=lambda c=clave: self._ir_a_modulo(c)
+                              ).pack(side="left", padx=(4, 2), pady=2)
+                if mostrar_cerrar:
+                    ctk.CTkButton(fila, text="✖", width=20, height=20, corner_radius=4,
+                                  font=("Arial", 9, "bold"), fg_color="#c0392b", hover_color="#922b21",
+                                  command=lambda c=clave: self.cerrar_ventana_modulo(c)
+                                  ).pack(side="left", padx=(0, 4), pady=2)
+                self.pestanas_modulos[clave] = fila
+        except Exception:
+            pass
+
+    def _marcar_modulo_activo(self, clave):
+        """Resalta la pestaña del módulo que tiene el foco."""
+        if getattr(self, "_modulo_activo", None) == clave:
+            return
+        self._modulo_activo = clave
+        self._actualizar_pestanas_modulos()
+
+    def _ir_a_modulo(self, clave):
+        """Trae al frente la ventana de un módulo y actualiza su información."""
+        self._modulo_activo = clave
+        self.traer_al_frente_ventana_modulo(clave)
+        self.refrescar_ventana_modulo(clave)
+        self._actualizar_pestanas_modulos()
+
+    def _al_destruir_ventana(self, evento, clave):
+        """Quita la ventana del registro cuando se cierra (la X o el sistema)."""
+        try:
+            if evento.widget is not self.ventanas_modulos.get(clave):
+                return          # el evento es de un widget hijo, no de la ventana
+        except Exception:
+            pass
+        self.ventanas_modulos.pop(clave, None)
+        self.instancias_modulos.pop(clave, None)
+        self._actualizar_pestanas_modulos()
+
+    def cerrar_ventana_modulo(self, clave):
+        """❌ Cierra la ventana de un módulo (la X de la ventana o los botones)."""
+        ventana = self.ventanas_modulos.pop(clave, None)
+        self.instancias_modulos.pop(clave, None)
+        if ventana is not None:
+            try:
+                ventana.destroy()
+            except Exception:
+                pass
+        self._actualizar_pestanas_modulos()
+
+    def cerrar_todas_las_ventanas(self):
+        """Cierra todas las ventanas de módulos abiertas (al cambiar de usuario o salir)."""
+        for clave in list(getattr(self, "ventanas_modulos", {}) or {}):
+            self.cerrar_ventana_modulo(clave)
+        self.ventanas_modulos = {}
+        self.instancias_modulos = {}
+        self._actualizar_pestanas_modulos()
 
     def limpiar_contenedor(self):
-        """Cierra todas las ventanas de módulos y deja el escritorio limpio."""
-        for clave in list(getattr(self, "ventanas_modulos", {}).keys()):
-            self.cerrar_ventana(clave)
-        # Compatibilidad: algunos módulos piden métodos de ventana al contenedor.
+        barra_pestanas = getattr(self, "barra_pestanas", None)
+        for widget in self.contenedor_central.winfo_children():
+            if widget is barra_pestanas:
+                continue          # 🪟 las pestañas de módulos abiertos siempre quedan
+            widget.destroy()
         def dummy(*args, **kwargs): pass
         if not hasattr(self.contenedor_central, 'title'): self.contenedor_central.title = dummy
         if not hasattr(self.contenedor_central, 'geometry'): self.contenedor_central.geometry = dummy
         if not hasattr(self.contenedor_central, 'resizable'): self.contenedor_central.resizable = dummy
         if not hasattr(self.contenedor_central, 'iconbitmap'): self.contenedor_central.iconbitmap = dummy
 
-    def abrir_ventana_modulo(self, clave, titulo, constructor, ancho_rel=0.92, alto_rel=0.90):
-        """Abre un módulo en su propia ventana del escritorio.
-
-        Si el módulo ya está abierto, no se duplica: se restaura (si estaba
-        minimizado) y se trae al frente. Devuelve la instancia del módulo.
-        """
-        escritorio = getattr(self, "escritorio", None)
-        if escritorio is None or not escritorio.winfo_exists():
-            messagebox.showerror("Error", "El escritorio de módulos no está disponible.")
-            return None
-
-        info = self.ventanas_modulos.get(clave)
-        if info and info["contenedor"].winfo_exists():
-            self.restaurar_ventana(clave)
-            self._traer_al_frente(clave)
-            return info.get("app")
-
-        contenedor = ctk.CTkFrame(escritorio, corner_radius=8, fg_color="#ffffff",
-                                  border_width=2, border_color="#1f538d")
-        contenedor._clave_modulo = clave
-        # El tamaño de la ventana lo decide el escritorio (no el contenido), así se
-        # puede mover, redimensionar y maximizar con precisión.
-        try:
-            contenedor.pack_propagate(False)
-            contenedor.grid_propagate(False)
-        except Exception:
-            pass
-
-        self._preparar_contenedor_modulo(contenedor)
-
-        barra_titulo = ctk.CTkFrame(contenedor, height=30, corner_radius=6, fg_color="#1f538d")
-        barra_titulo.pack(fill="x", padx=2, pady=(2, 0))
-        barra_titulo.pack_propagate(False)
-
-        lbl_titulo = ctk.CTkLabel(barra_titulo, text=f" {titulo}", font=("Arial", 12, "bold"),
-                                  text_color="white", anchor="w")
-        lbl_titulo.pack(side="left", fill="x", expand=True, padx=(10, 0))
-
-        ctk.CTkButton(barra_titulo, text="✕", width=30, height=22, font=("Arial", 12, "bold"),
-                      fg_color="#c0392b", hover_color="#922b21",
-                      command=lambda k=clave: self.cerrar_ventana(k)).pack(side="right", padx=3, pady=4)
-        ctk.CTkButton(barra_titulo, text="□", width=30, height=22, font=("Arial", 12, "bold"),
-                      fg_color="#34495e", hover_color="#2c3e50",
-                      command=lambda k=clave: self.alternar_maximizar_ventana(k)).pack(side="right", padx=3, pady=4)
-        ctk.CTkButton(barra_titulo, text="—", width=30, height=22, font=("Arial", 12, "bold"),
-                      fg_color="#34495e", hover_color="#2c3e50",
-                      command=lambda k=clave: self.minimizar_ventana(k)).pack(side="right", padx=3, pady=4)
-
-        cuerpo = ctk.CTkFrame(contenedor, fg_color="transparent")
-        cuerpo.pack(fill="both", expand=True, padx=2, pady=2)
-        # El módulo recibe el marco del cuerpo: también se prepara por compatibilidad.
-        self._preparar_contenedor_modulo(cuerpo)
-
-        # Asa inferior derecha para redimensionar la ventana
-        asa = ctk.CTkFrame(contenedor, width=16, height=16, corner_radius=0, fg_color="#1f538d")
-        asa.place(relx=1.0, rely=1.0, anchor="se")
-        asa.bind("<ButtonPress-1>", lambda e, k=clave: self._iniciar_redimension(e, k))
-        asa.bind("<B1-Motion>", self._redimensionar_ventana)
-        asa.bind("<ButtonRelease-1>", self._terminar_arrastre)
-        try: asa.configure(cursor="size_nw_se")
-        except Exception: pass
-
-        # Arrastrar la ventana tomándola de su barra de título (doble clic = maximizar)
-        for widget_barra in (barra_titulo, lbl_titulo):
-            widget_barra.bind("<ButtonPress-1>", lambda e, k=clave: self._iniciar_arrastre(e, k))
-            widget_barra.bind("<B1-Motion>", self._arrastrar_ventana)
-            widget_barra.bind("<ButtonRelease-1>", self._terminar_arrastre)
-            widget_barra.bind("<Double-Button-1>", lambda e, k=clave: self.alternar_maximizar_ventana(k))
-
-        btn_tarea = ctk.CTkButton(self.frame_botones_tareas, text=titulo, height=24, width=180,
-                                  font=("Arial", 10, "bold"), fg_color="#34495e", hover_color="#2c3e50",
-                                  anchor="w", command=lambda k=clave: self.alternar_ventana(k))
-        btn_tarea.pack(side="left", padx=3, pady=5)
-
-        self.ventanas_modulos[clave] = {
-            "titulo": titulo, "contenedor": contenedor, "cuerpo": cuerpo,
-            "btn_tarea": btn_tarea, "app": None,
-            "minimizada": False, "maximizada": False, "geometria": None, "geometria_previa": None,
-        }
-        self._refrescar_barra_tareas()
-        self._colocar_ventana_inicial(clave, ancho_rel, alto_rel)
-        self._traer_al_frente(clave)
-
-        try:
-            app = constructor(cuerpo)
-        except Exception as e:
-            self.cerrar_ventana(clave)
-            messagebox.showerror("Error", f"Fallo al abrir el módulo:\n{e}")
-            return None
-        self.ventanas_modulos[clave]["app"] = app
-        # 🖥️ El módulo queda MAXIMIZADO (el botón □ permite restaurarlo)
-        try:
-            self.escritorio.after(80, lambda k=clave: self.maximizar_ventana_modulo(k))
-        except Exception:
-            pass
-        return app
-
-    def _colocar_ventana_inicial(self, clave, ancho_rel=0.92, alto_rel=0.90):
-        """Coloca la ventana con un tamaño cómodo y en cascada."""
-        info = self.ventanas_modulos.get(clave)
-        if not info: return
-        try:
-            self.escritorio.update_idletasks()
-            ancho_total = max(500, self.escritorio.winfo_width())
-            alto_total = max(400, self.escritorio.winfo_height())
-            ancho = min(ancho_total, max(460, int(ancho_total * ancho_rel)))
-            alto = min(alto_total, max(340, int(alto_total * alto_rel)))
-            desfase = (self._contador_cascada % 6) * 36
-            self._contador_cascada += 1
-            x = min(desfase, max(0, ancho_total - ancho))
-            y = min(desfase, max(0, alto_total - alto))
-            self._ubicar_ventana(info, x, y, ancho, alto)
-            info["maximizada"] = False
-        except Exception as e:
-            print("Aviso - colocando ventana de módulo:", e)
-
-    def _geometria_actual(self, info):
-        """Posición y tamaño actuales de la ventana (o None si no se pudo leer)."""
-        try:
-            contenedor = info["contenedor"]
-            datos = contenedor.place_info()
-            ancho = int(float(datos.get("width") or 0)) or contenedor.winfo_width()
-            alto = int(float(datos.get("height") or 0)) or contenedor.winfo_height()
-            return {"x": int(float(datos.get("x") or 0)), "y": int(float(datos.get("y") or 0)),
-                    "ancho": int(ancho), "alto": int(alto)}
-        except Exception:
-            return None
-
-    def _ubicar_ventana(self, info, x, y, ancho, alto):
-        """Coloca la ventana en el escritorio y recuerda su geometría.
-
-        CustomTkinter exige que el ancho/alto se configuren en el widget y no en
-        place(), por eso se separa: primero el tamaño, luego la posición.
-        """
-        ancho = max(300, int(ancho))
-        alto = max(200, int(alto))
-        try:
-            info["contenedor"].configure(width=ancho, height=alto)
-        except Exception:
-            pass
-        info["contenedor"].place(x=int(x), y=int(y))
-        info["geometria"] = {"x": int(x), "y": int(y), "ancho": ancho, "alto": alto}
-
-    def _acomodar_modulo_pantalla_completa(self, activa):
-        """Módulo de adelante: se estira en pantalla completa y vuelve al salir."""
-        try:
-            self.root.after(180, lambda: self._aplicar_acomodo_modulo(bool(activa)))
-        except Exception:
-            self._aplicar_acomodo_modulo(activa)
-
-    def _aplicar_acomodo_modulo(self, activa):
-        clave = getattr(self, "_clave_activa", None)
-        info = (getattr(self, "ventanas_modulos", None) or {}).get(clave) if clave else None
-        if not info:
-            return
-        try:
-            if activa:
-                if not info.get("maximizada"):
-                    info["geometria_previa"] = self._geometria_actual(info) or info.get("geometria")
-                    self.escritorio.update_idletasks()
-                    self._ubicar_ventana(info, 0, 0,
-                                         self.escritorio.winfo_width(),
-                                         self.escritorio.winfo_height())
-                    info["maximizada"] = True
-                    info["_maximizada_por_pantalla"] = True
-            else:
-                if info.get("_maximizada_por_pantalla"):
-                    geo = info.get("geometria_previa") or info.get("geometria") or {}
-                    self._ubicar_ventana(info, geo.get("x") or 0, geo.get("y") or 0,
-                                         geo.get("ancho") or 800, geo.get("alto") or 600)
-                    info["geometria_previa"] = None
-                    info["maximizada"] = False
-                    info["_maximizada_por_pantalla"] = False
-        except Exception as e:
-            print("Aviso - módulo en pantalla completa:", e)
-
-    def _traer_al_frente(self, clave):
-        """La ventana indicada pasa al frente de todas las demás."""
-        info = self.ventanas_modulos.get(clave)
-        if not info: return
-        try:
-            info["contenedor"].lift()
-        except Exception:
-            pass
-        self._clave_activa = clave
-        self._refrescar_barra_tareas()
-        self._actualizar_bienvenida()
-
-    def _traer_ventana_del_clic(self, evento=None):
-        """Clic dentro de una ventana de módulo => esa ventana pasa al frente."""
-        try:
-            widget = getattr(evento, "widget", None)
-            escritorio = getattr(self, "escritorio", None)
-            if widget is None or escritorio is None or not self.ventanas_modulos:
-                return
-            actual = widget
-            while actual is not None:
-                if getattr(actual, "master", None) is escritorio:
-                    break
-                actual = getattr(actual, "master", None)
-            if actual is None or actual is widget:
-                return
-            clave = getattr(actual, "_clave_modulo", None)
-            if not clave or clave == self._clave_activa:
-                return
-            if self.ventanas_modulos.get(clave, {}).get("minimizada"):
-                return
-            self._traer_al_frente(clave)
-        except Exception:
-            pass
-
-    def minimizar_ventana(self, clave):
-        """Oculta la ventana y la deja en la barra de tareas."""
-        info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"]: return
-        geo = self._geometria_actual(info)
-        if geo: info["geometria"] = geo
-        try:
-            info["contenedor"].place_forget()
-        except Exception:
-            pass
-        info["minimizada"] = True
-        if self._clave_activa == clave:
-            self._clave_activa = None
-        self._refrescar_barra_tareas()
-        self._actualizar_bienvenida()
-
-    def restaurar_ventana(self, clave):
-        """Vuelve a mostrar una ventana minimizada en su sitio."""
-        info = self.ventanas_modulos.get(clave)
-        if not info or not info["minimizada"]: return
-        geo = info["geometria"] or {}
-        try:
-            self.escritorio.update_idletasks()
-            ancho_total = max(500, self.escritorio.winfo_width())
-            alto_total = max(400, self.escritorio.winfo_height())
-            ancho = min(int(geo.get("ancho") or ancho_total), ancho_total)
-            alto = min(int(geo.get("alto") or alto_total), alto_total)
-            x = max(0, min(int(geo.get("x") or 0), max(0, ancho_total - ancho)))
-            y = max(0, min(int(geo.get("y") or 0), max(0, alto_total - alto)))
-            self._ubicar_ventana(info, x, y, ancho, alto)
-        except Exception as e:
-            print("Aviso - restaurando ventana de módulo:", e)
-        info["minimizada"] = False
-        self._refrescar_barra_tareas()
-        self._actualizar_bienvenida()
-
-    def alternar_ventana(self, clave):
-        """Botón de la barra de tareas: restaura, trae al frente o minimiza."""
-        info = self.ventanas_modulos.get(clave)
-        if not info: return
-        if info["minimizada"]:
-            self.restaurar_ventana(clave)
-            self._traer_al_frente(clave)
-        elif self._clave_activa == clave:
-            self.minimizar_ventana(clave)
-        else:
-            self._traer_al_frente(clave)
-
-    def maximizar_ventana_modulo(self, clave):
-        """🖥️ Expande el módulo a todo el escritorio (se usa al abrirlo)."""
-        info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"] or info["maximizada"]:
-            return
-        try:
-            info["geometria_previa"] = self._geometria_actual(info) or info["geometria"]
-            self.escritorio.update_idletasks()
-            self._ubicar_ventana(info, 0, 0,
-                                 self.escritorio.winfo_width(), self.escritorio.winfo_height())
-            info["maximizada"] = True
-        except Exception as e:
-            print("Aviso - maximizando ventana de módulo:", e)
-        self._traer_al_frente(clave)
-
-    def alternar_maximizar_ventana(self, clave):
-        """Maximiza la ventana dentro del escritorio o la devuelve a su tamaño."""
-        info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"]: return
-        try:
-            if info["maximizada"]:
-                # Vuelve al tamaño y la posición que tenía antes de maximizarse
-                geo = info.get("geometria_previa") or info["geometria"] or {}
-                self._ubicar_ventana(info, geo.get("x") or 0, geo.get("y") or 0,
-                                     geo.get("ancho") or 800, geo.get("alto") or 600)
-                info["geometria_previa"] = None
-                info["maximizada"] = False
-            else:
-                info["geometria_previa"] = self._geometria_actual(info) or info["geometria"]
-                self.escritorio.update_idletasks()
-                self._ubicar_ventana(info, 0, 0, self.escritorio.winfo_width(), self.escritorio.winfo_height())
-                info["maximizada"] = True
-        except Exception as e:
-            print("Aviso - maximizando ventana de módulo:", e)
-        self._traer_al_frente(clave)
-
-    def cerrar_ventana(self, clave):
-        """Cierra la ventana del módulo (y libera sus recursos de interfaz)."""
-        info = self.ventanas_modulos.pop(clave, None)
-        if not info: return
-        # Antes de destruir la ventana se anulan sus temporizadores: así ningún
-        # sondeo en segundo plano intenta pintar sobre widgets que ya no existen.
-        for marco in (info.get("contenedor"), info.get("cuerpo")):
-            if marco is None: continue
-            try:
-                marco.after = lambda *a, **k: None
-                marco.after_cancel = lambda *a, **k: None
-            except Exception:
-                pass
-        try: info["btn_tarea"].destroy()
-        except Exception: pass
-        try: info["contenedor"].destroy()
-        except Exception: pass
-        if self._clave_activa == clave:
-            self._clave_activa = None
-            for otra, datos in reversed(list(self.ventanas_modulos.items())):
-                if not datos["minimizada"]:
-                    self._traer_al_frente(otra)
-                    break
-        self._refrescar_barra_tareas()
-        self._actualizar_bienvenida()
-
-    def cerrar_todas_las_ventanas(self):
-        for clave in list(getattr(self, "ventanas_modulos", {}).keys()):
-            self.cerrar_ventana(clave)
-
-    def _refrescar_barra_tareas(self):
-        """Pinta los botones de la barra de tareas (ventana activa / minimizada)."""
-        try:
-            if not hasattr(self, "frame_botones_tareas"): return
-            if hasattr(self, "_lbl_sin_ventanas"):
-                if self.ventanas_modulos:
-                    self._lbl_sin_ventanas.pack_forget()
-                elif not self._lbl_sin_ventanas.winfo_ismapped():
-                    self._lbl_sin_ventanas.pack(side="left", padx=6)
-            for clave, info in self.ventanas_modulos.items():
-                btn = info.get("btn_tarea")
-                if btn is None: continue
-                if info["minimizada"]:
-                    btn.configure(fg_color="#7f8c8d", hover_color="#606b6b", text=f"🗗 {info['titulo']}")
-                elif clave == self._clave_activa:
-                    btn.configure(fg_color="#1f538d", hover_color="#163b65", text=info["titulo"])
-                else:
-                    btn.configure(fg_color="#34495e", hover_color="#2c3e50", text=info["titulo"])
-        except Exception:
-            pass
-
-    def _actualizar_bienvenida(self):
-        """La pantalla de bienvenida solo se ve cuando no hay ventanas a la vista."""
-        bienvenida = getattr(self, "frame_bienvenida", None)
-        if bienvenida is None: return
-        try:
-            if not bienvenida.winfo_exists(): return
-            hay_visible = any((not d["minimizada"]) for d in self.ventanas_modulos.values())
-            if hay_visible:
-                if bienvenida.winfo_ismapped():
-                    bienvenida.pack_forget()
-            elif not bienvenida.winfo_ismapped():
-                bienvenida.pack(fill="both", expand=True, padx=20, pady=20)
-                for datos in self.ventanas_modulos.values():
-                    if not datos["minimizada"]:
-                        datos["contenedor"].lift()
-        except Exception:
-            pass
-
-    def _al_redimensionar_escritorio(self, evento=None):
-        """Si cambia el tamaño del escritorio, las ventanas maximizadas se reajustan."""
-        try:
-            if evento is not None and getattr(evento, "widget", None) is not self.escritorio:
-                return
-            ancho = self.escritorio.winfo_width()
-            alto = self.escritorio.winfo_height()
-            for info in self.ventanas_modulos.values():
-                if info["maximizada"] and not info["minimizada"]:
-                    self._ubicar_ventana(info, 0, 0, ancho, alto)
-        except Exception:
-            pass
-
-    def _iniciar_arrastre(self, evento, clave):
-        info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"] or info["maximizada"]: return
-        geo = self._geometria_actual(info) or {"x": 0, "y": 0, "ancho": 800, "alto": 600}
-        self._arrastre = {"clave": clave, "modo": "mover", "x0": evento.x_root, "y0": evento.y_root,
-                          "x": geo["x"], "y": geo["y"], "ancho": geo["ancho"], "alto": geo["alto"]}
-        try: info["contenedor"].lift()
-        except Exception: pass
-        self._clave_activa = clave
-        self._refrescar_barra_tareas()
-
-    def _arrastrar_ventana(self, evento):
-        est = self._arrastre
-        if not est or est.get("modo") != "mover": return
-        info = self.ventanas_modulos.get(est["clave"])
-        if not info: return
-        try:
-            ancho_total = self.escritorio.winfo_width()
-            alto_total = self.escritorio.winfo_height()
-            nuevo_x = est["x"] + (evento.x_root - est["x0"])
-            nuevo_y = est["y"] + (evento.y_root - est["y0"])
-            nuevo_x = max(120 - est["ancho"], min(nuevo_x, max(0, ancho_total - 120)))
-            nuevo_y = max(0, min(nuevo_y, max(0, alto_total - 40)))
-            info["contenedor"].place(x=nuevo_x, y=nuevo_y)
-        except Exception:
-            pass
-
-    def _iniciar_redimension(self, evento, clave):
-        info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"]: return
-        geo = self._geometria_actual(info) or {"x": 0, "y": 0, "ancho": 800, "alto": 600}
-        self._arrastre = {"clave": clave, "modo": "redimensionar", "x0": evento.x_root, "y0": evento.y_root,
-                          "x": geo["x"], "y": geo["y"], "ancho": geo["ancho"], "alto": geo["alto"]}
-        try: info["contenedor"].lift()
-        except Exception: pass
-
-    def _redimensionar_ventana(self, evento):
-        est = self._arrastre
-        if not est or est.get("modo") != "redimensionar": return
-        info = self.ventanas_modulos.get(est["clave"])
-        if not info: return
-        try:
-            ancho_total = self.escritorio.winfo_width()
-            alto_total = self.escritorio.winfo_height()
-            nuevo_ancho = est["ancho"] + (evento.x_root - est["x0"])
-            nuevo_alto = est["alto"] + (evento.y_root - est["y0"])
-            nuevo_ancho = max(460, min(nuevo_ancho, max(460, ancho_total - est["x"])))
-            nuevo_alto = max(340, min(nuevo_alto, max(340, alto_total - est["y"])))
-            info["contenedor"].configure(width=int(nuevo_ancho), height=int(nuevo_alto))
-        except Exception:
-            pass
-
-    def _terminar_arrastre(self, evento=None):
-        est = self._arrastre
-        self._arrastre = None
-        if not est: return
-        info = self.ventanas_modulos.get(est["clave"])
-        if not info: return
-        geo = self._geometria_actual(info)
-        if geo: info["geometria"] = geo
-
     def mostrar_pantalla_bienvenida(self):
-        anterior = getattr(self, "frame_bienvenida", None)
-        if anterior is not None:
-            try: anterior.destroy()
-            except Exception: pass
-        self.frame_bienvenida = ctk.CTkScrollableFrame(self.escritorio, fg_color="transparent")
-        f_dashboard = self.frame_bienvenida
+        self.limpiar_contenedor()
+        f_dashboard = ctk.CTkScrollableFrame(self.contenedor_central, fg_color="transparent")
         f_dashboard.pack(fill="both", expand=True, padx=20, pady=20)
-        self._actualizar_bienvenida()
-        
         f_header = ctk.CTkFrame(f_dashboard, fg_color="transparent")
         f_header.pack(fill="x", pady=(0, 20))
         ctk.CTkLabel(f_header, text=f"👋 Hola, {self.usuario_activo.upper()}", font=("Arial", 24, "bold"), text_color="#1f538d").pack(side="left")
@@ -2214,228 +2152,35 @@ class ControlGeneralEventos:
         
         ctk.CTkLabel(f_dashboard, text="🔔 PANEL DE NOTIFICACIONES Y ALERTAS", font=("Arial", 14, "bold"), text_color="#d35400").pack(anchor="w", pady=(0, 10))
         
-        config = cargar_configuracion_general()
-        try:
-            dias_alerta = int(config.get("dias_alerta_vencimiento", "30"))
-        except ValueError:
-            dias_alerta = 30
+        self.f_alertas_container = ctk.CTkFrame(f_dashboard, fg_color="transparent")
+        self.f_alertas_container.pack(fill="x")
+        
+        ctk.CTkLabel(self.f_alertas_container, text="Buscando alertas del sistema... ⏳", font=("Arial", 12, "italic"), text_color="gray").pack(pady=10)
+
+        ctk.CTkLabel(f_dashboard, text="📅 PRÓXIMOS EVENTOS (AGENDA)", font=("Arial", 14, "bold"), text_color="#27ae60").pack(anchor="w", pady=(25, 10))
+        self.f_agenda_container = ctk.CTkFrame(f_dashboard, fg_color="#f8f9fa", corner_radius=6, border_width=1, border_color="#e0e0e0")
+        self.f_agenda_container.pack(fill="x", pady=0)
+        ctk.CTkLabel(self.f_agenda_container, text="Cargando agenda... ⏳", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
+
+        f_pie = ctk.CTkFrame(f_dashboard, fg_color="transparent")
+        f_pie.pack(fill="x", pady=(40, 20))
+        ctk.CTkLabel(f_pie, text="Bienvenido", font=("Arial", 14, "bold"), text_color="gray").pack()
+        ctk.CTkLabel(f_pie, text="Este es el resumen automático de tu operación para el día de hoy.\nSeleccione un módulo en el menú lateral para gestionar sus operaciones.", font=("Arial", 12, "italic"), text_color="gray", justify="center").pack(pady=(5, 0))
+
+        def tarea_dashboard():
+            hoy = datetime.now()
+            alertas = []
+            tareas_mostrar = []
             
-        conn = conectar_db(silencioso=True)
-        if not conn:
-            ctk.CTkLabel(f_dashboard, text="📡 MODO LECTURA OFFLINE: Mostrando información desde el respaldo local.", font=("Arial", 12, "bold"), text_color="#d35400").pack(anchor="w", pady=5)
-            return
-
-        hoy = datetime.now()
-        alertas = []
-
-        try:
-            with conn.cursor() as cursor:
-                if self.tiene_permiso("flota"):
-                    try:
-                        try:
-                            cursor.execute("""
-                                SELECT placa, vencimiento_soat, vencimiento_seguro, vencimiento_rt, 
-                                       fec_rev_gas, fec_venc_bat, fec_venc_extintor, fec_aceite, 
-                                       km_prox_correa, kilometraje, fecha_ultimo_general,
-                                       km_ultimo_general, km_ultimo_aceite,
-                                       emision_mant_gas, km_mant_gas, neu_fecha, neu_km
-                                FROM flota_vehiculos 
-                                WHERE estado = 'Operativo'
-                            """)
-                            vehiculos = cursor.fetchall()
-                        except Exception:
-                            conn.rollback()
-                            cursor.execute("SELECT placa, vencimiento_soat, vencimiento_seguro, vencimiento_rt FROM flota_vehiculos WHERE estado = 'Operativo'")
-                            vehiculos = [(r[0], r[1], r[2], r[3], None, None, None, None, None, None, None, None,
-                                          None, None, None, None, None) for r in cursor.fetchall()]
-
-                        for v in vehiculos:
-                            placa = v[0]
-                            docs = {
-                                "SOAT": v[1],
-                                "Seguro": v[2],
-                                "Revisión Técnica": v[3],
-                                "Rev. Sist. Gas": v[4],
-                                "Garantía Batería": v[5],
-                                "Extintor": v[6]
-                            }
-                            for doc_nombre, doc_fecha in docs.items():
-                                if doc_fecha and str(doc_fecha).strip():
-                                    try:
-                                        dt_venc = datetime.strptime(str(doc_fecha), "%d/%m/%Y").date()
-                                        dias_restantes = (dt_venc - hoy.date()).days
-                                        if dias_restantes < 0:
-                                            alertas.append({"tipo": "peligro", "icono": "🚨", "titulo": f"{doc_nombre} Vencido ({placa})", "mensaje": f"Venció hace {abs(dias_restantes)} días ({doc_fecha})."})
-                                        elif 0 <= dias_restantes <= dias_alerta:
-                                            alertas.append({"tipo": "alerta", "icono": "⚠️", "titulo": f"{doc_nombre} por Vencer ({placa})", "mensaje": f"Vencerá en {dias_restantes} días ({doc_fecha})."})
-                                    except Exception:
-                                        pass
-
-                            fec_aceite = v[7]
-                            if fec_aceite and str(fec_aceite).strip():
-                                try:
-                                    meses_aceite = int(config.get("alerta_aceite_meses", "6"))
-                                    dt_aceite = datetime.strptime(str(fec_aceite), "%d/%m/%Y").date()
-                                    dt_prox_aceite = dt_aceite + timedelta(days=30 * meses_aceite)
-                                    dias_restantes = (dt_prox_aceite - hoy.date()).days
-                                    if dias_restantes < 0:
-                                        alertas.append({"tipo": "peligro", "icono": "🛢️", "titulo": f"Cambio de Aceite Vencido ({placa})", "mensaje": f"Venció hace {abs(dias_restantes)} días (por tiempo)."})
-                                    elif 0 <= dias_restantes <= dias_alerta:
-                                        alertas.append({"tipo": "alerta", "icono": "🛢️", "titulo": f"Próximo Cambio de Aceite ({placa})", "mensaje": f"Vence en {dias_restantes} días (por tiempo)."})
-                                except Exception:
-                                    pass
-
-                            # 🛠️ Mantenimiento Preventivo / General: se registra desde Compras
-                            #    (ventana "Resetear Mantenimientos") y aquí se controla por
-                            #    TIEMPO (fecha del último) y por KILOMETRAJE (último km + límite).
-                            fec_general = v[10] if len(v) > 10 else None
-                            if fec_general and str(fec_general).strip():
-                                try:
-                                    meses_prev = int(config.get("alerta_mantenimiento_general_meses", "6"))
-                                    dt_prev = datetime.strptime(str(fec_general), "%d/%m/%Y").date()
-                                    dt_prox_prev = dt_prev + timedelta(days=30 * meses_prev)
-                                    dias_restantes = (dt_prox_prev - hoy.date()).days
-                                    if dias_restantes < 0:
-                                        alertas.append({"tipo": "peligro", "icono": "🛠️", "titulo": f"Mantenimiento Preventivo Vencido ({placa})", "mensaje": f"Toca mantenimiento hace {abs(dias_restantes)} días (último: {fec_general})."})
-                                    elif 0 <= dias_restantes <= dias_alerta:
-                                        alertas.append({"tipo": "alerta", "icono": "🛠️", "titulo": f"Mantenimiento Preventivo Próximo ({placa})", "mensaje": f"Toca en {dias_restantes} días (último: {fec_general})."})
-                                except Exception:
-                                    pass
-
-                            km_ultimo_gral = v[11] if len(v) > 11 else None
-                            if km_ultimo_gral and str(km_ultimo_gral).strip() and v[9] and str(v[9]).strip():
-                                try:
-                                    lim_gral = float(config.get("alerta_mantenimiento_general_km", "10000"))
-                                    km_objetivo = float(str(km_ultimo_gral).replace(",", "")) + lim_gral
-                                    k_act = float(str(v[9]).replace(",", ""))
-                                    km_restantes = km_objetivo - k_act
-                                    if km_restantes < 0:
-                                        alertas.append({"tipo": "peligro", "icono": "🛠️", "titulo": f"Mantenimiento General Vencido ({placa})", "mensaje": f"Excedido por {abs(km_restantes):g} KM."})
-                                    elif 0 <= km_restantes <= 1000:
-                                        alertas.append({"tipo": "alerta", "icono": "🛠️", "titulo": f"Mantenimiento General Próximo ({placa})", "mensaje": f"Faltan {km_restantes:g} KM para el servicio."})
-                                except Exception:
-                                    pass
-
-                            # ⚙️ Correa/Cadena de distribución (por kilometraje)
-                            km_prox = v[8]
-                            km_actual = v[9]
-                            if km_prox and str(km_prox).strip() and km_actual and str(km_actual).strip():
-                                try:
-                                    k_p = float(str(km_prox).replace(",", ""))
-                                    k_a = float(str(km_actual).replace(",", ""))
-                                    km_restantes = k_p - k_a
-                                    if km_restantes < 0:
-                                        alertas.append({"tipo": "peligro", "icono": "⚙️", "titulo": f"Correa de Distribución Vencida ({placa})", "mensaje": f"Excedido por {abs(km_restantes):,.0f} KM."})
-                                    elif 0 <= km_restantes <= 1000:
-                                        alertas.append({"tipo": "alerta", "icono": "⚙️", "titulo": f"Correa de Distribución Próxima ({placa})", "mensaje": f"Faltan {km_restantes:,.0f} KM."})
-                                except Exception:
-                                    pass
-
-                            # 🛢️ Aceite por KILOMETRAJE (igual que el cronograma)
-                            # 🛢️ Cambio de Aceite Vencido
-                            km_aceite = v[12] if len(v) > 12 else None
-                            if km_aceite and str(km_aceite).strip() and v[9] and str(v[9]).strip():
-                                try:
-                                    lim = float(str(config.get("alerta_aceite_km", "5000")).replace(",", "."))
-                                    objetivo = float(str(km_aceite).replace(",", "")) + lim
-                                    actual = float(str(v[9]).replace(",", ""))
-                                    restantes = objetivo - actual
-                                    if restantes < 0:
-                                        alertas.append({"tipo": "peligro", "icono": "🛢️", "titulo": f"Cambio de Aceite Vencido ({placa})", "mensaje": f"Excedido por {abs(restantes):,.0f} KM (cada {lim:,.0f} km)."})
-                                    elif restantes <= 500:
-                                        alertas.append({"tipo": "alerta", "icono": "🛢️", "titulo": f"Próximo Cambio de Aceite ({placa})", "mensaje": f"Faltan {restantes:,.0f} KM."})
-                                except Exception:
-                                    pass
-
-                            # 💨 Mantenimiento del Sistema de Gas (por kilometraje)
-                            # 💨 Mantenimiento de Gas Vencido
-                            km_gas = v[14] if len(v) > 14 else None
-                            if km_gas and str(km_gas).strip() and v[9] and str(v[9]).strip():
-                                try:
-                                    lim = float(str(config.get("alerta_gas_km", "10000")).replace(",", "."))
-                                    objetivo = float(str(km_gas).replace(",", "")) + lim
-                                    actual = float(str(v[9]).replace(",", ""))
-                                    restantes = objetivo - actual
-                                    if restantes < 0:
-                                        alertas.append({"tipo": "peligro", "icono": "💨", "titulo": f"Mantenimiento de Gas Vencido ({placa})", "mensaje": f"Excedido por {abs(restantes):,.0f} KM (cada {lim:,.0f} km)."})
-                                    elif restantes <= 1000:
-                                        alertas.append({"tipo": "alerta", "icono": "💨", "titulo": f"Mantenimiento de Gas Próximo ({placa})", "mensaje": f"Faltan {restantes:,.0f} KM."})
-                                except Exception:
-                                    pass
-
-                            # 🛞 Neumáticos (por kilometraje)
-                            # 🛞 Cambio de Neumáticos Vencido
-                            km_neu = v[16] if len(v) > 16 else None
-                            if km_neu and str(km_neu).strip() and v[9] and str(v[9]).strip():
-                                try:
-                                    lim = float(str(config.get("alerta_neumaticos_km", "50000")).replace(",", "."))
-                                    objetivo = float(str(km_neu).replace(",", "")) + lim
-                                    actual = float(str(v[9]).replace(",", ""))
-                                    restantes = objetivo - actual
-                                    if restantes < 0:
-                                        alertas.append({"tipo": "peligro", "icono": "🛞", "titulo": f"Cambio de Neumáticos Vencido ({placa})", "mensaje": f"Excedido por {abs(restantes):,.0f} KM (cada {lim:,.0f} km)."})
-                                    elif restantes <= 2000:
-                                        alertas.append({"tipo": "alerta", "icono": "🛞", "titulo": f"Próximo Cambio de Neumáticos ({placa})", "mensaje": f"Faltan {restantes:,.0f} KM."})
-                                except Exception:
-                                    pass
-
-                    except Exception as e:
-                        print("Error alertas flota:", e)
-
-                if self.tiene_permiso("choferes") or self.tiene_permiso("flota"):
-                    try:
-                        cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'choferes')")
-                        if cursor.fetchone()[0]:
-                            try:
-                                cursor.execute("SELECT nombres, vencimiento_licencia, seguro_salud_venc, seguro_vida_venc, fecha_nacimiento, carnet_sanidad_venc, vencimiento_licencia2, fecha_fin_contrato FROM choferes WHERE estado = 'Activo'")
-                                choferes = cursor.fetchall()
-                            except Exception:
-                                conn.rollback()
-                                cursor.execute("SELECT nombres, vencimiento_licencia FROM choferes WHERE estado = 'Activo'")
-                                choferes = [(r[0], r[1], None, None, None, None, None, None) for r in cursor.fetchall()]
-
-                            for c in choferes:
-                                nombre, v_lic, v_salud, v_vida, f_nac = c[:5]
-                                v_sanidad = c[5] if len(c) > 5 else None
-                                v_lic2 = c[6] if len(c) > 6 else None
-                                v_contrato = c[7] if len(c) > 7 else None
-                                docs = {
-                                    "Licencia": v_lic,
-                                    "Segunda Licencia": v_lic2,
-                                    "Seguro de Salud": v_salud,
-                                    "Seguro Vida Ley": v_vida,
-                                    "Carné de Sanidad": v_sanidad,
-                                    "Fin de Contrato": v_contrato
-                                }
-                                for doc_nombre, doc_fecha in docs.items():
-                                    if doc_fecha and str(doc_fecha).strip():
-                                        try:
-                                            dt_venc = datetime.strptime(str(doc_fecha), "%d/%m/%Y").date()
-                                            dias_restantes = (dt_venc - hoy.date()).days
-                                            if dias_restantes < 0:
-                                                alertas.append({"tipo": "peligro", "icono": "🚨", "titulo": f"{doc_nombre} Vencida ({nombre})", "mensaje": f"Venció hace {abs(dias_restantes)} días ({doc_fecha})."})
-                                            elif 0 <= dias_restantes <= dias_alerta:
-                                                alertas.append({"tipo": "alerta", "icono": "⚠️", "titulo": f"{doc_nombre} por Vencer ({nombre})", "mensaje": f"Vencerá en {dias_restantes} días ({doc_fecha})."})
-                                        except Exception:
-                                            pass
-
-                                if f_nac and str(f_nac).strip():
-                                    try:
-                                        dt_nac = datetime.strptime(str(f_nac), "%d/%m/%Y").date()
-                                        dt_prox = dt_nac.replace(year=hoy.year)
-                                        if dt_prox < hoy.date():
-                                            dt_prox = dt_prox.replace(year=hoy.year + 1)
-                                        dias_restantes = (dt_prox - hoy.date()).days
-                                        if 0 <= dias_restantes <= dias_alerta:
-                                            if dias_restantes == 0:
-                                                alertas.append({"tipo": "peligro", "icono": "🎉", "titulo": f"¡Cumpleaños de {nombre}!", "mensaje": "Hoy es su cumpleaños."})
-                                            else:
-                                                alertas.append({"tipo": "alerta", "icono": "🎂", "titulo": f"Cumpleaños de {nombre}", "mensaje": f"Es en {dias_restantes} días ({dt_prox.strftime('%d/%m')})."})
-                                    except Exception:
-                                        pass
-                    except Exception as e:
-                        print("Error alertas choferes:", e)
-
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                self.root.after(0, lambda: self._pintar_offline())
+                return
+                
+            try:
+                cursor = conn.cursor()
+                
+                # RADAR: DEUDAS FINANCIERAS (Ventas)
                 if self.tiene_permiso("ventas"):
                     try:
                         cursor.execute("SELECT id, fecha, dias_credito, total, COALESCE(det_monto, 0) FROM facturas_emitidas")
@@ -2444,320 +2189,369 @@ class ControlGeneralEventos:
                         pagos_ventas = {row[0]: float(row[1]) for row in cursor.fetchall()}
                         ventas_vencidas, deuda_ventas = 0, 0.0
                         for f in facturas_ventas:
+                            f_id, fecha_str, dias, total, det = f
                             try:
-                                f_dt = datetime.strptime(f[1], "%d/%m/%Y")
-                                vencimiento = f_dt + timedelta(days=f[2])
-                                neto = float(f[3] if f[3] else 0) - float(f[4] if f[4] else 0)
-                                saldo = neto - pagos_ventas.get(f[0], 0.0)
-                                if saldo > 0.01 and hoy.date() > vencimiento.date():
-                                    ventas_vencidas += 1
-                                    deuda_ventas += saldo
-                            except Exception:
-                                pass
-                        if ventas_vencidas > 0:
-                            alertas.append({"tipo": "peligro", "icono": "⚠️", "titulo": "Cobros Vencidos", "mensaje": f"Tienes {ventas_vencidas} factura(s) de clientes atrasada(s) (S/. {deuda_ventas:,.2f})"})
-                    except Exception:
-                        pass
-
-                if not alertas:
-                    f_ok = ctk.CTkFrame(f_dashboard, fg_color="#d4edda", corner_radius=6, border_width=1, border_color="#c3e6cb", height=40)
-                    f_ok.pack(fill="x", pady=5)
-                    ctk.CTkLabel(f_ok, text="✅ Todo está al día. No hay notificaciones pendientes.", font=("Arial", 12, "bold"), text_color="#155724").pack(pady=8)
-                else:
-                    for al in alertas:
-                        if al["tipo"] == "peligro":
-                            c_fondo_al, c_borde_al, c_texto_al = "#f8d7da", "#f5c6cb", "#721c24"
-                        elif al["tipo"] == "alerta":
-                            c_fondo_al, c_borde_al, c_texto_al = "#fff3cd", "#ffeeba", "#856404"
-                        else:
-                            c_fondo_al, c_borde_al, c_texto_al = "#d1ecf1", "#bee5eb", "#0c5460"
-                        f_al = ctk.CTkFrame(f_dashboard, fg_color=c_fondo_al, corner_radius=6, border_width=1, border_color=c_borde_al)
-                        f_al.pack(fill="x", pady=4)
-                        ctk.CTkLabel(f_al, text=f"{al['icono']} {al['titulo']}:", font=("Arial", 12, "bold"), text_color=c_texto_al).pack(side="left", padx=(10, 5), pady=6)
-                        ctk.CTkLabel(f_al, text=al["mensaje"], font=("Arial", 12), text_color=c_texto_al).pack(side="left", padx=(0, 10), pady=6)
-
-                ctk.CTkLabel(f_dashboard, text="📅 TAREAS PENDIENTES DEL CRONOGRAMA", font=("Arial", 14, "bold"), text_color="#27ae60").pack(anchor="w", pady=(25, 10))
-                f_agenda = ctk.CTkFrame(f_dashboard, fg_color="#f8f9fa", corner_radius=6, border_width=1, border_color="#e0e0e0")
-                f_agenda.pack(fill="x", pady=0)
+                                f_dt = datetime.strptime(fecha_str, "%d/%m/%Y")
+                                vencimiento = f_dt + timedelta(days=dias)
+                                neto = float(total if total else 0) - float(det if det else 0)
+                                saldo = neto - pagos_ventas.get(f_id, 0.0)
+                                if saldo > 0.01 and hoy > vencimiento:
+                                    ventas_vencidas += 1; deuda_ventas += saldo
+                            except Exception: pass
+                        if ventas_vencidas > 0: alertas.append({"tipo": "peligro", "icono": "⚠️", "titulo": "Cobros Vencidos", "mensaje": f"Tienes {ventas_vencidas} factura(s) de clientes atrasada(s) (S/. {deuda_ventas:,.2f})"})
+                    except Exception: pass
+                    
+                # RADAR: PAGOS FINANCIEROS (Compras)
+                if self.tiene_permiso("compras"):
+                    try:
+                        cursor.execute("SELECT id, fecha, dias_credito, total, COALESCE(det_monto, 0), tipo_documento, impuesto FROM facturas_recibidas")
+                        facturas_compras = cursor.fetchall()
+                        cursor.execute("SELECT id_factura, SUM(monto_pagado) FROM pagos_comprobantes GROUP BY id_factura")
+                        pagos_compras = {row[0]: float(row[1]) for row in cursor.fetchall()}
+                        compras_vencidas, deuda_compras = 0, 0.0
+                        for f in facturas_compras:
+                            f_id, fecha_str, dias, total, det, tipo_doc, imp = f
+                            try:
+                                f_dt = datetime.strptime(fecha_str, "%d/%m/%Y")
+                                vencimiento = f_dt + timedelta(days=dias)
+                                tot_bruto = float(total if total else 0.0)
+                                det_monto = float(det if det else 0.0)
+                                imp_val = float(imp if imp else 0.0)
+                                if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - imp_val - det_monto
+                                else: neto = tot_bruto - det_monto
+                                saldo = neto - pagos_compras.get(f_id, 0.0)
+                                if saldo > 0.01 and hoy > vencimiento:
+                                    compras_vencidas += 1; deuda_compras += saldo
+                            except Exception: pass
+                        if compras_vencidas > 0: alertas.append({"tipo": "peligro", "icono": "🚨", "titulo": "Pagos Vencidos", "mensaje": f"Tienes {compras_vencidas} factura(s) de proveedores atrasada(s) (S/. {deuda_compras:,.2f})"})
+                    except Exception: pass
+                    
+                # RADAR: IMPUESTOS SUNAT
+                if self.tiene_permiso("impuestos"):
+                    try:
+                        mes_ant = hoy.month - 1; anio_ant = hoy.year
+                        if mes_ant == 0: mes_ant = 12; anio_ant -= 1
+                        periodo_ant = f"{mes_ant:02d}/{anio_ant}"
+                        cursor.execute("SELECT COUNT(*) FROM registro_impuestos WHERE periodo = %s", (periodo_ant,))
+                        if cursor.fetchone()[0] == 0: alertas.append({"tipo": "alerta", "icono": "🏦", "titulo": "Impuestos SUNAT", "mensaje": f"Declaración pendiente del mes anterior ({periodo_ant})."})
+                    except Exception: pass
+                    
+                # RADAR: INVENTARIO Y ALMACÉN
+                if self.tiene_permiso("inventario"):
+                    try:
+                        cursor.execute("SELECT COUNT(*) FROM inventario_equipos WHERE estado != 'Operativo'")
+                        equipos_malos = cursor.fetchone()[0]
+                        if equipos_malos > 0: alertas.append({"tipo": "alerta", "icono": "🛠️", "titulo": "Almacén", "mensaje": f"Tienes {equipos_malos} equipo(s) en mantenimiento o dados de baja."})
+                    except Exception: pass
+                    
+                # RADAR: COTIZACIONES SIN OC
+                if self.tiene_permiso("ordenes_cliente"):
+                    try:
+                        cursor.execute("""
+                            SELECT COUNT(*) FROM cotizaciones c
+                            WHERE c.status = 'Aprobada' AND NOT EXISTS (SELECT 1 FROM ordenes_compra_clientes o WHERE o.cotizacion_asociada = c.codigo)
+                        """)
+                        cots_sin_orden = cursor.fetchone()[0]
+                        if cots_sin_orden > 0: alertas.append({"tipo": "alerta", "icono": "📥", "titulo": "Órdenes de Cliente Pendientes", "mensaje": f"Tienes {cots_sin_orden} cotización(es) aprobada(s) que aún no tienen Orden de Compra subida."})
+                    except Exception: pass
+                    
+                # AGENDA Y EVENTOS FUTUROS
                 try:
-                    cursor.execute("SELECT nombre_tarea, evento_asociado, fecha_limite FROM tareas_evento WHERE estado = 'Pendiente' ORDER BY fecha_limite ASC LIMIT 20")
-                    tareas_agenda = cursor.fetchall()
-                    tareas_mostradas = 0
-                    for tar in tareas_agenda:
-                        nom_tar, ev, fec_str = tar
-                        try:
-                            f_dt = datetime.strptime(fec_str, "%d/%m/%Y").date()
-                            dias_faltan = (f_dt - hoy.date()).days
-                            if dias_faltan < 0:
-                                texto_dias = f"¡VENCIDA HACE {abs(dias_faltan)} DÍAS!"
-                                color_t = "#c0392b"
-                            elif dias_faltan == 0:
-                                texto_dias = "¡ES HOY!"
-                                color_t = "#d35400"
-                            elif dias_faltan <= dias_alerta:
-                                texto_dias = f"Faltan {dias_faltan} días"
-                                color_t = "#e67e22"
-                            else:
-                                continue
-                            lbl_text = f"📍 {f_dt.strftime('%d/%m/%Y')} | {nom_tar} ({ev.split(' | ')[0]}) - {texto_dias}"
-                            ctk.CTkLabel(f_agenda, text=lbl_text, font=("Arial", 12, "bold"), text_color=color_t).pack(anchor="w", padx=15, pady=8)
-                            tareas_mostradas += 1
+                    cursor.execute("SELECT codigo_cotizacion, nombre_evento, fecha_evento FROM cotizaciones WHERE status = 'Aprobada' ORDER BY id DESC")
+                    for ev in cursor.fetchall():
+                        cod, nom, fec_str = ev
+                        try: f_dt = datetime.strptime(fec_str, "%d/%m/%Y").date()
                         except Exception:
-                            pass
-                    if tareas_mostradas == 0:
-                        ctk.CTkLabel(f_agenda, text="No hay tareas críticas pendientes en el cronograma.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
-                except Exception:
-                    ctk.CTkLabel(f_agenda, text="No se pudo cargar la agenda.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
+                            try: f_dt = datetime.strptime(fec_str, "%Y-%m-%d").date()
+                            except Exception: f_dt = None
+                            
+                        if f_dt and f_dt >= hoy.date():
+                            dias_faltan = (f_dt - hoy.date()).days
+                            if dias_faltan == 0: texto_dias, color_t = "¡ES HOY!", "#d35400"
+                            elif dias_faltan <= 5: texto_dias, color_t = f"Faltan {dias_faltan} días", "#c0392b"
+                            else: texto_dias, color_t = f"Faltan {dias_faltan} días", "#1f538d"
+                            tareas_mostrar.append((color_t, f"📍 {f_dt.strftime('%d/%m/%Y')} | {nom} ({cod}) - {texto_dias}"))
+                except Exception: pass
 
+            except Exception as e:
+                print("Error general de alertas:", e)
+            finally:
+                liberar_conexion(conn)
+
+            self.root.after(0, lambda: self._pintar_alertas(alertas, tareas_mostrar))
+
+        threading.Thread(target=tarea_dashboard, daemon=True).start()
+
+    def _pintar_offline(self):
+        for widget in self.f_alertas_container.winfo_children(): widget.destroy()
+        ctk.CTkLabel(self.f_alertas_container, text="📡 MODO LECTURA OFFLINE: Mostrando información desde el respaldo local.", font=("Arial", 12, "bold"), text_color="#d35400").pack(anchor="w", pady=5)
+        for widget in self.f_agenda_container.winfo_children(): widget.destroy()
+        
+        evs_mem = getattr(cache_sistema, 'eventos_aprobados', [])
+        if evs_mem:
+            ctk.CTkLabel(self.f_agenda_container, text="📌 EVENTOS GUARDADOS EN MEMORIA:", font=("Arial", 12, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
+            for ev_txt in evs_mem: ctk.CTkLabel(self.f_agenda_container, text=f"📍 {ev_txt}", font=("Arial", 12)).pack(anchor="w", padx=25, pady=3)
+        else:
+            ctk.CTkLabel(self.f_agenda_container, text="No hay eventos guardados en la memoria local aún.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
+
+    def _pintar_alertas(self, alertas, tareas_mostrar):
+        for widget in self.f_alertas_container.winfo_children(): widget.destroy()
+        for widget in self.f_agenda_container.winfo_children(): widget.destroy()
+        
+        if not alertas:
+            f_ok = ctk.CTkFrame(self.f_alertas_container, fg_color="#d4edda", corner_radius=6, border_width=1, border_color="#c3e6cb", height=40)
+            f_ok.pack(fill="x", pady=5)
+            ctk.CTkLabel(f_ok, text="✅ Todo está al día. No hay notificaciones pendientes.", font=("Arial", 12, "bold"), text_color="#155724").pack(pady=8)
+        else:
+            for al in alertas:
+                if al["tipo"] == "peligro": c_fondo_al, c_borde_al, c_texto_al = "#f8d7da", "#f5c6cb", "#721c24"
+                elif al["tipo"] == "alerta": c_fondo_al, c_borde_al, c_texto_al = "#fff3cd", "#ffeeba", "#856404"
+                else: c_fondo_al, c_borde_al, c_texto_al = "#d1ecf1", "#bee5eb", "#0c5460"
+                f_al = ctk.CTkFrame(self.f_alertas_container, fg_color=c_fondo_al, corner_radius=6, border_width=1, border_color=c_borde_al)
+                f_al.pack(fill="x", pady=4)
+                ctk.CTkLabel(f_al, text=f"{al['icono']} {al['titulo']}:", font=("Arial", 12, "bold"), text_color=c_texto_al).pack(side="left", padx=(10, 5), pady=6)
+                ctk.CTkLabel(f_al, text=al["mensaje"], font=("Arial", 12), text_color=c_texto_al).pack(side="left", padx=(0, 10), pady=6)
+                
+        if not tareas_mostrar:
+            ctk.CTkLabel(self.f_agenda_container, text="No hay eventos próximos programados en la agenda.", font=("Arial", 12, "italic"), text_color="gray").pack(pady=15)
+        else:
+            for color, txt in tareas_mostrar:
+                ctk.CTkLabel(self.f_agenda_container, text=txt, font=("Arial", 12, "bold"), text_color=color).pack(anchor="w", padx=15, pady=8)
+
+    def _crear_modulo_pautas(self, contenedor):
+        try:
+            import pautas_evento
+            importlib.reload(pautas_evento)
+            app = pautas_evento.PautasEventoApp(contenedor, self.usuario_activo)
         except Exception as e:
-            print("Error cargando dashboard:", e)
-        finally:
-            liberar_conexion(conn)
+            messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-        f_pie = ctk.CTkFrame(f_dashboard, fg_color="transparent")
-        f_pie.pack(fill="x", pady=(40, 20))
-        ctk.CTkLabel(f_pie, text="Bienvenido", font=("Arial", 14, "bold"), text_color="gray").pack()
-        ctk.CTkLabel(f_pie, text="Este es el resumen automático de tu operación para el día de hoy.\nSeleccione un módulo en el menú lateral para gestionar sus operaciones.", font=("Arial", 12, "italic"), text_color="gray", justify="center").pack(pady=(5, 0))            
+    def _crear_modulo_bandeja(self, contenedor):
+        """📥 Bandeja de Entrada: procesa las facturas y comprobantes de la nube."""
+        try:
+            import modulo_bandeja
+            importlib.reload(modulo_bandeja)
+            app = modulo_bandeja.BandejaEntradaApp(contenedor, self.usuario_activo)
+            app.usuario_activo = self.usuario_activo
+            registrar_auditoria(self.usuario_activo, "Bandeja",
+                                "Abrió la Bandeja de Entrada")
+        except Exception as e:
+            messagebox.showerror("Error", f"Fallo al abrir la Bandeja de Entrada:\n{e}")
+            app = None
+        return app
 
-    # =======================================================
-    # FUNCIONES DE APERTURA DE MÓDULOS
-    # =======================================================
-    def abrir_modulo_ventas(self):
-        if not self.tiene_permiso("ventas"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_ventas(self, contenedor):
+        try:
             import modulo_ventas
             importlib.reload(modulo_ventas)
-            app = modulo_ventas.ModuloVentasApp(cuerpo)
+            app = modulo_ventas.ModuloVentasApp(contenedor)
             app.usuario_activo = self.usuario_activo
-            return app
-        self.abrir_ventana_modulo("ventas", self._titulo_modulo("ventas"), construir)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_compras(self):
-        if not self.tiene_permiso("compras"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_compras(self, contenedor):
+        try:
             import modulo_compras
             importlib.reload(modulo_compras)
-            app = modulo_compras.ModuloComprasApp(cuerpo)
+            app = modulo_compras.ModuloComprasApp(contenedor)
             app.usuario_activo = self.usuario_activo
-            return app
-        self.abrir_ventana_modulo("compras", self._titulo_modulo("compras"), construir)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_ordenes(self):
-        if not self.tiene_permiso("ordenes"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import ordenes_compra
-            importlib.reload(ordenes_compra)
-            return ordenes_compra.OrdenesCompraApp(cuerpo, self.usuario_activo)
-        self.abrir_ventana_modulo("ordenes", self._titulo_modulo("ordenes"), construir)
-
-    def abrir_modulo_ordenes_cliente(self):
-        if not self.tiene_permiso("ordenes_cliente"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import ordenes_compra_cliente
-            importlib.reload(ordenes_compra_cliente)
-            return ordenes_compra_cliente.OrdenesCompraClienteApp(cuerpo, self.usuario_activo)
-        self.abrir_ventana_modulo("ordenes_cliente", self._titulo_modulo("ordenes_cliente"), construir)
-
-    def abrir_estadisticas_financiera(self):
-        if not self.tiene_permiso("dashboard"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import estadisticas_financiera
-            importlib.reload(estadisticas_financiera)
-            return estadisticas_financiera.EstadisticasFinancieraApp(cuerpo, self.usuario_activo)
-        self.abrir_ventana_modulo("dashboard", self._titulo_modulo("dashboard"), construir)
-
-    def abrir_modulo_banco(self):
-        if not self.tiene_permiso("banco"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_bancos(self, contenedor):
+        """🏦 Módulo de Bancos: saldos por cuenta y conciliación bancaria."""
+        try:
             import modulo_banco
             importlib.reload(modulo_banco)
-            return modulo_banco.ModuloBancoApp(cuerpo, self.usuario_activo)
-        self.abrir_ventana_modulo("banco", self._titulo_modulo("banco"), construir)
+            app = modulo_banco.ModuloBancoApp(contenedor, self.usuario_activo)
+            app.usuario_activo = self.usuario_activo
+            registrar_auditoria(self.usuario_activo, "Bancos", "Abrió el módulo de Bancos (saldos y conciliación)")
+        except Exception as e:
+            messagebox.showerror("Error", f"Fallo al abrir el módulo de Bancos:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_nomina(self):
-        if not self.tiene_permiso("nomina"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import modulo_nomina
-            importlib.reload(modulo_nomina)
-            return modulo_nomina.ModuloNominaApp(cuerpo, self.usuario_activo)
-        self.abrir_ventana_modulo("nomina", self._titulo_modulo("nomina"), construir)
+    def _crear_modulo_ordenes(self, contenedor):
+        try:
+            import ordenes_compra
+            importlib.reload(ordenes_compra)
+            app = ordenes_compra.OrdenesCompraApp(contenedor, self.usuario_activo)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_calculo_impuestos(self):
-        if not self.tiene_permiso("impuestos"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_ordenes_cliente(self, contenedor):
+        try:
+            import ordenes_compra_cliente
+            importlib.reload(ordenes_compra_cliente)
+            app = ordenes_compra_cliente.OrdenesCompraClienteApp(contenedor, self.usuario_activo)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
+
+    def _crear_modulo_inventario(self, contenedor):
+        try:
+            import inventario
+            importlib.reload(inventario)
+            app = inventario.InventarioApp(contenedor, self.usuario_activo)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
+
+    def _crear_modulo_locaciones(self, contenedor):
+        try:
+            try:
+                import inventario_locacion as mod_loc
+            except ImportError:
+                import Inventario_locacion as mod_loc
+            importlib.reload(mod_loc)
+            app = mod_loc.InventarioLocacionesApp(contenedor)
+            app.usuario_activo = self.usuario_activo
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
+
+    def _crear_estadisticas_financiera(self, contenedor):
+        try:
+            import estadisticas_financiera
+            importlib.reload(estadisticas_financiera)
+            app = estadisticas_financiera.EstadisticasFinancieraApp(contenedor)
+            app.usuario_activo = self.usuario_activo
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
+
+    def _crear_calculo_impuestos(self, contenedor):
+        try:
             import calculo_impuestos
             importlib.reload(calculo_impuestos)
-            return calculo_impuestos.CalculoImpuestosApp(cuerpo)
-        self.abrir_ventana_modulo("impuestos", self._titulo_modulo("impuestos"), construir)
-
-    def abrir_modulo_cobranza(self):
-        if not self.tiene_permiso("cobranza"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import calculo_cobranza
-            importlib.reload(calculo_cobranza)
-            app = calculo_cobranza.CalculoCobranzaApp(cuerpo)
+            app = calculo_impuestos.CalculoImpuestosApp(contenedor)
             app.usuario_activo = self.usuario_activo
-            return app
-        self.abrir_ventana_modulo("cobranza", self._titulo_modulo("cobranza"), construir)
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_proveedores(self):
-        if not self.tiene_permiso("proveedores"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_proveedores(self, contenedor):
+        try:
             import proveedores
             importlib.reload(proveedores)
-            app = proveedores.SistemaProveedores(cuerpo)
+            app = proveedores.SistemaProveedores(contenedor)
             app.usuario_activo = self.usuario_activo
-            return app
-        self.abrir_ventana_modulo("proveedores", self._titulo_modulo("proveedores"), construir)
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_libro_diario(self):
-        if not self.tiene_permiso("libro_diario"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_solicitud_proveedor(self, contenedor):
+        try:
+            import solicitud_proveedor
+            importlib.reload(solicitud_proveedor)
+            app = solicitud_proveedor.SolicitudProveedorApp(contenedor, self.usuario_activo)
+        except Exception as e: messagebox.showerror("Error", f"Fallo al abrir:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
+
+    def _crear_modulo_libro_diario(self, contenedor):
+        try:
             import libro_diario
             importlib.reload(libro_diario)
-            return libro_diario.LibroDiarioApp(cuerpo)
-        self.abrir_ventana_modulo("libro_diario", self._titulo_modulo("libro_diario"), construir)
+            app = libro_diario.LibroDiarioApp(contenedor)
+            app.usuario_activo = self.usuario_activo
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_libro_mayor(self):
-        if not self.tiene_permiso("libro_mayor"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_libro_mayor(self, contenedor):
+        try:
             import libro_mayor
             importlib.reload(libro_mayor)
-            return libro_mayor.LibroMayorApp(cuerpo)
-        self.abrir_ventana_modulo("libro_mayor", self._titulo_modulo("libro_mayor"), construir)
+            app = libro_mayor.LibroMayorApp(contenedor)
+            app.usuario_activo = self.usuario_activo
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_clientes(self):
-        if not self.tiene_permiso("clientes"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_clientes(self, contenedor):
+        try:
             import clientes
             importlib.reload(clientes)
-            app = clientes.SistemaClientes(cuerpo)
+            app = clientes.SistemaClientes(contenedor)
             app.usuario_activo = self.usuario_activo
-            return app
-        self.abrir_ventana_modulo("clientes", self._titulo_modulo("clientes"), construir)
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_cronograma(self):
-        if not self.tiene_permiso("cronograma"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_cotizaciones(self, contenedor):
+        try:
+            import cotizaciones
+            importlib.reload(cotizaciones)
+            app = cotizaciones.VentanaCotizaciones(contenedor)
+            app.usuario_activo = self.usuario_activo
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
+
+    def _crear_modulo_cronograma(self, contenedor):
+        try:
             import cronograma_tareas
             importlib.reload(cronograma_tareas)
-            app = cronograma_tareas.CronogramaApp(cuerpo)
+            app = cronograma_tareas.CronogramaApp(contenedor)
             app.usuario_activo = self.usuario_activo
-            return app
-        self.abrir_ventana_modulo("cronograma", self._titulo_modulo("cronograma"), construir)
+        except Exception as e: messagebox.showerror("Error", str(e))
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
-    def abrir_modulo_bitacora(self):
-        if not self.tiene_permiso("bitacora"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
+    def _crear_modulo_bitacora(self, contenedor):
+        try:
             import bitacora
             importlib.reload(bitacora)
-            app = bitacora.BitacoraApp(cuerpo)
+            bitacora.BitacoraApp(contenedor)
             registrar_auditoria(self.usuario_activo, "Bitácora", "Accedió a revisar el historial de auditoría")
-            return app
-        self.abrir_ventana_modulo("bitacora", self._titulo_modulo("bitacora"), construir)
-
-    def abrir_modulo_flota(self):
-        if not self.tiene_permiso("flota"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import flota_automotriz
-            importlib.reload(flota_automotriz)
-            return flota_automotriz.FlotaAutomotrizApp(cuerpo, self.usuario_activo)
-        self.abrir_ventana_modulo("flota", self._titulo_modulo("flota"), construir)
-
-    def abrir_modulo_choferes(self):
-        if not self.tiene_permiso("choferes"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import choferes
-            importlib.reload(choferes)
-            return choferes.ChoferesApp(cuerpo, self.usuario_activo)
-        self.abrir_ventana_modulo("choferes", self._titulo_modulo("choferes"), construir)
-
-    def abrir_modulo_inspeccion_vehicular(self):
-        if not self.tiene_permiso("inspeccion_vehicular"): return messagebox.showerror("Denegado", "No tiene permisos.")
-        def construir(cuerpo):
-            import inspeccion_vehicular
-            importlib.reload(inspeccion_vehicular)
-            app = inspeccion_vehicular.InspeccionVehicularApp(cuerpo, self.usuario_activo)
-            registrar_auditoria(self.usuario_activo, "Inspección Vehicular",
-                                "Accedió al módulo de Inspección Vehicular")
-            return app
-        self.abrir_ventana_modulo("inspeccion_vehicular", self._titulo_modulo("inspeccion_vehicular"), construir)
-
-    def abrir_modulo_amonestaciones(self):
-        """📋 Amonestaciones y Suspensiones del personal de conducción."""
-        if not self.tiene_permiso("amonestaciones"):
-            return messagebox.showerror("Denegado", "No tiene permisos para este módulo.")
-        def construir(cuerpo):
-            import modulo_amonestaciones
-            importlib.reload(modulo_amonestaciones)
-            app = modulo_amonestaciones.AmonestacionesApp(cuerpo, self.usuario_activo)
-            registrar_auditoria(self.usuario_activo, "Amonestaciones",
-                                "Accedió al módulo de Amonestaciones y Suspensiones")
-            return app
-        self.abrir_ventana_modulo("amonestaciones",
-                                  self._titulo_modulo("amonestaciones"),
-                                  construir)
+        except Exception as e: messagebox.showerror("Error", f"No se pudo cargar la Bitácora:\n{e}")
+        return locals().get("app")          # 🪟 instancia del módulo (None si falló)
 
     # =======================================================
-    # CONFIGURACIÓN GENERAL (CROSS-PLATFORM)
+    # CONFIGURACIÓN GENERAL (EVENTOS) - 100% COMPLETA
     # =======================================================
     def abrir_configuracion_general(self):
         if not self.tiene_permiso("configuracion"):
             return messagebox.showerror("Acceso Denegado", "No tiene permisos para modificar la configuración.")
-            
         v_conf = ctk.CTkToplevel(self.root)
         v_conf.title("Configuración General del Sistema")
         v_conf.geometry("1000x750")
-        v_conf.after(50, lambda: maximizar_ventana(v_conf))
-        try:
-            v_conf.attributes("-topmost", True)
-        except Exception:
-            pass
-        v_conf.grab_set()
-        
+        v_conf.after(100, lambda: maximizar_ventana(v_conf))
+        # 🪟 Ya NO se usa grab_set(): el sistema es multi-ventana y esta ventana no
+        # debe bloquear los demás módulos que queden abiertos.
+        # 🪟 Se registra como un módulo más: aparece en "Módulos abiertos" y si se
+        # vuelve a pulsar en el menú se trae al frente en vez de abrir otra copia.
+        self.ventanas_modulos["configuracion"] = v_conf
+        v_conf.bind("<Destroy>", lambda e, c="configuracion": self._al_destruir_ventana(e, c), add="+")
+        self._actualizar_pestanas_modulos()
+        traer_al_frente(v_conf)
         archivo_config = str(CONFIG_FILE)
         config_actual = cargar_configuracion_general()
-        device_id = obtener_device_id()
-        
-        lat_val, lon_val, rad_val = "-12.046374", "-77.042793", "100"
-        conn_geo = conectar_db(silencioso=True)
-        if conn_geo:
-            try:
-                with conn_geo.cursor() as c_geo:
-                    c_geo.execute("SELECT latitud, longitud, radio FROM configuracion_geocerca LIMIT 1")
-                    res_geo = c_geo.fetchone()
-                    if res_geo:
-                        lat_val, lon_val, rad_val = str(res_geo[0]), str(res_geo[1]), str(res_geo[2])
-            except Exception:
-                pass
-            finally:
-                liberar_conexion(conn_geo)
-                
+        todas_guardadas = (
+            config_actual.get("orden_operativos", []) +
+            config_actual.get("orden_finanzas", []) +
+            config_actual.get("orden_ajustes", [])
+        )
+        default_fin_cfg = ["ventas", "compras", "bancos", "libro_diario", "libro_mayor", "impuestos", "dashboard"]
+        for k in self.modulos_sistema:
+            if k not in todas_guardadas:
+                grupo = "orden_finanzas" if k in default_fin_cfg else "orden_operativos"
+                lista_grupo = config_actual.setdefault(grupo, [])
+                if k == "bancos" and "compras" in lista_grupo:
+                    lista_grupo.insert(lista_grupo.index("compras") + 1, k)
+                else:
+                    lista_grupo.append(k)
         f_header = ctk.CTkFrame(v_conf, fg_color="transparent")
         f_header.pack(fill="x", padx=25, pady=(20, 10))
         ctk.CTkLabel(f_header, text="⚙️ Configuración General del Sistema", font=("Arial", 22, "bold"), text_color="#1f538d").pack(side="left")
         ctk.CTkButton(f_header, text="❌ Cerrar Configuración", font=("Arial", 12, "bold"), fg_color="#e74c3c", hover_color="#c0392b", command=v_conf.destroy).pack(side="right")
-        
         f_scroll = ctk.CTkScrollableFrame(v_conf, fg_color="transparent")
         f_scroll.pack(fill="both", expand=True, padx=20, pady=10)
         ctk.CTkLabel(f_scroll, text="Ajustes locales guardados específicamente para este equipo.", font=("Arial", 12, "italic"), text_color="gray").pack(anchor="w", padx=10, pady=(0, 15))
         
+        # ---------- 1. EMPRESA Y TRIBUTACIÓN ----------
         f_empresa = ctk.CTkFrame(f_scroll, corner_radius=10)
         f_empresa.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_empresa, text="🏢 Datos de tu Empresa y Tributación", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 10))
-        
         f_row1 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row1.pack(fill="x", padx=15, pady=5)
         ctk.CTkLabel(f_row1, text="RUC Empresa:\n(Enter para SUNAT)", font=("Arial", 11, "bold"), width=120, anchor="w").pack(side="left")
         ent_ruc_empresa = ctk.CTkEntry(f_row1, width=150)
         ent_ruc_empresa.pack(side="left", padx=5)
         ent_ruc_empresa.insert(0, config_actual.get("ruc_empresa", ""))
-        
         ctk.CTkLabel(f_row1, text="Razón Social:", font=("Arial", 11, "bold"), width=100, anchor="w").pack(side="left", padx=(15, 5))
         ent_razon_social = ctk.CTkEntry(f_row1, width=280)
         ent_razon_social.pack(side="left", padx=5, fill="x", expand=True)
         ent_razon_social.insert(0, config_actual.get("razon_social_empresa", ""))
-        
         f_row1_5 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row1_5.pack(fill="x", padx=15, pady=5)
         ctk.CTkLabel(f_row1_5, text="Régimen Tributario:", font=("Arial", 11, "bold"), width=120, anchor="w").pack(side="left")
@@ -2766,37 +2560,332 @@ class ControlGeneralEventos:
         cmb_regimen.pack(side="left", padx=5)
         reg_guardado = config_actual.get("regimen_empresa", "MYPE Tributario")
         cmb_regimen.set(reg_guardado if reg_guardado in regimenes_peru else regimenes_peru[2])
-        
         f_row2 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row2.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(f_row2, text="IGV (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        ent_igv = ctk.CTkEntry(f_row2, width=60); ent_igv.pack(side="left", padx=5); ent_igv.insert(0, config_actual.get("igv_porcentaje", "0"))
-        ctk.CTkLabel(f_row2, text="Renta Mensual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_renta_m = ctk.CTkEntry(f_row2, width=60); ent_renta_m.pack(side="left", padx=5); ent_renta_m.insert(0, config_actual.get("renta_mensual_porcentaje", "0"))
-        ctk.CTkLabel(f_row2, text="Renta Anual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_renta_a = ctk.CTkEntry(f_row2, width=60); ent_renta_a.pack(side="left", padx=5); ent_renta_a.insert(0, config_actual.get("renta_anual_porcentaje", "0"))
+        ent_igv = ctk.CTkEntry(f_row2, width=60)
+        ent_igv.pack(side="left", padx=5)
+        ent_igv.insert(0, config_actual.get("igv_porcentaje", "0"))
         ctk.CTkLabel(f_row2, text="Detracción (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_detraccion_cfg = ctk.CTkEntry(f_row2, width=60); ent_detraccion_cfg.pack(side="left", padx=5); ent_detraccion_cfg.insert(0, config_actual.get("detraccion_porcentaje", "12"))
-        
+        ent_detraccion = ctk.CTkEntry(f_row2, width=60)
+        ent_detraccion.pack(side="left", padx=5)
+        ent_detraccion.insert(0, config_actual.get("detraccion_porcentaje", "12"))
+        ctk.CTkLabel(f_row2, text="Renta Mensual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
+        ent_renta_m = ctk.CTkEntry(f_row2, width=60)
+        ent_renta_m.pack(side="left", padx=5)
+        ent_renta_m.insert(0, config_actual.get("renta_mensual_porcentaje", "0"))
+        ctk.CTkLabel(f_row2, text="Renta Anual (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
+        ent_renta_a = ctk.CTkEntry(f_row2, width=60)
+        ent_renta_a.pack(side="left", padx=5)
+        ent_renta_a.insert(0, config_actual.get("renta_anual_porcentaje", "0"))
         f_row3 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row3.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(f_row3, text="Última Factura SUNAT:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        ent_ult_fac = ctk.CTkEntry(f_row3, width=90, placeholder_text="F001-0"); ent_ult_fac.pack(side="left", padx=5); ent_ult_fac.insert(0, config_actual.get("ultimo_factura", "F001-0"))
+        ent_ult_fac = ctk.CTkEntry(f_row3, width=90, placeholder_text="F001-0")
+        ent_ult_fac.pack(side="left", padx=5)
+        ent_ult_fac.insert(0, config_actual.get("ultimo_factura", "F001-0"))
         ctk.CTkLabel(f_row3, text="Última Boleta:", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_ult_bol = ctk.CTkEntry(f_row3, width=90, placeholder_text="B001-0"); ent_ult_bol.pack(side="left", padx=5); ent_ult_bol.insert(0, config_actual.get("ultimo_boleta", "B001-0"))
+        ent_ult_bol = ctk.CTkEntry(f_row3, width=90, placeholder_text="B001-0")
+        ent_ult_bol.pack(side="left", padx=5)
+        ent_ult_bol.insert(0, config_actual.get("ultimo_boleta", "B001-0"))
         ctk.CTkLabel(f_row3, text="Último Recibo (RH):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_ult_rec = ctk.CTkEntry(f_row3, width=90, placeholder_text="E001-0"); ent_ult_rec.pack(side="left", padx=5); ent_ult_rec.insert(0, config_actual.get("ultimo_recibo", "E001-0"))
+        ent_ult_rec = ctk.CTkEntry(f_row3, width=90, placeholder_text="E001-0")
+        ent_ult_rec.pack(side="left", padx=5)
+        ent_ult_rec.insert(0, config_actual.get("ultimo_recibo", "E001-0"))
+
+        # ---------- 1.5 FECHA DE COMIENZO DEL SISTEMA (CORTE DE COMPRAS Y VENTAS) ----------
+        f_corte = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#fff7ed", border_width=1, border_color="#fdba74")
+        f_corte.pack(fill="x", padx=10, pady=10, ipady=10)
+        ctk.CTkLabel(f_corte, text="📅 Fecha de Comienzo del Sistema (Corte de Compras y Ventas)", font=("Arial", 14, "bold"), text_color="#9a3412").pack(anchor="w", padx=15, pady=(10, 2))
+        ctk.CTkLabel(
+            f_corte,
+            text=("Todo lo anterior a esta fecha se elimina de forma definitiva y SUNAT/SIRE ya no volverá a descargarlo.\n"
+                  "El sistema solo carga y registra compras y ventas desde esta fecha en adelante. Déjala vacía si no deseas ningún corte."),
+            font=("Arial", 11, "italic"), text_color="#7c2d12", justify="left"
+        ).pack(anchor="w", padx=15, pady=(0, 8))
+
+        f_corte_row = ctk.CTkFrame(f_corte, fg_color="transparent")
+        f_corte_row.pack(fill="x", padx=15, pady=2)
+        ctk.CTkLabel(f_corte_row, text="Fecha de Comienzo:", font=("Arial", 11, "bold"), width=140, anchor="w").pack(side="left")
+        ent_fecha_corte = ctk.CTkEntry(f_corte_row, width=130, placeholder_text="DD/MM/AAAA")
+        ent_fecha_corte.pack(side="left", padx=5)
+        _fecha_corte_guardada = obtener_fecha_comienzo(config_actual) if FECHA_SISTEMA_DISPONIBLE else None
+        if _fecha_corte_guardada:
+            ent_fecha_corte.insert(0, _fecha_corte_guardada.strftime("%d/%m/%Y"))
+
+        def _poner_fecha_hoy():
+            ent_fecha_corte.delete(0, tk.END)
+            ent_fecha_corte.insert(0, datetime.now().strftime("%d/%m/%Y"))
+
+        ctk.CTkButton(f_corte_row, text="📅 Hoy", width=70, fg_color="#7f8c8d", hover_color="#606b6b", command=_poner_fecha_hoy).pack(side="left", padx=5)
+        ctk.CTkButton(
+            f_corte_row, text="🧹 Eliminar Compras y Ventas de esta fecha hacia atrás",
+            font=("Arial", 11, "bold"), fg_color="#c0392b", hover_color="#922b21",
+            command=lambda: limpiar_anteriores()
+        ).pack(side="left", padx=10)
+
+        lbl_corte_info = ctk.CTkLabel(f_corte, text="", font=("Arial", 11, "bold"), text_color="gray", justify="left")
+        lbl_corte_info.pack(anchor="w", padx=15, pady=(8, 4))
+
+        if not FECHA_SISTEMA_DISPONIBLE:
+            ent_fecha_corte.configure(state="disabled")
+
+        def _refrescar_label_corte():
+            if not FECHA_SISTEMA_DISPONIBLE:
+                lbl_corte_info.configure(text="⚠️ No se pudo cargar el módulo de corte (fecha_sistema.py).", text_color="#c0392b")
+                return
+            f = obtener_fecha_comienzo()
+            if f:
+                lbl_corte_info.configure(
+                    text=f"📌 Corte activo: se eliminan y bloquean las compras/ventas anteriores al {f.strftime('%d/%m/%Y')}. "
+                         f"SUNAT/SIRE solo descarga desde el periodo {f.strftime('%Y%m')} en adelante.",
+                    text_color="#9a3412"
+                )
+            else:
+                lbl_corte_info.configure(text="📌 Sin corte definido: el sistema muestra y descarga todo el historial disponible.", text_color="gray")
+
+        def _purgar_con_progreso(fecha_corte, al_terminar):
+            """Elimina en segundo plano para no congelar la interfaz."""
+            v_prog = ctk.CTkToplevel(v_conf)
+            v_prog.title("Eliminando compras y ventas...")
+            v_prog.geometry("440x170")
+            v_prog.transient(v_conf)
+            v_prog.grab_set()
+            v_prog.resizable(False, False)
+            v_prog.update_idletasks()
+            try:
+                x = v_conf.winfo_rootx() + (v_conf.winfo_width() // 2) - 220
+                y = v_conf.winfo_rooty() + (v_conf.winfo_height() // 2) - 85
+                v_prog.geometry(f"+{max(0, x)}+{max(0, y)}")
+            except Exception:
+                pass
+            ctk.CTkLabel(v_prog, text=f"🧹 Eliminando compras y ventas anteriores al\n{fecha_corte.strftime('%d/%m/%Y')}", font=("Arial", 13, "bold"), text_color="#c0392b").pack(pady=(22, 10))
+            pbar = ctk.CTkProgressBar(v_prog, width=360)
+            pbar.pack(pady=5)
+            pbar.set(0.4)
+            ctk.CTkLabel(v_prog, text="Este proceso es definitivo. No cierres la ventana...", font=("Arial", 10, "italic"), text_color="gray").pack(pady=5)
+
+            def tarea():
+                try:
+                    resultado = purgar_anteriores(fecha_corte, usuario=self.usuario_activo)
+                    error = None
+                except Exception as e:
+                    resultado, error = None, str(e)
+
+                def terminar():
+                    try:
+                        v_prog.destroy()
+                    except Exception:
+                        pass
+                    al_terminar(resultado, error)
+
+                try:
+                    v_conf.after(0, terminar)
+                except Exception:
+                    terminar()
+
+            threading.Thread(target=tarea, daemon=True).start()
+
+        def limpiar_anteriores():
+            if not FECHA_SISTEMA_DISPONIBLE:
+                return messagebox.showerror("No disponible", "No se pudo cargar el módulo de corte (fecha_sistema.py).", parent=v_conf)
+            fecha_corte = parsear_fecha_corte(ent_fecha_corte.get().strip())
+            if fecha_corte is None:
+                return messagebox.showwarning("Fecha inválida", "Escribe la Fecha de Comienzo con el formato DD/MM/AAAA (ej: 01/08/2026).", parent=v_conf)
+
+            if not messagebox.askyesno(
+                "Confirmar eliminación definitiva",
+                f"Se eliminarán DEFINITIVAMENTE de la base de datos todas las COMPRAS y VENTAS anteriores al {fecha_corte.strftime('%d/%m/%Y')}.\n\n"
+                "Esto incluye facturas recibidas, facturas emitidas, sus pagos y notas de crédito.\n\n"
+                "¿Deseas continuar?",
+                parent=v_conf
+            ):
+                return
+
+            def al_terminar(resultado, error):
+                if error:
+                    return messagebox.showerror("Error", f"No se pudo eliminar la información:\n{error}", parent=v_conf)
+                cache_sistema.invalidar()
+                messagebox.showinfo("Limpieza completada", resumen_purga(resultado), parent=v_conf)
+                _refrescar_label_corte()
+
+            _purgar_con_progreso(fecha_corte, al_terminar)
+
+        _refrescar_label_corte()
+
+        # ---------- 1.6 CUENTAS BANCARIAS (MÓDULO DE BANCOS) ----------
+        # Estas cuentas son las que usa el módulo 🏦 Bancos (saldos y conciliación),
+        # el registro de cobros de Ventas y el de pagos de Compras.
+        # 🔗 Se leen SIEMPRE de la base de datos (fuente compartida por los equipos).
+        cuentas_bancarias_actual = []
+        try:
+            cuentas_bancarias_actual = [dict(c) for c in cargar_bancos(usar_cache=False)]
+        except Exception:
+            cuentas_bancarias_actual = []
+        cuentas_editadas = {"cambiado": False}      # ¿el usuario tocó las cuentas aquí?
+
+        f_bancos_cfg = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#eef7ff",
+                                    border_width=1, border_color="#bcd9f5")
+        f_bancos_cfg.pack(fill="x", padx=10, pady=10, ipady=10)
+        ctk.CTkLabel(f_bancos_cfg, text="🏦 Cuentas Bancarias (módulo de Bancos)",
+                     font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 2))
+        ctk.CTkLabel(
+            f_bancos_cfg,
+            text=("Registre aquí cada cuenta bancaria de la empresa. El módulo de Bancos calcula el saldo así:\n"
+                  "Saldo = Saldo inicial + cobros depositados − pagos realizados (desde la fecha indicada).\n"
+                  "Ponga como 'Saldo inicial' el dinero que había en la cuenta en esa fecha."),
+            font=("Arial", 11, "italic"), text_color="#1c4e80", justify="left"
+        ).pack(anchor="w", padx=15, pady=(0, 8))
+
+        f_lista_bancos = ctk.CTkFrame(f_bancos_cfg, fg_color="transparent")
+        f_lista_bancos.pack(fill="x", padx=15, pady=(0, 6))
+        lst_bancos = tk.Listbox(f_lista_bancos, height=5, font=("Consolas", 10), activestyle="none")
+        lst_bancos.pack(side="left", fill="both", expand=True)
+
+        def _refrescar_lista_bancos():
+            lst_bancos.delete(0, tk.END)
+            for cta in cuentas_bancarias_actual:
+                nombre = f"{cta.get('banco', '')} - {cta.get('cuenta', '')}".strip(" -") or "(Cuenta sin nombre)"
+                lst_bancos.insert(tk.END, f"{nombre}   |   Saldo inicial: {cta.get('saldo_inicial', '') or '0.00'}"
+                                          f"   |   Desde: {cta.get('fecha', '') or 'sin fecha'}")
+            if not cuentas_bancarias_actual:
+                lst_bancos.insert(tk.END, "   (Todavía no hay cuentas bancarias configuradas)")
+
+        def _guardar_cuentas_bancarias(borrado_explicito=False):
+            """Guarda las cuentas en la BASE DE DATOS (y deja copia en el equipo)
+            para que todos los módulos y todos los equipos vean lo mismo.
+
+            'borrado_explicito' se usa cuando el usuario elimina una cuenta: ahí sí
+            se permite que la lista quede vacía.
+            """
+            cuentas_editadas["cambiado"] = True
+            try:
+                guardar_bancos(cuentas_bancarias_actual,
+                               proteger_vacio=not borrado_explicito)
+            except Exception as e:
+                print("No se pudieron guardar las cuentas bancarias:", e)
+
+        def _dialogo_cuenta_bancaria(indice=None):
+            base = {}
+            if indice is not None and 0 <= indice < len(cuentas_bancarias_actual):
+                base = cuentas_bancarias_actual[indice]
+            v_banco = ctk.CTkToplevel(v_conf)
+            v_banco.title("Cuenta Bancaria")
+            v_banco.geometry("430x360")
+            v_banco.transient(v_conf)
+            v_banco.grab_set()
+            ctk.CTkLabel(v_banco, text=("✏️ Editar cuenta bancaria" if base else "➕ Nueva cuenta bancaria"),
+                         font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
+            f_b = ctk.CTkFrame(v_banco, fg_color="transparent")
+            f_b.pack(fill="x", padx=20)
+            ctk.CTkLabel(f_b, text="Banco:", font=("Arial", 11, "bold")).pack(anchor="w")
+            ent_banco_n = ctk.CTkEntry(f_b, placeholder_text="Ej.: BCP, BBVA, Interbank, Banco de la Nación")
+            ent_banco_n.pack(fill="x", pady=(0, 8))
+            ent_banco_n.insert(0, str(base.get("banco", "") or ""))
+            ctk.CTkLabel(f_b, text="Número de cuenta (o cuenta / CCI):", font=("Arial", 11, "bold")).pack(anchor="w")
+            ent_cuenta_n = ctk.CTkEntry(f_b, placeholder_text="Ej.: 193-1234567-0-91")
+            ent_cuenta_n.pack(fill="x", pady=(0, 8))
+            ent_cuenta_n.insert(0, str(base.get("cuenta", "") or ""))
+            f_saldo = ctk.CTkFrame(f_b, fg_color="transparent")
+            f_saldo.pack(fill="x", pady=(0, 8))
+            f_saldo.columnconfigure((0, 1), weight=1)
+            ctk.CTkLabel(f_saldo, text="Saldo inicial:", font=("Arial", 11, "bold")).grid(row=0, column=0, sticky="w")
+            ctk.CTkLabel(f_saldo, text="Desde la fecha (DD/MM/AAAA):", font=("Arial", 11, "bold")).grid(row=0, column=1, sticky="w", padx=(8, 0))
+            ent_saldo_n = ctk.CTkEntry(f_saldo, placeholder_text="0.00")
+            ent_saldo_n.grid(row=1, column=0, sticky="ew")
+            ent_saldo_n.insert(0, str(base.get("saldo_inicial", "") or ""))
+            ent_fecha_n = ctk.CTkEntry(f_saldo, placeholder_text="DD/MM/AAAA")
+            ent_fecha_n.grid(row=1, column=1, sticky="ew", padx=(8, 0))
+            ent_fecha_n.insert(0, str(base.get("fecha", "") or ""))
+
+            def _guardar_cuenta():
+                banco_txt = ent_banco_n.get().strip()
+                cuenta_txt = ent_cuenta_n.get().strip()
+                if not banco_txt and not cuenta_txt:
+                    return messagebox.showwarning("Datos incompletos",
+                                                  "Escriba al menos el banco o el número de cuenta.",
+                                                  parent=v_banco)
+                registro = normalizar_cuenta({
+                    "banco": banco_txt,
+                    "cuenta": cuenta_txt,
+                    "saldo_inicial": ent_saldo_n.get().strip(),
+                    "fecha": ent_fecha_n.get().strip(),
+                })
+                if indice is None:
+                    cuentas_bancarias_actual.append(registro)
+                else:
+                    cuentas_bancarias_actual[indice] = registro
+                _refrescar_lista_bancos()
+                _guardar_cuentas_bancarias()
+                registrar_auditoria(self.usuario_activo, "Bancos",
+                                    f"{'Editó' if base else 'Agregó'} la cuenta bancaria "
+                                    f"{registro.get('banco', '')} {registro.get('cuenta', '')}".strip())
+                v_banco.destroy()
+
+            f_btn_banco = ctk.CTkFrame(v_banco, fg_color="transparent")
+            f_btn_banco.pack(fill="x", padx=20, pady=15)
+            ctk.CTkButton(f_btn_banco, text="💾 Guardar Cuenta", fg_color="#27ae60",
+                          hover_color="#1e8449", font=("Arial", 12, "bold"),
+                          command=_guardar_cuenta).pack(side="left", expand=True, padx=5)
+            ctk.CTkButton(f_btn_banco, text="✖ Cancelar", fg_color="#7f8c8d",
+                          hover_color="#606b6b", font=("Arial", 12, "bold"),
+                          command=v_banco.destroy).pack(side="right", expand=True, padx=5)
+            ent_banco_n.focus()
+
+        def agregar_cuenta_bancaria():
+            _dialogo_cuenta_bancaria(None)
+
+        def editar_cuenta_bancaria():
+            sel = lst_bancos.curselection()
+            if not sel or not cuentas_bancarias_actual:
+                return messagebox.showinfo("Cuentas bancarias", "Seleccione la cuenta que desea editar.",
+                                           parent=v_conf)
+            _dialogo_cuenta_bancaria(sel[0])
+
+        def eliminar_cuenta_bancaria():
+            sel = lst_bancos.curselection()
+            if not sel or not cuentas_bancarias_actual:
+                return messagebox.showinfo("Cuentas bancarias", "Seleccione la cuenta que desea eliminar.",
+                                           parent=v_conf)
+            cta = cuentas_bancarias_actual[sel[0]]
+            if not messagebox.askyesno(
+                    "Confirmar eliminación",
+                    f"¿Quitar la cuenta {cta.get('banco', '')} {cta.get('cuenta', '')} del sistema?\n\n"
+                    "Los movimientos ya conciliados de esa cuenta NO se borran.",
+                    parent=v_conf):
+                return
+            cuentas_bancarias_actual.pop(sel[0])
+            _refrescar_lista_bancos()
+            _guardar_cuentas_bancarias(borrado_explicito=True)
+            registrar_auditoria(self.usuario_activo, "Bancos",
+                                f"Eliminó la cuenta bancaria {cta.get('banco', '')} {cta.get('cuenta', '')}".strip())
+
+        f_botones_bancos = ctk.CTkFrame(f_bancos_cfg, fg_color="transparent")
+        f_botones_bancos.pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkButton(f_botones_bancos, text="➕ Agregar Cuenta", width=160, font=("Arial", 11, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=agregar_cuenta_bancaria).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(f_botones_bancos, text="✏️ Editar", width=110, font=("Arial", 11, "bold"),
+                      fg_color="#34495e", hover_color="#2c3e50",
+                      command=editar_cuenta_bancaria).pack(side="left", padx=6)
+        ctk.CTkButton(f_botones_bancos, text="🗑️ Eliminar", width=110, font=("Arial", 11, "bold"),
+                      fg_color="#c0392b", hover_color="#96281b",
+                      command=eliminar_cuenta_bancaria).pack(side="left", padx=6)
+        _refrescar_lista_bancos()
 
         def actualizar_tasas_regimen(choice):
-            ent_igv.delete(0, tk.END); ent_renta_m.delete(0, tk.END); ent_renta_a.delete(0, tk.END)
+            ent_igv.delete(0, tk.END)
+            ent_detraccion.delete(0, tk.END)
+            ent_renta_m.delete(0, tk.END)
+            ent_renta_a.delete(0, tk.END)
             if "NRUS" in choice:
-                ent_igv.insert(0, "0"); ent_renta_m.insert(0, "0"); ent_renta_a.insert(0, "0")
+                ent_igv.insert(0, "0"); ent_detraccion.insert(0, "0"); ent_renta_m.insert(0, "0"); ent_renta_a.insert(0, "0")
             elif "RER" in choice:
-                ent_igv.insert(0, "18"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "0")
+                ent_igv.insert(0, "18"); ent_detraccion.insert(0, "12"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "0")
             elif "MYPE" in choice:
-                ent_igv.insert(0, "18"); ent_renta_m.insert(0, "1.0"); ent_renta_a.insert(0, "29.5")
+                ent_igv.insert(0, "18"); ent_detraccion.insert(0, "12"); ent_renta_m.insert(0, "1.0"); ent_renta_a.insert(0, "29.5")
             elif "General" in choice:
-                ent_igv.insert(0, "18"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "29.5")
+                ent_igv.insert(0, "18"); ent_detraccion.insert(0, "12"); ent_renta_m.insert(0, "1.5"); ent_renta_a.insert(0, "29.5")
         cmb_regimen.configure(command=actualizar_tasas_regimen)
 
         def buscar_ruc_empresa(event=None):
@@ -2804,292 +2893,63 @@ class ControlGeneralEventos:
             if len(ruc) != 11 or not ruc.isdigit():
                 messagebox.showwarning("RUC Inválido", "Por favor, ingrese un RUC válido de 11 dígitos.", parent=v_conf)
                 return
-            try:
-                # Contexto SSL seguro y compatible con macOS (ver _contexto_ssl_seguro)
-                ctx = _contexto_ssl_seguro()
+            
+            def tarea():
+                try:
+                    ctx = crear_contexto_ssl_seguro()
+                    token = config_actual.get("token_api_ruc", "")
+                    url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
+                    headers = {'User-Agent': 'Mozilla/5.0'}
+                    if token:
+                        headers['Authorization'] = f'Bearer {token}'
+                        
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, context=ctx, timeout=8) as response:
+                        if response.status == 200:
+                            data = json.loads(response.read().decode())
+                            v_conf.after(0, lambda: _aplicar_datos_empresa(data))
+                        else:
+                            v_conf.after(0, lambda: messagebox.showwarning("Sin Resultados", "No se encontró información para este RUC.", parent=v_conf))
+                except Exception as e:
+                    v_conf.after(0, lambda err=e: messagebox.showwarning("Error", f"Problema al consultar RUC:\n{err}", parent=v_conf))
 
-                url = f"https://api.apis.net.pe/v1/ruc?numero={ruc}"
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, context=ctx, timeout=8) as response:
-                    if response.status == 200:
-                        data = json.loads(response.read().decode())
-                        ent_razon_social.delete(0, tk.END)
-                        ent_razon_social.insert(0, data.get("nombre", ""))
-                        messagebox.showinfo("Éxito", "Datos recuperados correctamente.", parent=v_conf)
-                    else:
-                        messagebox.showwarning("Sin Resultados", "No se encontró información para este RUC.", parent=v_conf)
-            except urllib.error.HTTPError as e:
-                if e.code in (404, 422):
-                    messagebox.showwarning("RUC Inválido", "El RUC ingresado no existe en SUNAT o no es válido.", parent=v_conf)
-                elif e.code in (401, 403):
-                    messagebox.showwarning("API Restringida", "Se requiere un Token de API válido o el servicio está bloqueado.", parent=v_conf)
-                else:
-                    messagebox.showwarning("Error de Servidor", f"El servidor de SUNAT devolvió un error (Código {e.code}).", parent=v_conf)
-            except Exception as e:
-                messagebox.showwarning("Error", f"Problema al consultar RUC:\n{e}", parent=v_conf)
+            def _aplicar_datos_empresa(data):
+                ent_razon_social.delete(0, tk.END)
+                ent_razon_social.insert(0, data.get("nombre", ""))
+                messagebox.showinfo("Éxito", "Datos de la empresa recuperados correctamente.", parent=v_conf)
+
+            threading.Thread(target=tarea, daemon=True).start()
+            
         ent_ruc_empresa.bind("<Return>", buscar_ruc_empresa)
         
-        ctk.CTkLabel(f_empresa, text="🏦 Cuentas Bancarias de la Empresa", font=("Arial", 12, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(15, 5))
-        f_bancos_container = ctk.CTkFrame(f_empresa, fg_color="transparent")
-        f_bancos_container.pack(fill="x", padx=15, pady=0)
-        bancos_peru = ["BCP", "BBVA", "Interbank", "Scotiabank", "Banco de la Nación", "BanBif", "Banco Pichincha", "Banco Falabella", "Banco Ripley", "Mibanco", "Caja Arequipa", "Caja Huancayo", "Caja Piura", "Caja Cusco", "Yape / Plin", "Otro"]
-        filas_bancos = []
-
-        f_header_bancos = ctk.CTkFrame(f_bancos_container, fg_color="transparent")
-        f_header_bancos.pack(fill="x", pady=(0, 2))
-        ctk.CTkLabel(f_header_bancos, text="Banco", width=180, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=(0, 5))
-        ctk.CTkLabel(f_header_bancos, text="N° de Cuenta / CCI", width=280, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
-        ctk.CTkLabel(f_header_bancos, text="Fecha", width=100, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
-        ctk.CTkLabel(f_header_bancos, text="Saldo Inicial", width=110, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
-
-        def _formatear_monto(valor_str):
-            """Formatea un monto con separador de miles y 2 decimales según el
-            formato_numero configurado (puntos para miles y coma decimal)."""
-            formato = config_actual.get("formato_numero", "1,000.00")
-            es_latino = (formato == "1.000,00")
-            miles, dec = (".", ",") if es_latino else (",", ".")
-            s = (valor_str or "").strip()
-            if not s:
-                return ""
-            limpio = s.replace(miles, "").replace(" ", "").replace(dec, ".")
-            try:
-                num = float(limpio)
-            except ValueError:
-                digitos = "".join(ch for ch in s if ch.isdigit())
-                if not digitos:
-                    return s
-                num = float(digitos)
-            texto = f"{num:,.2f}"
-            if es_latino:
-                texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
-            return texto
-
-        # --- Cuenta asignada para pagos de facturas del App Grifo ---
-        f_grifo = ctk.CTkFrame(f_empresa, fg_color="transparent")
-        f_grifo.pack(fill="x", padx=15, pady=(12, 0))
-        ctk.CTkLabel(f_grifo, text="💳 Cuenta para pagos del App Grifo:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        cmb_cuenta_grifo = ctk.CTkOptionMenu(f_grifo, values=["Ninguna"], width=320)
-        cmb_cuenta_grifo.pack(side="left", padx=5)
-        cmb_cuenta_grifo.set("Ninguna")
-        ctk.CTkLabel(f_grifo, text="(se asigna automáticamente al llegar facturas del App Grifo)", font=("Arial", 9, "italic"), text_color="gray").pack(side="left", padx=5)
-
-        def _opciones_cuentas_grifo():
-            opciones = ["Ninguna"]
-            for _f, _cb, _ec, _ef, _es in filas_bancos:
-                b = _cb.get().strip()
-                c = _ec.get().strip()
-                etiqueta = f"{b} - {c}".strip(" -")
-                if etiqueta and etiqueta not in opciones:
-                    opciones.append(etiqueta)
-            return opciones
-
-        def actualizar_cmb_grifo(preservar=True):
-            actual = cmb_cuenta_grifo.get()
-            opciones = _opciones_cuentas_grifo()
-            cmb_cuenta_grifo.configure(values=opciones)
-            if preservar and actual in opciones:
-                cmb_cuenta_grifo.set(actual)
-            else:
-                cmb_cuenta_grifo.set("Ninguna")
-
-        def agregar_fila_banco(banco="", cuenta="", fecha="", saldo_inicial=""):
-            fila = ctk.CTkFrame(f_bancos_container, fg_color="transparent")
-            fila.pack(fill="x", pady=2)
-            cmb_banco = ctk.CTkComboBox(fila, values=bancos_peru, width=180)
-            cmb_banco.pack(side="left", padx=(0, 5))
-            cmb_banco.set(banco if banco else "BCP")
-            ent_cuenta = ctk.CTkEntry(fila, width=280, placeholder_text="N° de Cuenta / CCI")
-            ent_cuenta.pack(side="left", padx=5)
-            ent_cuenta.insert(0, cuenta)
-            ent_fecha = ctk.CTkEntry(fila, width=100, placeholder_text="DD/MM/AAAA")
-            ent_fecha.pack(side="left", padx=5)
-            ent_fecha.insert(0, fecha if fecha else datetime.now().strftime("%d/%m/%Y"))
-            ent_saldo_inicial = ctk.CTkEntry(fila, width=110, placeholder_text="Saldo Inicial")
-            ent_saldo_inicial.pack(side="left", padx=5)
-            ent_saldo_inicial.insert(0, _formatear_monto(saldo_inicial) if saldo_inicial else "")
-
-            def _formatear_saldo(event=None, entrada=ent_saldo_inicial):
-                txt = entrada.get()
-                formateado = _formatear_monto(txt)
-                if formateado != txt:
-                    entrada.delete(0, tk.END)
-                    entrada.insert(0, formateado)
-            ent_saldo_inicial.bind("<FocusOut>", _formatear_saldo)
-            ent_saldo_inicial.bind("<Return>", _formatear_saldo)
-
-            def remover_fila(f_eliminar=fila):
-                f_eliminar.destroy()
-                for item in filas_bancos:
-                    if item[0] == f_eliminar:
-                        filas_bancos.remove(item)
-                        break
-                actualizar_cmb_grifo()
-            ctk.CTkButton(fila, text="❌", width=30, fg_color="#e74c3c", hover_color="#c0392b", command=remover_fila).pack(side="left", padx=5)
-            filas_bancos.append((fila, cmb_banco, ent_cuenta, ent_fecha, ent_saldo_inicial))
-            actualizar_cmb_grifo()
-            
-        ctk.CTkButton(f_empresa, text="➕ Agregar Banco", font=("Arial", 11, "bold"), width=120, fg_color="#27ae60", hover_color="#1e8449", command=agregar_fila_banco).pack(anchor="w", padx=15, pady=(5, 10))
-        bancos_guardados = config_actual.get("cuentas_bancarias", [])
-        if bancos_guardados:
-            for b in bancos_guardados:
-                agregar_fila_banco(b.get("banco", ""), b.get("cuenta", ""), b.get("fecha", ""), b.get("saldo_inicial", ""))
-        else:
-            agregar_fila_banco()
-
-        # ==================================================
-        # 🗑️ BORRAR FACTURAS DE COMPRA Y VENTA HASTA EL SALDO INICIAL
-        # ==================================================
-        def _fecha_de_config(texto):
-            """Convierte la fecha escrita en la configuración a date (o None)."""
-            texto = str(texto or "").strip()
-            for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y", "%Y/%m/%d"):
-                try:
-                    return datetime.strptime(texto, fmt).date()
-                except Exception:
-                    continue
-            return None
-
-        def borrar_facturas_hasta_saldo_inicial():
-            """Elimina las facturas de COMPRA y VENTA anteriores a la fecha del saldo inicial."""
-            _nl = chr(10)
-            fechas = []
-            for b in (cargar_bancos() or []):
-                f = _fecha_de_config(b.get("fecha", ""))
-                if f:
-                    fechas.append(f)
-            if not fechas:
-                return messagebox.showwarning(
-                    "Saldo inicial",
-                    "Primero indique la FECHA del saldo inicial en las cuentas bancarias.",
-                    parent=v_conf)
-            corte = min(fechas)
-            corte_txt = corte.strftime("%d/%m/%Y")
-
-            conn = conectar_db(silencioso=True)
-            if not conn:
-                return messagebox.showerror("Sin conexión",
-                                            "No se pudo conectar a la base de datos.", parent=v_conf)
-            compras, ventas = [], []
-            try:
-                with conn.cursor() as c:
-                    for tabla, lista in (("facturas_recibidas", compras), ("facturas_emitidas", ventas)):
-                        try:
-                            c.execute('SELECT id, COALESCE(fecha, \'\') FROM "%s"' % tabla)
-                            for idf, f_txt in c.fetchall():
-                                f = _fecha_de_config(f_txt)
-                                if f and f < corte:
-                                    lista.append(int(idf))
-                        except Exception:
-                            conn.rollback()
-            finally:
-                liberar_conexion(conn)
-
-            if not compras and not ventas:
-                return messagebox.showinfo(
-                    "Sin facturas",
-                    "No hay facturas de compra ni de venta con fecha hasta el %s." % corte_txt,
-                    parent=v_conf)
-
-            if not messagebox.askyesno(
-                    "Eliminar facturas",
-                    _nl.join([
-                        "Se eliminarán DEFINITIVAMENTE las facturas con fecha ANTERIOR al %s "
-                        "(fecha del saldo inicial):" % corte_txt,
-                        "",
-                        "  • Facturas de COMPRA: %d" % len(compras),
-                        "  • Facturas de VENTA:  %d" % len(ventas),
-                        "",
-                        "También se borrarán sus pagos y cobros vinculados.",
-                        "",
-                        "¿Desea continuar?",
-                    ]),
-                    parent=v_conf):
-                return
-
-            borradas_c = borradas_v = 0
-            conn = conectar_db(silencioso=True)
-            if not conn:
-                return
-            try:
-                with conn.cursor() as c:
-                    if compras:
-                        try:
-                            c.execute("DELETE FROM pagos_comprobantes WHERE id_factura = ANY(%s)", (compras,))
-                        except Exception:
-                            conn.rollback()
-                        try:
-                            c.execute("DELETE FROM conciliacion_bancaria WHERE id_gasto_compras = ANY(%s)",
-                                      (compras,))
-                        except Exception:
-                            conn.rollback()
-                        c.execute("DELETE FROM facturas_recibidas WHERE id = ANY(%s)", (compras,))
-                        borradas_c = c.rowcount
-                        conn.commit()
-                    if ventas:
-                        try:
-                            c.execute("DELETE FROM pagos_clientes WHERE id_factura = ANY(%s)", (ventas,))
-                        except Exception:
-                            conn.rollback()
-                        c.execute("DELETE FROM facturas_emitidas WHERE id = ANY(%s)", (ventas,))
-                        borradas_v = c.rowcount
-                        conn.commit()
-            except Exception as e:
-                conn.rollback()
-                return messagebox.showerror("Error",
-                                            "No se pudieron eliminar las facturas:" + _nl + str(e),
-                                            parent=v_conf)
-            finally:
-                liberar_conexion(conn)
-
-            try:
-                cache_sistema.invalidar()
-            except Exception:
-                pass
-            try:
-                registrar_auditoria(self.usuario_activo, "Configuración",
-                                    "Eliminó facturas hasta el %s (compras %d, ventas %d)"
-                                    % (corte_txt, borradas_c, borradas_v))
-            except Exception:
-                pass
-            messagebox.showinfo(
-                "Listo",
-                _nl.join([
-                    "Facturas eliminadas hasta el %s:" % corte_txt,
-                    "",
-                    "  • Compras: %d" % borradas_c,
-                    "  • Ventas:  %d" % borradas_v,
-                ]),
-                parent=v_conf)
-
-        ctk.CTkButton(f_empresa, text="🗑️ Borrar facturas de compra y venta hasta el saldo inicial",
-                      font=("Arial", 11, "bold"), width=440, fg_color="#c0392b", hover_color="#922b21",
-                      command=borrar_facturas_hasta_saldo_inicial).pack(anchor="w", padx=15, pady=(12, 2))
-        ctk.CTkLabel(f_empresa, text="Elimina las facturas de COMPRA y VENTA con fecha ANTERIOR a la "
-                                     "fecha del saldo inicial de las cuentas bancarias.",
-                     font=("Arial", 9, "italic"), text_color="#7f8c8d",
-                     wraplength=620, justify="left").pack(anchor="w", padx=15, pady=(0, 8))
-
-        cuenta_grifo_guardada = config_actual.get("cuenta_grifo_pagos", "")
-        actualizar_cmb_grifo(preservar=False)
-        if cuenta_grifo_guardada and cuenta_grifo_guardada in _opciones_cuentas_grifo():
-            cmb_cuenta_grifo.set(cuenta_grifo_guardada)
-            
+        # ---------- 2. API SUNAT SIRE ----------
         f_sire = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#f0fdf4", border_width=1, border_color="#bbf7d0")
         f_sire.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_sire, text="🔐 Credenciales de Acceso a SUNAT SIRE (Descarga de Compras)", font=("Arial", 14, "bold"), text_color="#166534").pack(anchor="w", padx=15, pady=(10, 5))
-        f_sire_r1 = ctk.CTkFrame(f_sire, fg_color="transparent"); f_sire_r1.pack(fill="x", padx=15, pady=4)
+        f_sire_r1 = ctk.CTkFrame(f_sire, fg_color="transparent")
+        f_sire_r1.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_sire_r1, text="Usuario SOL:", font=("Arial", 11, "bold"), width=140, anchor="w").pack(side="left")
-        ent_user_sol = ctk.CTkEntry(f_sire_r1, placeholder_text="Ej: MODDATOS"); ent_user_sol.pack(side="left", fill="x", expand=True, padx=5); ent_user_sol.insert(0, config_actual.get("usuario_sol", ""))
+        ent_user_sol = ctk.CTkEntry(f_sire_r1, placeholder_text="Ej: MODDATOS")
+        ent_user_sol.pack(side="left", fill="x", expand=True, padx=5)
+        ent_user_sol.insert(0, config_actual.get("usuario_sol", ""))
         ctk.CTkLabel(f_sire_r1, text="Clave SOL:", font=("Arial", 11, "bold"), width=100, anchor="w").pack(side="left", padx=(15, 5))
-        ent_clave_sol = ctk.CTkEntry(f_sire_r1, show="*", placeholder_text="••••••••"); ent_clave_sol.pack(side="left", fill="x", expand=True, padx=5); ent_clave_sol.insert(0, config_actual.get("clave_sol", ""))
-        f_sire_r2 = ctk.CTkFrame(f_sire, fg_color="transparent"); f_sire_r2.pack(fill="x", padx=15, pady=4)
+        ent_clave_sol = ctk.CTkEntry(f_sire_r1, show="*", placeholder_text="••••••••")
+        ent_clave_sol.pack(side="left", fill="x", expand=True, padx=5)
+        ent_clave_sol.insert(0, config_actual.get("clave_sol", ""))
+        f_sire_r2 = ctk.CTkFrame(f_sire, fg_color="transparent")
+        f_sire_r2.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_sire_r2, text="Client ID (API SIRE):", font=("Arial", 11, "bold"), width=140, anchor="w").pack(side="left")
-        ent_client_id = ctk.CTkEntry(f_sire_r2); ent_client_id.pack(side="left", fill="x", expand=True, padx=5); ent_client_id.insert(0, config_actual.get("client_id_sire", ""))
+        ent_client_id = ctk.CTkEntry(f_sire_r2)
+        ent_client_id.pack(side="left", fill="x", expand=True, padx=5)
+        ent_client_id.insert(0, config_actual.get("client_id_sire", ""))
         ctk.CTkLabel(f_sire_r2, text="Client Secret:", font=("Arial", 11, "bold"), width=100, anchor="w").pack(side="left", padx=(15, 5))
-        ent_client_secret = ctk.CTkEntry(f_sire_r2, show="*"); ent_client_secret.pack(side="left", fill="x", expand=True, padx=5); ent_client_secret.insert(0, config_actual.get("client_secret_sire", ""))
+        ent_client_secret = ctk.CTkEntry(f_sire_r2, show="*")
+        ent_client_secret.pack(side="left", fill="x", expand=True, padx=5)
+        ent_client_secret.insert(0, config_actual.get("client_secret_sire", ""))
         
+        # ---------- 3. FACTURACIÓN ELECTRÓNICA ----------
         # ==================================================
-        # 🖨️ ESCÁNER DE COMPROBANTES (OCR) — lo usa el módulo de Compras
+        # 🖨️ ESCÁNER DE FACTURAS (OCR) — lo usa el módulo de Compras
         # ==================================================
         try:
             import escaner as mod_escaner
@@ -3099,8 +2959,8 @@ class ControlGeneralEventos:
         f_escaner = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#ecfeff",
                                  border_width=1, border_color="#a5f3fc")
         f_escaner.pack(fill="x", padx=10, pady=10, ipady=10)
-        ctk.CTkLabel(f_escaner, text="🖨️ Escáner de Comprobantes de Compras (OCR)",
-                     font=("Arial", 14, "bold"), text_color="#0e7490").pack(anchor="w", padx=15, pady=(10, 2))
+        ctk.CTkLabel(f_escaner, text="🖨️ Escáner de Facturas de Compras (OCR)",
+                     font=("Arial", 14, "bold"), text_color="#0e7490").pack(anchor="w", padx=15, pady=(4, 2))
         ctk.CTkLabel(f_escaner,
                      text="Lo usa el botón '🖨️ Escanear factura (OCR)' del módulo de Compras. "
                           "El equipo elegido se guarda solo para esta computadora.",
@@ -3123,25 +2983,21 @@ class ControlGeneralEventos:
                 "ocr": mod_escaner.OPCIONES_OCR, "idioma": mod_escaner.OPCIONES_IDIOMA_OCR,
                 "optimizar": mod_escaner.OPCIONES_OPTIMIZAR, "modo": mod_escaner.OPCIONES_MODO,
             }
-        if mod_escaner is not None:
-            cfg_escaner = mod_escaner.config_escaner(config_actual)
-        else:
-            cfg_escaner = {k: config_actual.get(k, "") for k in
-                           ("escaner_dispositivo", "escaner_dpi", "escaner_color", "escaner_origen",
-                            "escaner_paginas", "escaner_ocr", "escaner_idioma_ocr", "escaner_optimizar",
-                            "escaner_modo", "escaner_carpeta")}
-        cfg_escaner.setdefault("escaner_dpi", "300")
-        cfg_escaner.setdefault("escaner_color", "Escala de grises")
-        cfg_escaner.setdefault("escaner_origen", "Cristal (una página a la vez)")
-        cfg_escaner.setdefault("escaner_paginas", "1")
-        cfg_escaner.setdefault("escaner_ocr", "Sí")
-        cfg_escaner.setdefault("escaner_idioma_ocr", "Automático")
-        cfg_escaner.setdefault("escaner_optimizar", "Sí")
-        cfg_escaner.setdefault("escaner_modo", "Automático (sin ventanas)")
+        cfg_escaner = (mod_escaner.config_escaner(config_actual) if mod_escaner is not None
+                       else {"escaner_dispositivo": config_actual.get("escaner_dispositivo", ""),
+                             "escaner_dpi": config_actual.get("escaner_dpi", "300"),
+                             "escaner_color": config_actual.get("escaner_color", "Escala de grises"),
+                             "escaner_origen": config_actual.get("escaner_origen", "Cristal (una página a la vez)"),
+                             "escaner_paginas": config_actual.get("escaner_paginas", "1"),
+                             "escaner_ocr": config_actual.get("escaner_ocr", "Sí"),
+                             "escaner_idioma_ocr": config_actual.get("escaner_idioma_ocr", "Automático"),
+                             "escaner_optimizar": config_actual.get("escaner_optimizar", "Sí"),
+                             "escaner_modo": config_actual.get("escaner_modo", "Automático (sin ventanas)"),
+                             "escaner_carpeta": config_actual.get("escaner_carpeta", "")})
         mapa_escaneres = {}          # nombre visible -> id de WIA
 
         f_esc_r0 = ctk.CTkFrame(f_escaner, fg_color="transparent")
-        f_esc_r0.pack(fill="x", padx=15, pady=6)
+        f_esc_r0.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_esc_r0, text="Escáner:", font=("Arial", 11, "bold"), width=140, anchor="w").pack(side="left")
         cmb_escaner = ctk.CTkComboBox(f_esc_r0, values=["(pulse Detectar)"], width=330)
         cmb_escaner.pack(side="left", padx=(0, 8))
@@ -3164,9 +3020,9 @@ class ControlGeneralEventos:
                     try:
                         cmb_escaner.configure(values=nombres)
                         actual = ""
-                        for nombre_eq, ident in mapa_escaneres.items():
+                        for nombre, ident in mapa_escaneres.items():
                             if ident and ident == cfg_escaner.get("escaner_dispositivo"):
-                                actual = nombre_eq
+                                actual = nombre
                         if not actual and nombres and nombres[0].startswith("("):
                             actual = nombres[0]
                         cmb_escaner.set(actual or nombres[0])
@@ -3208,6 +3064,8 @@ class ControlGeneralEventos:
 
         ctk.CTkButton(f_esc_r0, text="🔄 Detectar", width=110, font=("Arial", 11, "bold"),
                       fg_color="#0e7490", hover_color="#155e75", command=detectar_escaneres).pack(side="left", padx=6)
+
+        # Valores guardados: si el equipo ya no aparece, se muestra igual
         if cfg_escaner.get("escaner_dispositivo"):
             cmb_escaner.set("(el guardado: se usará al escanear)")
             mapa_escaneres["(el guardado: se usará al escanear)"] = cfg_escaner["escaner_dispositivo"]
@@ -3273,14 +3131,14 @@ class ControlGeneralEventos:
         f_esc_r5 = ctk.CTkFrame(f_escaner, fg_color="transparent")
         f_esc_r5.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_esc_r5, text="Carpeta de escaneos:", font=("Arial", 11, "bold"), width=140, anchor="w").pack(side="left")
-        ent_esc_carpeta = ctk.CTkEntry(f_esc_r5, placeholder_text="(vacío = carpeta de la nube del sistema)")
+        ent_esc_carpeta = ctk.CTkEntry(f_esc_r5, placeholder_text="(vacío = carpeta de Google Drive del sistema)")
         ent_esc_carpeta.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ent_esc_carpeta.insert(0, cfg_escaner.get("escaner_carpeta", "") or config_actual.get("escaner_carpeta", ""))
+        ent_esc_carpeta.insert(0, cfg_escaner.get("escaner_carpeta", ""))
 
         def _config_escaner_formulario():
-            nombre_eq = cmb_escaner.get().strip()
-            ident = mapa_escaneres.get(nombre_eq, "")
-            if not ident and nombre_eq and not nombre_eq.startswith("("):
+            nombre = cmb_escaner.get().strip()
+            ident = mapa_escaneres.get(nombre, "")
+            if not ident and nombre and not nombre.startswith("("):
                 ident = cfg_escaner.get("escaner_dispositivo", "")
             return {"escaner_dispositivo": ident,
                     "escaner_dpi": cmb_esc_dpi.get(), "escaner_color": cmb_esc_color.get(),
@@ -3296,35 +3154,35 @@ class ControlGeneralEventos:
                 return messagebox.showerror("Escáner", "No se pudo cargar el módulo escaner.py.", parent=v_conf)
             if not mod_escaner.sistema_soportado():
                 return messagebox.showinfo("Escáner", "El escaneo está disponible en Windows y en macOS (M1/M2).", parent=v_conf)
-            prog = ctk.CTkToplevel(v_conf)
-            prog.title("Prueba de escaneo")
-            prog.geometry("430x150"); prog.transient(v_conf); prog.grab_set()
-            ctk.CTkLabel(prog, text="🖨️ Escaneando una página de prueba...", font=("Arial", 12, "bold"),
+            p = ctk.CTkToplevel(v_conf)
+            p.title("Prueba de escaneo")
+            p.geometry("420x150"); p.transient(v_conf); p.grab_set()
+            ctk.CTkLabel(p, text="🖨️ Escaneando una página de prueba...", font=("Arial", 12, "bold"),
                          text_color="#1f538d").pack(pady=(22, 6))
-            ctk.CTkLabel(prog, text="Coloque una hoja en el escáner.", font=("Arial", 10),
+            ctk.CTkLabel(p, text="Coloque una hoja en el escáner.", font=("Arial", 10),
                          text_color="gray").pack()
-            barra_p = ctk.CTkProgressBar(prog, width=330, mode="indeterminate"); barra_p.pack(pady=10); barra_p.start()
+            b = ctk.CTkProgressBar(p, width=330, mode="indeterminate"); b.pack(pady=10); b.start()
 
             def tarea():
                 cfg = _config_escaner_formulario()
                 cfg["escaner_paginas"] = "1"
-                res = mod_escaner.procesar_factura(cfg)
+                resultado = mod_escaner.procesar_factura(cfg)
 
                 def mostrar():
                     try:
-                        prog.grab_release(); prog.destroy()
+                        p.grab_release(); p.destroy()
                     except Exception:
                         pass
-                    if not res.get("ok"):
+                    if not resultado.get("ok"):
                         return messagebox.showerror("Prueba de escaneo",
-                                                    str(res.get("error") or "No se pudo escanear."), parent=v_conf)
-                    texto = (res.get("texto") or "").strip()
-                    resumen = (f"✅ Escaneo correcto.\n\nPáginas: {len(res.get('paginas') or [])}\n"
-                               f"PDF: {res.get('pdf')}\n\n"
-                               f"OCR ({res.get('ocr', {}).get('motor', 'Windows OCR')}):\n"
+                                                    str(resultado.get("error") or "No se pudo escanear."), parent=v_conf)
+                    texto = (resultado.get("texto") or "").strip()
+                    resumen = (f"✅ Escaneo correcto.\n\nPáginas: {len(resultado.get('paginas') or [])}\n"
+                               f"PDF: {resultado.get('pdf')}\n\n"
+                               f"OCR ({resultado.get('ocr', {}).get('motor', 'Windows OCR')}):\n"
                                f"{(texto[:400] + '...') if len(texto) > 400 else (texto or '(no reconoció texto)')}")
-                    if res.get("aviso"):
-                        resumen += f"\n\nAviso: {res['aviso']}"
+                    if resultado.get("aviso"):
+                        resumen += f"\n\nAviso: {resultado['aviso']}"
                     messagebox.showinfo("Prueba de escaneo", resumen, parent=v_conf)
                 try:
                     self.root.after(0, mostrar)
@@ -3333,7 +3191,7 @@ class ControlGeneralEventos:
             threading.Thread(target=tarea, daemon=True).start()
 
         f_esc_r6 = ctk.CTkFrame(f_escaner, fg_color="transparent")
-        f_esc_r6.pack(fill="x", padx=15, pady=(6, 10))
+        f_esc_r6.pack(fill="x", padx=15, pady=(6, 2))
         ctk.CTkButton(f_esc_r6, text="🧪 Probar escaneo (1 página)", width=200, font=("Arial", 11, "bold"),
                       fg_color="#27ae60", hover_color="#1e8449", command=probar_escaneo).pack(side="left")
         ctk.CTkLabel(f_esc_r6, text="Guarde la configuración para que Compras use estos ajustes.",
@@ -3342,165 +3200,164 @@ class ControlGeneralEventos:
         f_fe = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#f0f4f8", border_width=1, border_color="#d0d7de")
         f_fe.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_fe, text="⚡ Facturación Electrónica Directa (Emisión de Ventas)", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
-        f_fe_row1 = ctk.CTkFrame(f_fe, fg_color="transparent"); f_fe_row1.pack(fill="x", padx=15, pady=4)
+        f_fe_row1 = ctk.CTkFrame(f_fe, fg_color="transparent")
+        f_fe_row1.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_fe_row1, text="Proveedor Servicio PSE:", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        cmb_pse = ctk.CTkOptionMenu(f_fe_row1, values=["Nubefact", "Facturactiva", "Efact", "Bsale"], width=220); cmb_pse.pack(side="left", padx=5); cmb_pse.set(config_actual.get("proveedor_fe", "Nubefact"))
-        f_fe_row2 = ctk.CTkFrame(f_fe, fg_color="transparent"); f_fe_row2.pack(fill="x", padx=15, pady=4)
+        cmb_pse = ctk.CTkOptionMenu(f_fe_row1, values=["Nubefact", "Facturactiva", "Efact", "Bsale"], width=220)
+        cmb_pse.pack(side="left", padx=5)
+        cmb_pse.set(config_actual.get("proveedor_fe", "Nubefact"))
+        f_fe_row2 = ctk.CTkFrame(f_fe, fg_color="transparent")
+        f_fe_row2.pack(fill="x", padx=15, pady=4)
         ctk.CTkLabel(f_fe_row2, text="Ruta API (Endpoint):", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        ent_url_api = ctk.CTkEntry(f_fe_row2); ent_url_api.pack(side="left", fill="x", expand=True, padx=5); ent_url_api.insert(0, config_actual.get("url_api_fe", ""))
-        f_fe_row3 = ctk.CTkFrame(f_fe, fg_color="transparent"); f_fe_row3.pack(fill="x", padx=15, pady=(4, 8))
+        ent_url_api = ctk.CTkEntry(f_fe_row2)
+        ent_url_api.pack(side="left", fill="x", expand=True, padx=5)
+        ent_url_api.insert(0, config_actual.get("url_api_fe", ""))
+        f_fe_row3 = ctk.CTkFrame(f_fe, fg_color="transparent")
+        f_fe_row3.pack(fill="x", padx=15, pady=(4, 8))
         ctk.CTkLabel(f_fe_row3, text="Token de Autorización:", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        ent_token_api = ctk.CTkEntry(f_fe_row3, show="*"); ent_token_api.pack(side="left", fill="x", expand=True, padx=5); ent_token_api.insert(0, config_actual.get("token_api_fe", ""))
+        ent_token_api = ctk.CTkEntry(f_fe_row3, show="*")
+        ent_token_api.pack(side="left", fill="x", expand=True, padx=5)
+        ent_token_api.insert(0, config_actual.get("token_api_fe", ""))
         
+        # ---------- 4. 2FA ----------
         f_2fa = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#fff3cd", border_width=1, border_color="#ffeeba")
         f_2fa.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_2fa, text="🛡️ Seguridad: Clave Dinámica (OTP) para SUNAT", font=("Arial", 14, "bold"), text_color="#856404").pack(anchor="w", padx=15, pady=(10, 5))
-        f_2fa_m = ctk.CTkFrame(f_2fa, fg_color="transparent"); f_2fa_m.pack(fill="x", padx=15, pady=5)
+        f_2fa_m = ctk.CTkFrame(f_2fa, fg_color="transparent")
+        f_2fa_m.pack(fill="x", padx=15, pady=5)
         ctk.CTkLabel(f_2fa_m, text="Método de Envío OTP:", font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-        cmb_2fa = ctk.CTkOptionMenu(f_2fa_m, values=["Inactivo", "Telegram (Gratis)", "Correo Electrónico (Gratis)", "SMS Twilio (De Pago)"], width=250); cmb_2fa.pack(side="left", padx=5); cmb_2fa.set(config_actual.get("2fa_metodo", "Inactivo"))
-        
+        cmb_2fa = ctk.CTkOptionMenu(f_2fa_m, values=["Inactivo", "Telegram (Gratis)", "Correo Electrónico (Gratis)", "SMS Twilio (De Pago)"], width=250)
+        cmb_2fa.pack(side="left", padx=5)
+        cmb_2fa.set(config_actual.get("2fa_metodo", "Inactivo"))
         f_tel = ctk.CTkFrame(f_2fa, fg_color="transparent")
         ctk.CTkLabel(f_tel, text="Bot Token:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=4)
-        ent_tel_token = ctk.CTkEntry(f_tel, width=350); ent_tel_token.grid(row=0, column=1, sticky="w", pady=4); ent_tel_token.insert(0, config_actual.get("tel_bot_token", ""))
+        ent_tel_token = ctk.CTkEntry(f_tel, width=350)
+        ent_tel_token.grid(row=0, column=1, sticky="w", pady=4)
+        ent_tel_token.insert(0, config_actual.get("tel_bot_token", ""))
         ctk.CTkLabel(f_tel, text="Chat ID:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=4)
-        ent_tel_chat = ctk.CTkEntry(f_tel, width=350); ent_tel_chat.grid(row=1, column=1, sticky="w", pady=4); ent_tel_chat.insert(0, config_actual.get("tel_chat_id", ""))
-        
+        ent_tel_chat = ctk.CTkEntry(f_tel, width=350)
+        ent_tel_chat.grid(row=1, column=1, sticky="w", pady=4)
+        ent_tel_chat.insert(0, config_actual.get("tel_chat_id", ""))
         f_mail = ctk.CTkFrame(f_2fa, fg_color="transparent")
         ctk.CTkLabel(f_mail, text="Servidor SMTP:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=4)
-        ent_mail_smtp = ctk.CTkEntry(f_mail, width=200); ent_mail_smtp.grid(row=0, column=1, sticky="w", pady=4); ent_mail_smtp.insert(0, config_actual.get("email_smtp", "smtp.gmail.com"))
+        ent_mail_smtp = ctk.CTkEntry(f_mail, width=200)
+        ent_mail_smtp.grid(row=0, column=1, sticky="w", pady=4)
+        ent_mail_smtp.insert(0, config_actual.get("email_smtp", "smtp.gmail.com"))
         ctk.CTkLabel(f_mail, text="Puerto:", font=("Arial", 11, "bold"), width=60, anchor="w").grid(row=0, column=2, sticky="w", padx=(10, 0), pady=4)
-        ent_mail_port = ctk.CTkEntry(f_mail, width=80); ent_mail_port.grid(row=0, column=3, sticky="w", pady=4); ent_mail_port.insert(0, config_actual.get("email_port", "587"))
+        ent_mail_port = ctk.CTkEntry(f_mail, width=80)
+        ent_mail_port.grid(row=0, column=3, sticky="w", pady=4)
+        ent_mail_port.insert(0, config_actual.get("email_port", "587"))
         ctk.CTkLabel(f_mail, text="Tu Correo:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=4)
-        ent_mail_user = ctk.CTkEntry(f_mail, width=350); ent_mail_user.grid(row=1, column=1, columnspan=3, sticky="w", pady=4); ent_mail_user.insert(0, config_actual.get("email_user", ""))
+        ent_mail_user = ctk.CTkEntry(f_mail, width=350)
+        ent_mail_user.grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
+        ent_mail_user.insert(0, config_actual.get("email_user", ""))
         ctk.CTkLabel(f_mail, text="Clave de App:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=2, column=0, sticky="w", pady=4)
-        ent_mail_pass = ctk.CTkEntry(f_mail, width=350, show="*"); ent_mail_pass.grid(row=2, column=1, columnspan=3, sticky="w", pady=4); ent_mail_pass.insert(0, config_actual.get("email_pass", ""))
+        ent_mail_pass = ctk.CTkEntry(f_mail, width=350, show="*")
+        ent_mail_pass.grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
+        ent_mail_pass.insert(0, config_actual.get("email_pass", ""))
         ctk.CTkLabel(f_mail, text="Enviar a:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=4)
-        ent_mail_dest = ctk.CTkEntry(f_mail, width=350); ent_mail_dest.grid(row=3, column=1, columnspan=3, sticky="w", pady=4); ent_mail_dest.insert(0, config_actual.get("email_dest", ""))
-        
+        ent_mail_dest = ctk.CTkEntry(f_mail, width=350)
+        ent_mail_dest.grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
+        ent_mail_dest.insert(0, config_actual.get("email_dest", ""))
         f_sms = ctk.CTkFrame(f_2fa, fg_color="transparent")
         ctk.CTkLabel(f_sms, text="Account SID:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=4)
-        ent_twi_sid = ctk.CTkEntry(f_sms, width=350); ent_twi_sid.grid(row=0, column=1, sticky="w", pady=4); ent_twi_sid.insert(0, config_actual.get("twi_sid", ""))
+        ent_twi_sid = ctk.CTkEntry(f_sms, width=350)
+        ent_twi_sid.grid(row=0, column=1, sticky="w", pady=4)
+        ent_twi_sid.insert(0, config_actual.get("twi_sid", ""))
         ctk.CTkLabel(f_sms, text="Auth Token:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=4)
-        ent_twi_token = ctk.CTkEntry(f_sms, width=350, show="*"); ent_twi_token.grid(row=1, column=1, sticky="w", pady=4); ent_twi_token.insert(0, config_actual.get("twi_token", ""))
+        ent_twi_token = ctk.CTkEntry(f_sms, width=350, show="*")
+        ent_twi_token.grid(row=1, column=1, sticky="w", pady=4)
+        ent_twi_token.insert(0, config_actual.get("twi_token", ""))
         ctk.CTkLabel(f_sms, text="N° Twilio:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=2, column=0, sticky="w", pady=4)
-        ent_twi_from = ctk.CTkEntry(f_sms, width=350); ent_twi_from.grid(row=2, column=1, sticky="w", pady=4); ent_twi_from.insert(0, config_actual.get("twi_from", ""))
+        ent_twi_from = ctk.CTkEntry(f_sms, width=350)
+        ent_twi_from.grid(row=2, column=1, sticky="w", pady=4)
+        ent_twi_from.insert(0, config_actual.get("twi_from", ""))
         ctk.CTkLabel(f_sms, text="N° Destino:", font=("Arial", 11, "bold"), width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=4)
-        ent_twi_to = ctk.CTkEntry(f_sms, width=350); ent_twi_to.grid(row=3, column=1, sticky="w", pady=4); ent_twi_to.insert(0, config_actual.get("twi_to", ""))
+        ent_twi_to = ctk.CTkEntry(f_sms, width=350)
+        ent_twi_to.grid(row=3, column=1, sticky="w", pady=4)
+        ent_twi_to.insert(0, config_actual.get("twi_to", ""))
 
         def actualizar_ui_2fa(choice):
-            f_tel.pack_forget(); f_mail.pack_forget(); f_sms.pack_forget()
-            if "Telegram" in choice: f_tel.pack(fill="x", padx=15, pady=5)
-            elif "Correo" in choice: f_mail.pack(fill="x", padx=15, pady=5)
-            elif "SMS" in choice: f_sms.pack(fill="x", padx=15, pady=5)
+            f_tel.pack_forget()
+            f_mail.pack_forget()
+            f_sms.pack_forget()
+            if "Telegram" in choice:
+                f_tel.pack(fill="x", padx=15, pady=5)
+            elif "Correo" in choice:
+                f_mail.pack(fill="x", padx=15, pady=5)
+            elif "SMS" in choice:
+                f_sms.pack(fill="x", padx=15, pady=5)
         cmb_2fa.configure(command=actualizar_ui_2fa)
         actualizar_ui_2fa(cmb_2fa.get())
         
-        f_logo_docs = ctk.CTkFrame(f_scroll, corner_radius=10)
-        f_logo_docs.pack(fill="x", padx=10, pady=10, ipady=10)
-        ctk.CTkLabel(f_logo_docs, text="🖼️ Logo del Encabezado (Cálculo de Cobranza y Órdenes de Compra)", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 10))
-        f_ruta_logo = ctk.CTkFrame(f_logo_docs, fg_color="transparent")
-        f_ruta_logo.pack(fill="x", padx=15, pady=(0, 10))
+        # ---------- 5. PERSONALIZACIÓN VISUAL DE COTIZACIONES ----------
+        f_diseno = ctk.CTkFrame(f_scroll, corner_radius=10)
+        f_diseno.pack(fill="x", padx=10, pady=10, ipady=10)
+        ctk.CTkLabel(f_diseno, text="🎨 Personalización Visual de Cotizaciones (PDF y Pantalla)", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 10))
+        f_nombre_cot = ctk.CTkFrame(f_diseno, fg_color="transparent")
+        f_nombre_cot.pack(fill="x", padx=15, pady=5)
+        ctk.CTkLabel(f_nombre_cot, text="Mostrar en Cotizaciones (Cliente):", font=("Arial", 11, "bold"), width=220, anchor="w").pack(side="left")
+        cmb_nombre_cot = ctk.CTkOptionMenu(f_nombre_cot, values=["Razón Social", "Razón Comercial"], width=180)
+        cmb_nombre_cot.pack(side="left", padx=5)
+        cmb_nombre_cot.set(config_actual.get("nombre_cliente_cotizacion", "Razón Social"))
+
+        def crear_color_picker(padre, texto, key, default):
+            f_col = ctk.CTkFrame(padre, fg_color="transparent")
+            f_col.pack(fill="x", padx=15, pady=5)
+            ctk.CTkLabel(f_col, text=texto, font=("Arial", 11, "bold"), width=220, anchor="w").pack(side="left")
+            ent = ctk.CTkEntry(f_col, width=120)
+            ent.pack(side="left", padx=5)
+            valor_guardado = str(config_actual.get(key, default)).strip()
+            ent.insert(0, valor_guardado)
+            color_prev = valor_guardado if valor_guardado.startswith("#") else default
+            f_prev = ctk.CTkFrame(f_col, width=30, height=30, fg_color=color_prev, corner_radius=5)
+            f_prev.pack(side="left", padx=10)
+
+            def elegir():
+                curr = ent.get().strip()
+                if not curr.startswith("#"):
+                    curr = default
+                try:
+                    color = colorchooser.askcolor(title="Elegir Color", color=curr, parent=v_conf)[1]
+                except Exception:
+                    color = colorchooser.askcolor(title="Elegir Color")[1]
+                if color:
+                    ent.delete(0, tk.END)
+                    ent.insert(0, color)
+                    f_prev.configure(fg_color=color)
+            ctk.CTkButton(f_col, text="🎨 Elegir Color", width=120, command=elegir).pack(side="left")
+            return ent
+        ent_color_1 = crear_color_picker(f_diseno, "Color Principal (Letras M):", "color_primario", "#eb337a")
+        ent_color_2 = crear_color_picker(f_diseno, "Color Secundario (Letras N):", "color_secundario", "#000000")
+        ent_color_3 = crear_color_picker(f_diseno, "Color de Franja (Tabla PDF):", "color_franja", "#eb337a")
+        ctk.CTkLabel(f_diseno, text="🖼️ Logo del Encabezado de Cotización (PDF):", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 2))
+        f_ruta_logo = ctk.CTkFrame(f_diseno, fg_color="transparent")
+        f_ruta_logo.pack(fill="x", padx=15)
         ent_logo = ctk.CTkEntry(f_ruta_logo, placeholder_text="Ruta de la imagen (JPG/PNG)")
         ent_logo.pack(side="left", fill="x", expand=True, padx=(0, 10))
         ent_logo.insert(0, config_actual.get("ruta_logo_cotizacion", ""))
 
-        f_logo_preview = ctk.CTkFrame(f_logo_docs, fg_color="transparent")
-        f_logo_preview.pack(fill="x", padx=15, pady=(0, 10))
-        lbl_logo_preview = ctk.CTkLabel(f_logo_preview, text="Sin vista previa", width=150, height=40, fg_color="#eef2f7", corner_radius=8, anchor="center")
-        lbl_logo_preview.pack(side="left", padx=(0, 10))
-
-        def _actualizar_vista_previa(ruta):
-            try:
-                if PIL_DISPONIBLE and ruta and os.path.exists(ruta):
-                    img = Image.open(ruta).convert("RGBA")
-                    ancho, alto = img.width, img.height
-                    # Muestra el logo a su tamaño real; solo se limita si es muy
-                    # grande para no romper la ventana de configuración.
-                    max_ancho = 900
-                    if ancho > max_ancho:
-                        alto = int(alto * (max_ancho / ancho))
-                        ancho = max_ancho
-                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(ancho, alto))
-                    lbl_logo_preview.configure(image=ctk_img, text="", width=ancho, height=alto)
-                    lbl_logo_preview._img = ctk_img
-                else:
-                    _quitar_imagen_label(lbl_logo_preview)
-                    lbl_logo_preview.configure(image=None, text="Sin vista previa", width=150, height=40)
-            except Exception:
-                _quitar_imagen_label(lbl_logo_preview)
-                lbl_logo_preview.configure(image=None, text="No se pudo cargar", width=150, height=40)
-
-        _actualizar_vista_previa(config_actual.get("ruta_logo_cotizacion", ""))
-
-        def abrir_dialogo_nativo(crear_dialogo, al_seleccionar):
-            # 🚀 FIX macOS: libera el grab modal y DIFIERE la apertura del diálogo
-            # nativo con after(). Abrir el panel en el mismo callback con un grab
-            # activo (Toplevel con grab_set) puede cerrar abruptamente la app
-            # (segfault de Tk/Aqua). El after() deja que Tk procese la liberación
-            # del grab antes de que el panel nativo tome el foco. Tampoco se pasa
-            # 'parent' al selector por el mismo motivo.
-            try:
-                v_conf.grab_release()
-            except Exception:
-                pass
-            # Desactiva temporalmente el "siempre al frente" para que el
-            # selector nativo de archivos/carpetas pueda abrirse POR DELANTE
-            # de la ventana de configuración (si no, -topmost lo tapa).
-            try:
-                v_conf.attributes("-topmost", False)
-            except Exception:
-                pass
-
-            def _abrir():
-                try:
-                    ruta = crear_dialogo()
-                except Exception as e:
-                    messagebox.showerror("Error", f"No se pudo abrir el selector de archivos:\n{e}", parent=v_conf)
-                    ruta = None
-                finally:
-                    try:
-                        # Restaura el "siempre al frente" y trae la ventana de
-                        # configuración de vuelta al frente tras cerrar el selector.
-                        v_conf.attributes("-topmost", True)
-                    except Exception:
-                        pass
-                    try:
-                        v_conf.lift()
-                        v_conf.focus_force()
-                    except Exception:
-                        pass
-                    try:
-                        v_conf.grab_set()
-                    except Exception:
-                        pass
-                if ruta and al_seleccionar:
-                    al_seleccionar(ruta)
-
-            v_conf.after(150, _abrir)
-
-        def buscar_logo_docs():
-            def _poner_ruta(ruta):
-                if not ruta:
-                    return
-                ruta_final = guardar_logo_en_programa(ruta, ent_drive.get().strip())
+        def buscar_logo_cotizacion():
+            tipos_seguros = [
+                ("Archivos de Imagen", "*.png *.jpg *.jpeg *.PNG *.JPG *.JPEG"),
+                ("Todos", "*.*")
+            ]
+            ruta = filedialog.askopenfilename(title="Seleccionar Logo", filetypes=tipos_seguros, parent=v_conf)
+            if ruta:
                 ent_logo.delete(0, tk.END)
-                ent_logo.insert(0, ruta_final)
-                _actualizar_vista_previa(ruta_final)
-            abrir_dialogo_nativo(
-                lambda: seleccionar_archivo_dialogo(
-                    titulo="Seleccionar Logo",
-                    tipos=[("Imágenes", "*.png *.jpg *.jpeg")]),
-                _poner_ruta)
+                ent_logo.insert(0, ruta)
+                
+        ctk.CTkButton(f_ruta_logo, text="📂 Buscar Imagen", width=140, command=buscar_logo_cotizacion).pack(side="right")
+        
+        ctk.CTkLabel(f_diseno, text="📝 Términos y Condiciones (Por defecto en el PDF):", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 2))
+        txt_terminos = ctk.CTkTextbox(f_diseno, height=70, font=("Arial", 11), border_width=1)
+        txt_terminos.pack(fill="x", padx=15, pady=2)
+        txt_terminos.insert("1.0", config_actual.get("terminos_cotizacion", ""))
 
-        def quitar_logo():
-            ent_logo.delete(0, tk.END)
-            _actualizar_vista_previa("")
-        ctk.CTkButton(f_ruta_logo, text="📂 Buscar Imagen", width=140, command=buscar_logo_docs).pack(side="right")
-        ctk.CTkButton(f_ruta_logo, text="🗑️ Quitar", width=90, fg_color="#e74c3c", hover_color="#c0392b", command=quitar_logo).pack(side="right", padx=(0, 5))
-
+        # ---------- 6. PREFERENCIAS REGIONALES Y RCLONE ----------
         f_region = ctk.CTkFrame(f_scroll, corner_radius=10)
         f_region.pack(fill="x", padx=10, pady=10, ipady=10)
-        ctk.CTkLabel(f_region, text="🌍 Preferencias Regionales y Sincronización", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 10))
+        ctk.CTkLabel(f_region, text="🌍 Preferencias Regionales", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 10))
         
         f_mon = ctk.CTkFrame(f_region, fg_color="transparent")
         f_mon.pack(fill="x", padx=15, pady=5)
@@ -3523,9 +3380,22 @@ class ControlGeneralEventos:
         cmb_fecha.pack(side="left")
         cmb_fecha.set(config_actual.get("formato_fecha", "DD/MM/AAAA"))
 
-        ctk.CTkLabel(f_region, text="☁️ Sincronización en la Nube (Rclone - Google Drive)", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 5))
+        ctk.CTkLabel(f_region, text="🖨️ Impresora por Defecto", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 5))
+        ent_impresora = ctk.CTkEntry(f_region, placeholder_text="Ej: Epson L3150 Series")
+        ent_impresora.pack(fill="x", padx=15)
+        ent_impresora.insert(0, config_actual.get("impresora", ""))
 
-        f_rclone_1 = ctk.CTkFrame(f_region, fg_color="transparent")
+        # =========================================================
+        # ☁️ SINCRONIZACIÓN EN LA NUBE (RCLONE - GOOGLE DRIVE)
+        #    Sección PROPIA, separada de Preferencias Regionales.
+        # =========================================================
+        f_nube = ctk.CTkFrame(f_scroll, corner_radius=10)
+        f_nube.pack(fill="x", padx=10, pady=10, ipady=10)
+        device_id = obtener_device_id()
+
+        ctk.CTkLabel(f_nube, text="☁️ Sincronización en la Nube (Rclone - Google Drive)", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 5))
+
+        f_rclone_1 = ctk.CTkFrame(f_nube, fg_color="transparent")
         f_rclone_1.pack(fill="x", padx=15, pady=2)
         ctk.CTkLabel(f_rclone_1, text="Carpeta Local:", font=("Arial", 11, "bold"), width=120, anchor="w").pack(side="left")
         ent_drive = ctk.CTkEntry(f_rclone_1, placeholder_text="Ej: ~/Documents/ArchivosFlota")
@@ -3533,16 +3403,14 @@ class ControlGeneralEventos:
         ent_drive.insert(0, config_actual.get("ruta_drive", ""))
 
         def buscar_carpeta_drive():
-            def _poner_carpeta(carpeta):
+            carpeta = filedialog.askdirectory(title="Seleccionar Carpeta Local", parent=v_conf)
+            if carpeta:
                 ent_drive.delete(0, tk.END)
                 ent_drive.insert(0, carpeta)
-            abrir_dialogo_nativo(
-                lambda: seleccionar_carpeta_dialogo(titulo="Seleccionar Carpeta Local"),
-                _poner_carpeta)
 
         ctk.CTkButton(f_rclone_1, text="📁 Buscar", width=100, command=buscar_carpeta_drive).pack(side="right")
 
-        f_rclone_2 = ctk.CTkFrame(f_region, fg_color="transparent")
+        f_rclone_2 = ctk.CTkFrame(f_nube, fg_color="transparent")
         f_rclone_2.pack(fill="x", padx=15, pady=2)
 
         ctk.CTkLabel(f_rclone_2, text="Nombre Remote:", font=("Arial", 11, "bold"), width=120, anchor="w").pack(side="left")
@@ -3661,8 +3529,25 @@ class ControlGeneralEventos:
                     kwargs["creationflags"] = 0x08000000
                 # 300 s: el inicio de sesión de Google en el navegador puede tardar
                 # más de un minuto y antes se cortaba la vinculación a los 60 s.
+                # Si la cuenta YA estaba vinculada en este equipo, no se vuelve a
+                # lanzar el navegador: solo se registra y se comparte.
+                if _remoto_configurado_con_token(remote):
+                    registrar_sync_nube()
+                    reg = cargar_rclone_sync() or {}
+                    if (reg.get("linked_by_device") or "") == device_id:
+                        subir_token_rclone_nube()
+                    messagebox.showinfo(
+                        "Cuenta ya vinculada",
+                        "Este equipo YA tiene la cuenta de Google vinculada.\n\n"
+                        "Quedo registrado como propietario de la sincronizacion y su token "
+                        "fue compartido (cifrado) con los demas equipos.",
+                        parent=v_conf)
+                    _refrescar_estado_sync()
+                    _refrescar_politica()
+                    return
+
                 result = vincular_rclone_drive(cmd_rclone, args_cfg, remote, kwargs)
-                if result.returncode == 0:
+                if result.returncode == 0 and _remoto_configurado_con_token(remote):
                     # Este equipo queda registrado como propietario de la
                     # sincronización (el primero que lo registra es "el de siempre").
                     registrar_sync_nube()
@@ -3671,6 +3556,17 @@ class ControlGeneralEventos:
                     if (reg.get("linked_by_device") or "") == device_id:
                         subir_token_rclone_nube()
                     messagebox.showinfo("Éxito", "¡Google Drive vinculado correctamente!\n\nEste equipo quedó registrado como propietario de la sincronización y su token fue compartido (cifrado) con los demás equipos.\nYa puedes realizar la prueba de conexión.", parent=v_conf)
+                elif result.returncode == 0:
+                    messagebox.showwarning(
+                        "No quedo vinculada",
+                        "rclone termino pero NO guardo el token de Google, asi que la cuenta "
+                        "no quedo vinculada y este equipo NO se registro.\n\n"
+                        "Que hacer:\n"
+                        "1. Abra una terminal (CMD) y ejecute:  rclone config\n"
+                        "2. Elija 'n' (nuevo), nombre 'gdrive', tipo 'drive', scope 'drive'.\n"
+                        "3. En 'Use auto config?' responda 'y' y autorice en el navegador.\n"
+                        "4. Vuelva aqui y pulse de nuevo Vincular Cuenta Auto.",
+                        parent=v_conf)
                 else:
                     detalle = result.stderr or ""
                     if _rclone_puerto_ocupado(detalle):
@@ -3736,7 +3632,7 @@ class ControlGeneralEventos:
             except Exception as e:
                 messagebox.showerror("Error", f"Error al ejecutar Rclone:\n{e}", parent=v_conf)
 
-        f_rclone_3 = ctk.CTkFrame(f_region, fg_color="transparent")
+        f_rclone_3 = ctk.CTkFrame(f_nube, fg_color="transparent")
         f_rclone_3.pack(fill="x", padx=15, pady=(5, 0))
 
         lbl_propietario = ctk.CTkLabel(f_rclone_3, text="", font=("Arial", 10, "bold"))
@@ -3757,7 +3653,7 @@ class ControlGeneralEventos:
         # =========================================================
         # 🔒 ESTADO DE ALMACENAMIENTO (MONOUSUARIO / MULTIUSUARIO)
         # =========================================================
-        f_politica = ctk.CTkFrame(f_region, fg_color="#fff8e1", border_width=1, border_color="#f0c36d", corner_radius=8)
+        f_politica = ctk.CTkFrame(f_nube, fg_color="#fff8e1", border_width=1, border_color="#f0c36d", corner_radius=8)
         f_politica.pack(fill="x", padx=15, pady=(10, 2), ipady=6)
 
         lbl_politica = ctk.CTkLabel(f_politica, text="Verificando…", font=("Arial", 11, "bold"),
@@ -3811,6 +3707,12 @@ class ControlGeneralEventos:
                     text_color="#c0392b")
                 btn_usar_principal.configure(state="normal")
                 btn_compartir.configure(state="disabled")
+
+            try:
+                btn_principal.configure(state="disabled" if codigo == "OK_PRINCIPAL" else "normal")
+                btn_dejar_principal.configure(state="normal" if codigo == "OK_PRINCIPAL" else "disabled")
+            except Exception:
+                pass
 
         def _usar_cuenta_principal():
             try:
@@ -3868,6 +3770,39 @@ class ControlGeneralEventos:
                                       command=_compartir_cuenta_principal)
         btn_compartir.pack(side="left")
 
+        def _tomar_control_principal():
+            if not messagebox.askyesno(
+                    "Equipo principal",
+                    "¿Convertir ESTE equipo en el PRINCIPAL de la cuenta Rclone?" + chr(10) + chr(10) +
+                    "Se publicará la cuenta de Google de este equipo y los demás deberán pulsar "
+                    "«Usar la cuenta del equipo principal».",
+                    parent=v_conf):
+                return
+            ok, msg = tomar_control_cuenta_principal()
+            (messagebox.showinfo if ok else messagebox.showwarning)("Equipo principal", msg, parent=v_conf)
+            _refrescar_politica()
+
+        btn_principal = ctk.CTkButton(f_pol_btns, text="👑 Usar este equipo como PRINCIPAL",
+                                      font=("Arial", 11, "bold"), fg_color="#7d3c98", hover_color="#5b2c6f",
+                                      command=_tomar_control_principal)
+        btn_principal.pack(side="left", padx=(8, 0))
+
+        def _dejar_de_ser_principal():
+            if not messagebox.askyesno(
+                    "Dejar de ser principal",
+                    "¿Este equipo deja de ser el PRINCIPAL de la cuenta Rclone?" + chr(10) + chr(10) +
+                    "La configuración NO se borra: otro equipo podrá tomar el mando.",
+                    parent=v_conf):
+                return
+            ok, msg = dejar_de_ser_principal()
+            (messagebox.showinfo if ok else messagebox.showwarning)("Equipo principal", msg, parent=v_conf)
+            _refrescar_politica()
+
+        btn_dejar_principal = ctk.CTkButton(f_pol_btns, text="🖐 Dejar de ser principal",
+                                            font=("Arial", 11, "bold"), fg_color="#7f8c8d", hover_color="#5d6d6e",
+                                            command=_dejar_de_ser_principal)
+        btn_dejar_principal.pack(side="left", padx=(8, 0))
+
         def _limpiar_basura():
             """Borra los .DS_Store de la carpeta local y de la nube."""
             lbl_sync.configure(text="⏳ Limpiando archivos .DS_Store (local y nube)… puede tardar unos minutos",
@@ -3905,71 +3840,37 @@ class ControlGeneralEventos:
 
         _refrescar_politica()
 
-        ctk.CTkLabel(f_region, text="🖨️ Impresora por Defecto", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 5))
-        ent_impresora = ctk.CTkEntry(f_region, placeholder_text="Ej: Epson L3150 Series")
-        ent_impresora.pack(fill="x", padx=15)
-        ent_impresora.insert(0, config_actual.get("impresora", ""))
-
-        f_geo = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#fdf2e9", border_width=1, border_color="#fadbd8")
-        f_geo.pack(fill="x", padx=10, pady=10, ipady=10)
-        ctk.CTkLabel(f_geo, text="📍 Geocerca y Asistencia Automática GPS", font=("Arial", 14, "bold"), text_color="#d35400").pack(anchor="w", padx=15, pady=(10, 5))
-        f_geo_row = ctk.CTkFrame(f_geo, fg_color="transparent"); f_geo_row.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_geo_row, text="Latitud:", font=("Arial", 11, "bold")).pack(side="left")
-        ent_lat_geo = ctk.CTkEntry(f_geo_row, width=150); ent_lat_geo.pack(side="left", padx=5); ent_lat_geo.insert(0, lat_val)
-        ctk.CTkLabel(f_geo_row, text="Longitud:", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_lon_geo = ctk.CTkEntry(f_geo_row, width=150); ent_lon_geo.pack(side="left", padx=5); ent_lon_geo.insert(0, lon_val)
-        ctk.CTkLabel(f_geo_row, text="Radio (Metros):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_rad_geo = ctk.CTkEntry(f_geo_row, width=80); ent_rad_geo.pack(side="left", padx=5); ent_rad_geo.insert(0, rad_val)
-        
-        f_flota = ctk.CTkFrame(f_scroll, corner_radius=10)
-        f_flota.pack(fill="x", padx=10, pady=10, ipady=10)
-        ctk.CTkLabel(f_flota, text="🚙 Ajustes de Flota Automotriz", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
-        f_flota_row1 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row1.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_flota_row1, text="Días de anticipación para alertas de vencimiento (SOAT, Licencias, etc):", font=("Arial", 11, "bold")).pack(side="left")
-        ent_dias_alerta = ctk.CTkEntry(f_flota_row1, width=80); ent_dias_alerta.pack(side="left", padx=10); ent_dias_alerta.insert(0, config_actual.get("dias_alerta_vencimiento", "30"))
-        
-        f_flota_row2 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row2.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_flota_row2, text="Alerta Cambio Aceite (Kilómetros):", font=("Arial", 11, "bold")).pack(side="left")
-        ent_km_aceite = ctk.CTkEntry(f_flota_row2, width=80); ent_km_aceite.pack(side="left", padx=10); ent_km_aceite.insert(0, config_actual.get("alerta_aceite_km", "5000"))
-        ctk.CTkLabel(f_flota_row2, text="o Meses:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
-        ent_meses_aceite = ctk.CTkEntry(f_flota_row2, width=80); ent_meses_aceite.pack(side="left", padx=10); ent_meses_aceite.insert(0, config_actual.get("alerta_aceite_meses", "6"))
-        
-        f_flota_row3 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row3.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_flota_row3, text="Alerta Mantenimiento General (Kilómetros):", font=("Arial", 11, "bold")).pack(side="left")
-        ent_km_general = ctk.CTkEntry(f_flota_row3, width=80); ent_km_general.pack(side="left", padx=10); ent_km_general.insert(0, config_actual.get("alerta_mantenimiento_general_km", "10000"))
-        ctk.CTkLabel(f_flota_row3, text="o Meses:", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 5))
-        ent_meses_general = ctk.CTkEntry(f_flota_row3, width=80); ent_meses_general.pack(side="left", padx=10); ent_meses_general.insert(0, config_actual.get("alerta_mantenimiento_general_meses", "6"))
-        
-        f_flota_row4 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row4.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_flota_row4, text="Alerta Mantenimiento Sistema de Gas (Kilómetros):", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        ent_km_gas = ctk.CTkEntry(f_flota_row4, width=80); ent_km_gas.pack(side="left", padx=10); ent_km_gas.insert(0, config_actual.get("alerta_gas_km", "5000"))
-        f_flota_row5 = ctk.CTkFrame(f_flota, fg_color="transparent"); f_flota_row5.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_flota_row5, text="Clave IA Qwen (opcional, reemplaza la interna):", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
-        ent_ia_key = ctk.CTkEntry(f_flota_row5, width=80); ent_ia_key.pack(side="left", padx=10); ent_ia_key.insert(0, config_actual.get("ia_qwen_api_key", "5000"))
-        ctk.CTkLabel(f_flota_row5, text="Modelo IA (opcional):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
-        ent_ia_modelo = ctk.CTkEntry(f_flota_row5, width=140); ent_ia_modelo.pack(side="left", padx=10); ent_ia_modelo.insert(0, str(config_actual.get("ia_qwen_modelo", "") or ""))
+        # ---------- 7. DISEÑO Y ORDEN DEL MENÚ ----------
         f_menu = ctk.CTkFrame(f_scroll, corner_radius=10, fg_color="#eef2f3", border_width=1, border_color="#ccd1d9")
         f_menu.pack(fill="x", padx=10, pady=10, ipady=10)
         ctk.CTkLabel(f_menu, text="🎨 Apariencia y Orden del Menú Principal", font=("Arial", 14, "bold"), text_color="#1f538d").pack(anchor="w", padx=15, pady=(10, 5))
-        f_menu_colors = ctk.CTkFrame(f_menu, fg_color="transparent"); f_menu_colors.pack(fill="x", padx=15, pady=5)
+        f_menu_colors = ctk.CTkFrame(f_menu, fg_color="transparent")
+        f_menu_colors.pack(fill="x", padx=15, pady=5)
 
         def crear_selector_color_grid(padre, fila, col, texto, key_config, default):
             f_c = ctk.CTkFrame(padre, fg_color="transparent")
             f_c.grid(row=fila, column=col, padx=10, pady=5, sticky="w")
             ctk.CTkLabel(f_c, text=texto, font=("Arial", 11, "bold"), width=150, anchor="w").pack(side="left")
-            ent_c = ctk.CTkEntry(f_c, width=80); ent_c.pack(side="left", padx=5)
+            ent_c = ctk.CTkEntry(f_c, width=80)
+            ent_c.pack(side="left", padx=5)
             val = str(config_actual.get(key_config, default)).strip()
             ent_c.insert(0, val)
             color_prev = val if val.startswith("#") else default
-            f_p = ctk.CTkFrame(f_c, width=25, height=25, fg_color=color_prev, corner_radius=5); f_p.pack(side="left", padx=5)
+            f_p = ctk.CTkFrame(f_c, width=25, height=25, fg_color=color_prev, corner_radius=5)
+            f_p.pack(side="left", padx=5)
 
             def elegir():
                 curr = ent_c.get().strip()
-                if not curr.startswith("#"): curr = default
-                try: color = colorchooser.askcolor(title=f"Elegir {texto}", color=curr)[1]
-                except Exception: color = colorchooser.askcolor(title=f"Elegir {texto}")[1]
+                if not curr.startswith("#"):
+                    curr = default
+                try:
+                    color = colorchooser.askcolor(title=f"Elegir {texto}", color=curr, parent=v_conf)[1]
+                except Exception:
+                    color = colorchooser.askcolor(title=f"Elegir {texto}")[1]
                 if color:
-                    ent_c.delete(0, tk.END); ent_c.insert(0, color); f_p.configure(fg_color=color)
+                    ent_c.delete(0, tk.END)
+                    ent_c.insert(0, color)
+                    f_p.configure(fg_color=color)
             ctk.CTkButton(f_c, text="🎨", width=35, command=elegir).pack(side="left")
             return ent_c
             
@@ -3977,10 +3878,11 @@ class ControlGeneralEventos:
         ent_m_btn = crear_selector_color_grid(f_menu_colors, 0, 1, "Color del Botón:", "color_menu_btn", "#1f538d")
         ent_m_hov = crear_selector_color_grid(f_menu_colors, 1, 0, "Al pasar el Mouse:", "color_menu_hover", "#163b65")
         ent_m_txt = crear_selector_color_grid(f_menu_colors, 1, 1, "Color del Texto:", "color_menu_texto", "#ffffff")
-        
-        f_menu_order = ctk.CTkFrame(f_menu, fg_color="transparent"); f_menu_order.pack(fill="both", expand=True, padx=15, pady=(15, 0))
+        f_menu_order = ctk.CTkFrame(f_menu, fg_color="transparent")
+        f_menu_order.pack(fill="both", expand=True, padx=15, pady=(15, 0))
         ctk.CTkLabel(f_menu_order, text="Orden de los Módulos por Grupo:", font=("Arial", 11, "bold")).pack(anchor="w")
-        f_listas = ctk.CTkFrame(f_menu_order, fg_color="transparent"); f_listas.pack(fill="both", expand=True, pady=5)
+        f_listas = ctk.CTkFrame(f_menu_order, fg_color="transparent")
+        f_listas.pack(fill="both", expand=True, pady=5)
         nombres_a_keys = {v: k for k, v in self.modulos_sistema.items()}
 
         def crear_columna_orden(padre, titulo, lista_keys):
@@ -3992,108 +3894,84 @@ class ControlGeneralEventos:
             for k in lista_keys:
                 if k in self.modulos_sistema:
                     lb.insert(tk.END, self.modulos_sistema[k])
-            f_btns = ctk.CTkFrame(f_col, fg_color="transparent"); f_btns.pack(fill="x")
+            f_btns = ctk.CTkFrame(f_col, fg_color="transparent")
+            f_btns.pack(fill="x")
 
             def subir():
                 sel = lb.curselection()
-                if not sel or sel[0] == 0: return
-                idx = sel[0]; val = lb.get(idx); lb.delete(idx); lb.insert(idx - 1, val); lb.selection_set(idx - 1)
+                if not sel or sel[0] == 0:
+                    return
+                idx = sel[0]
+                val = lb.get(idx)
+                lb.delete(idx)
+                lb.insert(idx - 1, val)
+                lb.selection_set(idx - 1)
+
             def bajar():
                 sel = lb.curselection()
-                if not sel or sel[0] == lb.size() - 1: return
-                idx = sel[0]; val = lb.get(idx); lb.delete(idx); lb.insert(idx + 1, val); lb.selection_set(idx + 1)
+                if not sel or sel[0] == lb.size() - 1:
+                    return
+                idx = sel[0]
+                val = lb.get(idx)
+                lb.delete(idx)
+                lb.insert(idx + 1, val)
+                lb.selection_set(idx + 1)
             ctk.CTkButton(f_btns, text="⬆️", width=30, command=subir).pack(side="left", expand=True, padx=1)
             ctk.CTkButton(f_btns, text="⬇️", width=30, command=bajar).pack(side="left", expand=True, padx=1)
             return lb
             
-        default_ops = ["clientes", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "flota", "choferes"]
-        default_fin = ["ventas", "compras", "libro_diario", "libro_mayor", "impuestos", "dashboard", "banco", "nomina"]
+        default_ops = ["clientes", "cotizaciones", "pautas", "ordenes_cliente", "cronograma", "ordenes", "proveedores", "inventario", "locaciones"]
+        default_fin = ["ventas", "compras", "bancos", "libro_diario", "libro_mayor", "impuestos", "dashboard"]
         default_aju = ["configuracion", "usuarios", "bitacora"]
-        ops = config_actual.get("orden_operativos", default_ops)
-        fin = config_actual.get("orden_finanzas", default_fin)
-        aju = config_actual.get("orden_ajustes", default_aju)
-        # Los módulos Banco y Nómina siempre se ubican en Finanzas y Reportes
-        ops = [m for m in ops if m not in ("banco", "nomina")]
-        for modulo_fin in ("banco", "nomina"):
-            if modulo_fin not in fin:
-                fin.append(modulo_fin)
-        todas = ops + fin + aju
-        for k in self.modulos_sistema:
-            if k not in todas:
-                ops.append(k)
-        lb_ops = crear_columna_orden(f_listas, "Módulos Operativos", ops)
-        lb_fin = crear_columna_orden(f_listas, "Finanzas y Reportes", fin)
-        lb_aju = crear_columna_orden(f_listas, "Ajustes de Sistema", aju)
+        lb_ops = crear_columna_orden(f_listas, "Módulos Operativos", config_actual.get("orden_operativos", default_ops))
+        lb_fin = crear_columna_orden(f_listas, "Finanzas y Reportes", config_actual.get("orden_finanzas", default_fin))
+        lb_aju = crear_columna_orden(f_listas, "Ajustes de Sistema", config_actual.get("orden_ajustes", default_aju))
 
         def guardar_configuracion():
-            def ext_ord(lb):
-                return [nombres_a_keys[lb.get(i)] for i in range(lb.size())]
-                
-            lista_bancos = []
-            for f_widget, cmb_b, ent_c, ent_f, ent_s in filas_bancos:
-                b_val = cmb_b.get().strip(); c_val = ent_c.get().strip()
-                f_val = ent_f.get().strip(); s_val = _formatear_monto(ent_s.get())
-                if b_val or c_val or f_val or s_val:
-                    lista_bancos.append({"banco": b_val, "cuenta": c_val, "fecha": f_val, "saldo_inicial": s_val})
-
-            cuenta_grifo_sel = cmb_cuenta_grifo.get().strip()
-            if cuenta_grifo_sel in ("", "Ninguna"):
-                cuenta_grifo_sel = ""
-                    
-            conn_geo_upd = conectar_db(silencioso=True)
-            if conn_geo_upd:
-                try:
-                    with conn_geo_upd.cursor() as c_geo_upd:
-                        c_geo_upd.execute("UPDATE configuracion_geocerca SET latitud=%s, longitud=%s, radio=%s", (
-                            float(ent_lat_geo.get().strip() or 0), float(ent_lon_geo.get().strip() or 0), float(ent_rad_geo.get().strip() or 100)))
-                        conn_geo_upd.commit()
-                except Exception as e:
-                    print("Error guardando geocerca:", e)
-                finally:
-                    liberar_conexion(conn_geo_upd)
-
-            # La sincronización en la nube (remote y carpeta de la nube) se
-            # guarda en Supabase con regla "first-write-wins": el primer equipo
-            # que la registra es la fuente de verdad para todos los demás.
-            remote_val = ent_rclone_remote.get().strip()
-            nube_val = ent_rclone_nube.get().strip()
-            if remote_val or nube_val:
-                try:
-                    registrar_rclone_sync({
-                        "rclone_remote": remote_val,
-                        "rclone_ruta_nube": nube_val,
-                        "linked_by_device": device_id,
-                        "linked_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-                    })
-                except Exception as e:
-                    print("Error registrando sync nube:", e)
-            sync_final = cargar_rclone_sync() or {}
-            remote_final = (sync_final.get("rclone_remote") or remote_val).strip()
-            nube_final = (sync_final.get("rclone_ruta_nube") or nube_val).strip()
-
-            # Solo el equipo propietario comparte su token de Rclone (cifrado).
-            if (sync_final.get("linked_by_device") or "") == device_id:
-                try:
-                    subir_token_rclone_nube()
-                except Exception as e:
-                    print("Error subiendo token rclone:", e)
+            def ext_ord(lb, clave_config):
+                resultado = []
+                for i in range(lb.size()):
+                    texto = lb.get(i)
+                    if texto in nombres_a_keys:
+                        resultado.append(nombres_a_keys[texto])
+                if not resultado:
+                    # 🛡️ Si la lista quedó vacía (carga incompleta, un módulo nuevo...)
+                    # se conserva el orden anterior en lugar de dejar el menú sin módulos.
+                    anterior = config_actual.get(clave_config) or []
+                    return [k for k in anterior if k in self.modulos_sistema]
+                return resultado
+            fecha_corte_txt = ent_fecha_corte.get().strip()
+            fecha_corte_nueva = parsear_fecha_corte(fecha_corte_txt) if fecha_corte_txt else None
+            if fecha_corte_txt and fecha_corte_nueva is None:
+                return messagebox.showerror(
+                    "Fecha inválida",
+                    "La Fecha de Comienzo del Sistema debe tener el formato DD/MM/AAAA (ej: 01/08/2026).",
+                    parent=v_conf
+                )
 
             nueva_config = config_actual.copy()
+            nueva_config.pop("retencion_porcentaje", None)  # Retención ya no se usa en Perú
             nueva_config.update({
+                "fecha_comienzo_sistema": fecha_corte_nueva.isoformat() if fecha_corte_nueva else "",
                 "ruta_drive": ent_drive.get().strip(),
-                "rclone_remote": remote_final,
-                "rclone_ruta_nube": nube_final,
+                "rclone_remote": ent_rclone_remote.get().strip(),
+                "rclone_ruta_nube": ent_rclone_nube.get().strip(),
                 "impresora": ent_impresora.get().strip(),
                 "simbolo_moneda": cmb_moneda.get().strip() or "S/.",
                 "formato_numero": cmb_num.get(),
                 "formato_fecha": cmb_fecha.get(),
-                "detraccion_porcentaje": ent_detraccion_cfg.get().strip(),
+                "ruta_logo_cotizacion": ent_logo.get().strip(),
+                "color_primario": ent_color_1.get().strip(),
+                "color_secundario": ent_color_2.get().strip(),
+                "color_franja": ent_color_3.get().strip(),
                 "ruc_empresa": ent_ruc_empresa.get().strip(),
                 "razon_social_empresa": ent_razon_social.get().strip(),
                 "igv_porcentaje": ent_igv.get().strip(),
+                "detraccion_porcentaje": ent_detraccion.get().strip(),
                 "renta_mensual_porcentaje": ent_renta_m.get().strip(),
                 "renta_anual_porcentaje": ent_renta_a.get().strip(),
                 "regimen_empresa": cmb_regimen.get().strip(),
+                "nombre_cliente_cotizacion": cmb_nombre_cot.get().strip(),
                 "proveedor_fe": cmb_pse.get().strip(),
                 "url_api_fe": ent_url_api.get().strip(),
                 "token_api_fe": ent_token_api.get().strip(),
@@ -4116,22 +3994,10 @@ class ControlGeneralEventos:
                 "twi_token": ent_twi_token.get().strip(),
                 "twi_from": ent_twi_from.get().strip(),
                 "twi_to": ent_twi_to.get().strip(),
-                "dias_alerta_vencimiento": ent_dias_alerta.get().strip() or "30",
-                "alerta_aceite_km": ent_km_aceite.get().strip() or "5000",
-                "alerta_aceite_meses": ent_meses_aceite.get().strip() or "6",
-                "alerta_mantenimiento_general_km": ent_km_general.get().strip() or "10000",
-                "alerta_mantenimiento_general_meses": ent_meses_general.get().strip() or "6",
-                "alerta_gas_km": ent_km_gas.get().strip() or "10000",
-        "ia_qwen_api_key": ent_ia_key.get().strip(),
-        "ia_qwen_modelo": ent_ia_modelo.get().strip(),
                 "color_menu_fondo": ent_m_fondo.get().strip(),
                 "color_menu_btn": ent_m_btn.get().strip(),
                 "color_menu_hover": ent_m_hov.get().strip(),
                 "color_menu_texto": ent_m_txt.get().strip(),
-                "orden_operativos": ext_ord(lb_ops),
-                "orden_finanzas": ext_ord(lb_fin),
-                "orden_ajustes": ext_ord(lb_aju),
-                # 🖨️ Escáner de comprobantes (propio de este equipo)
                 "escaner_dispositivo": (mapa_escaneres.get(cmb_escaner.get().strip(), "")
                                         or config_actual.get("escaner_dispositivo", "")),
                 "escaner_dpi": cmb_esc_dpi.get(),
@@ -4143,131 +4009,183 @@ class ControlGeneralEventos:
                 "escaner_optimizar": cmb_esc_optimizar.get(),
                 "escaner_modo": cmb_esc_modo.get(),
                 "escaner_carpeta": ent_esc_carpeta.get().strip(),
-                "ruta_logo_cotizacion": guardar_logo_en_programa(ent_logo.get().strip(), ent_drive.get().strip())
+                "terminos_cotizacion": txt_terminos.get("1.0", "end-1c").strip(),
+                "orden_operativos": ext_ord(lb_ops, "orden_operativos"),
+                "orden_finanzas": ext_ord(lb_fin, "orden_finanzas"),
+                "orden_ajustes": ext_ord(lb_aju, "orden_ajustes")
             })
-            # Los datos bancarios y la cuenta del App Grifo se guardan en
-            # Supabase (nube), NO en el archivo local.
+
+            # 🧩 Claves que administran otros módulos (Bancos, Compras): se releen del
+            # disco para que guardar la configuración general NO las borre.
             try:
-                guardar_bancos(lista_bancos)
-                guardar_cuenta_grifo(cuenta_grifo_sel)
-            except Exception as e:
-                print("Error guardando bancos/grifo en nube:", e)
-
-            conn_cfg = conectar_db(silencioso=True)
-            if conn_cfg:
-                try:
-                    with conn_cfg.cursor() as c_cfg:
-                        c_cfg.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
-                        c_cfg.execute("INSERT INTO config_general (clave, valor) VALUES (%s, %s) ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor", ("ruc_empresa", ent_ruc_empresa.get().strip()))
-                        conn_cfg.commit()
-                except Exception as e:
-                    print("Error guardando config en nube:", e)
-                finally:
-                    liberar_conexion(conn_cfg)
-
-            # No se escriben en el JSON local (viven en Supabase).
-            nueva_config.pop("cuentas_bancarias", None)
-            nueva_config.pop("cuenta_grifo_pagos", None)
+                en_disco = cargar_config_local() or {}
+                for clave_externa in ("categorias_gastos", "comision_interbancaria"):
+                    if clave_externa in en_disco:
+                        nueva_config[clave_externa] = en_disco[clave_externa]
+                # 🏦 Las cuentas bancarias solo se escriben si el usuario las editó en
+                # ESTA ventana; si no, se conserva lo que ya hay guardado (en el equipo
+                # y en la base de datos) para no borrarlas por un formulario viejo.
+                if cuentas_editadas["cambiado"]:
+                    nueva_config["cuentas_bancarias"] = [dict(c) for c in cuentas_bancarias_actual]
+                elif "cuentas_bancarias" in en_disco:
+                    nueva_config["cuentas_bancarias"] = en_disco["cuentas_bancarias"]
+                else:
+                    nueva_config.pop("cuentas_bancarias", None)
+            except Exception:
+                pass
 
             try:
                 with open(archivo_config, "w", encoding="utf-8") as f:
                     json.dump(nueva_config, f, indent=4)
-                messagebox.showinfo("Éxito", "Las configuraciones del sistema se guardaron correctamente.\n\nLos cambios en el diseño se aplicarán inmediatamente.", parent=v_conf)
+                
+                config_para_nube = nueva_config.copy()
+                for clave_local in ["ruta_drive", "impresora", "ruta_logo_cotizacion", "rclone_remote",
+                                    "escaner_dispositivo", "escaner_carpeta"]:
+                    config_para_nube.pop(clave_local, None)
+
+                conn = conectar_db(silencioso=True)
+                if conn:
+                    try:
+                        cursor = conn.cursor()
+                        # 🧩 Antes de reemplazar la configuración de la nube se conservan
+                        # las claves que administran otros módulos o los demás equipos
+                        # (cuentas bancarias, categorías de gastos...). Sin esto, guardar
+                        # la configuración general borraba la configuración del banco.
+                        try:
+                            cursor.execute("SELECT data FROM configuracion_sistema WHERE id = 1")
+                            fila_nube = cursor.fetchone()
+                            datos_nube = fila_nube[0] if fila_nube else None
+                            if isinstance(datos_nube, str):
+                                datos_nube = json.loads(datos_nube)
+                            datos_nube = datos_nube if isinstance(datos_nube, dict) else {}
+                            for clave_externa in ("categorias_gastos", "comision_interbancaria"):
+                                if clave_externa in datos_nube:
+                                    config_para_nube[clave_externa] = datos_nube[clave_externa]
+                            if not cuentas_editadas["cambiado"] and "cuentas_bancarias" in datos_nube:
+                                config_para_nube["cuentas_bancarias"] = datos_nube["cuentas_bancarias"]
+                        except Exception:
+                            conn.rollback()
+                        cursor.execute("""
+                        INSERT INTO configuracion_sistema (id, data, actualizado_el)
+                        VALUES (1, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, actualizado_el = CURRENT_TIMESTAMP
+                        """, (json.dumps(config_para_nube),))
+                        conn.commit()
+                    except Exception as e:
+                        print("Error respaldando config en la nube:", e)
+                    finally:
+                        liberar_conexion(conn)
+
+                # 🚀 CORTE DE COMPRAS Y VENTAS: solo se pregunta si la fecha CAMBIÓ
+                decision_corte = decidir_limpieza_por_corte(v_conf, config_actual, fecha_corte_nueva)
+                if decision_corte == "purgar":
+                    def al_terminar_corte(resultado, error):
+                        if error:
+                            messagebox.showerror("Configuración guardada, limpieza fallida", f"La fecha se guardó correctamente, pero no se pudo limpiar:\n{error}", parent=v_conf)
+                        else:
+                            cache_sistema.invalidar()
+                            messagebox.showinfo("Limpieza completada", resumen_purga(resultado), parent=v_conf)
+                        lanzar_sync_background()
+                        try:
+                            v_conf.destroy()
+                        except Exception:
+                            pass
+                        self.construir_dashboard_spa()
+
+                    _purgar_con_progreso(fecha_corte_nueva, al_terminar_corte)
+                    return
+                if decision_corte == "omitir":
+                    messagebox.showinfo(
+                        "Corte guardado sin limpiar",
+                        "La Fecha de Comienzo quedó guardada.\n\nNo se eliminó ningún registro. Puedes ejecutar la limpieza cuando quieras con el botón rojo "
+                        "'Eliminar Compras y Ventas de esta fecha hacia atrás'.",
+                        parent=v_conf
+                    )
+
+                messagebox.showinfo("Éxito", "Las configuraciones del sistema se guardaron correctamente en la Nube y en este equipo.\n\nLos cambios visuales se aplicarán inmediatamente.", parent=v_conf)
                 lanzar_sync_background()
                 v_conf.destroy()
                 self.construir_dashboard_spa()
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo guardar la configuración:\n{e}", parent=v_conf)
-
+                
         ctk.CTkButton(f_scroll, text="💾 Guardar Todos los Cambios", font=("Arial", 14, "bold"), height=45, fg_color="#1f538d", hover_color="#163b65", command=guardar_configuracion).pack(pady=25)
 
-    # =======================================================
-    # GESTIÓN DE USUARIOS (BCRYPT + PROTECCIÓN SUPER ADMIN)
-    # =======================================================
     def abrir_gestion_usuarios(self):
         if not self.tiene_permiso("usuarios"):
             return messagebox.showerror("Acceso Denegado", "No tiene permisos para modificar usuarios.")
-            
         v_usr = ctk.CTkToplevel(self.root)
         v_usr.title("Configuración de Usuarios y Permisos")
-        ancho, alto = 1000, 580
-        v_usr.geometry(f"{ancho}x{alto}")
-        
-        v_usr.update_idletasks()
-        x = max(0, (v_usr.winfo_screenwidth() // 2) - (ancho // 2))
-        y = max(0, (v_usr.winfo_screenheight() // 2) - (alto // 2))
-        v_usr.geometry(f"{ancho}x{alto}+{x}+{y}")
-        v_usr.lift()
-        v_usr.grab_set()
-
+        v_usr.geometry("1000x580")
+        # 🖥️ La ventana de usuarios también se abre maximizada
+        try:
+            v_usr._modulo_geometria_previa = "1000x580"
+            v_usr._modulo_maximizado = True
+            v_usr.after(120, lambda v=v_usr: maximizar_ventana(v))
+        except Exception:
+            pass
+        # 🪟 Sin grab_set(): no debe bloquear los demás módulos abiertos.
+        self.ventanas_modulos["usuarios"] = v_usr
+        v_usr.bind("<Destroy>", lambda e, c="usuarios": self._al_destruir_ventana(e, c), add="+")
+        self._actualizar_pestanas_modulos()
+        traer_al_frente(v_usr)
         main_split = ctk.CTkFrame(v_usr, fg_color="transparent")
         main_split.pack(fill="both", expand=True, padx=15, pady=15)
-        
         left_panel = ctk.CTkFrame(main_split, fg_color="transparent")
         left_panel.pack(side="left", fill="both", expand=True)
-        
         ctk.CTkLabel(left_panel, text="👥 CREAR O MODIFICAR USUARIO", font=("Arial", 16, "bold"), text_color="#1f538d").pack(pady=(0, 15))
-        
         f_form = ctk.CTkFrame(left_panel, fg_color="transparent")
         f_form.pack(fill="x", padx=10, pady=5)
-        
         ctk.CTkLabel(f_form, text="Usuario:", font=("Arial", 11, "bold")).grid(row=0, column=0, sticky="w", pady=4)
         ent_u = ctk.CTkEntry(f_form, width=160)
         ent_u.grid(row=0, column=1, sticky="w", pady=4, padx=5)
-        
         ctk.CTkLabel(f_form, text="Clave (Nueva):", font=("Arial", 11, "bold")).grid(row=0, column=2, sticky="w", pady=4, padx=10)
         ent_c = ctk.CTkEntry(f_form, width=160, placeholder_text="(Dejar en blanco)")
         ent_c.grid(row=0, column=3, sticky="w", pady=4)
-        
         ctk.CTkLabel(f_form, text="Rol Nominal:", font=("Arial", 11, "bold")).grid(row=1, column=0, sticky="w", pady=10)
         cmb_r = ctk.CTkComboBox(f_form, values=["Super Administrador", "Administrador", "Comercial", "Logistica"], width=180, state="readonly")
         cmb_r.grid(row=1, column=1, sticky="w", pady=10, padx=5)
-        
         f_tbl = ctk.CTkFrame(left_panel, corner_radius=8)
         f_tbl.pack(fill="both", expand=True, padx=10, pady=5)
-        
         tbl_u = ttk.Treeview(f_tbl, columns=("id", "usuario", "rol"), show="headings", height=8)
-        tbl_u.heading("id", text="ID"); tbl_u.heading("usuario", text="Usuario"); tbl_u.heading("rol", text="Rol Nominal")
-        tbl_u.column("id", width=55, anchor="center"); tbl_u.column("usuario", width=220); tbl_u.column("rol", width=200)
-        
+        tbl_u.heading("id", text="ID")
+        tbl_u.heading("usuario", text="Usuario")
+        tbl_u.heading("rol", text="Rol Nominal")
+        tbl_u.column("id", width=55, anchor="center")
+        tbl_u.column("usuario", width=220)
+        tbl_u.column("rol", width=200)
         scr_u = ttk.Scrollbar(f_tbl, orient="vertical", command=tbl_u.yview)
         tbl_u.configure(yscrollcommand=scr_u.set)
         tbl_u.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
         scr_u.pack(side="right", fill="y", pady=10, padx=(0, 10))
-        
         right_panel = ctk.CTkScrollableFrame(main_split, width=320, fg_color="#f8f9fa", corner_radius=10, border_width=1, border_color="#cccccc")
         right_panel.pack(side="right", fill="y", padx=(15, 0))
-        
         ctk.CTkLabel(right_panel, text="🛡️ PERMISOS POR MÓDULO", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
-        
         self.vars_permisos = {}
         for key_mod, nombre_mod in self.modulos_sistema.items():
             var_cb = tk.BooleanVar(value=False)
             self.vars_permisos[key_mod] = var_cb
             ctk.CTkCheckBox(right_panel, text=nombre_mod, variable=var_cb, font=("Arial", 12)).pack(anchor="w", padx=20, pady=5)
-            
         f_acciones_perm = ctk.CTkFrame(right_panel, fg_color="transparent")
         f_acciones_perm.pack(fill="x", padx=10, pady=15)
         ctk.CTkButton(f_acciones_perm, text="Marcar Todo", width=120, fg_color="#34495e", command=lambda: [v.set(True) for v in self.vars_permisos.values()]).pack(side="left", padx=5)
         ctk.CTkButton(f_acciones_perm, text="Desmarcar", width=120, fg_color="#7f8c8d", command=lambda: [v.set(False) for v in self.vars_permisos.values()]).pack(side="right", padx=5)
-        
         self.dict_permisos_usuarios = {}
 
         def cargar_usuarios():
-            for item in tbl_u.get_children():
-                tbl_u.delete(item)
+            tbl_u.delete(*tbl_u.get_children())
             conn = conectar_db(silencioso=True)
             if not conn:
                 return
             try:
-                with conn.cursor() as c:
-                    c.execute("SELECT id, usuario, rol, permisos FROM usuarios ORDER BY usuario ASC")
-                    for r in c.fetchall():
-                        tbl_u.insert("", tk.END, values=(r[0], r[1], r[2]))
-                        try:
-                            self.dict_permisos_usuarios[r[1]] = json.loads(r[3]) if r[3] else {}
-                        except Exception:
-                            self.dict_permisos_usuarios[r[1]] = {}
+                c = conn.cursor()
+                c.execute("SELECT id, usuario, rol, permisos FROM usuarios ORDER BY usuario ASC")
+                for r in c.fetchall():
+                    tbl_u.insert("", tk.END, values=(r[0], r[1], r[2]))
+                    try:
+                        self.dict_permisos_usuarios[r[1]] = json.loads(r[3]) if r[3] else {}
+                    except Exception:
+                        self.dict_permisos_usuarios[r[1]] = {}
             except Exception:
                 pass
             finally:
@@ -4285,7 +4203,6 @@ class ControlGeneralEventos:
             permisos_guardados = self.dict_permisos_usuarios.get(user_sel, {})
             for key_mod, var_cb in self.vars_permisos.items():
                 var_cb.set(permisos_guardados.get(key_mod, False))
-
         tbl_u.bind("<<TreeviewSelect>>", al_seleccionar_usuario)
 
         def registrar_o_modificar():
@@ -4300,20 +4217,30 @@ class ControlGeneralEventos:
             if not conn:
                 return
             try:
-                with conn.cursor() as c:
-                    c.execute("SELECT id FROM usuarios WHERE usuario = %s", (u,))
-                    existe = c.fetchone()
-                    if existe:
-                        if c_str:
-                            c.execute("UPDATE usuarios SET clave_hash=%s, clave=NULL, rol=%s, permisos=%s WHERE usuario=%s", (hash_password(c_str), r, permisos_json, u))
-                        else:
-                            c.execute("UPDATE usuarios SET rol=%s, permisos=%s WHERE usuario=%s", (r, permisos_json, u))
-                        registrar_auditoria(self.usuario_activo, "Seguridad", f"Modificó el usuario '{u}' y sus permisos")
+                c = conn.cursor()
+                c.execute("SELECT id FROM usuarios WHERE usuario = %s", (u,))
+                existe = c.fetchone()
+                if existe:
+                    if c_str:
+                        c.execute(
+                            "UPDATE usuarios SET clave_hash=%s, clave=NULL, rol=%s, permisos=%s WHERE usuario=%s",
+                            (hash_password(c_str), r, permisos_json, u)
+                        )
                     else:
-                        if not c_str:
-                            return messagebox.showwarning("Error", "Falta clave obligatoria para usuario nuevo.", parent=v_usr)
-                        c.execute("INSERT INTO usuarios (usuario, clave, clave_hash, rol, permisos) VALUES (%s, NULL, %s, %s, %s)", (u, hash_password(c_str), r, permisos_json))
-                        registrar_auditoria(self.usuario_activo, "Seguridad", f"Creó al usuario '{u}'")
+                        c.execute(
+                            "UPDATE usuarios SET rol=%s, permisos=%s WHERE usuario=%s",
+                            (r, permisos_json, u)
+                        )
+                    registrar_auditoria(self.usuario_activo, "Seguridad", f"Modificó el usuario '{u}' y sus permisos")
+                else:
+                    if not c_str:
+                        liberar_conexion(conn)
+                        return messagebox.showwarning("Error", "Falta clave obligatoria para usuario nuevo.", parent=v_usr)
+                    c.execute(
+                        "INSERT INTO usuarios (usuario, clave, clave_hash, rol, permisos) VALUES (%s, NULL, %s, %s, %s)",
+                        (u, hash_password(c_str), r, permisos_json)
+                    )
+                    registrar_auditoria(self.usuario_activo, "Seguridad", f"Creó al usuario '{u}'")
                 conn.commit()
                 messagebox.showinfo("Éxito", "Usuario y permisos guardados exitosamente.", parent=v_usr)
             except Exception as e:
@@ -4334,29 +4261,63 @@ class ControlGeneralEventos:
             if not conn:
                 return
             try:
-                with conn.cursor() as c:
-                    c.execute("SELECT rol FROM usuarios WHERE usuario = %s", (u_borrar,))
-                    fila = c.fetchone()
-                    if fila and str(fila[0]).strip() == "Super Administrador":
-                        c.execute("SELECT COUNT(*) FROM usuarios WHERE rol = 'Super Administrador'")
-                        if (c.fetchone()[0] or 0) <= 1:
-                            messagebox.showwarning("Error", "No puedes eliminar al único Super Administrador del sistema.", parent=v_usr)
-                            return
-                    if messagebox.askyesno("Confirmar", f"¿Eliminar al usuario '{u_borrar}' permanentemente?", parent=v_usr):
-                        c.execute("DELETE FROM usuarios WHERE usuario = %s", (u_borrar,))
-                        conn.commit()
-                        registrar_auditoria(self.usuario_activo, "Seguridad", f"Eliminó permanentemente al usuario '{u_borrar}'")
-                        cargar_usuarios()
+                c = conn.cursor()
+                c.execute("SELECT rol FROM usuarios WHERE usuario = %s", (u_borrar,))
+                fila = c.fetchone()
+                if fila and str(fila[0]).strip() == "Super Administrador":
+                    c.execute("SELECT COUNT(*) FROM usuarios WHERE rol = 'Super Administrador'")
+                    if (c.fetchone()[0] or 0) <= 1:
+                        messagebox.showwarning("Error", "No puedes eliminar al único Super Administrador del sistema.", parent=v_usr)
+                        return
+                if messagebox.askyesno("Confirmar", f"¿Eliminar al usuario '{u_borrar}' permanentemente?", parent=v_usr):
+                    c.execute("DELETE FROM usuarios WHERE usuario = %s", (u_borrar,))
+                    conn.commit()
+                    registrar_auditoria(self.usuario_activo, "Seguridad", f"Eliminó permanentemente al usuario '{u_borrar}'")
+                    cargar_usuarios()
             except Exception as e:
                 messagebox.showerror("Error", str(e), parent=v_usr)
             finally:
                 liberar_conexion(conn)
-
+                
         f_btn = ctk.CTkFrame(left_panel, fg_color="transparent")
         f_btn.pack(fill="x", padx=10, pady=15)
         ctk.CTkButton(f_btn, text="💾 Guardar Usuario", font=("Arial", 12, "bold"), fg_color="#27ae60", hover_color="#1e8449", command=registrar_o_modificar).pack(side="left", padx=5)
         ctk.CTkButton(f_btn, text="🗑️ Eliminar Usuario", font=("Arial", 12, "bold"), command=eliminar_usuario, fg_color="#e74c3c", hover_color="#c0392b").pack(side="left", padx=5)
         cargar_usuarios()
+
+    def buscar_actualizaciones_github(self):
+        # En macOS no se revisan actualizaciones: el cliente se actualiza
+        # ejecutando el archivo .command del instalador.
+        if sys.platform == "darwin":
+            return
+        def tarea_check():
+            try:
+                ctx = crear_contexto_ssl_seguro()
+                url = "https://api.github.com/repos/Alfredcollie/Sistema_control_eventos/releases/latest"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
+                    if response.status == 200:
+                        data = json.loads(response.read().decode())
+                        version_github = data.get("tag_name", "")
+                        
+                        if version_github and _version_a_tupla(version_github) > _version_a_tupla(VERSION_ACTUAL):
+                            def preguntar_actualizacion():
+                                respuesta = messagebox.askyesno(
+                                    "🚀 Nueva Actualización Disponible",
+                                    f"¡Hay una nueva versión de Black Cube disponible!\n\n"
+                                    f"Versión actual: {VERSION_ACTUAL}\n"
+                                    f"Versión nueva: {version_github}\n\n"
+                                    "¿Deseas descargar e instalar la actualización ahora?",
+                                    parent=self.root
+                                )
+                                if respuesta:
+                                    webbrowser.open("https://github.com/Alfredcollie/Sistema_control_eventos/releases/latest")
+                                    
+                            self.root.after(2000, preguntar_actualizacion)
+            except Exception:
+                pass
+
+        threading.Thread(target=tarea_check, daemon=True).start()
 
     def confirmar_salida(self):
         if messagebox.askyesno("Confirmar Salida", "⚠️ ¿Estás seguro de que deseas cerrar completamente el sistema?", parent=self.root):
@@ -4370,24 +4331,21 @@ class ControlGeneralEventos:
 
 if __name__ == "__main__":
     try:
-        root = ctk.CTk()
-        app = ControlGeneralEventos(root)
-        root.mainloop()
-    except Exception as e:
-        detalle = traceback.format_exc()
-        ruta_log = None
-        try:
-            ruta_log = str(DATA_DIR / "error_inicio.log")
-            with open(ruta_log, "w", encoding="utf-8") as f:
-                f.write(detalle)
-        except Exception:
-            ruta_log = None
-        try:
-            messagebox.showerror(
-                "Error de inicio",
-                f"Ocurrió un error al iniciar el sistema:\n{e}\n\n"
-                + (f"Detalle guardado en:\n{ruta_log}" if ruta_log else "")
-            )
-        except Exception:
-            pass
-        raise
+        from validacion_licencia import comprobar_acceso
+        if not comprobar_acceso():
+            sys.exit()
+    except ImportError:
+        pass
+
+    root = ctk.CTk()
+
+    # Scroll de rueda global: funciona sobre toda la ventana (y subventanas),
+    # no solo sobre widgets internos concretos.
+    try:
+        from scroll_utils import instalar_scroll_global
+        instalar_scroll_global(root)
+    except Exception:
+        pass
+
+    app = ControlGeneralEventos(root)
+    root.mainloop()
