@@ -1849,6 +1849,11 @@ class ControlGeneralEventos:
             messagebox.showerror("Error", f"Fallo al abrir el módulo:\n{e}")
             return None
         self.ventanas_modulos[clave]["app"] = app
+        # 🖥️ El módulo queda MAXIMIZADO (el botón □ permite restaurarlo)
+        try:
+            self.escritorio.after(80, lambda k=clave: self.maximizar_ventana_modulo(k))
+        except Exception:
+            pass
         return app
 
     def _colocar_ventana_inicial(self, clave, ancho_rel=0.92, alto_rel=0.90):
@@ -2012,6 +2017,21 @@ class ControlGeneralEventos:
             self.minimizar_ventana(clave)
         else:
             self._traer_al_frente(clave)
+
+    def maximizar_ventana_modulo(self, clave):
+        """🖥️ Expande el módulo a todo el escritorio (se usa al abrirlo)."""
+        info = self.ventanas_modulos.get(clave)
+        if not info or info["minimizada"] or info["maximizada"]:
+            return
+        try:
+            info["geometria_previa"] = self._geometria_actual(info) or info["geometria"]
+            self.escritorio.update_idletasks()
+            self._ubicar_ventana(info, 0, 0,
+                                 self.escritorio.winfo_width(), self.escritorio.winfo_height())
+            info["maximizada"] = True
+        except Exception as e:
+            print("Aviso - maximizando ventana de módulo:", e)
+        self._traer_al_frente(clave)
 
     def alternar_maximizar_ventana(self, clave):
         """Maximiza la ventana dentro del escritorio o la devuelve a su tamaño."""
