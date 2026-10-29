@@ -30,7 +30,21 @@ except Exception:            # pragma: no cover
     _PDF_OK = False
 
 
-def abrir_documento(ruta):
+def abrir_documento(ruta, titulo="Documento"):
+    """🖼️ Muestra el documento en el VISOR INTERNO del programa.
+
+    Antes se abría con el programa externo (Acrobat, Fotos…) y la ventana
+    quedaba muchas veces detrás del sistema. Ahora se ve dentro del programa.
+    """
+    try:
+        from visor_documentos import ver_documento_ventana
+        return ver_documento_ventana(ruta, titulo)
+    except Exception as e_visor:
+        print("Aviso - visor interno:", e_visor)
+    return abrir_documento_externo(ruta)
+
+
+def abrir_documento_externo(ruta):
     """Abre un PDF/archivo con la aplicación del sistema."""
     ruta = str(ruta or "")
     if not ruta or not Path(ruta).is_file():
@@ -129,6 +143,10 @@ def asegurar_schema():
                     creado TIMESTAMP DEFAULT now()
                 )
             """)
+            # 🔢 Número de documento (AMO-2026-0001 / SUS-2026-0001)
+            c.execute("ALTER TABLE amonestaciones ADD COLUMN IF NOT EXISTS numero_documento VARCHAR(30)")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_amonestaciones_numero "
+                      "ON amonestaciones (numero_documento) WHERE numero_documento IS NOT NULL")
             c.execute("SELECT COUNT(*) FROM motivos_amonestacion")
             if not c.fetchone()[0]:
                 for motivo in MOTIVOS_BASE:
@@ -187,6 +205,44 @@ def guardar_motivo(motivo):
         liberar_conexion(conn)
 
 
+def _prefijo_documento(tipo):
+    """AMO para amonestaciones, SUS para suspensiones (series independientes)."""
+    return "SUS" if "suspens" in str(tipo or "").lower() else "AMO"
+
+
+def siguiente_numero_documento(tipo):
+    """Devuelve el próximo número correlativo del año para ese tipo.
+
+    Formato: AMO-2026-0001 / SUS-2026-0001. Cada serie lleva su propio
+    correlativo, así que nunca se repite un número entre amonestaciones y
+    suspensiones. Se calcula desde la base (no es editable por el usuario).
+    """
+    prefijo = _prefijo_documento(tipo)
+    anio = datetime.datetime.now().year
+    base = "%s-%d-" % (prefijo, anio)
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return base + "0001"
+    try:
+        with conn.cursor() as c:
+            c.execute("SELECT numero_documento FROM amonestaciones "
+                      "WHERE numero_documento LIKE %s ORDER BY numero_documento DESC LIMIT 1",
+                      (base + "%",))
+            fila = c.fetchone()
+            ultimo = 0
+            if fila and fila[0]:
+                try:
+                    ultimo = int(str(fila[0]).split("-")[-1])
+                except Exception:
+                    ultimo = 0
+            return base + "%04d" % (ultimo + 1)
+    except Exception as e:
+        print("[amonestaciones] numeración:", e)
+        return base + "0001"
+    finally:
+        liberar_conexion(conn)
+
+
 def listar_amonestaciones(filtro=""):
     """Historial (más recientes primero), con búsqueda por texto."""
     conn = conectar_db(silencioso=True)
@@ -196,7 +252,8 @@ def listar_amonestaciones(filtro=""):
     try:
         with conn.cursor() as c:
             sql = ("SELECT id, tipo, fecha, chofer, dni, motivo, gerente, COALESCE(archivo_ruta,''), "
-                   "COALESCE(detalle,''), COALESCE(dias,0), COALESCE(fecha_inicio,'') "
+                   "COALESCE(detalle,''), COALESCE(dias,0), COALESCE(fecha_inicio,''), "
+                   "COALESCE(numero_documento,'') "
                    "FROM amonestaciones")
             params = ()
             if filtro:
@@ -298,6 +355,11 @@ def generar_pdf(datos, ruta_destino, gerente, empresa="BLACK RIDERS E.I.R.L.", r
     y -= 62
     lienzo.setLineWidth(1.2)
     lienzo.line(margen, y, ancho - margen, y)
+    # 🔢 Número del documento (arriba a la derecha)
+    numero_doc = str(datos.get("numero") or "").strip()
+    if numero_doc:
+        lienzo.setFont("Helvetica-Bold", 10)
+        lienzo.drawRightString(ancho - margen, y + 14, "N° " + numero_doc)
     y -= 34
 
     # ---------- título ----------
@@ -672,6 +734,74 @@ class AmonestacionesApp(ctk.CTkFrame):
                       command=guardar).pack(fill="x", padx=16, pady=14)
 
     # ------------------------------------------------------------------
+    def _reservar_numero(self, tipo, chofer):
+        """Reserva el próximo número de la serie (atómico). Devuelve (id, número)."""
+        prefijo = _prefijo_documento(tipo)
+        anio = datetime.datetime.now().year
+        patron = "%s-%d-%%" % (prefijo, anio)
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            raise RuntimeError("sin conexión a la base")
+        try:
+            with conn.cursor() as c:
+                c.execute("""
+                    INSERT INTO amonestaciones (tipo, chofer, numero_documento)
+                    SELECT %s, %s,
+                           %s || '-' || %s || '-' ||
+                           LPAD((COALESCE(MAX(CAST(SPLIT_PART(numero_documento, '-', 3) AS INTEGER)), 0) + 1)::text, 4, '0')
+                    FROM amonestaciones
+                    WHERE numero_documento LIKE %s
+                    RETURNING id, numero_documento
+                """, (tipo, chofer, prefijo, str(anio), patron))
+                fila = c.fetchone()
+            conn.commit()
+            if not fila:
+                raise RuntimeError("no se pudo reservar el número")
+            return int(fila[0]), str(fila[1])
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            liberar_conexion(conn)
+
+    def _descartar_reserva(self, id_fila):
+        """Borra la fila reservada si no se pudo generar el documento."""
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return
+        try:
+            with conn.cursor() as c:
+                c.execute("DELETE FROM amonestaciones WHERE id = %s AND COALESCE(archivo_ruta,'') = ''",
+                          (id_fila,))
+            conn.commit()
+        except Exception as e:
+            print("[amonestaciones] descartar reserva:", e)
+        finally:
+            liberar_conexion(conn)
+
+    def _numero_para_guardar(self, tipo):
+        """Número consecutivo del documento (se reintenta si otro equipo lo tomó)."""
+        for _intento in range(6):
+            numero = siguiente_numero_documento(tipo)
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                return numero
+            try:
+                with conn.cursor() as c:
+                    c.execute("SELECT 1 FROM amonestaciones WHERE numero_documento = %s", (numero,))
+                    if c.fetchone():
+                        continue          # ya existe: se prueba el siguiente
+                    return numero
+            except Exception as e:
+                print("[amonestaciones] verificar número:", e)
+                return numero
+            finally:
+                liberar_conexion(conn)
+        return siguiente_numero_documento(tipo)
+
     def generar(self):
         datos = self._datos_formulario()
         if not datos["chofer"]:
@@ -696,14 +826,25 @@ class AmonestacionesApp(ctk.CTkFrame):
         else:
             carpeta = Path(str(DATA_DIR)) / "amonestaciones"
         carpeta.mkdir(parents=True, exist_ok=True)
+        # 🔢 Se RESERVA el número antes de generar el PDF (atómico: nunca se repite)
+        id_fila, datos["numero"] = None, ""
+        try:
+            id_fila, datos["numero"] = self._reservar_numero(datos["tipo"], datos["chofer"])
+        except Exception as e_num:
+            print("[amonestaciones] número:", e_num)
+
         marca = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         tipo_txt = "Suspension" if "suspens" in datos["tipo"].lower() else "Amonestacion"
-        nombre_archivo = "%s_%s_%s.pdf" % (tipo_txt, _nombre_archivo_seguro(datos["chofer"]), marca)
+        nombre_archivo = "%s_%s_%s.pdf" % (
+            (datos.get("numero") or tipo_txt).replace("/", "-"),
+            _nombre_archivo_seguro(datos["chofer"]), marca)
         ruta_pdf = str(carpeta / nombre_archivo)
 
         try:
             generar_pdf(datos, ruta_pdf, datos["gerente"])
         except Exception as e:
+            if id_fila:
+                self._descartar_reserva(id_fila)
             return messagebox.showerror("Amonestaciones", "No se pudo generar el PDF: " + str(e))
         try:
             ruta_bd = ruta_para_guardar(ruta_pdf, base_nube) if base_nube else ruta_pdf
@@ -714,14 +855,25 @@ class AmonestacionesApp(ctk.CTkFrame):
         if conn:
             try:
                 with conn.cursor() as c:
-                    c.execute("""
-                        INSERT INTO amonestaciones
-                            (tipo, id_chofer, chofer, dni, motivo, detalle, fecha, fecha_inicio,
-                             dias, gerente, archivo_ruta)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (datos["tipo"], 0, datos["chofer"], datos["dni"], datos["motivo"],
-                          datos["detalle"], datos["fecha"], datos["fecha_inicio"],
-                          int(datos["dias"] or 0), datos["gerente"], ruta_pdf))
+                    if id_fila:
+                        # se completa la fila ya reservada (con su número)
+                        c.execute("""UPDATE amonestaciones SET
+                                        id_chofer=%s, dni=%s, motivo=%s, detalle=%s, fecha=%s,
+                                        fecha_inicio=%s, dias=%s, gerente=%s, archivo_ruta=%s
+                                     WHERE id=%s""",
+                                  (0, datos["dni"], datos["motivo"], datos["detalle"],
+                                   datos["fecha"], datos["fecha_inicio"], int(datos["dias"] or 0),
+                                   datos["gerente"], ruta_pdf, id_fila))
+                    else:
+                        c.execute("""
+                            INSERT INTO amonestaciones
+                                (tipo, id_chofer, chofer, dni, motivo, detalle, fecha, fecha_inicio,
+                                 dias, gerente, archivo_ruta, numero_documento)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (datos["tipo"], 0, datos["chofer"], datos["dni"], datos["motivo"],
+                              datos["detalle"], datos["fecha"], datos["fecha_inicio"],
+                              int(datos["dias"] or 0), datos["gerente"], ruta_pdf,
+                              datos.get("numero") or None))
                 conn.commit()
             except Exception as e:
                 print("[amonestaciones] guardar:", e)
@@ -774,12 +926,13 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
         ctk.CTkButton(barra, text="🔄 Actualizar", width=110,
                       command=self.cargar).pack(side="left")
 
-        columnas = ("id", "tipo", "fecha", "chofer", "dni", "motivo", "gerente", "archivo")
+        columnas = ("numero", "id", "tipo", "fecha", "chofer", "dni", "motivo", "gerente", "archivo")
         self.tabla = ttk.Treeview(self, columns=columnas, show="headings", height=18)
-        titulos = {"id": "N°", "tipo": "Tipo", "fecha": "Fecha", "chofer": "Chofer",
-                   "dni": "DNI", "motivo": "Motivo", "gerente": "Gerente", "archivo": "PDF"}
-        anchos = {"id": 45, "tipo": 110, "fecha": 90, "chofer": 200, "dni": 85,
-                  "motivo": 260, "gerente": 170, "archivo": 60}
+        titulos = {"numero": "N° Documento", "id": "ID", "tipo": "Tipo", "fecha": "Fecha",
+                   "chofer": "Chofer", "dni": "DNI", "motivo": "Motivo",
+                   "gerente": "Gerente", "archivo": "PDF"}
+        anchos = {"numero": 130, "id": 45, "tipo": 120, "fecha": 90, "chofer": 190, "dni": 85,
+                  "motivo": 240, "gerente": 160, "archivo": 55}
         for col in columnas:
             self.tabla.heading(col, text=titulos[col])
             self.tabla.column(col, width=anchos[col], anchor="w" if col in ("chofer", "motivo") else "center")
@@ -803,9 +956,11 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
         for i in self.tabla.get_children():
             self.tabla.delete(i)
         for fila in listar_amonestaciones(self.ent_buscar.get().strip()):
-            (id_, tipo, fecha, chofer, dni, motivo, gerente, archivo, detalle, dias, inicio) = fila
+            (id_, tipo, fecha, chofer, dni, motivo, gerente, archivo, detalle, dias, inicio,
+             numero_doc) = fila
             self.tabla.insert("", tk.END, iid=str(id_), values=(
-                id_, tipo, fecha, chofer, dni, motivo, gerente, "Sí" if archivo else "—"))
+                numero_doc or "—", id_, tipo, fecha, chofer, dni, motivo, gerente,
+                "Sí" if archivo else "—"))
 
 
     # ------------------------------------------------------------------
@@ -824,14 +979,15 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
                 with conn.cursor() as c:
                     c.execute("""SELECT tipo, chofer, COALESCE(dni,''), motivo, COALESCE(detalle,''),
                                         COALESCE(fecha,''), COALESCE(fecha_inicio,''), COALESCE(dias,0),
-                                        COALESCE(gerente,''), COALESCE(archivo_ruta,'')
+                                        COALESCE(gerente,''), COALESCE(archivo_ruta,''),
+                                        COALESCE(numero_documento,'')
                                  FROM amonestaciones WHERE id = %s""", (id_doc,))
                     fila = c.fetchone()
                     if fila:
                         datos = {"id": id_doc, "tipo": fila[0], "chofer": fila[1], "dni": fila[2],
                                  "motivo": fila[3], "detalle": fila[4], "fecha": fila[5],
                                  "fecha_inicio": fila[6], "dias": fila[7], "gerente": fila[8],
-                                 "archivo": fila[9]}
+                                 "archivo": fila[9], "numero": fila[10]}
             except Exception as e:
                 print("[amonestaciones] leer:", e)
             finally:
@@ -847,7 +1003,7 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
             return messagebox.showwarning("Historial", "No se pudo leer el documento.", parent=self)
 
         ventana = ctk.CTkToplevel(self)
-        ventana.title("Editar documento #%s" % id_doc)
+        ventana.title("Editar documento %s" % (datos.get("numero") or ("#%s" % id_doc)))
         ventana.geometry("520x620")
         ventana.transient(self)
         ventana.grab_set()
@@ -913,6 +1069,8 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
                         pass
                     pdf_datos = dict(nuevos)
                     pdf_datos["tipo"] = datos["tipo"]
+                    # 🔢 El número no se edita: se conserva el original
+                    pdf_datos["numero"] = datos.get("numero", "")
                     generar_pdf(pdf_datos, destino, nuevos["gerente"])
                 except Exception as e:
                     messagebox.showwarning("Historial", "Se guardó, pero no se pudo regenerar el PDF: "

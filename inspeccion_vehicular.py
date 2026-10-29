@@ -352,6 +352,38 @@ class InspeccionVehicularApp:
         campos = [str(reg.get("id", "")), placa, chofer, fecha, str(nd)]
         return any(texto in (c or "").lower() for c in campos)
 
+    def _carpeta_de_la_inspeccion(self, reg):
+        """Carpeta de la inspección en la zona sincronizada (aunque el registro venga de Supabase).
+
+        Antes solo se borraba la carpeta si el registro traía '_carpeta' (los que
+        se leían del disco). Al eliminar uno que venía de la base, la carpeta
+        quedaba, se volvía a leer del disco y por eso "reaparecía".
+        """
+        carpeta = str(reg.get("_carpeta") or "").strip()
+        if carpeta and os.path.isdir(carpeta):
+            return carpeta
+        try:
+            raiz = os.path.join(_carpeta_archivos(), "Inspecciones")
+        except Exception:
+            return carpeta
+        if not os.path.isdir(raiz):
+            return carpeta
+        id_reg = str(reg.get("id") or "").strip()
+        placa = str(reg.get("placa") or "").strip().upper().replace(" ", "_")
+        candidatas = []
+        for nombre in os.listdir(raiz):
+            sub = os.path.join(raiz, nombre)
+            if not os.path.isdir(sub):
+                continue
+            nombre_up = nombre.upper()
+            if id_reg and nombre.rsplit("_", 1)[-1] == id_reg:
+                candidatas.append(sub)
+            elif placa and nombre_up.startswith(placa + "_"):
+                candidatas.append(sub)
+        if candidatas:
+            return candidatas[0]
+        return carpeta
+
     def _btn_descargar(self):
         # Descarga de Supabase todas las inspecciones y, tras descargarlas,
         # las elimina de Supabase para liberar espacio en esa base de datos.
@@ -375,7 +407,7 @@ class InspeccionVehicularApp:
 
         errores = []
         avisos = []
-        carpeta = reg.get("_carpeta") or ""
+        carpeta = self._carpeta_de_la_inspeccion(reg)
 
         # 1) 🗑️ PRIMERO se borra en la carpeta SINCRONIZADA (nube).
         #    La sincronización del programa es bilateral con 'rclone copy', que
@@ -1022,7 +1054,11 @@ class InspeccionVehicularApp:
             # Abrir el PDF automáticamente con el visor predeterminado
             try:
                 if sys.platform == "win32":
-                    os.startfile(ruta_pdf)
+                    try:
+                        from visor_documentos import ver_documento_ventana
+                        ver_documento_ventana(ruta_pdf, "Inspección Vehicular")
+                    except Exception:
+                        os.startfile(ruta_pdf)
                 elif sys.platform == "darwin":
                     subprocess.Popen(["open", ruta_pdf])
                 else:

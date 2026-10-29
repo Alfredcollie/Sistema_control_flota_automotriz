@@ -49,7 +49,21 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-def abrir_documento(ruta):
+def abrir_documento(ruta, titulo="Documento"):
+    """🖼️ Muestra el documento en el VISOR INTERNO del programa.
+
+    Antes se abría con el programa externo (Acrobat, Fotos…) y la ventana
+    quedaba muchas veces detrás del sistema. Ahora se ve dentro del programa.
+    """
+    try:
+        from visor_documentos import ver_documento_ventana
+        return ver_documento_ventana(ruta, titulo)
+    except Exception as e_visor:
+        print("Aviso - visor interno:", e_visor)
+    return abrir_documento_externo(ruta)
+
+
+def abrir_documento_externo(ruta):
     try:
         if sys.platform == "win32":
             os.startfile(ruta)
@@ -78,6 +92,17 @@ def maximizar_ventana(ventana):
 # =========================================================
 # CLASE: CALENDARIO NATIVO (MEJORADO CON COMBOBOX)
 # =========================================================
+def _sumar_meses_calendario(fecha_txt, meses):
+    """Suma MESES de calendario a una fecha DD/MM/AAAA (no 30 días por mes)."""
+    import calendar as _cal
+    dt = datetime.strptime(str(fecha_txt).strip(), "%d/%m/%Y")
+    total = (dt.month - 1) + int(meses)
+    anio = dt.year + total // 12
+    mes = total % 12 + 1
+    dia = min(dt.day, _cal.monthrange(anio, mes)[1])
+    return dt.replace(year=anio, month=mes, day=dia).strftime("%d/%m/%Y")
+
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry):
         super().__init__(parent)
@@ -394,14 +419,43 @@ class CalendarioDashboard(ctk.CTkToplevel):
                                         venc_veh = None
 
                                     if venc_veh:
+                                        # 🛢️/💨 OJO: 'fec_aceite' y 'fec_rev_gas' guardan la FECHA DEL SERVICIO.
+                                        # El cronograma debe mostrar el VENCIMIENTO = servicio + vigencia.
+                                        try:
+                                            meses_aceite = int(float(str(
+                                                CONFIG_REGIONAL.get("alerta_aceite_meses", "6")).replace(",", ".")))
+                                        except Exception:
+                                            meses_aceite = 6
+
+                                        venc_aceite, detalle_aceite = "", "Cambio de aceite"
+                                        fec_serv_aceite = str(venc_veh[6] or "").strip()
+                                        if fec_serv_aceite:
+                                            try:
+                                                venc_aceite = _sumar_meses_calendario(fec_serv_aceite,
+                                                                                      meses_aceite)
+                                                detalle_aceite = (f"Cambio realizado: {fec_serv_aceite} "
+                                                                  f"+ {meses_aceite} meses")
+                                            except Exception:
+                                                venc_aceite = ""
+
+                                        venc_gas, detalle_gas = "", "Revisión del sistema de gas"
+                                        fec_serv_gas = str(venc_veh[3] or "").strip()
+                                        if fec_serv_gas:
+                                            try:
+                                                venc_gas = _sumar_meses_calendario(fec_serv_gas, 12)
+                                                detalle_gas = (f"Revisión realizada: {fec_serv_gas} "
+                                                               "+ 12 meses de vigencia")
+                                            except Exception:
+                                                venc_gas = ""
+
                                         for etiqueta, fecha_venc, detalle in (
                                                 ("📄 Vence SOAT", venc_veh[0], "SOAT"),
                                                 ("🛡️ Vence Seguro", venc_veh[1], "Póliza de seguro"),
                                                 ("🔍 Vence Rev. Técnica", venc_veh[2], "Revisión técnica"),
-                                                ("💨 Vence Rev. Sist. Gas", venc_veh[3], "Revisión del sistema de gas"),
+                                                ("💨 Vence Rev. Sist. Gas", venc_gas, detalle_gas),
                                                 ("🔋 Vence Garantía Batería", venc_veh[4], "Garantía de batería"),
                                                 ("🧯 Vence Extintor", venc_veh[5], "Extintor"),
-                                                ("🛢️ Cambio de Aceite (por fecha)", venc_veh[6], "Cambio de aceite")):
+                                                ("🛢️ Vence Cambio de Aceite (por fecha)", venc_aceite, detalle_aceite)):
                                             fecha_venc = str(fecha_venc or "").strip()
                                             if not fecha_venc:
                                                 continue
@@ -419,9 +473,8 @@ class CalendarioDashboard(ctk.CTkToplevel):
                                         if fec_general:
                                             try:
                                                 meses_gen = int(CONFIG_REGIONAL.get("alerta_mantenimiento_general_meses", "6"))
-                                                prox_general = (datetime.strptime(fec_general, "%d/%m/%Y")
-                                                                + timedelta(days=30 * meses_gen))
-                                                datos_db.append(("VENC", prox_general.strftime("%d/%m/%Y"),
+                                                prox_general = _sumar_meses_calendario(fec_general, meses_gen)
+                                                datos_db.append(("VENC", prox_general,
                                                                  "🛠️ Mantenimiento Preventivo (proyectado)", evt_name,
                                                                  "Sistema Automático",
                                                                  f"Último servicio: {fec_general} + {meses_gen} meses",

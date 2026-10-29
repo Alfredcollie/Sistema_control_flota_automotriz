@@ -43,7 +43,21 @@ from config_nube import cargar_bancos
 # =========================================================
 # 🚀 ADAPTACIÓN MULTIPLATAFORMA: Función universal para abrir archivos (Excel)
 # =========================================================
-def abrir_documento(ruta):
+def abrir_documento(ruta, titulo="Documento"):
+    """🖼️ Muestra el documento en el VISOR INTERNO del programa.
+
+    Antes se abría con el programa externo (Acrobat, Fotos…) y la ventana
+    quedaba muchas veces detrás del sistema. Ahora se ve dentro del programa.
+    """
+    try:
+        from visor_documentos import ver_documento_ventana
+        return ver_documento_ventana(ruta, titulo)
+    except Exception as e_visor:
+        print("Aviso - visor interno:", e_visor)
+    return abrir_documento_externo(ruta)
+
+
+def abrir_documento_externo(ruta):
     try:
         if sys.platform == "win32":
             os.startfile(ruta)
@@ -182,6 +196,21 @@ def categoria_de_conciliacion(descripcion):
     return partes[0] if partes else "(Sin categoría)"
 
 # --- CLASE DEL CALENDARIO NATIVO PARA EL RANGO DE FECHAS ---
+def _venc_gas_txt(fecha_txt, meses=12):
+    """Vencimiento de la revisión de gas: fecha de la revisión + meses."""
+    import calendar as _cal
+    from datetime import datetime as _dt
+    try:
+        d = _dt.strptime(str(fecha_txt or "").strip(), "%d/%m/%Y")
+        total = (d.month - 1) + int(meses)
+        anio = d.year + total // 12
+        mes = total % 12 + 1
+        dia = min(d.day, _cal.monthrange(anio, mes)[1])
+        return d.replace(year=anio, month=mes, day=dia).strftime("%d/%m/%Y")
+    except Exception:
+        return str(fecha_txt or "")
+
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry):
         super().__init__(parent)
@@ -1619,7 +1648,7 @@ class EstadisticasFinancieraApp:
                                            str(fila[6] or ""), parse_num(fila[7]), str(fila[8] or ""),
                                            str(fila[9] or ""), str(fila[10] or ""), str(fila[11] or ""),
                                            parse_num(fila[12]), parse_num(fila[13]), str(fila[14] or ""),
-                                           str(fila[15] or ""), str(fila[16] or ""), str(fila[17] or ""),
+                                           _venc_gas_txt(fila[15]), str(fila[16] or ""), str(fila[17] or ""),
                                            parse_num(fila[18]), str(fila[19] or ""), parse_num(fila[20]),
                                            str(fila[21] or ""), parse_num(fila[22]), str(fila[23] or "")])
             S["flota"] = {"cols": [("Placa", TXT), ("Marca", TXT), ("Modelo", TXT), ("Año", TXT), ("Categoría", TXT),

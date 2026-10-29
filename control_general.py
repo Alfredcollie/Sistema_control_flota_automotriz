@@ -291,6 +291,20 @@ def alternar_pantalla_completa(ventana, boton=None):
     return sincronizar_botones_pantalla_completa(raiz, activa)
 
 
+def _sumar_meses_fecha(fecha_txt, meses):
+    """Suma MESES de calendario a una fecha DD/MM/AAAA."""
+    import calendar as _cal
+    try:
+        dt = datetime.strptime(str(fecha_txt).strip(), "%d/%m/%Y")
+        total = (dt.month - 1) + int(meses)
+        anio = dt.year + total // 12
+        mes = total % 12 + 1
+        dia = min(dt.day, _cal.monthrange(anio, mes)[1])
+        return dt.replace(year=anio, month=mes, day=dia).strftime("%d/%m/%Y")
+    except Exception:
+        return ""
+
+
 def maximizar_ventana(ventana):
     """Maximiza la ventana de forma nativa según el sistema operativo."""
     try:
@@ -1855,6 +1869,22 @@ class ControlGeneralEventos:
             messagebox.showerror("Error", f"Fallo al abrir el módulo:\n{e}")
             return None
         self.ventanas_modulos[clave]["app"] = app
+        # 🪟 Muchas clases de módulo NO son widgets pero usan self.winfo_toplevel()
+        #    como padre de sus diálogos (Flota Automotriz, Choferes, Cronograma…).
+        #    Se les da ese método apuntando al marco del módulo.
+        try:
+            if app is not None and not hasattr(app, "winfo_toplevel"):
+                def _toplevel_del_modulo(_marco=cuerpo):
+                    try:
+                        return _marco.winfo_toplevel()
+                    except Exception:
+                        try:
+                            return tk._default_root
+                        except Exception:
+                            return None
+                app.winfo_toplevel = _toplevel_del_modulo
+        except Exception as e_tl:
+            print("Aviso - winfo_toplevel del módulo:", e_tl)
         # 🖥️ El módulo queda MAXIMIZADO (el botón □ permite restaurarlo)
         try:
             self.escritorio.after(80, lambda k=clave: self.maximizar_ventana_modulo(k))
@@ -2290,7 +2320,7 @@ class ControlGeneralEventos:
                                 "SOAT": v[1],
                                 "Seguro": v[2],
                                 "Revisión Técnica": v[3],
-                                "Rev. Sist. Gas": v[4],
+                                "Rev. Sist. Gas": (_sumar_meses_fecha(v[4], 12) if str(v[4] or "").strip() else ""),
                                 "Garantía Batería": v[5],
                                 "Extintor": v[6]
                             }
@@ -2311,7 +2341,8 @@ class ControlGeneralEventos:
                                 try:
                                     meses_aceite = int(config.get("alerta_aceite_meses", "6"))
                                     dt_aceite = datetime.strptime(str(fec_aceite), "%d/%m/%Y").date()
-                                    dt_prox_aceite = dt_aceite + timedelta(days=30 * meses_aceite)
+                                    dt_prox_aceite = datetime.strptime(
+                                        _sumar_meses_fecha(fec_aceite, meses_aceite), "%d/%m/%Y").date()
                                     dias_restantes = (dt_prox_aceite - hoy.date()).days
                                     if dias_restantes < 0:
                                         alertas.append({"tipo": "peligro", "icono": "🛢️", "titulo": f"Cambio de Aceite Vencido ({placa})", "mensaje": f"Venció hace {abs(dias_restantes)} días (por tiempo)."})

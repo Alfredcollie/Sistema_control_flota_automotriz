@@ -20,7 +20,10 @@ from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from tareas_seguras import ejecutar_en_hilo
-from app_paths import CONFIG_FILE
+from app_paths import (CONFIG_FILE, ruta_drive_configurada, ruta_para_guardar,
+                       resolver_ruta_archivo)
+# 🖼️ Visor interno: los documentos se ven DENTRO del programa
+from visor_documentos import ver_documento_ventana as _ver_documento_ventana
 
 
 # =========================================================
@@ -245,6 +248,26 @@ _SCHEMA_VEHICULOS_OK = False
 # MÓDULO PRINCIPAL DE FLOTA
 # =========================================================
 class FlotaAutomotrizApp:
+    def winfo_toplevel(self):
+        """🪟 Ventana principal del módulo.
+
+        FlotaAutomotrizApp NO es un widget (recibe un marco), pero varios métodos
+        usan self.winfo_toplevel() como padre de los diálogos. Este método lo
+        resuelve a partir del marco recibido, así no falla con
+        "object has no attribute 'winfo_toplevel'".
+        """
+        for atributo in ("parent_frame", "frame_main", "main_root", "contenedor"):
+            widget = getattr(self, atributo, None)
+            if widget is not None:
+                try:
+                    return widget.winfo_toplevel()
+                except Exception:
+                    continue
+        try:
+            return tk._default_root
+        except Exception:
+            return None
+
     def __init__(self, parent_frame, usuario_activo):
         self.parent_frame = parent_frame
         self.usuario_activo = usuario_activo
@@ -544,16 +567,12 @@ class FlotaAutomotrizApp:
         ejecutar_en_hilo(self.parent_frame, correr, al_terminar=pintar)
 
     def abrir_tarjeta(self):
+        # 🖼️ La tarjeta se ve DENTRO del programa (visor interno)
         from app_paths import resolver_ruta_archivo
         ruta = self.ruta_tarjeta_db if self.ruta_tarjeta_db else self.ruta_tarjeta_temp
         ruta = resolver_ruta_archivo(ruta) if ruta else ""
         if ruta:
-            try:
-                if sys.platform == "win32": os.startfile(ruta)
-                elif sys.platform == "darwin": subprocess.call(["open", ruta])
-                else: subprocess.call(["xdg-open", ruta])
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo abrir el archivo:\n{e}")
+            self.ver_documento(ruta, "Tarjeta de Propiedad")
         else:
             messagebox.showwarning("No encontrado", "No se encontró el archivo físico de la tarjeta de propiedad.")
 
@@ -605,11 +624,47 @@ class FlotaAutomotrizApp:
     # =====================================================================
     # 📎 CERTIFICADOS (SOAT y EXTINTOR): se cargan en PDF o JPG/PNG
     # =====================================================================
-    def _abrir_archivo_local(self, ruta):
-        """Abre un archivo del equipo (Windows y macOS)."""
+    def ver_documento(self, ruta, titulo="Documento"):
+        """Muestra el documento en una ventana del programa (no en uno externo)."""
         try:
+            return _ver_documento_ventana(ruta, titulo, self.winfo_toplevel())
+        except Exception as e:
+            print("Aviso - visor interno:", e)
+            return self._abrir_archivo_local(ruta)
+
+    def _abrir_archivo_local(self, ruta):
+        """Abre un archivo del equipo (Windows y macOS).
+
+        🔎 La ruta guardada puede ser RELATIVA ("documentos_vehiculos/CFP-792/x.pdf")
+        o venir de otro equipo/SO: se resuelve contra la carpeta sincronizada antes
+        de abrir. Sin esto, el botón «Ver» no abría nada.
+        """
+        try:
+            try:
+                from app_paths import resolver_ruta_archivo
+                resuelta = resolver_ruta_archivo(ruta)
+            except Exception:
+                resuelta = ""
+            if resuelta:
+                ruta = resuelta
+            if not resuelta:
+                # 🔎 Último recurso: buscar el archivo por NOMBRE dentro de la carpeta base
+                try:
+                    nombre_bus = os.path.basename(str(ruta or "").strip())
+                    base_bus = os.path.expanduser(str(ruta_drive_configurada() or "").strip())
+                    if nombre_bus and base_bus and os.path.isdir(base_bus):
+                        for raiz_bus, _dirs_bus, archivos_bus in os.walk(base_bus):
+                            if nombre_bus in archivos_bus:
+                                ruta = os.path.join(raiz_bus, nombre_bus)
+                                break
+                except Exception as e_bus:
+                    print("Aviso - buscando el documento:", e_bus)
             if not ruta or not os.path.exists(ruta):
-                return messagebox.showwarning("Certificado", "El archivo ya no está en esa carpeta.")
+                return messagebox.showwarning(
+                    "Documento no encontrado",
+                    "El archivo no está en este equipo:\n\n%s\n\n"
+                    "Vuelva a cargarlo con «📎 Cargar …» o escanéelo de nuevo."
+                    % os.path.basename(str(ruta or "(sin ruta)")))
             if sys.platform == "darwin":
                 subprocess.Popen(["open", ruta])
             elif sys.platform == "win32":
@@ -618,6 +673,57 @@ class FlotaAutomotrizApp:
                 subprocess.Popen(["xdg-open", ruta])
         except Exception as e:
             messagebox.showerror("Certificado", "No se pudo abrir el archivo:\n%s" % e)
+
+    def _copiar_certificado_a_base(self, tipo, ruta_origen):
+        """📁 Copia el certificado a la carpeta sincronizada del vehículo.
+
+        Devuelve la ruta que se debe guardar (relativa si quedó dentro de la base).
+        Así el archivo no depende de la carpeta Descargas y se puede abrir en
+        cualquier equipo (Windows o Mac).
+        """
+        try:
+            origen = str(ruta_origen or "").strip()
+            if not origen or not os.path.exists(origen):
+                return ruta_origen
+            base = os.path.expanduser(str(ruta_drive_configurada() or "").strip())
+            if not base:
+                return ruta_origen
+            # 🚗 Si ya está dentro de la carpeta base, se deja como está
+            try:
+                if os.path.commonpath([os.path.abspath(origen), os.path.abspath(base)]) == os.path.abspath(base):
+                    return ruta_para_guardar(origen)
+            except Exception:
+                pass
+            placa = ""
+            try:
+                placa = (self.ent_placa.get() or "").strip().upper()
+            except Exception:
+                placa = ""
+            placa = re.sub(r"[^A-Z0-9\-]", "", placa) or "SIN_PLACA"
+            if tipo == "tarjeta":
+                carpeta = os.path.join(base, "archivos_flota", "tarjetas_propiedad", placa)
+            else:
+                carpeta = os.path.join(base, "documentos_vehiculos", placa)
+            os.makedirs(carpeta, exist_ok=True)
+            nombre = os.path.basename(origen)
+            destino = os.path.join(carpeta, nombre)
+            if os.path.abspath(destino) != os.path.abspath(origen):
+                if not os.path.exists(destino):
+                    shutil.copy2(origen, destino)
+                else:
+                    # ya existe: se compara el tamaño
+                    try:
+                        if os.path.getsize(origen) != os.path.getsize(destino):
+                            tallo, ext = os.path.splitext(nombre)
+                            destino = os.path.join(carpeta, "%s_%s%s" % (
+                                tallo, datetime.now().strftime("%H%M%S"), ext))
+                            shutil.copy2(origen, destino)
+                    except Exception:
+                        pass
+            return ruta_para_guardar(destino)
+        except Exception as e:
+            print("Aviso - copiando el certificado a la carpeta base:", e)
+            return ruta_origen
 
     def _elegir_certificado(self, tipo):
         """Pide el PDF/JPG del certificado y devuelve la ruta (o "" si se cancela).
@@ -636,12 +742,32 @@ class FlotaAutomotrizApp:
                 "Ya hay un %s cargado:\n%s\n\n¿Quiere REEMPLAZARLO?\n"
                 "(elija «No» para verlo)" % (etiqueta, os.path.basename(actual)))
             if not reemplazar:
-                self._abrir_archivo_local(actual)
+                self.ver_documento(actual, "Certificado")
                 return ""
-        ruta = filedialog.askopenfilename(
-            title="Seleccionar %s (PDF o imagen)" % etiqueta,
-            filetypes=[("PDF o imagen", "*.pdf *.jpg *.jpeg *.png"), ("PDF", "*.pdf"),
-                       ("Imágenes", "*.jpg *.jpeg *.png"), ("Todos", "*.*")])
+        # 🪟 El diálogo debe abrirse SOBRE la ventana del módulo; sin 'parent'
+        #    Windows lo muestra detrás y parece que el botón no hace nada.
+        ventana = None
+        try:
+            ventana = self.winfo_toplevel()
+            ventana.lift()
+        except Exception:
+            ventana = None
+        ruta = ""
+        try:
+            ruta = filedialog.askopenfilename(
+                parent=ventana,
+                title="Seleccionar %s (PDF o imagen)" % etiqueta,
+                filetypes=[("PDF o imagen", "*.pdf *.jpg *.jpeg *.png"), ("PDF", "*.pdf"),
+                           ("Imágenes", "*.jpg *.jpeg *.png"), ("Todos", "*.*")])
+        except Exception as e_dlg:
+            print("Aviso - seleccionando el certificado:", e_dlg)
+            ruta = ""
+        try:
+            if ventana is not None:
+                ventana.lift()
+                ventana.focus_force()
+        except Exception:
+            pass
         return ruta or ""
 
     def _texto_de_certificado(self, ruta):
@@ -745,7 +871,8 @@ class FlotaAutomotrizApp:
                                        "Todavía no hay %s cargado.\n\nUse el botón «📎 Cargar %s (PDF/JPG)»."
                                        % (etiqueta, etiqueta),
                                        parent=self.winfo_toplevel())
-        self._abrir_archivo_local(ruta)
+        # 🖼️ Se muestra en una ventana del propio programa
+        self.ver_documento(ruta, etiqueta)
 
     def ver_certificado_soat(self):
         """Abre el SOAT cargado (PDF o imagen)."""
@@ -760,14 +887,17 @@ class FlotaAutomotrizApp:
         ruta = self._elegir_certificado("rt")
         if not ruta:
             return
-        self._rt_archivo = ruta
+        self._rt_archivo = self._copiar_certificado_a_base("rt", ruta)
         try:
             self.lbl_rt_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
         except Exception:
             pass
-        aviso = self._completar_fechas_del_certificado("rt", ruta)
-        messagebox.showinfo("Revisión Técnica cargada", "%s\n\n%s" % (os.path.basename(ruta), aviso),
-                            parent=self.winfo_toplevel())
+        # 📎 El certificado SOLO se guarda (sin OCR): las fechas se escriben a mano.
+        messagebox.showinfo(
+            "Revisión Técnica cargada",
+            "%s\n\nEscriba la fecha de vencimiento en el campo «Venc. Revisión Técnica»."
+            % os.path.basename(ruta),
+            parent=self.winfo_toplevel())
 
     def ver_soporte_rt(self):
         return self._ver_certificado("rt")
@@ -776,14 +906,17 @@ class FlotaAutomotrizApp:
         ruta = self._elegir_certificado("gas")
         if not ruta:
             return
-        self._gas_archivo = ruta
+        self._gas_archivo = self._copiar_certificado_a_base("gas", ruta)
         try:
             self.lbl_gas_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
         except Exception:
             pass
-        aviso = self._completar_fechas_del_certificado("gas", ruta)
-        messagebox.showinfo("Revisión de Gas cargada", "%s\n\n%s" % (os.path.basename(ruta), aviso),
-                            parent=self.winfo_toplevel())
+        # 📎 El certificado SOLO se guarda (sin OCR): las fechas se escriben a mano.
+        messagebox.showinfo(
+            "Revisión de Gas cargada",
+            "%s\n\nEscriba la fecha de vencimiento en el campo «Venc. Rev. Sist. Gas»."
+            % os.path.basename(ruta),
+            parent=self.winfo_toplevel())
 
     def ver_soporte_gas(self):
         return self._ver_certificado("gas")
@@ -793,19 +926,21 @@ class FlotaAutomotrizApp:
         ruta = self._elegir_certificado("soat")
         if not ruta:
             return
-        self._soat_archivo = ruta
+        self._soat_archivo = self._copiar_certificado_a_base("soat", ruta)
         try:
             self.lbl_soat_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
         except Exception:
             pass
-        # 📅 Se leen las fechas del certificado y se completan los campos vacíos
-        aviso = self._completar_fechas_del_certificado("soat", ruta)
+        # 📎 El certificado SOLO se guarda (sin OCR): las fechas se escriben a mano.
+        aviso = ""
         try:
             self.actualizar_proximo_aceite() if hasattr(self, "actualizar_proximo_aceite") else None
         except Exception:
             pass
         try:
-            messagebox.showinfo("SOAT cargado", "%s\n\n%s" % (os.path.basename(ruta), aviso),
+            messagebox.showinfo("SOAT cargado",
+                                "%s\n\nEscriba la fecha de vencimiento en «Vencimiento del SOAT»."
+                                % os.path.basename(ruta),
                                 parent=ventana_para_mensaje(self) if "ventana_para_mensaje" in globals() else None)
         except Exception:
             pass
@@ -815,15 +950,17 @@ class FlotaAutomotrizApp:
         ruta = self._elegir_certificado("extintor")
         if not ruta:
             return
-        self._extintor_archivo = ruta
+        self._extintor_archivo = self._copiar_certificado_a_base("extintor", ruta)
         try:
             self.lbl_extintor_archivo.configure(text="📎 %s" % os.path.basename(ruta), text_color="#1e8449")
         except Exception:
             pass
-        aviso_ext = self._completar_fechas_del_certificado("extintor", ruta)
+        # 📎 El certificado SOLO se guarda (sin OCR): las fechas se escriben a mano.
+        aviso_ext = ""
         try:
             messagebox.showinfo("Certificado de extintor cargado",
-                                "%s\n\n%s" % (os.path.basename(ruta), aviso_ext),
+                                "%s\n\nEscriba la fecha de vencimiento en «Vencimiento del Extintor»."
+                                % os.path.basename(ruta),
                                 parent=ventana_para_mensaje(self) if "ventana_para_mensaje" in globals() else None)
         except Exception:
             pass
@@ -1454,23 +1591,10 @@ class FlotaAutomotrizApp:
                 c_crono = conn.cursor()
                 c_crono.execute("DELETE FROM tareas_evento WHERE evento_asociado = 'FLOTA | Vencimientos' AND responsable = %s", (placa,))
                 
-                vencimientos = [
-                    ("Vencimiento SOAT", venc_soat),
-                    ("Vencimiento Seguro", venc_seguro),
-                    ("Vencimiento Revisión Técnica", rt),
-                    ("Venc. Rev. Sist. Gas", fec_gas),
-                    ("Vencimiento Garantía Batería", fec_venc_bat),
-                    ("Vencimiento Extintor", fec_venc_ext)
-                ]
-                for nom_doc, fec_doc in vencimientos:
-                    if fec_doc and fec_doc.strip():
-                        c_crono.execute("SELECT COALESCE(MAX(orden), 0) FROM tareas_evento WHERE evento_asociado = 'FLOTA | Vencimientos'")
-                        nuevo_orden = c_crono.fetchone()[0] + 1
-                        
-                        c_crono.execute("""
-                            INSERT INTO tareas_evento (evento_asociado, nombre_tarea, responsable, fecha_limite, estado, notas, orden, tipo_pago)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        """, ("FLOTA | Vencimientos", nom_doc, placa, fec_doc, "Pendiente", f"Alerta automática de {nom_doc} para la unidad {placa}", nuevo_orden, "No aplica"))
+                # ℹ️ Los vencimientos del vehículo (SOAT, seguro, RT, gas, batería,
+                # extintor, aceite) ya los calcula el CRONOGRAMA automáticamente con
+                # su fecha real de vencimiento. Aquí solo se limpian las tareas viejas
+                # para no duplicarlas con una fecha equivocada.
             except Exception as e_crono: print("Aviso - Sincronización Cronograma:", e_crono)
 
             conn.commit()

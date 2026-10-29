@@ -245,7 +245,21 @@ def borrar_soporte_si_huerfano(ruta):
         print("[Banco] No se pudo borrar el soporte digital:", e)
 
 
-def abrir_documento(ruta):
+def abrir_documento(ruta, titulo="Documento"):
+    """🖼️ Muestra el documento en el VISOR INTERNO del programa.
+
+    Antes se abría con el programa externo (Acrobat, Fotos…) y la ventana
+    quedaba muchas veces detrás del sistema. Ahora se ve dentro del programa.
+    """
+    try:
+        from visor_documentos import ver_documento_ventana
+        return ver_documento_ventana(ruta, titulo)
+    except Exception as e_visor:
+        print("Aviso - visor interno:", e_visor)
+    return abrir_documento_externo(ruta)
+
+
+def abrir_documento_externo(ruta):
     try:
         # Resuelve rutas guardadas en otro equipo/SO (Mac <-> Windows)
         try:
@@ -298,6 +312,23 @@ def guardar_config_disco(cfg):
         return True
     except Exception:
         return False
+
+
+def ordenar_categorias_principales(principales):
+    """Ordena las categorías principales: primero las de GASTOS.
+
+    Al registrar un pago lo habitual es elegir una categoría de gasto; así el
+    desplegable abre directamente en una de ellas (antes abría en "Otros", que
+    solo tiene "Varios" y parecía que no había categorías).
+    """
+    def clave(nombre):
+        n = str(nombre).strip().lower()
+        if "gasto" in n:
+            return (0, n)
+        if "ingreso" in n:
+            return (2, n)
+        return (1, n)
+    return sorted([str(p) for p in (principales or []) if str(p).strip()], key=clave)
 
 
 def cargar_categorias_gastos():
@@ -1835,7 +1866,8 @@ class ModuloBancoApp:
                         SELECT p.id, p.fecha_pago, p.cliente_nombre, p.monto_pagado,
                                COALESCE(p.cuenta_destino, ''), p.id_factura,
                                COALESCE(f.numero_documento, ''), COALESCE(p.codigo_cotizacion, ''),
-                               COALESCE(p.archivo_ruta, '')
+                               COALESCE(p.archivo_ruta, ''),
+                               COALESCE(p.numero_operacion, '')
                         FROM pagos_clientes p
                         LEFT JOIN facturas_emitidas f ON p.id_factura = f.id
                         WHERE COALESCE(p.id_factura, 0) = 0 OR f.id IS NOT NULL
@@ -1852,7 +1884,8 @@ class ModuloBancoApp:
                                COALESCE(f.numero_documento, ''), COALESCE(p.codigo_cotizacion, ''),
                                (COALESCE(f.tipo_documento, '') = 'PAGO BANCO'
                                 ) AS espejo_banco,
-                               COALESCE(p.archivo_ruta, '')
+                               COALESCE(p.archivo_ruta, ''),
+                               COALESCE(p.numero_operacion, '')
                         FROM pagos_comprobantes p
                         LEFT JOIN facturas_recibidas f ON p.id_factura = f.id
                         WHERE COALESCE(p.id_factura, 0) = 0 OR f.id IS NOT NULL
@@ -1891,6 +1924,7 @@ class ModuloBancoApp:
         for fila_c in (datos.get("cobros") or []):
             idp, fecha, nombre, monto, cuenta, idf, num_doc, ref = fila_c[:8]
             arch = fila_c[8] if len(fila_c) > 8 else ""
+            oper_c = str(fila_c[9] or "").strip() if len(fila_c) > 9 else ""
             if banco_matchea(banco, cuenta):
                 doc = (num_doc or ref or "").strip()
                 desc = f"Cobro {nombre or ''}".replace("  ", " ").strip()
@@ -1899,6 +1933,7 @@ class ModuloBancoApp:
                     "monto": float(monto or 0), "tipo": "ingreso",
                     "origen": "sistema", "tabla": "pagos_clientes", "documento": doc,
                     "archivo_ruta": arch or "", "id_factura": idf or 0,
+                    "operacion": oper_c,
                 })
         for fila in (datos.get("pagos") or []):
             idp, fecha, nombre, monto, cuenta, idf, num_doc, ref = fila[:8]
@@ -1907,6 +1942,7 @@ class ModuloBancoApp:
             # ve como MANUAL en la conciliación, así que no se lista dos veces.
             espejo = bool(fila[8]) if len(fila) > 8 else False
             arch_p = fila[9] if len(fila) > 9 else ""
+            oper_p = str(fila[10] or "").strip() if len(fila) > 10 else ""
             if banco_matchea(banco, cuenta):
                 doc = (num_doc or ref or "").strip()
                 desc = f"Pago {nombre or ''}".replace("  ", " ").strip()
@@ -1916,6 +1952,7 @@ class ModuloBancoApp:
                     "origen": "sistema", "tabla": "pagos_comprobantes", "documento": doc,
                     "espejo_banco": espejo,
                     "archivo_ruta": arch_p or "", "id_factura": idf or 0,
+                    "operacion": oper_p,
                 })
         for fila_tx in (datos.get("transferencias") or []):
             if len(fila_tx) != 11:
@@ -1954,10 +1991,51 @@ class ModuloBancoApp:
                     "origen": "sistema", "tabla": "transferencias_bancarias",
                     "documento": str(referencia_tx or ""), "archivo_ruta": archivo_tx or "",
                 })
+        # Un mismo pago (mismo N de operacion o mismo comprobante) que cancela
+        # VARIAS facturas debe verse como UN SOLO asiento.
+        movs = self._agrupar_pagos_multiples(movs)
         if mes:
             movs = [m for m in movs if clave_fecha(m["fecha"]).startswith(mes)]
         movs.sort(key=lambda m: (clave_fecha(m["fecha"]), m["monto"]))
         return movs
+
+    def _agrupar_pagos_multiples(self, movs):
+        # Une en un solo asiento los pagos/cobros que comparten operacion o comprobante.
+        grupos = {}
+        salida = []
+        for m in movs:
+            if m.get("tabla") not in ("pagos_comprobantes", "pagos_clientes"):
+                salida.append(m)
+                continue
+            clave_unica = str(m.get("operacion") or "").strip() or str(m.get("archivo_ruta") or "").strip()
+            if not clave_unica:
+                salida.append(m)
+                continue
+            clave = (m.get("tabla"), clave_fecha(m.get("fecha")), clave_unica)
+            if clave in grupos:
+                principal = grupos[clave]
+                principal["monto"] = float(principal.get("monto") or 0) + float(m.get("monto") or 0)
+                principal.setdefault("ids", [principal.get("id")]).append(m.get("id"))
+                doc = str(m.get("documento") or "").strip()
+                if doc:
+                    principal.setdefault("documentos", [str(principal.get("documento") or "")]).append(doc)
+                continue
+            copia = dict(m)
+            copia["ids"] = [m.get("id")]
+            copia["documentos"] = [str(m.get("documento") or "")]
+            grupos[clave] = copia
+            salida.append(copia)
+
+        for copia in grupos.values():
+            documentos = [d for d in (copia.get("documentos") or []) if d]
+            unicos = list(dict.fromkeys(documentos))
+            if len(unicos) > 1:
+                prefijo = "Cobro" if copia.get("tabla") == "pagos_clientes" else "Pago"
+                nombre = str(copia.get("descripcion") or "").replace(prefijo, "", 1).strip()
+                copia["descripcion"] = "%s %s - %d facturas: %s" % (
+                    prefijo, nombre, len(unicos), ", ".join(unicos))
+                copia["documento"] = ", ".join(unicos)
+        return salida
 
     @staticmethod
     def _limpiar_conciliaciones_transferencia(cursor, ids):
@@ -2956,6 +3034,9 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns2, text="➕ Registrar Pago / Compra Cruzada", font=("Arial", 12, "bold"),
                       fg_color="#8e44ad", hover_color="#703688",
                       command=self.agregar_movimiento_manual).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns2, text="🧾 Asentar ITF", font=("Arial", 12, "bold"),
+                      fg_color="#b7950b", hover_color="#9a7d0a",
+                      command=self.asentar_itf).pack(side="left", padx=4)
         ctk.CTkButton(f_btns2, text="✏️ Editar / Corregir", font=("Arial", 12, "bold"),
                       fg_color="#34495e", hover_color="#2c3e50",
                       command=self.corregir_movimiento).pack(side="left", padx=4)
@@ -3736,6 +3817,22 @@ class ModuloBancoApp:
         finally:
             liberar_conexion(conn)
 
+    def _mostrar_facturas_del_comprobante(self, ruta_comprobante):
+        """🔎 Detalle de las facturas que cancela un mismo comprobante de pago."""
+        try:
+            from modulo_compras import (facturas_que_cancela, texto_facturas_canceladas,
+                                        formatear_moneda)
+            filas = facturas_que_cancela(ruta_comprobante or "", "")
+        except Exception as e:
+            return messagebox.showerror("Comprobante", "No se pudo consultar: %s" % e)
+        if not filas:
+            return messagebox.showinfo("Comprobante",
+                                       "Este comprobante todavía no cancela facturas registradas.")
+        messagebox.showinfo(
+            "Facturas que cancela este comprobante",
+            "Cancela %d factura(s):\n\n%s"
+            % (len(filas), texto_facturas_canceladas(filas)))
+
     def _ruta_existente(self, ruta):
         """Ruta real del archivo (resuelta para este equipo/SO) o '' si no existe."""
         ruta = str(ruta or "").strip()
@@ -3788,6 +3885,21 @@ class ModuloBancoApp:
         if ruta_soporte:
             menu.add_command(label="Abrir comprobante de pago",
                              command=lambda r=ruta_soporte: abrir_documento(r))
+            # 🧾 Si ese comprobante cancela VARIAS facturas, se muestran los números
+            try:
+                from modulo_compras import facturas_que_cancela
+                vinculadas = facturas_que_cancela(ruta_soporte, "") or []
+            except Exception:
+                vinculadas = []
+            if len(vinculadas) > 1:
+                numeros = ", ".join(str(x[0]) for x in vinculadas[:8])
+                if len(vinculadas) > 8:
+                    numeros += "…"
+                menu.add_command(
+                    label="🧾 Este comprobante cancela %d facturas: %s" % (len(vinculadas), numeros),
+                    state="disabled")
+                menu.add_command(label="🔎 Ver el detalle de esas facturas",
+                                 command=lambda r=ruta_soporte: self._mostrar_facturas_del_comprobante(r))
         else:
             menu.add_command(label="Abrir comprobante (sin archivo)", state="disabled")
 
@@ -3955,19 +4067,14 @@ class ModuloBancoApp:
                 messagebox.showinfo("Escáner", "El escaneo con la multifuncional está disponible "
                                     "en Windows y en macOS (M1/M2).", parent=padre)
                 return al_terminar("")
-            # La configuración se carga desde control_general (regional o general)
+            # ⚙️ La configuración del escáner se lee del PROPIO módulo (es la misma
+            #    que usa Compras, donde el escaneo funciona). Antes se importaba
+            #    control_general y esa carga podía dejar la ventana colgada.
             config = {}
             try:
-                import control_general
-                cargador = (getattr(control_general, "cargar_configuracion_regional", None)
-                            or getattr(control_general, "cargar_configuracion_general", None))
-                if cargador:
-                    config = cargador() or {}
-            except Exception:
-                try:
-                    config = cargar_configuracion_regional()
-                except Exception:
-                    config = {}
+                config = cargar_configuracion_regional() or {}
+            except Exception as e_cfg:
+                config = {}
         except Exception as e:
             messagebox.showerror("Escáner", "No se pudo leer la configuración del escáner:\n%s" % e, parent=padre)
             return al_terminar("")
@@ -3979,22 +4086,32 @@ class ModuloBancoApp:
         try:
             prog.transient(ventana)
             prog.grab_set()
+            # 🪟 La ventanita de escaneo va SIEMPRE encima mientras se escanea
+            prog.lift()
+            prog.attributes("-topmost", True)
+            prog.focus_force()
         except Exception:
             pass
         ctk.CTkLabel(prog, text="🖨️ Escaneando el comprobante de pago...",
                      font=("Arial", 12, "bold"), text_color="#0e7490").pack(pady=(20, 4))
         ctk.CTkLabel(prog, text="Coloque el comprobante en el escáner (cristal).",
                      font=("Arial", 10), text_color="gray").pack()
-        barra = ctk.CTkProgressBar(prog, width=330, mode="indeterminate")
+        # ⏳ Barra SIN animación: la animación deja temporizadores pendientes y
+        #    hacía que update_idletasks() no retornara (la ventana se quedaba ahí).
+        barra = ctk.CTkProgressBar(prog, width=330, mode="determinate")
         barra.pack(pady=10)
-        barra.start()
+        try:
+            barra.set(0.35)
+        except Exception:
+            pass
+
+        resultado = {"ok": False, "pdf": "", "error": "", "numero": "", "fecha": "", "monto": 0.0}
 
         def tarea():
-            resultado = {"ok": False, "pdf": "", "error": ""}
             try:
                 datos = escaner.config_escaner(config)
                 carpeta = escaner.carpeta_escaneos(config)
-                esc = _escanear_con_progreso(None, "el comprobante", escaner, 
+                esc = _escanear_con_progreso(ventana, "el comprobante", escaner, 
                     carpeta,
                     dispositivo=datos.get("escaner_dispositivo", ""),
                     dpi=datos.get("escaner_dpi", "300"),
@@ -4032,29 +4149,53 @@ class ModuloBancoApp:
                 resultado["error"] = str(e)
             resultado["listo"] = True
 
-            def terminar():
-                try:
-                    prog.grab_release()
-                    prog.destroy()
-                except Exception:
-                    pass
-                if not resultado["ok"]:
-                    messagebox.showerror("Escáner", resultado["error"] or "No se pudo escanear.", parent=padre)
+        def terminar():
+            try:
+                prog.grab_release()
+                prog.attributes("-topmost", False)
+                prog.destroy()
+            except Exception:
+                pass
+            # 🪟 Al cerrar la ventanita, la de "Registrar Pago" vuelve AL FRENTE
+            try:
+                if padre is not None and padre.winfo_exists():
+                    padre.deiconify()
+                    padre.lift()
+                    padre.focus_force()
+                    padre.attributes("-topmost", True)
+                    padre.after(600, lambda: padre.winfo_exists() and padre.attributes("-topmost", False))
+                    try:
+                        padre.grab_set()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            if not resultado["ok"]:
+                messagebox.showerror("Escáner", resultado["error"] or "No se pudo escanear.", parent=padre)
+            try:
+                al_terminar(resultado["pdf"], resultado.get("numero", ""),
+                            resultado.get("fecha", ""), resultado.get("monto", 0.0))
+            except TypeError:
                 try:
                     al_terminar(resultado["pdf"], resultado.get("numero", ""),
-                                resultado.get("fecha", ""), resultado.get("monto", 0.0))
+                                resultado.get("fecha", ""))
                 except TypeError:
                     try:
-                        al_terminar(resultado["pdf"], resultado.get("numero", ""),
-                                    resultado.get("fecha", ""))
+                        al_terminar(resultado["pdf"])
                     except TypeError:
-                        try:
-                            al_terminar(resultado["pdf"])
-                        except TypeError:
-                            al_terminar()
-            # Se escanea en el mismo hilo: así el resultado SIEMPRE llega
-            tarea()
-            terminar()
+                        al_terminar()
+        # ⚠️ El escaneo (WIA por PowerShell) debe correr en el HILO PRINCIPAL:
+        #    en un hilo aparte el proceso de PowerShell se queda esperando y la
+        #    ventana nunca sale de "Escaneando...". El corte de tiempo está en
+        #    escaner._ejecutar_ps (90 s), que libera el equipo si no responde.
+        try:
+            # Solo update_idletasks(): con la barra animada, update() procesa
+            # los temporizadores de la animación y NO retorna nunca.
+            prog.update_idletasks()
+        except Exception:
+            pass
+        tarea()
+        terminar()
 
     def _comprobante_de_movimiento(self, registro):
         """📎 Comprobante de pago de un movimiento del banco.
@@ -4146,6 +4287,112 @@ class ModuloBancoApp:
         datos["descripcion"] = " - ".join(libres)
         return datos
 
+    def asentar_itf(self):
+        """ITF manual: pide fecha, N° de transaccion y monto, y crea el asiento."""
+        banco = self.banco_seleccionado()
+        if not banco:
+            return messagebox.showwarning("Banco", "Seleccione un banco.", parent=self.parent_frame)
+
+        v = ctk.CTkToplevel(self.parent_frame)
+        v.title("Asentar ITF")
+        v.geometry("460x360")
+        v.transient(self.parent_frame)
+        try:
+            v.grab_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(v, text="ITF - Impuesto a las Transacciones Financieras",
+                     font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(16, 2))
+        ctk.CTkLabel(v, text="Banco: " + str(banco.get("banco", "")) + " - " + str(banco.get("cuenta", "")),
+                     font=("Arial", 11)).pack(pady=(0, 10))
+
+        f = ctk.CTkFrame(v, fg_color="transparent")
+        f.pack(fill="x", padx=24, pady=4)
+        ctk.CTkLabel(f, text="Fecha (dd/mm/aaaa):", width=150, anchor="w",
+                     font=("Arial", 12, "bold")).pack(side="left")
+        ent_fecha = ctk.CTkEntry(f, width=170)
+        ent_fecha.pack(side="left")
+        ent_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        ctk.CTkButton(f, text="📅", width=42, font=("Arial", 13, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(6, 0))
+
+        f2 = ctk.CTkFrame(v, fg_color="transparent")
+        f2.pack(fill="x", padx=24, pady=4)
+        ctk.CTkLabel(f2, text="N° de transaccion:", width=150, anchor="w",
+                     font=("Arial", 12, "bold")).pack(side="left")
+        ent_num = ctk.CTkEntry(f2, width=200)
+        ent_num.pack(side="left")
+
+        f3 = ctk.CTkFrame(v, fg_color="transparent")
+        f3.pack(fill="x", padx=24, pady=4)
+        ctk.CTkLabel(f3, text="Monto del ITF (S/):", width=150, anchor="w",
+                     font=("Arial", 12, "bold")).pack(side="left")
+        ent_monto = ctk.CTkEntry(f3, width=200)
+        ent_monto.pack(side="left")
+
+        def guardar():
+            fecha = (ent_fecha.get() or "").strip()
+            numero = (ent_num.get() or "").strip()
+            texto_monto = (ent_monto.get() or "").strip().replace(",", ".")
+            if not fecha:
+                return messagebox.showwarning("ITF", "Indique la fecha.", parent=v)
+            if not numero:
+                return messagebox.showwarning("ITF", "Indique el N° de transaccion.", parent=v)
+            try:
+                monto = float(texto_monto)
+            except Exception:
+                return messagebox.showwarning("ITF", "El monto no es valido.", parent=v)
+            if monto <= 0:
+                return messagebox.showwarning("ITF", "El monto debe ser mayor a cero.", parent=v)
+            if self._guardar_itf(banco, fecha, numero, monto):
+                try:
+                    self.generar_reporte()
+                except Exception:
+                    try:
+                        self.ver_movimientos(banco)
+                    except Exception:
+                        pass
+                messagebox.showinfo("ITF", "Asiento de ITF registrado por S/ %.2f." % monto, parent=v)
+                v.destroy()
+            else:
+                messagebox.showerror("ITF", "No se pudo registrar el ITF.", parent=v)
+
+        f_pie = ctk.CTkFrame(v, fg_color="transparent")
+        f_pie.pack(side="bottom", fill="x", pady=16)
+        ctk.CTkButton(f_pie, text="Guardar ITF", width=150, fg_color="#27ae60", hover_color="#1e8449",
+                      font=("Arial", 12, "bold"), command=guardar).pack(side="left", padx=40)
+        ctk.CTkButton(f_pie, text="Cancelar", width=110, fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=v.destroy).pack(side="left")
+
+    def _guardar_itf(self, banco, fecha, numero_operacion, monto):
+        """Inserta el asiento del ITF en la conciliacion (egreso, manual)."""
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as c:
+                c.execute("""INSERT INTO conciliacion_bancaria
+                    (banco, cuenta, fecha, descripcion, monto, tipo, origen, id_movimiento, estado,
+                     categoria, subcategoria, numero_operacion, tabla)
+                    VALUES (%s, %s, %s, %s, %s, 'egreso', 'manual', 0, 'pendiente', 'ITF', '', %s, 'itf')""",
+                    (banco.get("banco", ""), banco.get("cuenta", ""), fecha,
+                     "ITF - Transaccion N " + str(numero_operacion),
+                     -abs(float(monto)), str(numero_operacion)))
+            conn.commit()
+            return True
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            print("Aviso - asentando ITF:", e)
+            return False
+        finally:
+            liberar_conexion(conn)
+
+
     def agregar_movimiento_manual(self, registro=None):
         """Ventana de Registrar Pago / Compra Cruzada.
 
@@ -4160,7 +4407,7 @@ class ModuloBancoApp:
             return
 
         cats = cargar_categorias_gastos()
-        principales = list(cats.keys()) or ["Gastos Operativos"]
+        principales = ordenar_categorias_principales(list(cats.keys())) or ["Gastos Operativos"]
         comision = cargar_comision_interbancaria()
         en_edicion = bool(registro)
         datos_ini = (self._datos_iniciales_pago(registro, cats, principales) if en_edicion else {})
@@ -4242,7 +4489,7 @@ class ModuloBancoApp:
         def recargar_categorias_combos():
             nonlocal cats, principales
             cats = cargar_categorias_gastos()
-            principales = list(cats.keys()) or ["Gastos Operativos"]
+            principales = ordenar_categorias_principales(list(cats.keys())) or ["Gastos Operativos"]
             cmb_principal.configure(values=principales)
             cmb_principal.set(principales[0])
             on_principal()

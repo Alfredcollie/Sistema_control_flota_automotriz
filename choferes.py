@@ -18,8 +18,24 @@ from datetime import datetime
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
+# 🖼️ Visor interno de documentos
+from visor_documentos import ver_documento_ventana as _ver_documento_ventana
 
-def abrir_documento_local(ruta):
+def abrir_documento_local(ruta, titulo="Documento"):
+    """🖼️ Muestra el documento en el VISOR INTERNO del programa.
+
+    Antes se abría con el programa externo (Acrobat, Fotos…) y la ventana
+    quedaba muchas veces detrás del sistema. Ahora se ve dentro del programa.
+    """
+    try:
+        from visor_documentos import ver_documento_ventana
+        return ver_documento_ventana(ruta, titulo)
+    except Exception as e_visor:
+        print("Aviso - visor interno:", e_visor)
+    return abrir_documento_local_externo(ruta)
+
+
+def abrir_documento_local_externo(ruta):
     if not ruta: return False
     # Resuelve la ruta aunque el expediente se haya guardado en otro equipo/SO
     ruta = _resolver_documento(ruta) or ruta
@@ -841,7 +857,7 @@ class ChoferesApp:
             btn_eliminar = ctk.CTkButton(f_row, text="❌", width=30, fg_color="#e74c3c", hover_color="#c0392b", command=lambda d=doc_name, f=f_row: eliminar_doc(d, f))
             btn_eliminar.pack(side="right", padx=(5, 10))
             
-            btn_ver = ctk.CTkButton(f_row, text="👁️ Ver", width=60, fg_color="#34495e", hover_color="#2c3e50", command=lambda p=path: abrir_documento_local(p))
+            btn_ver = ctk.CTkButton(f_row, text="👁️ Ver", width=60, fg_color="#34495e", hover_color="#2c3e50", command=lambda p=path, n=doc_name: _ver_documento_ventana(p, n, v_gestor))
             btn_ver.pack(side="right", padx=5)
 
     # =========================================================
