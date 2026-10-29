@@ -2099,9 +2099,10 @@ class FacturasEmitidasTab:
 
         columnas = ("num", "id", "fecha", "nro_doc", "dias", "tipo", "cliente", "concepto", "subtotal", "impuesto", "total", "detraccion", "neto", "estado_sunat", "archivo")
         self.tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="extended")
+        # 🎨 Estado de cobro: 🔴 sin cobrar · 🔵 cobrada en parte · 🟢 cobrada totalmente
         self.tabla.tag_configure("pagada", background="#d5f5e3", foreground="#145a32")
-        self.tabla.tag_configure("no_pagada", background="#fadbd8", foreground="#922b21")
-        self.tabla.tag_configure("parcial", background="#e8daef", foreground="#6c3483")
+        self.tabla.tag_configure("no_pagada", background="#f9d6d5", foreground="#922b21")
+        self.tabla.tag_configure("parcial", background="#d6eaf8", foreground="#1f538d")
         self.tabla.heading("num", text="N°", anchor="center")
         self.tabla.heading("id", text="ID (Oculto)")
         self.tabla.heading("fecha", text="Fecha ↕", command=lambda: self.ordenar_por_columna("fecha", False))
@@ -3857,9 +3858,10 @@ class CuentasPorCobrarTab:
         self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c") 
 
         # 🎨 Estado de cobro: azul (cobrada) · rojo (no cobrada) · morado (parcial)
+        # 🎨 Estado de cobro: 🔴 sin cobrar · 🔵 cobrada en parte · 🟢 cobrada totalmente
         self.tabla.tag_configure("pagada", background="#d5f5e3", foreground="#145a32")
-        self.tabla.tag_configure("no_pagada", background="#fadbd8", foreground="#922b21")
-        self.tabla.tag_configure("parcial", background="#e8daef", foreground="#6c3483")
+        self.tabla.tag_configure("no_pagada", background="#f9d6d5", foreground="#922b21")
+        self.tabla.tag_configure("parcial", background="#d6eaf8", foreground="#1f538d")
 
         self.tabla.heading("num", text="N°")
         self.tabla.heading("id_factura", text="ID (Oculto)")
@@ -3931,14 +3933,14 @@ class CuentasPorCobrarTab:
         f_leyenda = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
         f_leyenda.pack(side="left", padx=30)
         
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1a5276").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Totalmente cobrada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
-
         ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#922b21").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="No cobrada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+        ctk.CTkLabel(f_leyenda, text="Factura SIN cobrar", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
 
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#6c3483").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Parcialmente cobrada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1f538d").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Cobrada EN PARTE", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1e8449").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Cobrada TOTALMENTE", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
         # ---------------
 
         self.lbl_total_general = ctk.CTkLabel(self.frame_bottom, text="Total Pendiente General por Cobrar: 0.00", font=("Arial", 12, "bold"), text_color="#c0392b")

@@ -5466,11 +5466,15 @@ class FacturasRecibidasTab:
         f_leyenda = ctk.CTkFrame(f_btn_tabla, fg_color="transparent")
         f_leyenda.pack(side="left", padx=20)
         
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#c0392b").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Sin Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,10))
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#922b21").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Factura SIN pagar", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1f538d").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Pagada EN PARTE", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1e8449").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Pagada TOTALMENTE", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
         
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#27ae60").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,5))
 
         f_tabla = ctk.CTkFrame(self.f_wrapper_derecha, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True)
@@ -5490,9 +5494,10 @@ class FacturasRecibidasTab:
         
         self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251")
         # 🟢 Estados de pago (verde = totalmente cancelada)
+        # 🎨 Estado de pago: 🔴 sin pagar · 🔵 pagada en parte · 🟢 pagada totalmente
         self.tabla.tag_configure("pagada", background="#d5f5e3", foreground="#145a32")
-        self.tabla.tag_configure("parcial", background="#e8daef", foreground="#6c3483")
-        self.tabla.tag_configure("no_pagada", background="#fdedec", foreground="#7b241c") 
+        self.tabla.tag_configure("parcial", background="#d6eaf8", foreground="#1f538d")
+        self.tabla.tag_configure("no_pagada", background="#f9d6d5", foreground="#922b21") 
         self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c") 
         
         self.tabla.heading("num", text="N°", anchor="center")
@@ -8235,6 +8240,10 @@ class CuentasPorPagarTab:
         
         self.tabla.tag_configure("con_cuenta", background="#e8f8f5", foreground="#0e6251") 
         self.tabla.tag_configure("sin_cuenta", background="#fdedec", foreground="#7b241c") 
+        # Estado de pago: rojo sin pagar / azul en parte / verde pagada
+        self.tabla.tag_configure("pagada", background="#d5f5e3", foreground="#145a32")
+        self.tabla.tag_configure("parcial", background="#d6eaf8", foreground="#1f538d")
+        self.tabla.tag_configure("no_pagada", background="#f9d6d5", foreground="#922b21")
 
         self.tabla.heading("num", text="N°")
         self.tabla.heading("id_factura", text="ID (Oculto)")
@@ -8304,11 +8313,14 @@ class CuentasPorPagarTab:
         f_leyenda = ctk.CTkFrame(self.frame_bottom, fg_color="transparent")
         f_leyenda.pack(side="left", padx=30)
         
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#c0392b").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Sin Cuenta Asignada / Pendiente", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,10))
-        
-        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#27ae60").pack(side="left", padx=(5,2))
-        ctk.CTkLabel(f_leyenda, text="Cuenta Asignada", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left", padx=(0,5))
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#922b21").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Factura SIN pagar", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1f538d").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Pagada EN PARTE", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
+
+        ctk.CTkLabel(f_leyenda, text="■", font=("Arial", 14), text_color="#1e8449").pack(side="left", padx=(5,2))
+        ctk.CTkLabel(f_leyenda, text="Pagada TOTALMENTE", font=("Arial", 11, "bold"), text_color="#333333").pack(side="left")
 
         self.lbl_total_general = ctk.CTkLabel(self.frame_bottom, text="Total Pendiente General por Pagar: 0.00", font=("Arial", 12, "bold"), text_color="#c0392b")
         self.lbl_total_general.pack(side="right")
@@ -8600,7 +8612,16 @@ class CuentasPorPagarTab:
                 for parte in partes[1:]:
                     if parte.startswith("Hora: "): hora_consumo = parte.replace("Hora: ", "").strip()
 
-            etiqueta_color = "con_cuenta" if f['tiene_cuenta'] else "sin_cuenta"
+            # 🎨 Color de la fila según el estado de pago (rojo/azul/verde)
+            try:
+                if f.get("es_cruzada") or float(f.get("saldo_pendiente") or 0) <= 0.01:
+                    etiqueta_color = "pagada"
+                elif float(f.get("monto_pagado") or 0) <= 0.01:
+                    etiqueta_color = "no_pagada"
+                else:
+                    etiqueta_color = "parcial"
+            except Exception:
+                etiqueta_color = "con_cuenta" if f.get('tiene_cuenta') else "sin_cuenta"
 
             row_vals = (
                 0, f['id_factura'], f['fecha'], hora_consumo, f['nro_doc'] if f['nro_doc'] else "S/N", f['proveedor'], ruc_str, f['evento'], km_str, cant_str, concepto_limpio, metodo_pago,
