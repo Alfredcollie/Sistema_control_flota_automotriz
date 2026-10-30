@@ -822,7 +822,11 @@ class AmonestacionesApp(ctk.CTkFrame):
         except Exception:
             base_nube = ""
         if base_nube and Path(str(base_nube)).is_dir():
-            carpeta = Path(str(base_nube)) / "amonestaciones"
+            # 📁 Estructura: Amonestaciones y suspensiones/<Mes año>/<DNI>/Amonestaciones|Suspensiones/
+            from estructura_archivos import carpeta as _carpeta_estructura
+            _tipo_doc = "suspension" if "suspens" in str(datos.get("tipo", "")).lower() else "amonestacion"
+            carpeta = Path(str(base_nube)) / _carpeta_estructura(
+                _tipo_doc, fecha=datos.get("fecha"), dni=datos.get("dni"))
         else:
             carpeta = Path(str(DATA_DIR)) / "amonestaciones"
         carpeta.mkdir(parents=True, exist_ok=True)

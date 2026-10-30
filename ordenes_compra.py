@@ -281,7 +281,7 @@ class OrdenesCompraApp:
         if not base_ordenes:
             _avisar_guardado_bloqueado()
             return
-        carpeta = os.path.join(base_ordenes, "ordenes_anuladas")
+        carpeta = os.path.join(base_ordenes, "Órdenes de servicio compras")
         if not os.path.exists(carpeta):
             os.makedirs(carpeta)
         abrir_documento(carpeta)
@@ -626,7 +626,8 @@ class OrdenesCompraApp:
                 ruta_pdf = cursor.fetchone()[0]
                 
                 base_ordenes = _carpeta_base_ordenes()
-                carpeta_anuladas = os.path.join(base_ordenes, "ordenes_anuladas") if base_ordenes else ""
+                carpeta_anuladas = os.path.join(base_ordenes, "Órdenes de servicio compras",
+                                                "_Anuladas") if base_ordenes else ""
                 if carpeta_anuladas and not os.path.exists(carpeta_anuladas): os.makedirs(carpeta_anuladas)
                 if not base_ordenes:
                     _avisar_guardado_bloqueado()
@@ -652,7 +653,10 @@ class OrdenesCompraApp:
         if not base_ordenes:
             _avisar_guardado_bloqueado()
             return ""
-        carpeta_destino = os.path.join(base_ordenes, "ordenes_generadas")
+        # 📁 Estructura: Órdenes de servicio compras/<Placa>/<Mes año>/
+        from estructura_archivos import carpeta as _carpeta_estructura
+        carpeta_destino = os.path.join(base_ordenes, *_carpeta_estructura(
+            "orden_servicio", placa=placa, fecha=fecha).split("/"))
         if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
         marca_tiempo = datetime.now().strftime("%H%M%S")
         nombre_archivo = os.path.join(carpeta_destino, f"Orden_Servicio_{placa}_{marca_tiempo}.pdf")
@@ -961,7 +965,8 @@ class OrdenesCompraApp:
             ruta_pdf_antigua_abs = _resolver_ruta_pdf(ruta_pdf_antigua)
             if ruta_pdf_antigua_abs and os.path.exists(ruta_pdf_antigua_abs):
                 base_ordenes = _carpeta_base_ordenes()
-                carpeta_anuladas = os.path.join(base_ordenes, "ordenes_anuladas") if base_ordenes else ""
+                carpeta_anuladas = os.path.join(base_ordenes, "Órdenes de servicio compras",
+                                                "_Anuladas") if base_ordenes else ""
                 if not carpeta_anuladas:
                     _avisar_guardado_bloqueado()
                     return

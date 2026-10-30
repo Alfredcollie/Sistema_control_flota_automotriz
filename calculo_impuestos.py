@@ -192,7 +192,8 @@ class CalculoImpuestosApp:
         
         ruta_base = obtener_ruta_base_drive()
         if ruta_base:
-            self.carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_impuestos")
+            # 📁 Estructura: Cálculo de impuesto/<Mes año>/
+            self.carpeta_comprobantes = os.path.join(ruta_base, "Cálculo de impuesto")
             if not os.path.exists(self.carpeta_comprobantes):
                 try: os.makedirs(self.carpeta_comprobantes)
                 except Exception: pass
@@ -685,7 +686,27 @@ class CalculoImpuestosApp:
             avisar_sin_permiso_guardado()
             return
             
-        self.carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_impuestos")
+        # 📁 Estructura: Cálculo de impuesto/<Mes año>/
+        try:
+            from datetime import datetime as _dt
+            from estructura_archivos import carpeta as _carpeta_estructura
+            _periodo = str((self.datos_actuales or {}).get("periodo") or "").strip()
+            _fecha_periodo = None
+            try:
+                if "/" in _periodo:
+                    _m, _a = _periodo.split("/")[:2]
+                    _fecha_periodo = _dt(int(_a), int(_m), 15)
+                elif "-" in _periodo:
+                    _a, _m = _periodo.split("-")[:2]
+                    _fecha_periodo = _dt(int(_a), int(_m), 15)
+            except Exception:
+                _fecha_periodo = None
+            if not _fecha_periodo:
+                _fecha_periodo = _dt.now()
+            self.carpeta_comprobantes = os.path.join(
+                ruta_base, *_carpeta_estructura("impuesto", fecha=_fecha_periodo).split("/"))
+        except Exception:
+            self.carpeta_comprobantes = os.path.join(ruta_base, "Cálculo de impuesto")
         d = self.datos_actuales
         messagebox.showinfo("Comprobante de Pago", "A continuación, seleccione el comprobante de pago de SUNAT (PDF o Imagen).\n\nPuede cancelar si no desea adjuntar uno ahora.")
         ruta_origen = seleccionar_archivo_dialogo(

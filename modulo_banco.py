@@ -5101,15 +5101,19 @@ class ModuloBancoApp:
                                            parent=parent)
                 return False, ""
             marca = datetime.now().strftime('%Y%m%d%H%M%S')
+            _fecha_doc = locals().get("fecha") or datetime.now().strftime("%d/%m/%Y")
             if origen_factura and os.path.isfile(origen_factura):
                 try:
-                    carpeta = os.path.normpath(os.path.join(base, "facturas_recibidas"))
-                    if not os.path.exists(carpeta):
-                        os.makedirs(carpeta)
+                    # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Facturas/
+                    from estructura_archivos import ruta_documento
                     prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor).replace(" ", "_")[:40]
                     ext = os.path.splitext(origen_factura)[1] or ".pdf"
-                    ruta_factura = os.path.normpath(os.path.join(
-                        carpeta, f"Cruzada_{marca}_{prov_limpio}{ext}"))
+                    ruta_factura = ruta_documento("compra_factura",
+                                                  f"Cruzada_{marca}_{prov_limpio}{ext}",
+                                                  ruta_base=base, fecha=_fecha_doc,
+                                                  nombre=proveedor)
+                    if not ruta_factura:
+                        raise RuntimeError("No se pudo preparar la carpeta de destino")
                     shutil.copy2(origen_factura, ruta_factura)
                 except Exception as e:
                     messagebox.showerror("Error", f"Fallo al guardar la factura de compra:\n{e}",
@@ -5117,12 +5121,15 @@ class ModuloBancoApp:
                     return False, ""
             if origen_soporte and os.path.isfile(origen_soporte):
                 try:
-                    carpeta = os.path.normpath(os.path.join(base, "soportes_pagos_terceros"))
-                    if not os.path.exists(carpeta):
-                        os.makedirs(carpeta)
+                    # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Comprobantes de pago/
+                    from estructura_archivos import ruta_documento
                     ext = os.path.splitext(origen_soporte)[1] or ".pdf"
-                    ruta_soporte = os.path.normpath(os.path.join(
-                        carpeta, f"Soporte_{marca}_{nro or 'sin_doc'}{ext}"))
+                    ruta_soporte = ruta_documento("compra_comprobante",
+                                                  f"Soporte_{marca}_{nro or 'sin_doc'}{ext}",
+                                                  ruta_base=base, fecha=_fecha_doc,
+                                                  nombre=proveedor)
+                    if not ruta_soporte:
+                        raise RuntimeError("No se pudo preparar la carpeta de destino")
                     shutil.copy2(origen_soporte, ruta_soporte)
                 except Exception as e:
                     messagebox.showerror("Error", f"Fallo al guardar el soporte del pago a tercero:\n{e}",

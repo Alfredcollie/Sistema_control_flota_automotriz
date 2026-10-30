@@ -477,12 +477,15 @@ class OrdenesCompraClienteApp:
                     messagebox.showwarning("Configuración", "Debe configurar la ruta de Google Drive en los ajustes del sistema para guardar PDFs.")
                 return
             
-            carpeta_dest = os.path.join(ruta_base, "ordenes_compra_recibidas")
-            if not os.path.exists(carpeta_dest): os.makedirs(carpeta_dest)
-            
+            # 📁 Estructura: Ordenes de compras cliente/<Nombre cliente>/<Mes año>/
+            from estructura_archivos import ruta_documento
             ext = os.path.splitext(self.ruta_archivo_temp)[1]
-            ruta_final = os.path.join(carpeta_dest, f"OC_{oc}_{cot_codigo}{ext}")
-            
+            ruta_final = ruta_documento("orden_compra_cliente", f"OC_{oc}_{cot_codigo}{ext}",
+                                        ruta_base=ruta_base, fecha=locals().get("fecha"),
+                                        nombre=locals().get("cli") or locals().get("cliente") or oc)
+            if not ruta_final:
+                return messagebox.showerror("Error de copia", "No se pudo preparar la carpeta de destino.")
+
             try:
                 shutil.copy2(self.ruta_archivo_temp, ruta_final)
             except Exception as e:

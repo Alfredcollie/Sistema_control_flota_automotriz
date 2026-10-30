@@ -2806,9 +2806,23 @@ class CalculoCobranzaApp:
         razon_empresa = config.get("razon_social_empresa", "")
         simbolo = config.get("simbolo_moneda", "S/.")
 
-        # Carpeta de destino: la configurada en 'Configuración del Sistema'
-        # (ruta_drive + cobranzas_generadas), con respaldo local si no existe.
-        carpeta_pdf = _carpeta_pdf()
+        # Carpeta de destino según la ESTRUCTURA:
+        # Cálculos de cobranza/<Mes año>/<RUC>/<1ra|2da quincena>/
+        carpeta_pdf = ""
+        try:
+            from app_paths import ruta_drive_configurada
+            from estructura_archivos import ruta_para_registro
+            _base_drive = os.path.expanduser(ruta_drive_configurada() or "")
+            _id_cob = locals().get("id_cob")
+            if _base_drive and os.path.isdir(_base_drive) and _id_cob:
+                _ruta = ruta_para_registro("cobranza", "Cobranza.pdf", "cobranza_quincenas",
+                                           _id_cob, _base_drive)
+                if _ruta:
+                    carpeta_pdf = os.path.dirname(_ruta)
+        except Exception:
+            carpeta_pdf = ""
+        if not carpeta_pdf:
+            carpeta_pdf = _carpeta_pdf()
         if not carpeta_pdf:
             try:
                 from politica_almacenamiento import advertir

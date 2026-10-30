@@ -253,7 +253,7 @@ def imagen_ampliada(ruta, factor=2):
     except Exception:
         return ""
 
-def copiar_comprobante(ruta, base):
+def copiar_comprobante(ruta, base, fecha=None, cuenta=None):
     """Copia inmutable con UUID, portátil por nombre. No borra originales."""
     if not ruta:
         return ""
@@ -261,7 +261,14 @@ def copiar_comprobante(ruta, base):
         raise ValueError("Configure una carpeta de archivos autorizada antes de adjuntar el comprobante.")
     if not os.path.isfile(ruta):
         raise ValueError("El comprobante seleccionado no existe en este equipo.")
-    carpeta = os.path.abspath(os.path.join(base, "comprobantes_transferencias"))
+    # 📁 Estructura: Banco/<Mes año>/<Cuenta>/Transferencias/
+    try:
+        from datetime import datetime as _dt
+        from estructura_archivos import carpeta as _carpeta_estructura
+        carpeta = os.path.join(base, *_carpeta_estructura(
+            "banco", fecha=fecha or _dt.now(), cuenta=cuenta).split("/"))
+    except Exception:
+        carpeta = os.path.abspath(os.path.join(base, "comprobantes_transferencias"))
     os.makedirs(carpeta, exist_ok=True)
     if os.path.normcase(os.path.dirname(os.path.abspath(ruta))) == os.path.normcase(carpeta):
         return os.path.normpath(ruta)

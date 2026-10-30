@@ -138,7 +138,7 @@ def quitar(tipo, entidad, documento):
         liberar_conexion(conn)
 
 
-def carpeta_destino(tipo, entidad):
+def carpeta_destino(tipo, entidad, documento=None):
     """Carpeta donde se dejan los archivos de este vehículo/chofer."""
     tipo = str(tipo or "").strip().lower()
     entidad = str(entidad or "").strip()
@@ -149,9 +149,21 @@ def carpeta_destino(tipo, entidad):
         base = ""
     if not base:
         base = os.path.join(os.path.expanduser("~"), "Archivos_control_flota")
-    sub = SUBCARPETAS.get(tipo, "documentos")
     seguro = "".join(ch for ch in entidad if ch.isalnum() or ch in "-_ ").strip().replace(" ", "_")
-    carpeta = os.path.join(base, sub, seguro or "sin_identificar")
+    # 📁 Estructura: Flota automotriz/<Placa>/...  ·  Control choferes/<DNI>/...
+    try:
+        from estructura_archivos import carpeta as _carpeta_estructura
+        if tipo == "vehiculo":
+            sub = _carpeta_estructura("flota", placa=seguro,
+                                      documento=documento or "Otros documentos")
+        elif tipo == "chofer":
+            sub = _carpeta_estructura("chofer", dni=seguro,
+                                      documento=documento or "Otros documentos")
+        else:
+            sub = "documentos/%s" % (seguro or "sin_identificar")
+    except Exception:
+        sub = os.path.join(SUBCARPETAS.get(tipo, "documentos"), seguro or "sin_identificar")
+    carpeta = os.path.join(base, *str(sub).replace("\\", "/").split("/"))
     try:
         os.makedirs(carpeta, exist_ok=True)
     except Exception:
@@ -163,4 +175,4 @@ def ruta_destino(tipo, entidad, documento, extension=".pdf"):
     """Ruta nueva (con fecha) para guardar el escaneo de un documento."""
     marca = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     nombre = "%s_%s%s" % (str(documento or "documento").lower(), marca, extension)
-    return os.path.join(carpeta_destino(tipo, entidad), nombre)
+    return os.path.join(carpeta_destino(tipo, entidad, documento), nombre)

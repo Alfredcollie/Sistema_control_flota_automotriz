@@ -700,10 +700,10 @@ class FlotaAutomotrizApp:
             except Exception:
                 placa = ""
             placa = re.sub(r"[^A-Z0-9\-]", "", placa) or "SIN_PLACA"
-            if tipo == "tarjeta":
-                carpeta = os.path.join(base, "archivos_flota", "tarjetas_propiedad", placa)
-            else:
-                carpeta = os.path.join(base, "documentos_vehiculos", placa)
+            # 📁 Estructura: Flota automotriz/<Placa>/<Soat|Revisión técnica|...>
+            from estructura_archivos import carpeta as _carpeta_estructura
+            carpeta = os.path.join(base, *_carpeta_estructura(
+                "flota", placa=placa, documento=tipo).split("/"))
             os.makedirs(carpeta, exist_ok=True)
             nombre = os.path.basename(origen)
             destino = os.path.join(carpeta, nombre)
@@ -1500,7 +1500,11 @@ class FlotaAutomotrizApp:
                         "Configuración Requerida",
                         "No se pudo guardar la Tarjeta de Propiedad:\n"
                         "no hay una carpeta válida configurada en Configuración General.")
-                carpeta_destino = os.path.join(ruta_base, "archivos_flota", "tarjetas_propiedad")
+                # 📁 Estructura: Flota automotriz/<Placa>/Tarjeta de identificación/
+                from estructura_archivos import carpeta as _carpeta_estructura
+                carpeta_destino = os.path.join(
+                    ruta_base, *_carpeta_estructura("flota", placa=placa,
+                                                    documento="tarjeta").split("/"))
                 os.makedirs(carpeta_destino, exist_ok=True)
                 
                 ext = os.path.splitext(self.ruta_tarjeta_temp)[1]

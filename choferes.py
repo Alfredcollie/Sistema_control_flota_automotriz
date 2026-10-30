@@ -119,6 +119,7 @@ def _candidatas_carpetas_expedientes():
         if drive and os.path.isdir(drive):
             # Carpeta sincronizada (la misma que usan los demás módulos), para que
             # las fotos y documentos se vean desde CUALQUIER equipo (Windows y Mac).
+            candidatas.append(os.path.join(drive, "Control choferes"))
             candidatas.append(os.path.join(drive, "archivos_flota", "expedientes_choferes"))
         # Carpetas de datos que rodean al programa (app dentro de la carpeta sincronizada)
         for cercana in _carpetas_datos_cercanas():
@@ -1684,14 +1685,25 @@ class ChoferesApp:
                 # En Mac (app empaquetada) la carpeta del programa puede ser de solo lectura:
                 # _carpeta_expedientes() cae automáticamente a la carpeta de datos del usuario.
                 carpeta_destino = _carpeta_expedientes()
-                
+                from estructura_archivos import ruta_documento as _ruta_documento
+                from app_paths import ruta_drive_configurada as _ruta_drive
+                base_drive = os.path.expanduser(_ruta_drive() or "")
+
                 for doc_name, temp_path in self.rutas_documentos_temp.items():
                     if temp_path and os.path.exists(os.path.normpath(temp_path)):
                         ext = os.path.splitext(temp_path)[1]
                         nombre_seguro = doc_name.replace(" ", "_")
                         nombre_archivo = f"Expediente_{nombre_seguro}_{dni}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
-                        ruta_final = os.path.join(carpeta_destino, nombre_archivo)
-                        
+                        # 📁 Estructura: Control choferes/<DNI>/<Documento>/
+                        if base_drive:
+                            ruta_final = _ruta_documento("chofer", nombre_archivo,
+                                                         ruta_base=base_drive, dni=dni,
+                                                         documento=doc_name)
+                        else:
+                            ruta_final = ""
+                        if not ruta_final:
+                            ruta_final = os.path.join(carpeta_destino, nombre_archivo)
+
                         shutil.copy2(os.path.normpath(temp_path), ruta_final)
                         # Ruta PORTABLE (relativa a la carpeta sincronizada): sirve en Windows y en Mac
                         try:

@@ -118,7 +118,9 @@ def carpeta_escaneos(config=None):
             base = str(CONFIG_DIR)
         except Exception:
             base = os.path.join(os.path.expanduser("~"), "BlackCube_Seguro")
-    destino = os.path.join(base, "facturas_recibidas", "escaneos")
+    # 📁 Los escaneos son archivos de trabajo: van dentro de Compras/_Escaneos
+    #    (al registrar la factura se copian a Compras/<Mes>/<RUC>/Facturas/).
+    destino = os.path.join(base, "Compras", "_Escaneos")
     try:
         os.makedirs(destino, exist_ok=True)
     except Exception:

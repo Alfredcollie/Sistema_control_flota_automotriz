@@ -2635,10 +2635,14 @@ class FacturasEmitidasTab:
             ruta_final = ""
             if self.ruta_archivo_temp:
                 try:
-                    carpeta_destino = os.path.join(ruta_base, "facturas_emitidas")
-                    if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
+                    # 📁 Estructura: Ventas/<Mes año>/<RUC - Cliente>/Facturas/
+                    from estructura_archivos import ruta_documento
                     nombre_ext = os.path.splitext(self.ruta_archivo_temp)[1]
-                    ruta_final = os.path.join(carpeta_destino, f"Emitida_{datetime.now().strftime('%Y%m%d%H%M%S')}_{cliente.replace(' ', '_')}{nombre_ext}")
+                    nombre_archivo = f"Emitida_{datetime.now().strftime('%Y%m%d%H%M%S')}_{cliente.replace(' ', '_')}{nombre_ext}"
+                    ruta_final = ruta_documento("venta_factura", nombre_archivo,
+                                                ruta_base=ruta_base, fecha=fecha, nombre=cliente)
+                    if not ruta_final:
+                        raise RuntimeError("No se pudo preparar la carpeta de destino")
                     shutil.copy2(self.ruta_archivo_temp, ruta_final)
                 except Exception as e: 
                     liberar_conexion(conn)
@@ -3298,11 +3302,13 @@ class FacturasEmitidasTab:
             if not ruta_pdf:
                 return
             try:
-                carpeta_destino = os.path.join(ruta_base, "facturas_emitidas")
-                if not os.path.exists(carpeta_destino):
-                    os.makedirs(carpeta_destino)
-                nombre_ext = os.path.splitext(ruta_pdf)[1]
-                ruta_final = os.path.join(carpeta_destino, f"Emitida_{datetime.now().strftime('%Y%m%d%H%M%S')}_{id_doc}{nombre_ext}")
+                # 📁 Estructura: Ventas/<Mes año>/<RUC - Cliente>/Facturas/
+                from estructura_archivos import ruta_para_registro
+                nombre_archivo = f"Emitida_{datetime.now().strftime('%Y%m%d%H%M%S')}_{id_doc}{os.path.splitext(ruta_pdf)[1]}"
+                ruta_final = ruta_para_registro("venta_factura", nombre_archivo,
+                                                "facturas_emitidas", id_doc, ruta_base)
+                if not ruta_final:
+                    raise RuntimeError("No se pudo preparar la carpeta de destino")
                 shutil.copy2(ruta_pdf, ruta_final)
             except Exception as e:
                 return messagebox.showerror("Error", f"No se pudo guardar el archivo:\n{e}", parent=v_edit)
@@ -5371,15 +5377,18 @@ class CuentasPorCobrarTab:
             ruta_origen = seleccionar_archivo_dialogo(titulo="Seleccionar Soporte", tipos=[("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             if ruta_origen:
                 try:
-                    carpeta_comprobantes = os.path.join(ruta_base, "comprobantes_ingresos")
-                    if not os.path.exists(carpeta_comprobantes): os.makedirs(carpeta_comprobantes)
+                    # 📁 Estructura: Ventas/<Mes año>/<RUC - Cliente>/Comprobantes de pago/
+                    from estructura_archivos import ruta_para_registro
                     conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM pagos_clientes WHERE id = %s", (id_pago,))
                     antigua_ruta = cursor.fetchone()[0]
                     eliminar_archivo(antigua_ruta)   # resuelve rutas de otros equipos/SO
 
                     nombre_limpio = f"Ingreso_Fac_{id_factura}_{cliente.replace(' ', '_')}_R_{id_pago}{os.path.splitext(ruta_origen)[1]}"
-                    ruta_destino = os.path.join(carpeta_comprobantes, nombre_limpio)
+                    ruta_destino = ruta_para_registro("venta_comprobante", nombre_limpio,
+                                                      "pagos_clientes", id_pago, ruta_base)
+                    if not ruta_destino:
+                        raise RuntimeError("No se pudo preparar la carpeta de destino")
                     shutil.copy2(ruta_origen, ruta_destino)
                     cursor.execute("UPDATE pagos_clientes SET archivo_ruta = %s WHERE id = %s", (ruta_para_guardar(ruta_destino), id_pago))
                     conn.commit(); liberar_conexion(conn)

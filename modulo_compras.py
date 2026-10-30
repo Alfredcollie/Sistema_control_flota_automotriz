@@ -5699,15 +5699,18 @@ class FacturasRecibidasTab:
             if not pendientes:
                 return 0
             
-            carpeta_destino = os.path.normpath(os.path.join(ruta_base, "facturas_recibidas"))
-            if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
-            
+            from estructura_archivos import ruta_para_registro
+
             for reg in pendientes:
                 id_doc, img_b64, proveedor = reg
                 prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor) if proveedor else "GRIFO_APP"
                 nombre_prov = prov_limpio.replace(' ', '_')
                 nombre_archivo = f"Ticket_Movil_{id_doc}_{nombre_prov}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
-                ruta_final = os.path.normpath(os.path.join(carpeta_destino, nombre_archivo))
+                # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Facturas/
+                ruta_final = ruta_para_registro("compra_factura", nombre_archivo,
+                                                "facturas_recibidas", id_doc, ruta_base)
+                if not ruta_final:
+                    continue
                 
                 try:
                     with open(ruta_final, "wb") as f:
@@ -6217,7 +6220,7 @@ class FacturasRecibidasTab:
         except Exception:
             pass
 
-    def _guardar_soporte_tercero(self, ruta_base, tercero):
+    def _guardar_soporte_tercero(self, ruta_base, tercero, fecha=None, ruc=None, proveedor=None):
         """Copia el soporte del pago al tercero a la carpeta autorizada.
 
         Devuelve la ruta guardada (relativa) o "" si no había soporte.
@@ -6226,13 +6229,15 @@ class FacturasRecibidasTab:
         if not origen or not os.path.exists(origen):
             return ""
         try:
-            carpeta = os.path.normpath(os.path.join(ruta_base, "soportes_pagos_terceros"))
-            if not os.path.exists(carpeta):
-                os.makedirs(carpeta)
+            # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Comprobantes de pago/
+            from estructura_archivos import ruta_documento
             ext = os.path.splitext(origen)[1] or ".pdf"
             limpio = re.sub(r'[\\/*?:"<>|]', '-', str(tercero or "tercero")).replace(" ", "_")[:40]
-            destino = os.path.normpath(os.path.join(
-                carpeta, f"Soporte_{datetime.now().strftime('%Y%m%d%H%M%S')}_{limpio}{ext}"))
+            nombre_archivo = f"Soporte_{datetime.now().strftime('%Y%m%d%H%M%S')}_{limpio}{ext}"
+            destino = ruta_documento("compra_comprobante", nombre_archivo, ruta_base=ruta_base,
+                                     fecha=fecha, ruc=ruc, nombre=proveedor or tercero)
+            if not destino:
+                return ""
             shutil.copy2(origen, destino)
             return ruta_para_guardar(destino)
         except Exception as e:
@@ -6755,21 +6760,27 @@ class FacturasRecibidasTab:
         ruta_final = ""
         if self.ruta_archivo_temp:
             try:
-                carpeta_destino = os.path.normpath(os.path.join(ruta_base, "facturas_recibidas"))
-                if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
+                # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Facturas/
+                from estructura_archivos import ruta_documento
                 nombre_ext = os.path.splitext(self.ruta_archivo_temp)[1]
-                
+
                 prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', prov)
                 nombre_prov = prov_limpio.replace(' ', '_')
-                
-                ruta_final = os.path.normpath(os.path.join(carpeta_destino, f"Recibida_{datetime.now().strftime('%Y%m%d%H%M%S')}_{nombre_prov}{nombre_ext}"))
+
+                nombre_archivo = f"Recibida_{datetime.now().strftime('%Y%m%d%H%M%S')}_{nombre_prov}{nombre_ext}"
+                ruta_final = ruta_documento("compra_factura", nombre_archivo, ruta_base=ruta_base,
+                                            fecha=fecha, ruc=ruc_val, nombre=prov)
+                if not ruta_final:
+                    raise RuntimeError("No se pudo preparar la carpeta de destino")
                 shutil.copy2(self.ruta_archivo_temp, ruta_final)
             except Exception as e: return messagebox.showerror("Error", f"Fallo al guardar archivo:\n{e}")
 
         # 📎 Soporte del pago hecho al tercero (se copia a la carpeta autorizada)
         ruta_soporte_tercero = ""
         if cruzada["activa"] and cruzada["soporte"]:
-            ruta_soporte_tercero = self._guardar_soporte_tercero(ruta_base, cruzada["tercero"])
+            ruta_soporte_tercero = self._guardar_soporte_tercero(ruta_base, cruzada["tercero"],
+                                                                  fecha=fecha, ruc=ruc_val,
+                                                                  proveedor=prov)
             if not ruta_soporte_tercero:
                 return messagebox.showwarning("Factura Cruzada",
                                               "No se pudo copiar el soporte del pago al tercero.\n"
@@ -7615,13 +7626,15 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
                             if not ruta_base:
                                 return messagebox.showerror("Error", "No tiene configurada la ruta de Google Drive.")
                                 
-                            carpeta_destino = os.path.normpath(os.path.join(ruta_base, "facturas_recibidas"))
-                            if not os.path.exists(carpeta_destino): os.makedirs(carpeta_destino)
-                            
+                            # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Facturas/
+                            from estructura_archivos import ruta_para_registro
                             prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor) if proveedor else "RECUPERADO"
                             nombre_prov = prov_limpio.replace(' ', '_')
                             nombre_archivo = f"Ticket_Movil_Recuperado_{id_doc}_{nombre_prov}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
-                            ruta_final = os.path.normpath(os.path.join(carpeta_destino, nombre_archivo))
+                            ruta_final = ruta_para_registro("compra_factura", nombre_archivo,
+                                                            "facturas_recibidas", id_doc, ruta_base)
+                            if not ruta_final:
+                                return messagebox.showerror("Error", "No se pudo preparar la carpeta de destino.")
                             
                             try:
                                 with open(ruta_final, "wb") as f:
@@ -8997,7 +9010,10 @@ class CuentasPorPagarTab:
                     return messagebox.showwarning("Escáner", "El escáner no devolvió páginas.",
                                                   parent=v_pago)
                 try:
-                    carpeta_comp = os.path.join(obtener_ruta_base_drive() or carpeta, "comprobantes_egresos")
+                    # El escaneo es un archivo temporal: al guardar el pago se
+                    # copia a la estructura (Compras/<Mes>/<RUC>/Comprobantes de pago).
+                    import tempfile
+                    carpeta_comp = os.path.join(tempfile.gettempdir(), "ControlFlota_escaneos")
                     os.makedirs(carpeta_comp, exist_ok=True)
                     destino = os.path.join(carpeta_comp,
                                            "Escaneo_Pago_%s.pdf" % datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -9097,11 +9113,16 @@ class CuentasPorPagarTab:
             ruta_destino = ""
             if ruta_origen:
                 try:
-                    carpeta_comprobantes = os.path.normpath(os.path.join(ruta_base, "comprobantes_egresos"))
-                    if not os.path.exists(carpeta_comprobantes): os.makedirs(carpeta_comprobantes)
+                    # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Comprobantes de pago/
+                    from estructura_archivos import ruta_documento
                     conn = conectar_db(); c = conn.cursor(); c.execute("SELECT COUNT(*) FROM pagos_comprobantes"); idx = c.fetchone()[0] + 1; liberar_conexion(conn)
                     prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor)
-                    ruta_destino = os.path.normpath(os.path.join(carpeta_comprobantes, f"Egreso_Fac_{id_factura}_{prov_limpio.replace(' ', '_')}_{idx}{os.path.splitext(ruta_origen)[1]}"))
+                    nombre_archivo = f"Egreso_Fac_{id_factura}_{prov_limpio.replace(' ', '_')}_{idx}{os.path.splitext(ruta_origen)[1]}"
+                    ruta_destino = ruta_documento("compra_comprobante", nombre_archivo,
+                                                  ruta_base=ruta_base, fecha=fecha_val,
+                                                  nombre=proveedor)
+                    if not ruta_destino:
+                        raise RuntimeError("No se pudo preparar la carpeta de destino")
                     shutil.copy2(ruta_origen, ruta_destino)
                 except Exception as e:
                     return messagebox.showerror("Error", f"Fallo al copiar archivo:\n{e}")
@@ -9382,8 +9403,8 @@ class CuentasPorPagarTab:
             ruta_origen = seleccionar_archivo_dialogo("Seleccionar Soporte", [("Archivos", "*.pdf;*.png;*.jpg;*.jpeg")])
             if ruta_origen:
                 try:
-                    carpeta_comprobantes = os.path.normpath(os.path.join(ruta_base, "comprobantes_egresos"))
-                    if not os.path.exists(carpeta_comprobantes): os.makedirs(carpeta_comprobantes)
+                    # 📁 Estructura: Compras/<Mes año>/<RUC - Proveedor>/Comprobantes de pago/
+                    from estructura_archivos import ruta_para_registro
                     conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id = %s", (id_pago,))
                     antigua_ruta = os.path.normpath(cursor.fetchone()[0])
@@ -9391,7 +9412,10 @@ class CuentasPorPagarTab:
 
                     prov_limpio = re.sub(r'[\\/*?:"<>|]', '-', proveedor)
                     nombre_limpio = f"Egreso_Fac_{id_factura}_{prov_limpio.replace(' ', '_')}_R_{id_pago}{os.path.splitext(ruta_origen)[1]}"
-                    ruta_destino = os.path.normpath(os.path.join(carpeta_comprobantes, nombre_limpio))
+                    ruta_destino = ruta_para_registro("compra_comprobante", nombre_limpio,
+                                                      "pagos_comprobantes", id_pago, ruta_base)
+                    if not ruta_destino:
+                        raise RuntimeError("No se pudo preparar la carpeta de destino")
                     shutil.copy2(ruta_origen, ruta_destino)
                     cursor.execute("UPDATE pagos_comprobantes SET archivo_ruta = %s WHERE id = %s", (ruta_para_guardar(ruta_destino), id_pago))
                     conn.commit(); liberar_conexion(conn)

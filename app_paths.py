@@ -187,7 +187,46 @@ def resolver_ruta_archivo(ruta_guardada, ruta_base=""):
                             return os.path.normpath(ruta)
             except Exception:
                 continue
+
+    # Último recurso (estructura por año/RUC): buscar el archivo por su nombre en
+    # TODA la carpeta del sistema. Así los enlaces siguen funcionando aunque el
+    # archivo se haya movido a otra carpeta (Compras/Octubre 2026/<RUC>/...).
+    if objetivo and base and os.path.isdir(base):
+        for ruta in _buscar_por_nombre_en_carpeta(base, objetivo):
+            if os.path.isfile(ruta):
+                return os.path.normpath(ruta)
     return ""
+
+
+# Índice de nombres de archivo de la carpeta del sistema (se reutiliza 5 min).
+_INDICE_NOMBRES = {"base": "", "momento": 0.0, "mapa": {}}
+_INDICE_TTL = 300
+
+
+def _indice_archivos(base):
+    """{nombre_normalizado: [rutas]} de toda la carpeta del sistema (cacheado)."""
+    import time
+    ahora = time.time()
+    if (_INDICE_NOMBRES["base"] == base
+            and ahora - _INDICE_NOMBRES["momento"] < _INDICE_TTL
+            and _INDICE_NOMBRES["mapa"]):
+        return _INDICE_NOMBRES["mapa"]
+    mapa = {}
+    for raiz, _dirs, archivos in os.walk(base):
+        for nombre in archivos:
+            mapa.setdefault(_normalizar_nombre(nombre), []).append(os.path.join(raiz, nombre))
+    _INDICE_NOMBRES.update({"base": base, "momento": ahora, "mapa": mapa})
+    return mapa
+
+
+def _buscar_por_nombre_en_carpeta(base, objetivo):
+    """Rutas candidatas para un nombre normalizado (prefiere las más cortas)."""
+    try:
+        candidatas = list(_indice_archivos(base).get(objetivo, []))
+    except Exception:
+        return []
+    candidatas.sort(key=len)
+    return candidatas
 
 
 def ruta_para_guardar(ruta, ruta_base=""):

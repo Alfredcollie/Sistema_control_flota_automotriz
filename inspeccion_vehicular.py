@@ -817,7 +817,14 @@ class InspeccionVehicularApp:
             except Exception:
                 messagebox.showwarning("Almacenamiento bloqueado", "Este equipo no está autorizado a guardar archivos.")
             return
-        carpeta = os.path.join(base_archivos, "Inspecciones_PDF")
+        # 📁 Estructura: Inspección vehicular/<Placa>/<Mes año>/
+        from estructura_archivos import carpeta as _carpeta_estructura
+        try:
+            _fecha_dt = datetime(int(fecha[4:8]), int(fecha[2:4]), int(fecha[0:2]))
+        except Exception:
+            _fecha_dt = datetime.now()
+        carpeta = os.path.join(base_archivos, *_carpeta_estructura(
+            "inspeccion", placa=placa, fecha=_fecha_dt).split("/"))
         os.makedirs(carpeta, exist_ok=True)
         sello = datetime.now().strftime("%H%M%S")
         ruta_pdf = os.path.join(carpeta, "Inspeccion_" + placa + "_" + fecha + "_" + sello + ".pdf")
