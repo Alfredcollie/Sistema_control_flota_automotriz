@@ -887,8 +887,38 @@ def ejecutar_sincronizacion_silenciosa():
     # son miles de archivos que ralentizan muchísimo el listado y la sincronización.
     exclusiones = ["--exclude", ".DS_Store*", "--exclude", "._*"]
 
+    # 🚧 PROTECCIÓN (migración a la nueva estructura de carpetas):
+    # Mientras la NUBE todavía conserve las carpetas antiguas de la raíz
+    # ('facturas_recibidas', 'comprobantes_egresos', etc.), NO se descarga nada:
+    # la descarga volvería a crear en el disco los duplicados que se están
+    # limpiando. Cuando la nube quede migrada esta comprobación no encuentra
+    # esas carpetas y la sincronización vuelve a funcionar como siempre.
+    CARPETAS_ANTIGUAS = {
+        "facturas_recibidas", "facturas_emitidas", "comprobantes_egresos",
+        "comprobantes_ingresos", "comprobantes_impuestos", "comprobantes_transferencias",
+        "archivos_flota", "documentos_vehiculos", "ordenes_generadas", "ordenes_anuladas",
+        "cobranzas_generadas", "soportes_pagos_terceros", "inspecciones_pdf",
+        "inspecciones", "cartas_eventos", "amonestaciones", "formularios_proveedores",
+        "pautas_eventos", "cotizaciones",
+    }
+    puede_descargar = True
     try:
-        subprocess.run([cmd, *args_cfg, "copy", ruta_remota, local, "--update", "--quiet", *exclusiones], timeout=600, **kwargs)
+        listado = subprocess.run(
+            [cmd, *args_cfg, "lsf", ruta_remota, "--max-depth", "1", "--dirs-only"],
+            capture_output=True, text=True, timeout=120, **kwargs)
+        presentes = {linea.strip().strip("/").lower()
+                     for linea in (listado.stdout or "").splitlines() if linea.strip()}
+        if presentes & CARPETAS_ANTIGUAS:
+            puede_descargar = False
+            print("[sync] La nube aún tiene carpetas de la estructura anterior: "
+                  "no se descargan archivos para no recrear duplicados.")
+    except Exception:
+        # Si no se puede comprobar, es más seguro NO descargar.
+        puede_descargar = False
+
+    try:
+        if puede_descargar:
+            subprocess.run([cmd, *args_cfg, "copy", ruta_remota, local, "--update", "--quiet", *exclusiones], timeout=600, **kwargs)
         subprocess.run([cmd, *args_cfg, "copy", local, ruta_remota, "--update", "--quiet", *exclusiones], timeout=600, **kwargs)
     except Exception:
         pass
@@ -896,6 +926,146 @@ def ejecutar_sincronizacion_silenciosa():
 
 def lanzar_sync_background():
     threading.Thread(target=ejecutar_sincronizacion_silenciosa, daemon=True).start()
+
+
+# =========================================================
+# MUDANZA DE LA CARPETA DE ARCHIVOS (Configuración General)
+# =========================================================
+def _tamano_legible(bytes_):
+    try:
+        for unidad in ("B", "KB", "MB", "GB", "TB"):
+            if bytes_ < 1024 or unidad == "TB":
+                return "%.1f %s" % (bytes_, unidad)
+            bytes_ /= 1024.0
+    except Exception:
+        pass
+    return ""
+
+
+def mudar_carpeta_archivos(ruta_actual, ruta_nueva, parent=None):
+    """Si el usuario cambió la carpeta de archivos, avisa y traslada todo.
+
+    Devuelve:
+        True  -> se mudó correctamente (hay que guardar y reiniciar)
+        False -> no cambió la carpeta (se sigue guardando normal)
+        None  -> canceló o hubo un problema (NO se guarda nada)
+    """
+    from mover_carpeta_archivos import contar, mover_contenido
+
+    actual = os.path.abspath(os.path.expanduser(normalizar_ruta_local(ruta_actual or "")))
+    nueva = os.path.abspath(os.path.expanduser(normalizar_ruta_local(ruta_nueva or "")))
+
+    if not nueva or os.path.normcase(actual) == os.path.normcase(nueva):
+        return False
+    if not actual or not os.path.isdir(actual):
+        return False                      # no hay carpeta anterior: nada que mover
+
+    archivos, carpetas = contar(actual)
+    if archivos == 0 and carpetas == 0:
+        return False                      # carpeta vacía: no se avisa ni se mueve
+
+    # Tamaño aproximado (solo consulta de tamaños, es rápido)
+    total_bytes = 0
+    for raiz, _d, ficheros in os.walk(actual):
+        for f in ficheros:
+            try:
+                total_bytes += os.path.getsize(os.path.join(raiz, f))
+            except OSError:
+                pass
+
+    mensaje = (
+        "⚠️  VA A CAMBIAR LA CARPETA DE ARCHIVOS\n\n"
+        "  Carpeta actual:\n    %s\n\n"
+        "  Carpeta nueva:\n    %s\n\n"
+        "Se moverán TODAS las carpetas y archivos: %d archivos (%s).\n\n"
+        "Si la carpeta nueva ya tiene archivos, se combinarán sin borrar nada.\n"
+        "Al terminar se guardará la configuración y el programa se reiniciará solo.\n\n"
+        "Consejo: si el programa está subiendo archivos a la nube, espere a que\n"
+        "termine antes de mudar la carpeta.\n\n"
+        "¿Desea continuar?"
+        % (actual, nueva, archivos, _tamano_legible(total_bytes))
+    )
+    if not messagebox.askyesno("Mudar los archivos a la nueva ubicación", mensaje, parent=parent):
+        return None
+
+    # Ventana de progreso
+    ventana = etiqueta = barra = None
+    try:
+        if parent is not None:
+            ventana = ctk.CTkToplevel(parent)
+            ventana.title("Mudando los archivos…")
+            ventana.geometry("480x150")
+            ventana.resizable(False, False)
+            ventana.transient(parent)
+            ventana.grab_set()
+            ctk.CTkLabel(ventana, text="Moviendo archivos a la nueva carpeta…",
+                         font=("Arial", 12, "bold")).pack(padx=20, pady=(18, 8), anchor="w")
+            barra = ctk.CTkProgressBar(ventana, width=440)
+            barra.set(0)
+            barra.pack(padx=20, pady=(0, 8))
+            etiqueta = ctk.CTkLabel(ventana, text="Preparando…", font=("Arial", 10),
+                                    text_color="#555")
+            etiqueta.pack(padx=20, anchor="w")
+            ventana.update_idletasks()
+            ventana.update()
+    except Exception:
+        ventana = None
+
+    def _progreso(hechos, total, nombre):
+        try:
+            if barra is not None and total:
+                barra.set(hechos / float(total))
+            if etiqueta is not None:
+                etiqueta.configure(text="%d de %d  ·  %s" % (hechos, total, str(nombre)[:40]))
+            if ventana is not None:
+                ventana.update_idletasks()
+                ventana.update()
+        except Exception:
+            pass
+
+    resultado = mover_contenido(actual, nueva, al_progreso=_progreso)
+    try:
+        if ventana is not None:
+            ventana.destroy()
+    except Exception:
+        pass
+
+    if not resultado.get("ok"):
+        detalle = "\n".join(resultado.get("errores", [])[:8])
+        messagebox.showerror(
+            "No se pudieron mover todos los archivos",
+            "%s\n\nArchivos movidos: %d\n\n%s\n\n"
+            "NO se guardó la nueva carpeta. Cierre los programas que tengan esos "
+            "archivos abiertos y vuelva a intentarlo."
+            % (resultado.get("detalle", ""), resultado.get("archivos", 0), detalle),
+            parent=parent)
+        return None
+
+    messagebox.showinfo(
+        "Archivos movidos",
+        "%s\n\nCarpetas creadas: %d\n\nAhora se guardará la configuración y el "
+        "programa se reiniciará." % (resultado.get("detalle", ""),
+                                     resultado.get("carpetas", 0)),
+        parent=parent)
+    return True
+
+
+def reiniciar_programa():
+    """Cierra y vuelve a abrir el programa (para aplicar la nueva carpeta)."""
+    try:
+        if getattr(sys, "frozen", False):
+            argumentos = [sys.executable] + sys.argv[1:]
+        else:
+            argumentos = [sys.executable] + sys.argv
+        os.execv(sys.executable, argumentos)
+    except Exception as e:
+        print("No se pudo reiniciar automáticamente:", e)
+        try:
+            import subprocess
+            subprocess.Popen([sys.executable] + sys.argv)
+        except Exception:
+            pass
+        os._exit(0)
 
 
 def limpiar_basura_macos(ruta_drive="", borrar_nube=True):
@@ -4092,6 +4262,13 @@ class ControlGeneralEventos:
         lb_aju = crear_columna_orden(f_listas, "Ajustes de Sistema", aju)
 
         def guardar_configuracion():
+            # 📦 Si cambió la carpeta local de archivos, primero se MUDA todo el
+            #    contenido a la nueva ubicación; solo después se guarda y se reinicia.
+            estado_mudanza = mudar_carpeta_archivos(
+                config_actual.get("ruta_drive", ""), ent_drive.get().strip(), v_conf)
+            if estado_mudanza is None:
+                return                      # canceló o falló: no se guarda nada
+
             def ext_ord(lb):
                 return [nombres_a_keys[lb.get(i)] for i in range(lb.size())]
                 
@@ -4241,6 +4418,15 @@ class ControlGeneralEventos:
                 messagebox.showinfo("Éxito", "Las configuraciones del sistema se guardaron correctamente.\n\nLos cambios en el diseño se aplicarán inmediatamente.", parent=v_conf)
                 lanzar_sync_background()
                 v_conf.destroy()
+                if estado_mudanza:
+                    self.root.update_idletasks()
+                    messagebox.showinfo(
+                        "Reiniciando el programa",
+                        "La carpeta de archivos quedó en su nueva ubicación.\n\n"
+                        "El programa se cerrará y volverá a abrirse solo para aplicar el cambio.",
+                        parent=self.root)
+                    reiniciar_programa()
+                    return
                 self.construir_dashboard_spa()
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo guardar la configuración:\n{e}", parent=v_conf)
