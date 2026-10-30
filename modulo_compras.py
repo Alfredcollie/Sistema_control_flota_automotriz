@@ -851,6 +851,37 @@ def _fecha_dd_mm_aaaa(fecha):
     return texto
 
 
+def a_float(valor, defecto=0.0):
+    """Convierte a float de forma segura un monto que venga de la base de datos.
+
+    🔴 PostgreSQL devuelve las columnas NUMERIC como `decimal.Decimal`, y Python
+    NO permite operar Decimal con float:
+        TypeError: unsupported operand type(s) for -: 'decimal.Decimal' and 'float'
+    Ese error rompía la tabla de Compras al cambiar de pestaña (el cálculo
+    `neto - 0.01`). Aquí se normaliza TODO monto a float antes de calcular.
+    """
+    if valor is None or isinstance(valor, bool):
+        return defecto
+    try:
+        return float(valor)          # Decimal, int y texto numérico simple
+    except (TypeError, ValueError):
+        pass
+    texto = str(valor).strip()
+    for simbolo in ("S/.", "S/", "$", "€"):
+        texto = texto.replace(simbolo, "")
+    texto = texto.replace(" ", "")
+    if not texto:
+        return defecto
+    if "," in texto and "." in texto:
+        texto = texto.replace(",", "")     # "1,234.56"
+    elif "," in texto:
+        texto = texto.replace(",", ".")    # "1234,56"
+    try:
+        return float(texto)
+    except (TypeError, ValueError):
+        return defecto
+
+
 def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
@@ -7475,7 +7506,11 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
                 tiene_archivo = True          # solo tiene el soporte del pago a tercero
             tiene_arch = "✅ Ver" if tiene_archivo else "❌ No"
                 
-            tipo_doc = r[4]; impuesto = r[9]; tot_bruto = r[10]; det_monto = r[11]; cat = r[13] if r[13] else "GENERAL"
+            # 💱 Los montos llegan como Decimal (columnas NUMERIC de PostgreSQL):
+            #    se pasan a float ANTES de restarlos, si no Python lanza
+            #    "unsupported operand type(s) for -: 'decimal.Decimal' and 'float'".
+            tipo_doc = r[4]; cat = r[13] if r[13] else "GENERAL"
+            impuesto = a_float(r[9]); tot_bruto = a_float(r[10]); det_monto = a_float(r[11])
             km_val = r[14] if r[14] else "-"
             cant_val = r[15] if r[15] else "-"
             ruc_val = r[16] if len(r) > 16 and r[16] else "-"
@@ -7512,7 +7547,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
             # 🟢 Verde = cancelada; 🟣 violeta = pago parcial; 🔴 rojo = sin pagos
             try:
                 # 💰 La suma pagada es la ÚLTIMA columna de la consulta
-                _pagado_f = float(r[-1] or 0) if len(r) > 22 else 0.0
+                _pagado_f = a_float(r[-1]) if len(r) > 22 else 0.0
             except Exception:
                 _pagado_f = 0.0
             if es_cruzada or neto <= 0.01 or _pagado_f >= neto - 0.01:
