@@ -1152,9 +1152,9 @@ class CalculoCobranzaApp:
         # ---- Encabezado ----
         f_header = ctk.CTkFrame(self.scroll, fg_color="transparent")
         f_header.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(f_header, text="💰 CÁLCULO DE COBRANZA QUINCENAL",
+        ctk.CTkLabel(f_header, text="💰 CÁLCULO DE COBRANZA",
                      font=(familia_fuente, 18, "bold"), text_color="#1f538d").pack(side="left")
-        btn_registros = ctk.CTkButton(f_header, text="📋 Ver Registros de Quincenas", width=210,
+        btn_registros = ctk.CTkButton(f_header, text="📋 Ver Registros", width=170,
                                       fg_color="#34495e", hover_color="#2c3e50",
                                       font=(familia_fuente, 12, "bold"), command=self.abrir_registros)
         btn_registros.pack(side="right")
@@ -1162,6 +1162,8 @@ class CalculoCobranzaApp:
                                       fg_color="#27ae60", hover_color="#1e8449",
                                       font=(familia_fuente, 12, "bold"), command=self.abrir_asistente)
         btn_asistente.pack(side="right", padx=(0, 8))
+        self.f_header = f_header
+        self.f_secciones_manuales = []   # se llena al final (modo solo asistente)
 
         # ---- 1. Cliente ----
         f_cli = ctk.CTkFrame(self.scroll, corner_radius=10, border_width=1, border_color="#e0e0e0")
@@ -1524,6 +1526,28 @@ class CalculoCobranzaApp:
         btn_limp.pack(side="left", padx=5)
 
         self.aplicar_plan(self.plan_cobro)
+
+        # 🧭 El módulo trabaja SOLO con el asistente paso a paso:
+        #    el formulario manual se mantiene construido (el asistente reutiliza
+        #    sus campos y cálculos) pero queda oculto.
+        self._modo_solo_asistente()
+
+    def _modo_solo_asistente(self):
+        """Oculta el proceso manual y deja el asistente + Ver Registros."""
+        try:
+            for hijo in list(self.scroll.winfo_children()):
+                if hijo is self.f_header or hijo is self.frame_flash:
+                    continue
+                self.f_secciones_manuales.append(hijo)
+                try:
+                    hijo.pack_forget()
+                except Exception:
+                    pass
+            self.f_header.pack(fill="x", pady=(0, 6))
+        except Exception as e:
+            print("[Cobranza] modo solo asistente:", e)
+        # El módulo se queda en esta pantalla (asistente + Ver Registros):
+        # el asistente se abre solo cuando el usuario pulsa el botón.
 
     # ---------- CLIENTES ----------
     @con_letrero("Leyendo clientes de la base de datos…")
@@ -3795,8 +3819,18 @@ class CalculoCobranzaApp:
     def abrir_asistente(self):
         """Abre el asistente paso a paso para hacer un cálculo de cobranza."""
         try:
-            AsistenteCobranza(self.parent, self)
+            ventana = AsistenteCobranza(self.parent, self)
+            self._asistente_abierto = True
+
+            def _al_cerrar(_evento=None):
+                self._asistente_abierto = False
+
+            try:
+                ventana.bind("<Destroy>", _al_cerrar)
+            except Exception:
+                self._asistente_abierto = False
         except Exception as e:
+            self._asistente_abierto = False
             messagebox.showerror("No se pudo abrir el asistente", str(e))
 
     # ---------- REGISTROS ----------
