@@ -559,6 +559,41 @@ def dias_de_quincena(anio, mes, quincena, feriados):
     return dias
 
 
+def _etiqueta_rango(rg):
+    """Nombre visible de una ZONA o de un rango de distancia.
+
+    Nunca devuelve «0 - 0 km»: si no hay nombre ni distancias, devuelve «—».
+    Acepta claves nombre/distancia_desde/distancia_hasta o desde/hasta.
+    """
+    if isinstance(rg, dict):
+        nombre = str(rg.get("nombre") or "").strip()
+        if nombre:
+            return nombre
+        desde = rg.get("distancia_desde", rg.get("desde", 0))
+        hasta = rg.get("distancia_hasta", rg.get("hasta", 0))
+    else:
+        desde, hasta = rg, 0
+    try:
+        d, h = float(desde or 0), float(hasta or 0)
+    except Exception:
+        return "—"
+    if d == 0 and h == 0:
+        return "—"
+    return "%g - %g km" % (d, h)
+
+
+def dias_de_mes(anio, mes, feriados):
+    """Todos los días del MES (para el plan Por Punto o Viaje, sin quincena)."""
+    dias = []
+    ultimo = calendar.monthrange(anio, mes)[1]
+    for d in range(1, ultimo + 1):
+        f = date(anio, mes, d)
+        cat = clasificar_dia(f, feriados)
+        nombre = feriados.get(f, "") if cat == "feriado" else ""
+        dias.append({"fecha": f, "categoria": cat, "feriado_nombre": nombre})
+    return dias
+
+
 def conteos_quincena(dias):
     c = {"normal": 0, "domingo": 0, "feriado": 0}
     for d in dias:
@@ -624,6 +659,20 @@ def formato_horas_minutos(horas, etiqueta_cero="0 min"):
         partes.append(f"{minutos} min")
     texto = " ".join(partes) or etiqueta_cero
     return f"-{texto}" if negativo else texto
+
+
+def _nombre_zona_pdf(zona, desde, hasta):
+    """Nombre que se imprime en el PDF: la ZONA; si no hay, la distancia; si no, un guion."""
+    nombre = str(zona or "").strip()
+    if nombre:
+        return nombre
+    try:
+        d, h = float(desde or 0), float(hasta or 0)
+    except Exception:
+        return "—"
+    if d == 0 and h == 0:
+        return "—"
+    return "%s - %s km" % (numero_2_decimales(d), numero_2_decimales(h))
 
 
 def numero_2_decimales(valor):
@@ -974,6 +1023,16 @@ class CalculoCobranzaApp:
                 )
             ''')
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS precios_viaje_zona (
+                    id SERIAL PRIMARY KEY,
+                    id_cliente INTEGER NOT NULL,
+                    nombre VARCHAR(80) NOT NULL,
+                    precio_normal NUMERIC(12,2) DEFAULT 0,
+                    precio_domingo NUMERIC(12,2) DEFAULT 0,
+                    precio_feriado NUMERIC(12,2) DEFAULT 0
+                )
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cobranza_quincena_viajes (
                     id SERIAL PRIMARY KEY,
                     id_cobranza INTEGER NOT NULL,
@@ -993,6 +1052,22 @@ class CalculoCobranzaApp:
                     subtotal NUMERIC(12,2) DEFAULT 0
                 )
             ''')
+            try:
+                cursor.execute("ALTER TABLE cobranza_quincena_viajes "
+                               "ADD COLUMN IF NOT EXISTS zona VARCHAR(80)")
+                cursor.execute("ALTER TABLE cobranza_viajes_detalle "
+                               "ADD COLUMN IF NOT EXISTS zona VARCHAR(80)")
+                # 🔹 Medios viajes: las cantidades deben aceptar decimales (0.5, 1.5…)
+                for _col in ("viajes_normal", "viajes_domingo", "viajes_feriado",
+                             "ded_normal", "ded_domingo", "ded_feriado"):
+                    cursor.execute("ALTER TABLE cobranza_quincena_viajes "
+                                   "ALTER COLUMN %s TYPE NUMERIC(12,2)" % _col)
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cobranza_viajes_detalle (
                     id SERIAL PRIMARY KEY,
@@ -1096,7 +1171,11 @@ class CalculoCobranzaApp:
         self.btn_precios_dist = ctk.CTkButton(f_cli, text="📏 Precios por Distancia", width=190,
                                               font=(familia_fuente, 11, "bold"), fg_color="#8e44ad",
                                               hover_color="#6c3483", command=self.abrir_ventana_precios_distancia)
-        self.btn_precios_dist.grid(row=0, column=4, sticky="e", padx=(5, 15), pady=8)
+        self.btn_precios_dist.grid(row=0, column=4, sticky="e", padx=(5, 5), pady=8)
+        self.btn_zonas = ctk.CTkButton(f_cli, text="🏷️ Zonas (precios)", width=170,
+                                       font=(familia_fuente, 11, "bold"), fg_color="#16a085",
+                                       hover_color="#11806a", command=self.abrir_ventana_zonas)
+        self.btn_zonas.grid(row=0, column=5, sticky="e", padx=(5, 15), pady=8)
 
         ctk.CTkLabel(f_cli, text="🧾 Plan de Cobro:", font=(familia_fuente, 12, "bold")).grid(
             row=1, column=0, sticky="w", padx=(15, 5), pady=8)
@@ -1526,6 +1605,14 @@ class CalculoCobranzaApp:
     def aplicar_plan(self, plan):
         """Muestra la sección y botones según el plan de cobro:
         Por Hora → unidades; Por Punto o Viaje → tabla de distancias."""
+        # 🗓️ Plan por punto: se cobra por MES, la quincena no se usa
+        try:
+            if plan == "Por Punto o Viaje":
+                self.combo_quincena.configure(state="disabled")
+            else:
+                self.combo_quincena.configure(state="normal")
+        except Exception:
+            pass
         try:
             f_dias = self.tabla_dias.master
             if plan == "Por Punto o Viaje":
@@ -1689,6 +1776,13 @@ class CalculoCobranzaApp:
             return
         VentanaPreciosDistancia(self.parent, self, self.cliente_id, self.cliente_nombre)
 
+    def abrir_ventana_zonas(self):
+        """🏷️ Zonas del cliente con su precio normal, domingo y feriado."""
+        if not self.cliente_id:
+            messagebox.showwarning("Sin cliente", "Seleccione un cliente primero.")
+            return
+        VentanaZonasPrecio(self.parent, self, self.cliente_id, self.cliente_nombre)
+
     @con_letrero("Leyendo los precios por distancia…")
     def cargar_rangos_viaje(self):
         """Carga la tabla de precios por distancia del cliente."""
@@ -1718,6 +1812,28 @@ class CalculoCobranzaApp:
                     "viajes": {"normal": 0, "domingo": 0, "feriado": 0},
                     "ded": {"normal": 0, "domingo": 0, "feriado": 0},
                 })
+            # 🏷️ ZONAS con precio: si el cliente las tiene, se cobra por zona (no por km)
+            zonas = []
+            try:
+                cursor.execute("""
+                    SELECT id, nombre, precio_normal, precio_domingo, precio_feriado
+                    FROM precios_viaje_zona WHERE id_cliente = %s ORDER BY nombre ASC
+                """, (self.cliente_id,))
+                zonas = cursor.fetchall()
+            except Exception as e_zona:
+                print("[Zonas Error]", e_zona)
+            if zonas:
+                self.rangos_viaje = []
+                for z in zonas:
+                    self.rangos_viaje.append({
+                        "id": z[0], "nombre": str(z[1] or ""), "es_zona": True,
+                        "distancia_desde": 0.0, "distancia_hasta": 0.0,
+                        "precio_normal": float(z[2] or 0), "precio_domingo": float(z[3] or 0),
+                        "precio_feriado": float(z[4] or 0),
+                        "viajes": {"normal": 0, "domingo": 0, "feriado": 0},
+                        "ded": {"normal": 0, "domingo": 0, "feriado": 0},
+                    })
+                print("[Zonas] cliente %s: %d zona(s)" % (self.cliente_id, len(zonas)))
             cursor.close()
         except Exception as e:
             print("[Rangos Viaje Error]", e)
@@ -1734,7 +1850,8 @@ class CalculoCobranzaApp:
         self.ent_viajes = []
         try:
             if hasattr(self, "combo_tipo_viaje"):
-                valores = [f"{rg['distancia_desde']:g} - {rg['distancia_hasta']:g} km" for rg in self.rangos_viaje]
+                valores = [(_etiqueta_rango(rg))
+                           for rg in self.rangos_viaje]
                 self.combo_tipo_viaje.configure(values=valores or ["— Seleccione distancia —"])
                 self.combo_tipo_viaje.set("— Seleccione distancia —")
                 if hasattr(self, "combo_tipo_ded"):
@@ -1758,7 +1875,7 @@ class CalculoCobranzaApp:
         for i, rg in enumerate(self.rangos_viaje):
             row = i + 1
             ctk.CTkLabel(self.frame_viajes_grid,
-                         text=f"{rg['distancia_desde']:g} - {rg['distancia_hasta']:g} km",
+                         text=(_etiqueta_rango(rg)),
                          font=(familia_fuente, 10, "bold")).grid(row=row, column=0, sticky="w", padx=3, pady=3)
             ctk.CTkLabel(self.frame_viajes_grid, text=formatear_moneda(rg['precio_normal']),
                          font=(familia_fuente, 10)).grid(row=row, column=1, padx=3)
@@ -1770,18 +1887,28 @@ class CalculoCobranzaApp:
             for col, clave in zip((4, 5, 6), ("normal", "domingo", "feriado")):
                 e = ctk.CTkEntry(self.frame_viajes_grid, width=62, justify="center")
                 e.grid(row=row, column=col, padx=2, pady=2)
-                e.insert(0, str(int(rg["viajes"][clave])))
+                e.insert(0, ("%g" % float(rg["viajes"][clave] or 0)))
                 entradas["viajes"][clave] = e
             for col, clave in zip((7, 8, 9), ("normal", "domingo", "feriado")):
                 e = ctk.CTkEntry(self.frame_viajes_grid, width=62, justify="center")
                 e.grid(row=row, column=col, padx=2, pady=2)
-                e.insert(0, str(int(rg["ded"][clave])))
+                e.insert(0, ("%g" % float(rg["ded"][clave] or 0)))
                 entradas["ded"][clave] = e
             lbl_m = ctk.CTkLabel(self.frame_viajes_grid, text=formatear_moneda(0),
                                  font=(familia_fuente, 10, "bold"), text_color="#1f538d")
             lbl_m.grid(row=row, column=10, padx=3, pady=2)
             self.lbl_monto_viaje.append(lbl_m)
             self.ent_viajes.append(entradas)
+
+    def _leer_cantidad_viaje(self, entry, nombre):
+        """Cantidad de viajes/puntos: admite MEDIOS viajes (0.5, 1.5, …)."""
+        try:
+            v = float(str(entry.get()).strip().replace(",", ".") or 0)
+            if v < 0:
+                raise ValueError
+            return v
+        except ValueError:
+            raise ValueError("'%s' debe ser un número mayor o igual a 0 (puede ser 0.5)." % nombre)
 
     def _leer_int_entry(self, entry, nombre):
         try:
@@ -1797,8 +1924,8 @@ class CalculoCobranzaApp:
         for i, rg in enumerate(self.rangos_viaje):
             if i < len(self.ent_viajes):
                 for cat in ("normal", "domingo", "feriado"):
-                    rg["viajes"][cat] = self._leer_int_entry(self.ent_viajes[i]["viajes"][cat], f"Viajes {cat}")
-                    rg["ded"][cat] = self._leer_int_entry(self.ent_viajes[i]["ded"][cat], f"No realizados {cat}")
+                    rg["viajes"][cat] = self._leer_cantidad_viaje(self.ent_viajes[i]["viajes"][cat], f"Viajes {cat}")
+                    rg["ded"][cat] = self._leer_cantidad_viaje(self.ent_viajes[i]["ded"][cat], f"No realizados {cat}")
 
     # ---------- REGISTRO RÁPIDO DE VIAJES (plan Por Punto o Viaje) ----------
     def _cargar_vehiculos_combo(self):
@@ -1862,7 +1989,7 @@ class CalculoCobranzaApp:
             self.tabla_viajes_reg.insert("", tk.END, values=(
                 t["fecha"].strftime("%d/%m/%Y"),
                 etiqueta,
-                f"{rango['distancia_desde']:g} - {rango['distancia_hasta']:g} km",
+                _etiqueta_rango(rango),
                 t.get("vehiculo", ""),
             ))
 
@@ -1974,7 +2101,7 @@ class CalculoCobranzaApp:
             self.tabla_ded_reg.insert("", tk.END, values=(
                 etiqueta_fecha_hora(t.get("fecha")),
                 dict(CATEGORIAS).get(t.get("categoria"), ""),
-                f"{float(t.get('desde') or 0):g} - {float(t.get('hasta') or 0):g} km",
+                _etiqueta_rango({"desde": t.get('desde'), "hasta": t.get("hasta")}),
                 f"{float(t.get('cantidad') or 0):g}",
                 str(t.get("motivo") or ""),
             ))
@@ -2111,7 +2238,11 @@ class CalculoCobranzaApp:
     def construir_dias(self):
         """Reconstruye la lista de días desde la lista de feriados y la pinta."""
         anio, mes, quincena = self.periodo_actual()
-        self.dias = dias_de_quincena(anio, mes, quincena, self.feriados)
+        if self.plan_cobro == "Por Punto o Viaje":
+            # 🗓️ Cobro por punto: se toman TODOS los días del mes (no hay quincena)
+            self.dias = dias_de_mes(anio, mes, self.feriados)
+        else:
+            self.dias = dias_de_quincena(anio, mes, quincena, self.feriados)
         self.pintar_dias()
 
     def pintar_dias(self):
@@ -2344,7 +2475,7 @@ class CalculoCobranzaApp:
                 continue
             cat = t.get("categoria") if t.get("categoria") in ("normal", "domingo", "feriado") else "normal"
             ded_reg.setdefault(idx, {"normal": 0, "domingo": 0, "feriado": 0})
-            ded_reg[idx][cat] += int(t.get("cantidad") or 0)
+            ded_reg[idx][cat] += float(t.get("cantidad") or 0)
 
         monto_base = 0.0
         monto_ded = 0.0
@@ -2357,9 +2488,9 @@ class CalculoCobranzaApp:
             pd = self._leer_float(rg["precio_domingo"], "Precio Domingo")
             pf = self._leer_float(rg["precio_feriado"], "Precio Feriado")
             extra = ded_reg.get(i, {})
-            nr_normal = int(rg["ded"]["normal"] or 0) + int(extra.get("normal", 0))
-            nr_domingo = int(rg["ded"]["domingo"] or 0) + int(extra.get("domingo", 0))
-            nr_feriado = int(rg["ded"]["feriado"] or 0) + int(extra.get("feriado", 0))
+            nr_normal = float(rg["ded"]["normal"] or 0) + float(extra.get("normal", 0))
+            nr_domingo = float(rg["ded"]["domingo"] or 0) + float(extra.get("domingo", 0))
+            nr_feriado = float(rg["ded"]["feriado"] or 0) + float(extra.get("feriado", 0))
             base_r = rg["viajes"]["normal"] * pn + rg["viajes"]["domingo"] * pd + rg["viajes"]["feriado"] * pf
             ded_r = nr_normal * pn + nr_domingo * pd + nr_feriado * pf
             monto_cat["normal"] += (rg["viajes"]["normal"] - nr_normal) * pn
@@ -2374,7 +2505,7 @@ class CalculoCobranzaApp:
             # repintar el cuadro). En el registro guardado sí van ya sumados.
             detalle.append({
                 "desde": rg["distancia_desde"], "hasta": rg["distancia_hasta"],
-                "distancia": f"{rg['distancia_desde']:g} - {rg['distancia_hasta']:g} km",
+                "distancia": _etiqueta_rango(rg),
                 "precio_normal": pn, "precio_domingo": pd, "precio_feriado": pf,
                 "viajes_normal": rg["viajes"]["normal"], "viajes_domingo": rg["viajes"]["domingo"],
                 "viajes_feriado": rg["viajes"]["feriado"],
@@ -2397,7 +2528,7 @@ class CalculoCobranzaApp:
             deducciones_detalle.append({
                 "tipo": "DEDUCCION",
                 "plan": "Por Punto o Viaje",
-                "unidad": f"{float(t.get('desde') or 0):g} - {float(t.get('hasta') or 0):g} km",
+                "unidad": _etiqueta_rango({"desde": t.get('desde'), "hasta": t.get("hasta")}),
                 "fecha": t.get("fecha"), "categoria": cat,
                 "horas": 0.0, "minutos": 0.0, "cantidad": cant,
                 "desde": t.get("desde"), "hasta": t.get("hasta"),
@@ -2445,13 +2576,29 @@ class CalculoCobranzaApp:
         lineas = []
         if "viajes" in r:
             # Plan Por Punto o Viaje: resumen por rango de distancia
+            # 🛣️ Solo se listan los traslados/zonas que realmente se calcularon
             for i, vj in enumerate(r["viajes"]):
-                lineas.append(
-                    f"🛣️ {vj['distancia']}: base {formatear_moneda(vj['monto_base'])}"
-                    f" − no realizados {formatear_moneda(vj['monto_deducciones'])} = {formatear_moneda(vj['subtotal'])}")
-                # Actualiza el monto por rango y el total en la tabla de viajes
+                tiene_viajes = any(int(vj.get(k) or 0) for k in
+                                   ("viajes_normal", "viajes_domingo", "viajes_feriado"))
+                tiene_ded = any(int(vj.get(k) or 0) for k in
+                                ("ded_normal", "ded_domingo", "ded_feriado"))
+                if tiene_viajes or tiene_ded or float(vj.get("monto_base") or 0):
+                    detalle_cant = []
+                    for clave, etiqueta in (("normal", "normal"), ("domingo", "domingo"),
+                                            ("feriado", "feriado")):
+                        cuantos = int(vj.get("viajes_%s" % clave) or 0)
+                        if cuantos:
+                            detalle_cant.append("%d %s" % (cuantos, etiqueta))
+                    texto_cant = ("  (" + ", ".join(detalle_cant) + ")") if detalle_cant else ""
+                    lineas.append(
+                        f"🛣️ {vj['distancia']}{texto_cant}: base {formatear_moneda(vj['monto_base'])}"
+                        f" − no realizados {formatear_moneda(vj['monto_deducciones'])}"
+                        f" = {formatear_moneda(vj['subtotal'])}")
+                # El monto de cada fila de la tabla se actualiza siempre
                 if hasattr(self, "lbl_monto_viaje") and i < len(self.lbl_monto_viaje):
                     self.lbl_monto_viaje[i].configure(text=formatear_moneda(vj["subtotal"]))
+            if not lineas:
+                lineas.append("(Todavía no hay traslados registrados para este periodo.)")
             try:
                 self.lbl_total_viajes.configure(text=f"TOTAL VIAJES: {formatear_moneda(r['total'])}")
             except Exception:
@@ -2590,12 +2737,13 @@ class CalculoCobranzaApp:
                 for vj in r["viajes"]:
                     cursor.execute('''
                         INSERT INTO cobranza_quincena_viajes
-                        (id_cobranza, distancia_desde, distancia_hasta, precio_normal, precio_domingo, precio_feriado,
+                        (id_cobranza, zona, distancia_desde, distancia_hasta, precio_normal,
+                         precio_domingo, precio_feriado,
                          viajes_normal, viajes_domingo, viajes_feriado,
                          ded_normal, ded_domingo, ded_feriado,
                          monto_base, monto_deducciones, subtotal)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ''', (id_cob,
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ''', (id_cob, vj.get("distancia", ""),
                           vj.get("desde", 0), vj.get("hasta", 0),
                           vj["precio_normal"], vj["precio_domingo"], vj["precio_feriado"],
                           vj["viajes_normal"], vj["viajes_domingo"], vj["viajes_feriado"],
@@ -2726,13 +2874,25 @@ class CalculoCobranzaApp:
             unidades = cursor.fetchall()
 
             cursor.execute('''
-                SELECT distancia_desde, distancia_hasta, precio_normal, precio_domingo, precio_feriado,
+                SELECT COALESCE(zona, ''), distancia_desde, distancia_hasta, precio_normal,
+                       precio_domingo, precio_feriado,
                        viajes_normal, viajes_domingo, viajes_feriado,
                        ded_normal, ded_domingo, ded_feriado,
                        monto_base, monto_deducciones, subtotal
                 FROM cobranza_quincena_viajes WHERE id_cobranza=%s ORDER BY id
             ''', (id_cob,))
-            viajes_pdf = cursor.fetchall()
+            todas_pdf = cursor.fetchall()
+            # 🛣️ Solo lo que se calculó (zonas con viajes, deducciones o monto)
+            viajes_pdf = []
+            for fila in todas_pdf:
+                try:
+                    (zona, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb, md, sub) = fila
+                except Exception:
+                    continue
+                if (float(vn or 0) or float(vd or 0) or float(vf or 0)
+                        or float(dn or 0) or float(dd or 0) or float(df or 0)
+                        or abs(float(mb or 0)) > 0.005 or abs(float(sub or 0)) > 0.005):
+                    viajes_pdf.append(fila)
 
             # Asientos con fecha (deducciones y horas extras) — detalle uno por uno
             try:
@@ -2854,6 +3014,11 @@ class CalculoCobranzaApp:
         ancho_pag = 612
         y = 760.0
 
+        # 🏷️ Título según el plan: por punto se cobra por MES (no hay quincena)
+        titulo_pdf = ("CÁLCULO DE COBRANZA MENSUAL"
+                      if str(plan).strip() == "Por Punto o Viaje"
+                      else "CÁLCULO DE COBRANZA QUINCENAL")
+
         # ---- Encabezado con logo ----
         ruta_logo = _obtener_logo_pdf()
         if ruta_logo and os.path.exists(ruta_logo):
@@ -2865,15 +3030,15 @@ class CalculoCobranzaApp:
                 c.drawImage(img, 40, y - alto, width=min(ancho, 160), height=alto)
                 c.setFont("Helvetica-Bold", 15)
                 c.setFillColorRGB(0.12, 0.32, 0.55)
-                c.drawString(220, y - 25, "CÁLCULO DE COBRANZA QUINCENAL")
+                c.drawString(220, y - 25, titulo_pdf)
             except Exception:
                 c.setFont("Helvetica-Bold", 15)
                 c.setFillColorRGB(0.12, 0.32, 0.55)
-                c.drawString(40, y - 25, "CÁLCULO DE COBRANZA QUINCENAL")
+                c.drawString(40, y - 25, titulo_pdf)
         else:
             c.setFont("Helvetica-Bold", 15)
             c.setFillColorRGB(0.12, 0.32, 0.55)
-            c.drawString(40, y - 25, "CÁLCULO DE COBRANZA QUINCENAL")
+            c.drawString(40, y - 25, titulo_pdf)
 
         c.setFont("Helvetica-Bold", 10)
         c.setFillColorRGB(0, 0, 0)
@@ -2985,7 +3150,12 @@ class CalculoCobranzaApp:
         c.setFont("Helvetica-Bold", 11)
         c.drawString(40, y_cli, "PERIODO")
         c.setFont("Helvetica", 10)
-        periodo_txt = f"{NOMBRES_MESES[mes-1]} {anio} — Quincena {'1ª (1 al 15)' if quincena == 1 else '2ª (16 al fin)'}"
+        if str(plan).strip() == "Por Punto o Viaje":
+            # 🗓️ Por punto se cobra por MES: no se menciona la quincena
+            periodo_txt = f"{NOMBRES_MESES[mes-1]} {anio}"
+        else:
+            periodo_txt = (f"{NOMBRES_MESES[mes-1]} {anio} — "
+                           f"Quincena {'1ª (1 al 15)' if quincena == 1 else '2ª (16 al fin)'}")
         c.drawString(40, y_cli - 13.0, _recortar_texto(c, periodo_txt, ANCHO_TOTAL, tam=10))
         c.drawString(40, y_cli - 26.0, f"Plan de Cobro: {plan}")
         y = y_cli - 40.0
@@ -2993,19 +3163,22 @@ class CalculoCobranzaApp:
         c.line(40, y, 572, y)
         y -= SALTO_TITULO
 
-        # ---- Días de la quincena: solo el resumen total ----
-        c.setFillColorRGB(0, 0, 0)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(40, y, "DETALLE DE DÍAS DE LA QUINCENA")
-        y -= SALTO_TITULO
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(40, y, f"Total días: {len(detalle)}  |  Días Normales (Lun–Sáb): {c_lunvie}  |  Domingos: {c_dom}  |  Feriados: {c_fer}")
+        # ---- Días: solo se muestra en el plan Por Hora (por punto se cobra por traslado) ----
+        if str(plan).strip() != "Por Punto o Viaje":
+            c.setFillColorRGB(0, 0, 0)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(40, y, "DETALLE DE DÍAS DE LA QUINCENA")
+            y -= SALTO_TITULO
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(40, y, f"Total días: {len(detalle)}  |  Días Normales (Lun–Sáb): {c_lunvie}  |  Domingos: {c_dom}  |  Feriados: {c_fer}")
         y -= SALTO_BLOQUE
 
         if viajes_pdf:
             # ---- Detalle de viajes por distancia ----
             c.setFont("Helvetica-Bold", 11)
-            c.drawString(40, y, "DETALLE DE VIAJES POR DISTANCIA")
+            c.drawString(40, y, ("DETALLE DE VIAJES POR ZONA"
+                                 if str(plan).strip() == "Por Punto o Viaje"
+                                 else "DETALLE DE VIAJES POR DISTANCIA"))
             y -= SALTO_TITULO
             if y < 90:
                 c.showPage()
@@ -3016,7 +3189,7 @@ class CalculoCobranzaApp:
             for w in cols_a:
                 xs_a.append(xs_a[-1] + w)
             ancho_a = sum(cols_a)
-            cab_a = ["DISTANCIA", "P.NORM", "P.DOM", "P.FER", "V.NORM", "V.DOM", "V.FER", "MONTO"]
+            cab_a = ["ZONA", "P.NORM", "P.DOM", "P.FER", "V.NORM", "V.DOM", "V.FER", "MONTO"]
 
             def _cabecera_viajes(cols, xs, ancho, cab):
                 """Encabezado de las tablas de viajes (se repite al cambiar de hoja)."""
@@ -3031,14 +3204,14 @@ class CalculoCobranzaApp:
                 y -= ALTO_CAB
 
             _cabecera_viajes(cols_a, xs_a, ancho_a, cab_a)
-            for (desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
+            for (zona, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
                 if y < 70:
                     c.showPage()
                     y = 750.0
                     _cabecera_viajes(cols_a, xs_a, ancho_a, cab_a)
                 c.setFillColorRGB(0, 0, 0)
                 c.drawString(xs_a[0] + 3, y - BASE_TXT, _recortar_texto(
-                    c, f"{numero_2_decimales(desde)} - {numero_2_decimales(hasta)} km",
+                    c, _nombre_zona_pdf(zona, desde, hasta),
                     cols_a[0] - 6, "Helvetica", FUENTE_TABLA))
                 c.drawCentredString(xs_a[1] + cols_a[1] / 2, y - BASE_TXT, _recortar_texto(
                     c, f"{round(float(pn or 0), 2):,.2f}", cols_a[1] - 4, "Helvetica", FUENTE_TABLA))
@@ -3046,9 +3219,9 @@ class CalculoCobranzaApp:
                     c, f"{round(float(pd or 0), 2):,.2f}", cols_a[2] - 4, "Helvetica", FUENTE_TABLA))
                 c.drawCentredString(xs_a[3] + cols_a[3] / 2, y - BASE_TXT, _recortar_texto(
                     c, f"{round(float(pf or 0), 2):,.2f}", cols_a[3] - 4, "Helvetica", FUENTE_TABLA))
-                c.drawCentredString(xs_a[4] + cols_a[4] / 2, y - BASE_TXT, numero_2_decimales(vn))
-                c.drawCentredString(xs_a[5] + cols_a[5] / 2, y - BASE_TXT, numero_2_decimales(vd))
-                c.drawCentredString(xs_a[6] + cols_a[6] / 2, y - BASE_TXT, numero_2_decimales(vf))
+                c.drawCentredString(xs_a[4] + cols_a[4] / 2, y - BASE_TXT, ("%g" % float(vn or 0)))
+                c.drawCentredString(xs_a[5] + cols_a[5] / 2, y - BASE_TXT, ("%g" % float(vd or 0)))
+                c.drawCentredString(xs_a[6] + cols_a[6] / 2, y - BASE_TXT, ("%g" % float(vf or 0)))
                 c.drawCentredString(xs_a[7] + cols_a[7] / 2, y - BASE_TXT, _recortar_texto(
                     c, f"{simbolo} {round(float(mb2 or 0), 2):,.2f}", cols_a[7] - 4,
                     "Helvetica", FUENTE_TABLA))
@@ -3058,49 +3231,66 @@ class CalculoCobranzaApp:
             c.setStrokeColorRGB(0, 0, 0)
             c.setLineWidth(1)
             c.line(40, y + 1, 40 + ancho_a, y + 1)
-            # Tabla B: viajes no realizados (deducción) — en la MISMA hoja
-            y -= ALTO_FILA + 2.0
-            cols_b = [120, 60, 60, 60, 100]
-            xs_b = [40]
-            for w in cols_b:
-                xs_b.append(xs_b[-1] + w)
-            ancho_b = sum(cols_b)
-            cab_b = ["DISTANCIA", "NR.NORM", "NR.DOM", "NR.FER", "MONTO"]
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(40, y, "VIAJES NO REALIZADOS (DEDUCCIÓN)")
-            y -= 14.0
-            _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
-            for (desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
-                if y < 70:
-                    c.showPage()
-                    y = 750.0
-                    _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
-                c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_b[0] + 3, y - BASE_TXT, _recortar_texto(
-                    c, f"{numero_2_decimales(desde)} - {numero_2_decimales(hasta)} km",
-                    cols_b[0] - 6, "Helvetica", FUENTE_TABLA))
-                c.drawCentredString(xs_b[1] + cols_b[1] / 2, y - BASE_TXT, numero_2_decimales(dn))
-                c.drawCentredString(xs_b[2] + cols_b[2] / 2, y - BASE_TXT, numero_2_decimales(dd))
-                c.drawCentredString(xs_b[3] + cols_b[3] / 2, y - BASE_TXT, numero_2_decimales(df))
-                c.drawCentredString(xs_b[4] + cols_b[4] / 2, y - BASE_TXT, _recortar_texto(
-                    c, f"{simbolo} {round(float(md2 or 0), 2):,.2f}", cols_b[4] - 4,
-                    "Helvetica", FUENTE_TABLA))
-                c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                c.line(40, y - LINEA_FILA, 40 + ancho_b, y - LINEA_FILA)
-                y -= ALTO_FILA
-            c.setStrokeColorRGB(0, 0, 0)
-            c.setLineWidth(1)
-            c.line(40, y + 1, 40 + ancho_b, y + 1)
+            # 🚫 La tabla «viajes no realizados» solo se imprime si hay deducciones
+            _hay_no_realizados = any(
+                (float(v[9] or 0) or float(v[10] or 0) or float(v[11] or 0)
+                 or abs(float(v[13] or 0)) > 0.005) for v in viajes_pdf)
+            if _hay_no_realizados:
+                # Tabla B: viajes no realizados (deducción) — en la MISMA hoja
+                y -= ALTO_FILA + 2.0
+                cols_b = [120, 60, 60, 60, 100]
+                xs_b = [40]
+                for w in cols_b:
+                    xs_b.append(xs_b[-1] + w)
+                ancho_b = sum(cols_b)
+                cab_b = ["ZONA", "NR.NORM", "NR.DOM", "NR.FER", "MONTO"]
+                c.setFont("Helvetica-Bold", 9)
+                c.drawString(40, y, "VIAJES NO REALIZADOS (DEDUCCIÓN)")
+                y -= 14.0
+                _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
+                for (zona, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
+                    if y < 70:
+                        c.showPage()
+                        y = 750.0
+                        _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
+                    c.setFillColorRGB(0, 0, 0)
+                    c.drawString(xs_b[0] + 3, y - BASE_TXT, _recortar_texto(
+                        c, _nombre_zona_pdf(zona, desde, hasta),
+                        cols_b[0] - 6, "Helvetica", FUENTE_TABLA))
+                    c.drawCentredString(xs_b[1] + cols_b[1] / 2, y - BASE_TXT, numero_2_decimales(dn))
+                    c.drawCentredString(xs_b[2] + cols_b[2] / 2, y - BASE_TXT, numero_2_decimales(dd))
+                    c.drawCentredString(xs_b[3] + cols_b[3] / 2, y - BASE_TXT, numero_2_decimales(df))
+                    c.drawCentredString(xs_b[4] + cols_b[4] / 2, y - BASE_TXT, _recortar_texto(
+                        c, f"{simbolo} {round(float(md2 or 0), 2):,.2f}", cols_b[4] - 4,
+                        "Helvetica", FUENTE_TABLA))
+                    c.setStrokeColorRGB(0.85, 0.85, 0.85)
+                    c.line(40, y - LINEA_FILA, 40 + ancho_b, y - LINEA_FILA)
+                    y -= ALTO_FILA
+                c.setStrokeColorRGB(0, 0, 0)
+                c.setLineWidth(1)
+                c.line(40, y + 1, 40 + ancho_b, y + 1)
             y -= 8.0
+            # 🧮 Cantidad de viajes por tarifa (lo que se cobra)
+            tot_norm = sum(float(v[6] or 0) for v in viajes_pdf)
+            tot_dom = sum(float(v[7] or 0) for v in viajes_pdf)
+            tot_fer = sum(float(v[8] or 0) for v in viajes_pdf)
+            total_viajes = tot_norm + tot_dom + tot_fer
             c.setFont("Helvetica-Bold", 10)
+            c.drawString(42, y - BASE_TXT,
+                         f"VIAJES: Normal {tot_norm:g}  ·  Domingo {tot_dom:g}  ·  "
+                         f"Feriado {tot_fer:g}  ·  TOTAL {total_viajes:g}")
+            y -= ALTO_FILA
             c.drawString(42, y - BASE_TXT, "SUBTOTAL (BASE)")
             c.drawRightString(40 + ancho_a - 2, y - BASE_TXT,
                               f"{simbolo} {round(float(m_base or 0), 2):,.2f}")
             y -= ALTO_FILA
-            c.drawString(42, y - BASE_TXT, "TOTAL NO REALIZADOS (DEDUCCIÓN)")
-            c.drawRightString(40 + ancho_a - 2, y - BASE_TXT,
-                              f"- {simbolo} {round(float(m_ded or 0), 2):,.2f}")
-            y -= ALTO_FILA + SALTO_SECCION
+            # 🚫 La deducción solo se imprime si de verdad hay algo que descontar
+            if abs(float(m_ded or 0)) > 0.005:
+                c.drawString(42, y - BASE_TXT, "TOTAL NO REALIZADOS (DEDUCCIÓN)")
+                c.drawRightString(40 + ancho_a - 2, y - BASE_TXT,
+                                  f"- {simbolo} {round(float(m_ded or 0), 2):,.2f}")
+                y -= ALTO_FILA
+            y -= SALTO_SECCION
         else:
             # ---- Cuadro de cobro POR UNIDAD ----
             c.setFont("Helvetica-Bold", 11)
@@ -4872,7 +5062,8 @@ class VentanaPreciosDistancia(ctk.CTkToplevel):
 # 🚀 CALENDARIO AMIGABLE PARA ELEGIR FECHA
 # =========================================================
 class CalendarioPopup(ctk.CTkToplevel):
-    def __init__(self, parent, entry, on_change=None, anio=None, mes=None, dias_resaltados=None):
+    def __init__(self, parent, entry, on_change=None, anio=None, mes=None, dias_resaltados=None,
+                 feriados=None):
         super().__init__(parent)
         self.entry = entry
         self.on_change = on_change
@@ -4898,6 +5089,9 @@ class CalendarioPopup(ctk.CTkToplevel):
         self.anio = anio if anio else hoy.year
         self.mes = mes if mes else hoy.month
         self.dias_resaltados = dias_resaltados or {}  # {dia: categoria}
+        # 🎌 Feriados conocidos: así el calendario pinta normal/domingo/feriado
+        #    aunque se navegue a un mes que no esté en la tabla de días.
+        self.feriados = feriados or {}
 
         f_nav = ctk.CTkFrame(self, fg_color="transparent")
         f_nav.pack(fill="x", padx=10, pady=(10, 2))
@@ -4944,8 +5138,13 @@ class CalendarioPopup(ctk.CTkToplevel):
             col = (col_inicio + dia - 1) % 7
             if dia > 1 and col == 0:
                 fila += 1
-            # Resalta los días de la quincena según su tipo de día
+            # 🎨 Colorea cada día: normal (azul), domingo (naranja) o feriado (rojo)
             cat = self.dias_resaltados.get(dia)
+            if not cat:
+                try:
+                    cat = clasificar_dia(date(self.anio, self.mes, dia), self.feriados)
+                except Exception:
+                    cat = None
             if cat == "feriado":
                 fg_color, hover_color = "#f8d7da", "#e6b8ba"
             elif cat == "domingo":
@@ -5463,8 +5662,14 @@ class AsistenteCobranza(ctk.CTkToplevel):
                          "Cada unidad del cliente maneja sus propios precios (normal, domingo, feriado) "
                          "y su cantidad de horas al día.")
         else:
-            self._titulo("Paso 2 de 6 — Precios por distancia",
-                         "Define la tabla Distancia → Precio (normal, domingo, feriado) que se aplicará a cada viaje.")
+            tiene_zonas = any(rg.get("es_zona") for rg in (getattr(self.app, "rangos_viaje", []) or []))
+            if tiene_zonas:
+                self._titulo("Paso 2 de 6 — Precios por ZONA",
+                             "Este cliente cobra por ZONA: cada zona tiene su precio normal, domingo y feriado.")
+            else:
+                self._titulo("Paso 2 de 6 — Precios por ZONA o distancia",
+                             "Configura las ZONAS (recomendado) o, si el cliente ya usa distancias, "
+                             "mantén la tabla Distancia → Precio.")
         f = self._tarjeta()
         fx = ctk.CTkFrame(f, fg_color="transparent")
         fx.pack(fill="x", padx=15, pady=(12, 4))
@@ -5473,9 +5678,12 @@ class AsistenteCobranza(ctk.CTkToplevel):
                           font=(self.familia, 12, "bold"), fg_color="#e67e22", hover_color="#d35400",
                           command=self._abrir_unidades).pack(side="left")
         else:
-            ctk.CTkButton(fx, text="📏 Configurar precios por distancia", width=420, height=38,
-                          font=(self.familia, 12, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
-                          command=self._abrir_precios).pack(side="left")
+            ctk.CTkButton(fx, text="🏷️ Configurar zonas y precios", width=340, height=38,
+                          font=(self.familia, 12, "bold"), fg_color="#16a085", hover_color="#11806a",
+                          command=self._abrir_zonas).pack(side="left")
+            ctk.CTkButton(fx, text="📏 Usar distancias", width=190, height=38,
+                          font=(self.familia, 11, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
+                          command=self._abrir_precios).pack(side="left", padx=(8, 0))
         ctk.CTkButton(fx, text="🔄 Actualizar resumen", width=190, height=38,
                       font=(self.familia, 11, "bold"), fg_color="#7f8c8d", hover_color="#606b6b",
                       command=self._refrescar_config).pack(side="left", padx=10)
@@ -5505,6 +5713,20 @@ class AsistenteCobranza(ctk.CTkToplevel):
         except Exception as e:
             messagebox.showerror("Horas por feriado", str(e), parent=self)
         self._programar(800, self._refrescar_config)
+
+    def _abrir_zonas(self):
+        """🏷️ Zonas del cliente (precio normal, domingo y feriado)."""
+        if not self.app.cliente_id:
+            messagebox.showwarning("Falta el cliente", "Primero elige un cliente (paso 1).",
+                                   parent=self)
+            return
+        try:
+            VentanaZonasPrecio(self, self.app, self.app.cliente_id, self.app.cliente_nombre)
+        except Exception as e:
+            messagebox.showerror("Zonas", "No se pudo abrir las zonas:" + chr(10) + str(e),
+                                 parent=self)
+            return
+        self._refrescar_config()
 
     def _abrir_precios(self):
         if not self.app.cliente_id:
@@ -5542,13 +5764,17 @@ class AsistenteCobranza(ctk.CTkToplevel):
         else:
             rangos = getattr(self.app, "rangos_viaje", [])
             if not rangos:
-                lineas.append("⚠️ Este cliente todavía NO tiene precios por distancia.")
-                lineas.append("    Usa el botón «📏 Configurar precios por distancia».")
+                lineas.append("⚠️ Este cliente todavía NO tiene zonas ni precios por distancia.")
+                lineas.append("    Usa el botón «🏷️ Configurar zonas y precios».")
             else:
-                lineas.append(f"✔ {len(rangos)} rango(s) de distancia configurado(s):")
+                es_zona = any(rg.get("es_zona") for rg in rangos)
+                lineas.append(("✔ %d ZONA(S) con precio:" if es_zona
+                               else "✔ %d rango(s) de distancia:") % len(rangos))
                 for rg in rangos:
+                    nombre = (rg.get("nombre") or
+                              _etiqueta_rango(rg))
                     lineas.append(
-                        "    • " + f"{float(rg['distancia_desde']):g} - {float(rg['distancia_hasta']):g} km"
+                        "    • " + str(nombre)
                         + "  —  normal " + formatear_moneda(rg["precio_normal"])
                         + ", domingo " + formatear_moneda(rg["precio_domingo"])
                         + ", feriado " + formatear_moneda(rg["precio_feriado"]))
@@ -5559,9 +5785,16 @@ class AsistenteCobranza(ctk.CTkToplevel):
 
     # ---------------- PASO 3: Periodo ----------------
     def _paso_periodo(self):
-        self._titulo("Paso 3 de 6 — Elige el periodo y los feriados",
-                     "Selecciona mes, año y quincena, busca los días y marca o quita los feriados "
-                     "que necesites. Puedes seleccionar varios días a la vez (Ctrl o Shift).")
+        self._por_mes = (self.app.plan_cobro == "Por Punto o Viaje")
+        if self._por_mes:
+            self._titulo("Paso 3 de 6 — Elige el MES y los feriados",
+                         "Cobro por punto: se toman TODOS los días del mes. Elige mes y año, "
+                         "busca los días y marca o quita feriados si hace falta "
+                         "(los domingos y días normales se clasifican solos).")
+        else:
+            self._titulo("Paso 3 de 6 — Elige el periodo y los feriados",
+                         "Selecciona mes, año y quincena, busca los días y marca o quita los feriados "
+                         "que necesites. Puedes seleccionar varios días a la vez (Ctrl o Shift).")
         f = self._tarjeta()
         fila = ctk.CTkFrame(f, fg_color="transparent")
         fila.pack(fill="x", padx=15, pady=(12, 6))
@@ -5575,17 +5808,27 @@ class AsistenteCobranza(ctk.CTkToplevel):
                                           width=100, font=(self.familia, 12))
         self.cmb_anio.set(self.app.combo_anio.get())
         self.cmb_anio.pack(side="left", padx=(0, 16))
-        ctk.CTkLabel(fila, text="Quincena:", font=(self.familia, 12, "bold")).pack(side="left", padx=(0, 4))
-        self.cmb_quin = ctk.CTkOptionMenu(fila, values=list(self.app.combo_quincena.cget("values")),
-                                          width=200, font=(self.familia, 12))
-        self.cmb_quin.set(self.app.combo_quincena.get())
-        self.cmb_quin.pack(side="left")
-        ctk.CTkButton(f, text="🔎 Buscar días de la quincena (internet)", width=360, height=38,
+        self.cmb_quin = None
+        if not self._por_mes:
+            # 🕐 Plan Por Hora: se mantiene igual que siempre (con quincena)
+            ctk.CTkLabel(fila, text="Quincena:", font=(self.familia, 12, "bold")).pack(side="left", padx=(0, 4))
+            self.cmb_quin = ctk.CTkOptionMenu(fila, values=list(self.app.combo_quincena.cget("values")),
+                                              width=200, font=(self.familia, 12))
+            self.cmb_quin.set(self.app.combo_quincena.get())
+            self.cmb_quin.pack(side="left")
+        else:
+            ctk.CTkLabel(fila, text="🗓️ Se usarán todos los días del mes",
+                         font=(self.familia, 11, "bold"),
+                         text_color="#1e8449").pack(side="left", padx=(8, 0))
+        ctk.CTkButton(f, text=("🔎 Buscar los días del mes (internet)" if self._por_mes
+                               else "🔎 Buscar días de la quincena (internet)"), width=360, height=38,
                       font=(self.familia, 12, "bold"), fg_color="#1f538d", hover_color="#163b65",
                       command=self._buscar_dias).pack(anchor="w", padx=15, pady=(8, 4))
 
         # ---- Tabla de días: marcar/quitar feriados a mano ----
-        ctk.CTkLabel(f, text="📆 Días de la quincena — selecciona uno o varios para marcar como feriado:",
+        ctk.CTkLabel(f, text=("📆 Días del MES — selecciona uno o varios para marcar como feriado:"
+                              if self._por_mes else
+                              "📆 Días de la quincena — selecciona uno o varios para marcar como feriado:"),
                      font=(self.familia, 11, "bold"), text_color="#1f538d").pack(
             anchor="w", padx=15, pady=(8, 2))
         f_t = ctk.CTkFrame(f, fg_color="transparent")
@@ -5727,6 +5970,20 @@ class AsistenteCobranza(ctk.CTkToplevel):
 
     @con_letrero("Buscando los días de la quincena…")
     def _buscar_dias(self):
+        # (Por Punto o Viaje) no se envía quincena: la app arma el mes completo
+        if getattr(self, "_por_mes", False):
+            try:
+                self.app.combo_mes.set(self.cmb_mes.get())
+                self.app.combo_anio.set(self.cmb_anio.get())
+            except Exception:
+                pass
+        else:
+            self._buscar_dias_quincena_asis()
+            return
+        self.app.buscar_dias_quincena()
+        self._refrescar_dias()
+
+    def _buscar_dias_quincena_asis(self):
         try:
             self.app.combo_mes.set(self.cmb_mes.get())
             self.app.combo_anio.set(self.cmb_anio.get())
@@ -6411,6 +6668,306 @@ class AsistenteCobranza(ctk.CTkToplevel):
             formatear_moneda(tot["m_ex"] - tot["m_ded"])))
 
     # ---------------- PASO 5: Resumen ----------------
+    def _paso_registro_viaje(self):
+        """Paso 4 (plan Por Punto o Viaje): traslados y deducciones por ZONA, con su fecha."""
+        self._titulo("Paso 4 de 6 — Traslados y deducciones por ZONA",
+                     "Cada traslado lleva su FECHA (puede ser cualquier día). El precio sale de la "
+                     "ZONA elegida según el día: normal, domingo o feriado. Puedes poner la cantidad "
+                     "de viajes de esa fecha.")
+        rangos = getattr(self.app, "rangos_viaje", []) or []
+        if not rangos:
+            f = self._tarjeta("🛣️ Traslados")
+            ctk.CTkLabel(f, text="⚠️ Este cliente no tiene ZONAS ni precios configurados.\n"
+                                 "Vuelve al paso 2 y configura las zonas.",
+                         font=(self.familia, 11, "bold"), text_color="#c0392b",
+                         justify="left").pack(anchor="w", padx=15, pady=10)
+            return
+
+        nombres = []
+        for rg in rangos:
+            nombres.append(rg.get("nombre") or
+                           _etiqueta_rango(rg))
+        self._nombres_zonas_asis = nombres
+        vehiculos = ["— Sin vehículo —"]
+        try:
+            valores = list(self.app.combo_vehiculo_viaje.cget("values"))
+            vehiculos += [v for v in valores if v and not str(v).startswith("—")]
+        except Exception:
+            pass
+
+        # ---------------- TRASLADOS REGISTRADOS ----------------
+        f_reg = self._tarjeta("🛣️ Traslados registrados")
+        self.tabla_traslados = ttk.Treeview(
+            f_reg, columns=("fecha", "zona", "cat", "cant", "vehiculo", "monto"),
+            show="headings", height=6, selectmode="browse")
+        for col, titulo, ancho in (("fecha", "Fecha", 90), ("zona", "Zona", 200),
+                                   ("cat", "Día", 90), ("cant", "Cant.", 55),
+                                   ("vehiculo", "Vehículo", 170), ("monto", "Monto", 100)):
+            self.tabla_traslados.heading(col, text=titulo, anchor="center")
+            self.tabla_traslados.column(col, width=ancho,
+                                        anchor="w" if col in ("zona", "vehiculo") else "center")
+        self.tabla_traslados.pack(fill="x", padx=15, pady=(6, 4))
+        ctk.CTkButton(f_reg, text="➖ Quitar traslado seleccionado", width=240,
+                      font=(self.familia, 11, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
+                      command=self._quitar_traslado_asistente).pack(anchor="w", padx=15, pady=(0, 10))
+
+        # ---------------- ALTA DE TRASLADO ----------------
+        f_alta = self._tarjeta("➕ Registrar traslado")
+        fila = ctk.CTkFrame(f_alta, fg_color="transparent")
+        fila.pack(fill="x", padx=15, pady=(6, 8))
+        ctk.CTkLabel(fila, text="Fecha:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.ent_fecha_asis = ctk.CTkEntry(fila, width=110, placeholder_text="dd/mm/aaaa")
+        self.ent_fecha_asis.pack(side="left", padx=(4, 2))
+        ctk.CTkButton(fila, text="📅", width=40, font=(self.familia, 12),
+                      command=self._calendario_asis).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(fila, text="Zona:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.combo_zona_asis = ctk.CTkOptionMenu(fila, values=nombres, width=200,
+                                                 font=(self.familia, 11))
+        self.combo_zona_asis.pack(side="left", padx=(4, 10))
+        ctk.CTkLabel(fila, text="Vehículo:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.combo_veh_asis = ctk.CTkOptionMenu(fila, values=vehiculos, width=170,
+                                                font=(self.familia, 11))
+        self.combo_veh_asis.pack(side="left", padx=(4, 10))
+        ctk.CTkLabel(fila, text="Cantidad:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.ent_cant_asis = ctk.CTkEntry(fila, width=60, justify="center")
+        self.ent_cant_asis.insert(0, "1")
+        self.ent_cant_asis.pack(side="left", padx=(4, 10))
+        ctk.CTkButton(fila, text="➕ Agregar traslado", width=170, height=32,
+                      font=(self.familia, 11, "bold"), fg_color="#27ae60", hover_color="#1e8449",
+                      command=self._agregar_traslado_asistente).pack(side="left")
+        self.lbl_cat_asis = ctk.CTkLabel(f_alta, text="",
+                                         font=(self.familia, 10, "bold"), text_color="#1f538d")
+        self.lbl_cat_asis.pack(anchor="w", padx=15, pady=(0, 8))
+        self.ent_fecha_asis.bind("<KeyRelease>", lambda e: self._actualizar_cat_asis())
+
+        # ---------------- DEDUCCIONES ----------------
+        f_ded = self._tarjeta("➖ Deducciones (traslados NO realizados)")
+        fila2 = ctk.CTkFrame(f_ded, fg_color="transparent")
+        fila2.pack(fill="x", padx=15, pady=(6, 8))
+        ctk.CTkLabel(fila2, text="Fecha:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.ent_fecha_ded_asis = ctk.CTkEntry(fila2, width=110, placeholder_text="dd/mm/aaaa")
+        self.ent_fecha_ded_asis.pack(side="left", padx=(4, 2))
+        ctk.CTkButton(fila2, text="📅", width=40, font=(self.familia, 12),
+                      command=lambda: self._calendario_asis(deduccion=True)).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(fila2, text="Zona:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.combo_zona_ded_asis = ctk.CTkOptionMenu(fila2, values=nombres, width=200,
+                                                     font=(self.familia, 11))
+        self.combo_zona_ded_asis.pack(side="left", padx=(4, 10))
+        ctk.CTkLabel(fila2, text="Cantidad:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.ent_cant_ded_asis = ctk.CTkEntry(fila2, width=60, justify="center")
+        self.ent_cant_ded_asis.insert(0, "1")
+        self.ent_cant_ded_asis.pack(side="left", padx=(4, 10))
+        ctk.CTkLabel(fila2, text="Motivo:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.ent_motivo_ded_asis = ctk.CTkEntry(fila2, width=200,
+                                                placeholder_text="Ej.: servicio no realizado")
+        self.ent_motivo_ded_asis.pack(side="left", padx=(4, 10))
+        ctk.CTkButton(fila2, text="➕ Agregar deducción", width=170, height=32,
+                      font=(self.familia, 11, "bold"), fg_color="#e67e22", hover_color="#d35400",
+                      command=self._agregar_ded_asistente).pack(side="left")
+
+        self.tabla_ded_asis = ttk.Treeview(
+            f_ded, columns=("fecha", "zona", "cat", "cant", "motivo", "monto"),
+            show="headings", height=4, selectmode="browse")
+        for col, titulo, ancho in (("fecha", "Fecha", 90), ("zona", "Zona", 190),
+                                   ("cat", "Día", 90), ("cant", "Cant.", 55),
+                                   ("motivo", "Motivo", 220), ("monto", "Monto", 100)):
+            self.tabla_ded_asis.heading(col, text=titulo, anchor="center")
+            self.tabla_ded_asis.column(col, width=ancho,
+                                       anchor="w" if col in ("zona", "motivo") else "center")
+        self.tabla_ded_asis.pack(fill="x", padx=15, pady=(4, 4))
+        ctk.CTkButton(f_ded, text="➖ Quitar deducción seleccionada", width=240,
+                      font=(self.familia, 11, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
+                      command=self._quitar_ded_asistente).pack(anchor="w", padx=15, pady=(0, 10))
+
+        self._pintar_traslados_asistente()
+        self._actualizar_cat_asis()
+
+    # ---------- utilidades del paso 4 ----------
+    @staticmethod
+    def _fecha_texto_asis(texto):
+        try:
+            return datetime.strptime(str(texto or "").strip(), "%d/%m/%Y").date()
+        except Exception:
+            return None
+
+    def _calendario_asis(self, deduccion=False):
+        entrada = self.ent_fecha_ded_asis if deduccion else self.ent_fecha_asis
+        try:
+            hoy = datetime.now()
+            # Se abre en el mes/año del periodo elegido y con los feriados del cliente
+            try:
+                anio_cal, mes_cal, _q = self.app.periodo_actual()
+            except Exception:
+                anio_cal, mes_cal = hoy.year, hoy.month
+            CalendarioPopup(self, entrada,
+                            (lambda: self._actualizar_cat_asis()) if not deduccion else (lambda: None),
+                            anio=anio_cal, mes=mes_cal,
+                            dias_resaltados={d["fecha"].day: d["categoria"]
+                                             for d in (getattr(self.app, "dias", []) or [])
+                                             if d["fecha"].year == anio_cal and d["fecha"].month == mes_cal},
+                            feriados=getattr(self.app, "feriados", {}) or {})
+        except Exception as e:
+            messagebox.showwarning("Calendario", "Escriba la fecha como dd/mm/aaaa." + chr(10) + str(e),
+                                   parent=self)
+
+    def _categoria_fecha_asis(self, fecha):
+        try:
+            return self.app._categoria_para_fecha(fecha)
+        except Exception:
+            return "normal"
+
+    def _actualizar_cat_asis(self):
+        fecha = self._fecha_texto_asis(self.ent_fecha_asis.get())
+        if not fecha:
+            self.lbl_cat_asis.configure(text="Escriba la fecha (dd/mm/aaaa).")
+            return
+        cat = self._categoria_fecha_asis(fecha)
+        etiquetas = dict(CATEGORIAS)
+        self.lbl_cat_asis.configure(
+            text="Ese día es %s  →  se cobrará el precio de %s."
+                 % (etiquetas.get(cat, cat), etiquetas.get(cat, cat)))
+
+    def _indice_zona_asis(self, nombre, combo):
+        valores = list(combo.cget("values"))
+        if nombre in valores and valores.index(nombre) < len(self.app.rangos_viaje):
+            return valores.index(nombre)
+        return None
+
+    def _agregar_traslado_asistente(self):
+        fecha = self._fecha_texto_asis(self.ent_fecha_asis.get())
+        if not fecha:
+            return messagebox.showwarning("Fecha", "Escriba la fecha (dd/mm/aaaa).", parent=self)
+        idx = self._indice_zona_asis(self.combo_zona_asis.get(), self.combo_zona_asis)
+        if idx is None:
+            return messagebox.showwarning("Zona", "Elija la zona del traslado.", parent=self)
+        try:
+            cant = float(str(self.ent_cant_asis.get()).replace(",", ".") or 0)
+        except Exception:
+            cant = 0.0
+        if cant <= 0:
+            return messagebox.showwarning(
+                "Cantidad", "La cantidad de viajes debe ser mayor a 0 (puede ser 0.5).", parent=self)
+        rg = self.app.rangos_viaje[idx]
+        cat = self._categoria_fecha_asis(fecha)
+        precio = float(rg.get("precio_%s" % cat, 0) or 0)
+        vehiculo = self.combo_veh_asis.get()
+        if str(vehiculo).startswith("—"):
+            vehiculo = ""
+        rg["viajes"][cat] = float(rg["viajes"].get(cat, 0) or 0) + cant
+        self.app.viajes_registrados.append({
+            "fecha": fecha, "categoria": cat, "rango_idx": idx, "cantidad": cant,
+            "vehiculo": vehiculo, "precio": precio, "monto": precio * cant,
+            "desde": rg.get("distancia_desde", 0), "hasta": rg.get("distancia_hasta", 0),
+            "zona": rg.get("nombre", ""),
+        })
+        self._refrescar_totales_asis()
+
+    def _quitar_traslado_asistente(self):
+        sel = self.tabla_traslados.selection()
+        if not sel:
+            return messagebox.showwarning("Traslados", "Elija el traslado que quiere quitar.",
+                                          parent=self)
+        posicion = int(sel[0])
+        if not (0 <= posicion < len(self.app.viajes_registrados)):
+            return
+        registro = self.app.viajes_registrados.pop(posicion)
+        idx = registro.get("rango_idx")
+        cat = registro.get("categoria") or "normal"
+        cant = float(registro.get("cantidad") or 1)
+        try:
+            rg = self.app.rangos_viaje[idx]
+            rg["viajes"][cat] = max(0.0, float(rg["viajes"].get(cat, 0) or 0) - cant)
+        except Exception:
+            pass
+        self._refrescar_totales_asis()
+
+    def _agregar_ded_asistente(self):
+        fecha = self._fecha_texto_asis(self.ent_fecha_ded_asis.get())
+        if not fecha:
+            return messagebox.showwarning("Fecha", "Escriba la fecha de la deducción (dd/mm/aaaa).",
+                                          parent=self)
+        idx = self._indice_zona_asis(self.combo_zona_ded_asis.get(), self.combo_zona_ded_asis)
+        if idx is None:
+            return messagebox.showwarning("Zona", "Elija la zona de la deducción.", parent=self)
+        try:
+            cant = float(str(self.ent_cant_ded_asis.get()).replace(",", ".") or 0)
+        except Exception:
+            cant = 0.0
+        if cant <= 0:
+            return messagebox.showwarning(
+                "Cantidad", "La cantidad debe ser mayor a 0 (puede ser 0.5).", parent=self)
+        rg = self.app.rangos_viaje[idx]
+        cat = self._categoria_fecha_asis(fecha)
+        precio = float(rg.get("precio_%s" % cat, 0) or 0)
+        self.app.deducciones_registradas.append({
+            "fecha": fecha, "categoria": cat, "rango_idx": idx, "cantidad": cant,
+            "motivo": self.ent_motivo_ded_asis.get().strip(),
+            "precio": precio, "monto": precio * cant,
+            "desde": rg.get("distancia_desde", 0), "hasta": rg.get("distancia_hasta", 0),
+            "zona": rg.get("nombre", ""),
+        })
+        self._refrescar_totales_asis()
+
+    def _quitar_ded_asistente(self):
+        sel = self.tabla_ded_asis.selection()
+        if not sel:
+            return messagebox.showwarning("Deducciones", "Elija la deducción que quiere quitar.",
+                                          parent=self)
+        posicion = int(sel[0])
+        if 0 <= posicion < len(self.app.deducciones_registradas):
+            self.app.deducciones_registradas.pop(posicion)
+        self._refrescar_totales_asis()
+
+    def _refrescar_totales_asis(self):
+        """Repinta las tablas del paso 4 y recalcula el cobro en la ventana principal."""
+        self._pintar_traslados_asistente()
+        try:
+            self.app.pintar_viajes()          # deja las cantidades en la tabla principal
+        except Exception:
+            pass
+        try:
+            self.app._pintar_deducciones_registradas()
+        except Exception:
+            pass
+        try:
+            self.app.recalcular()
+        except Exception as e:
+            print("[Asistente] recalcular:", e)
+
+    def _pintar_traslados_asistente(self):
+        for tabla, origen in ((self.tabla_traslados, "viajes"),
+                              (self.tabla_ded_asis, "deducciones")):
+            try:
+                tabla.delete(*tabla.get_children())
+            except Exception:
+                continue
+            lista = (self.app.viajes_registrados if origen == "viajes"
+                     else self.app.deducciones_registradas)
+            for posicion, registro in enumerate(lista):
+                idx = registro.get("rango_idx")
+                try:
+                    rg = self.app.rangos_viaje[idx]
+                    zona = rg.get("nombre") or (
+                        _etiqueta_rango(rg))
+                except Exception:
+                    zona = registro.get("zona", "")
+                fecha = registro.get("fecha")
+                fecha_txt = fecha.strftime("%d/%m/%Y") if hasattr(fecha, "strftime") else str(fecha)
+                cat = str(registro.get("categoria") or "")
+                etiqueta_cat = dict(CATEGORIAS).get(cat, cat)
+                if origen == "viajes":
+                    valores = (fecha_txt, zona, etiqueta_cat,
+                               ("%g" % float(registro.get("cantidad", 1) or 0)),
+                               registro.get("vehiculo", ""),
+                               formatear_moneda(registro.get("monto", 0)))
+                else:
+                    valores = (fecha_txt, zona, etiqueta_cat,
+                               ("%g" % float(registro.get("cantidad", 1) or 0)),
+                               registro.get("motivo", ""),
+                               formatear_moneda(registro.get("monto", 0)))
+                tabla.insert("", tk.END, iid=str(posicion), values=valores)
+
+
     def _paso_resumen(self):
         self._titulo("Paso 5 de 6 — Revisa el resumen",
                      "Este es el resultado del cálculo. Si algo no cuadra, puedes volver atrás.")
@@ -6505,3 +7062,201 @@ if __name__ == "__main__":
     root.geometry("1000x760")
     app = CalculoCobranzaApp(root)
     root.mainloop()
+
+
+# =========================================================
+# 🏷️ VENTANA: ZONAS DEL CLIENTE CON SUS PRECIOS
+# =========================================================
+class VentanaZonasPrecio(ctk.CTkToplevel):
+    """Precios por ZONA: cada zona con precio normal, domingo y feriado."""
+
+    def __init__(self, parent, app, id_cliente, nombre_cliente):
+        super().__init__(parent)
+        self.app = app
+        self.id_cliente = id_cliente
+        self.nombre_cliente = nombre_cliente
+        familia_fuente = "Helvetica" if sys.platform == "darwin" else "Arial"
+        self.title("Zonas y precios — %s" % nombre_cliente)
+        self.geometry("780x520")
+        self.transient(parent)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(self, text="🏷️ ZONAS DEL CLIENTE  (precio normal / domingo / feriado)",
+                     font=(familia_fuente, 14, "bold"), text_color="#0e6655").pack(
+            anchor="w", padx=15, pady=(12, 2))
+        ctk.CTkLabel(self, text="Cada viaje se cobra según la ZONA de destino.",
+                     font=(familia_fuente, 10), text_color="gray").pack(anchor="w", padx=15)
+        f_tabla = ctk.CTkFrame(self, fg_color="transparent")
+        f_tabla.pack(fill="both", expand=True, padx=15, pady=8)
+        self.tabla = ttk.Treeview(f_tabla, columns=("nombre", "normal", "domingo", "feriado"),
+                                  show="headings", selectmode="browse", height=8)
+        for col, titulo, ancho in (("nombre", "Zona", 300), ("normal", "P. Normal", 130),
+                                   ("domingo", "P. Domingo", 130), ("feriado", "P. Feriado", 130)):
+            self.tabla.heading(col, text=titulo, anchor="center")
+            self.tabla.column(col, width=ancho, anchor="w" if col == "nombre" else "center")
+        self.tabla.pack(side="left", fill="both", expand=True)
+        barra = ttk.Scrollbar(f_tabla, orient="vertical", command=self.tabla.yview)
+        self.tabla.configure(yscrollcommand=barra.set)
+        barra.pack(side="right", fill="y")
+        f_edit = ctk.CTkFrame(self, corner_radius=8)
+        f_edit.pack(fill="x", padx=15, pady=(0, 6))
+        ctk.CTkLabel(f_edit, text="Zona:", font=(familia_fuente, 11, "bold")).grid(
+            row=0, column=0, sticky="w", padx=(10, 4), pady=8)
+        self.ent_nombre = ctk.CTkEntry(f_edit, width=210,
+                                       placeholder_text="Ej.: Centro / Sur / Aeropuerto")
+        self.ent_nombre.grid(row=0, column=1, sticky="w", padx=4, pady=8)
+        ctk.CTkLabel(f_edit, text="Normal:", font=(familia_fuente, 11, "bold")).grid(
+            row=0, column=2, sticky="w", padx=(12, 4))
+        self.ent_normal = ctk.CTkEntry(f_edit, width=85, justify="center", placeholder_text="0.00")
+        self.ent_normal.grid(row=0, column=3, sticky="w", padx=4)
+        ctk.CTkLabel(f_edit, text="Domingo:", font=(familia_fuente, 11, "bold")).grid(
+            row=0, column=4, sticky="w", padx=(12, 4))
+        self.ent_domingo = ctk.CTkEntry(f_edit, width=85, justify="center", placeholder_text="0.00")
+        self.ent_domingo.grid(row=0, column=5, sticky="w", padx=4)
+        ctk.CTkLabel(f_edit, text="Feriado:", font=(familia_fuente, 11, "bold")).grid(
+            row=0, column=6, sticky="w", padx=(12, 4))
+        self.ent_feriado = ctk.CTkEntry(f_edit, width=85, justify="center", placeholder_text="0.00")
+        self.ent_feriado.grid(row=0, column=7, sticky="w", padx=(4, 10))
+        f_btn = ctk.CTkFrame(self, fg_color="transparent")
+        f_btn.pack(fill="x", padx=15, pady=(0, 12))
+        ctk.CTkButton(f_btn, text="➕ Agregar zona", width=150, font=(familia_fuente, 11, "bold"),
+                      fg_color="#27ae60", hover_color="#1e8449",
+                      command=self.agregar).pack(side="left", padx=3)
+        ctk.CTkButton(f_btn, text="✏️ Modificar", width=130, font=(familia_fuente, 11, "bold"),
+                      fg_color="#2980b9", hover_color="#1f618d",
+                      command=self.modificar).pack(side="left", padx=3)
+        ctk.CTkButton(f_btn, text="🗑️ Eliminar", width=120, font=(familia_fuente, 11, "bold"),
+                      fg_color="#c0392b", hover_color="#922b21",
+                      command=self.eliminar).pack(side="left", padx=3)
+        ctk.CTkButton(f_btn, text="✅ Guardar y cerrar", width=190,
+                      font=(familia_fuente, 11, "bold"), fg_color="#1f538d",
+                      hover_color="#154360",
+                      command=self.guardar_cerrar).pack(side="right", padx=3)
+        self.tabla.bind("<<TreeviewSelect>>", self._al_seleccionar)
+        self.cargar()
+
+    def cargar(self):
+        for fila in self.tabla.get_children():
+            self.tabla.delete(fila)
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, nombre, precio_normal, precio_domingo, precio_feriado
+                FROM precios_viaje_zona WHERE id_cliente = %s ORDER BY nombre ASC
+            """, (self.id_cliente,))
+            for z in cursor.fetchall():
+                self.tabla.insert("", tk.END, iid=str(z[0]),
+                                  values=(z[1], "%.2f" % float(z[2] or 0),
+                                          "%.2f" % float(z[3] or 0),
+                                          "%.2f" % float(z[4] or 0)))
+            cursor.close()
+        except Exception as e:
+            messagebox.showerror("Zonas", "No se pudieron cargar las zonas:" + chr(10) + str(e),
+                                 parent=self)
+        finally:
+            liberar_conexion(conn)
+
+    def _al_seleccionar(self, _evento=None):
+        sel = self.tabla.selection()
+        if not sel:
+            return
+        valores = self.tabla.item(sel[0], "values")
+        self.ent_nombre.delete(0, "end")
+        self.ent_nombre.insert(0, valores[0])
+        for entrada, valor in ((self.ent_normal, valores[1]),
+                               (self.ent_domingo, valores[2]),
+                               (self.ent_feriado, valores[3])):
+            entrada.delete(0, "end")
+            entrada.insert(0, valor)
+
+    @staticmethod
+    def _numero(entrada):
+        try:
+            return float(str(entrada.get()).replace(",", ".").strip() or 0)
+        except Exception:
+            return 0.0
+
+    def _datos(self):
+        nombre = self.ent_nombre.get().strip()
+        if not nombre:
+            messagebox.showwarning("Zona", "Escriba el nombre de la zona.", parent=self)
+            return None
+        return (nombre, self._numero(self.ent_normal), self._numero(self.ent_domingo),
+                self._numero(self.ent_feriado))
+
+    def _guardar_fila(self, datos, id_zona=None):
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return False
+        try:
+            cursor = conn.cursor()
+            if id_zona:
+                cursor.execute("""
+                    UPDATE precios_viaje_zona
+                    SET nombre=%s, precio_normal=%s, precio_domingo=%s, precio_feriado=%s
+                    WHERE id=%s
+                """, datos + (id_zona,))
+            else:
+                cursor.execute("""
+                    INSERT INTO precios_viaje_zona
+                        (id_cliente, nombre, precio_normal, precio_domingo, precio_feriado)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (self.id_cliente,) + datos)
+            conn.commit()
+            return True
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            messagebox.showerror("Zonas", "No se pudo guardar:" + chr(10) + str(e), parent=self)
+            return False
+        finally:
+            liberar_conexion(conn)
+
+    def agregar(self):
+        datos = self._datos()
+        if datos and self._guardar_fila(datos):
+            self.cargar()
+            self.ent_nombre.delete(0, "end")
+
+    def modificar(self):
+        sel = self.tabla.selection()
+        if not sel:
+            return messagebox.showwarning("Zonas", "Elija la zona a modificar.", parent=self)
+        datos = self._datos()
+        if datos and self._guardar_fila(datos, int(sel[0])):
+            self.cargar()
+
+    def eliminar(self):
+        sel = self.tabla.selection()
+        if not sel:
+            return messagebox.showwarning("Zonas", "Elija la zona a eliminar.", parent=self)
+        nombre = self.tabla.item(sel[0], "values")[0]
+        if not messagebox.askyesno("Eliminar zona", "¿Eliminar la zona «%s»?" % nombre, parent=self):
+            return
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM precios_viaje_zona WHERE id=%s", (int(sel[0]),))
+            conn.commit()
+        except Exception as e:
+            messagebox.showerror("Zonas", "No se pudo eliminar:" + chr(10) + str(e), parent=self)
+        finally:
+            liberar_conexion(conn)
+        self.cargar()
+
+    def guardar_cerrar(self):
+        try:
+            if hasattr(self.app, "cargar_rangos_viaje"):
+                self.app.cargar_rangos_viaje()
+        except Exception:
+            pass
+        self.destroy()
