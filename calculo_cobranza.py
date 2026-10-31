@@ -3083,7 +3083,7 @@ class CalculoCobranzaApp:
         y = 760.0
 
         # 🏷️ Título según el plan: por punto se cobra por MES (no hay quincena)
-        titulo_pdf = ("CÁLCULO DE COBRANZA MENSUAL"
+        titulo_pdf = ("LIQUIDACIÓN DE SERVICIO"
                       if str(plan).strip() == "Por Punto o Viaje"
                       else "CÁLCULO DE COBRANZA QUINCENAL")
 
@@ -3296,7 +3296,7 @@ class CalculoCobranzaApp:
             hay_precio = any(abs(f[4]) > 0.005 for f in filas_pdf)
             columnas = []
             if hay_fecha:
-                columnas.append(("FECHA", 62))
+                columnas.append(("F. SERVICIO", 74))    # fecha del servicio (abreviada)
             columnas += [("ZONA", 118), ("DÍA", 62), ("CANT.", 40)]
             if hay_precio:
                 columnas.append(("PRECIO", 55))
@@ -7175,7 +7175,7 @@ class AsistenteCobranza(ctk.CTkToplevel):
             pass
         btns = ctk.CTkFrame(f, fg_color="transparent")
         btns.pack(fill="x", padx=15, pady=(8, 14))
-        ctk.CTkButton(btns, text="💾 Guardar quincena", width=220, height=40,
+        ctk.CTkButton(btns, text="💾 Guardar", width=220, height=40,
                       font=(self.familia, 13, "bold"), fg_color="#27ae60", hover_color="#1e8449",
                       command=self._guardar).pack(side="left", padx=(0, 10))
         ctk.CTkButton(btns, text="📄 Guardar y generar PDF", width=270, height=40,

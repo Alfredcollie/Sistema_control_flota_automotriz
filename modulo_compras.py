@@ -7072,7 +7072,7 @@ class FacturasRecibidasTab:
                             parent=getattr(self, "main_root", None))
 
     def _editar_factura(self, id_factura):
-        """✏️ Editor completo de la factura (todos los campos, incluidos los de flota)."""
+        """✏️ Edición completa de la factura, con el mismo estilo que Eventos."""
         if not id_factura:
             return
         conn = conectar_db(silencioso=True)
@@ -7099,36 +7099,178 @@ class FacturasRecibidasTab:
         finally:
             liberar_conexion(conn)
 
-        ventana = ctk.CTkToplevel(getattr(self, "main_root", None))
-        ventana.title("Editar factura #%s" % id_factura)
-        ventana.geometry("560x640")
-        marco = ctk.CTkScrollableFrame(ventana, width=520, height=520)
-        marco.pack(fill="both", expand=True, padx=10, pady=10)
+        raiz = getattr(self, "main_root", None)
+        v = ctk.CTkToplevel(raiz)
+        v.title("✏️ Editar Factura")
+        # 📐 Se abre pegada arriba y con el alto justo (pantallas de 768 px)
+        try:
+            sw, sh = v.winfo_screenwidth(), v.winfo_screenheight()
+            ancho = min(640, max(520, sw - 60))
+            alto = min(720, max(460, sh - 90))
+            x = max(0, (sw - ancho) // 2)
+            y = 0 if sh >= 800 else 2
+        except Exception:
+            ancho, alto, x, y = 640, 700, 60, 0
+        v.geometry("%dx%d+%d+%d" % (ancho, alto, x, y))
+        v.transient(raiz)
+        try:
+            v.resizable(True, True)
+            v.lift()
+            v.focus_force()
+            v.grab_set()
+        except Exception:
+            pass
 
-        entradas = {}
-        etiquetas = (("tipo_documento", "Tipo de documento"), ("numero_documento", "N° de documento"),
-                     ("fecha", "Fecha (DD/MM/AAAA)"), ("proveedor", "Proveedor"),
-                     ("ruc", "RUC"), ("categoria", "Categoría"),
-                     ("descripcion", "Descripción"), ("evento_asociado", "Vehículo (Placa)"),
-                     ("dias_credito", "Días de crédito"), ("subtotal", "Base"),
-                     ("impuesto", "IGV"), ("total", "Total"),
-                     ("det_porcentaje", "Detracción %"), ("det_monto", "Detracción S/"),
-                     ("delivery", "Delivery"), ("chofer_asociado", "Chofer"),
-                     ("kilometraje", "Kilometraje"), ("cantidad_combustible", "Galones"),
-                     ("orden_servicio", "Orden de Servicio"))
-        for campo, etiqueta in etiquetas:
-            ctk.CTkLabel(marco, text=etiqueta + ":", font=("Arial", 11, "bold")).pack(anchor="w", pady=(4, 0))
-            entrada = ctk.CTkEntry(marco)
-            entrada.pack(fill="x")
-            valor = datos.get(campo)
-            entrada.insert(0, "" if valor is None else str(valor))
-            entradas[campo] = entrada
+        f = ctk.CTkScrollableFrame(v, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=12, pady=(12, 0))
 
-        def guardar():
-            valores = {c: e.get().strip() for c, e in entradas.items()}
+        def _valores(combo_attr):
             try:
-                def a_num(x):
-                    return float(str(x).replace(",", ".") or 0)
+                return [str(x) for x in (getattr(self, combo_attr).cget("values") or [])]
+            except Exception:
+                return []
+
+        def seccion(titulo, color="#1f538d"):
+            ctk.CTkLabel(f, text=titulo, font=("Arial", 12, "bold"),
+                         text_color=color).pack(anchor="w", pady=(12, 2))
+            linea = ctk.CTkFrame(f, height=1, fg_color="#dfe6ec")
+            linea.pack(fill="x", pady=(0, 4))
+
+        def campo(texto, valor=""):
+            ctk.CTkLabel(f, text=texto, font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
+            e = ctk.CTkEntry(f)
+            e.pack(fill="x", pady=(0, 2))
+            if valor not in (None, ""):
+                e.insert(0, str(valor))
+            return e
+
+        def combo_campo(texto, valores, valor):
+            ctk.CTkLabel(f, text=texto, font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
+            vals = list(valores or [])
+            c = ctk.CTkComboBox(f, values=vals)
+            c.pack(fill="x", pady=(0, 2))
+            try:
+                if valor:
+                    if str(valor) not in vals:
+                        vals = vals + [str(valor)]
+                        c.configure(values=vals)
+                    c.set(str(valor))
+                else:
+                    c.set("")      # sin dato guardado: queda vacío (no el primer elemento)
+            except Exception:
+                pass
+            return c
+
+        # ---------------- 1. DOCUMENTO ----------------
+        seccion("📄 Documento")
+        c_tipo = combo_campo("Tipo de documento:", _valores("combo_tipo"),
+                             datos.get("tipo_documento"))
+        e_nro = campo("N° de documento:", datos.get("numero_documento"))
+
+        ctk.CTkLabel(f, text="Fecha (DD/MM/AAAA):", font=("Arial", 11, "bold")).pack(
+            anchor="w", pady=(6, 0))
+        f_fec = ctk.CTkFrame(f, fg_color="transparent")
+        f_fec.pack(fill="x", pady=(0, 2))
+        e_fecha = ctk.CTkEntry(f_fec)
+        e_fecha.pack(side="left", fill="x", expand=True)
+        if datos.get("fecha"):
+            e_fecha.insert(0, str(datos.get("fecha")))
+        ctk.CTkButton(f_fec, text="[ 📅 ]", width=44, font=("Arial", 12, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, e_fecha)).pack(side="right", padx=(5, 0))
+
+        e_dias = campo("Días de crédito:", datos.get("dias_credito"))
+
+        # ---------------- 2. PROVEEDOR ----------------
+        seccion("🏭 Proveedor")
+        e_prov = combo_campo("Nombre del proveedor:", _valores("combo_proveedor"),
+                             datos.get("proveedor"))
+        e_ruc = campo("R.U.C.:", datos.get("ruc"))
+
+        ctk.CTkLabel(f, text="Categoría de Gasto:", font=("Arial", 11, "bold")).pack(
+            anchor="w", pady=(6, 0))
+        f_cat = ctk.CTkFrame(f, fg_color="transparent")
+        f_cat.pack(fill="x", pady=(0, 2))
+        vals_cat = _valores("combo_categoria")
+        e_cat = ctk.CTkComboBox(f_cat, values=vals_cat)
+        e_cat.pack(side="left", fill="x", expand=True)
+        if datos.get("categoria"):
+            try:
+                if str(datos["categoria"]) not in vals_cat:
+                    vals_cat = vals_cat + [str(datos["categoria"])]
+                    e_cat.configure(values=vals_cat)
+                e_cat.set(str(datos["categoria"]))
+            except Exception:
+                pass
+        # ⚙️ Mismo gestor de categorías que el alta (compartido con Banco)
+        ctk.CTkButton(f_cat, text="⚙️", width=34, font=("Arial", 12, "bold"),
+                      fg_color="#8e44ad", hover_color="#703688",
+                      command=self.agregar_nueva_categoria).pack(side="right", padx=(6, 0))
+
+        e_desc = campo("Concepto / Descripción:", datos.get("descripcion"))
+
+        # ---------------- 3. FLOTA ----------------
+        seccion("🚚 Datos de flota")
+        e_veh = combo_campo("Vehículo asignado (Placa):", _valores("combo_evento"),
+                            datos.get("evento_asociado"))
+        e_chofer = combo_campo("Chofer:", _valores("combo_chofer"), datos.get("chofer_asociado"))
+        e_km = campo("Kilometraje:", datos.get("kilometraje"))
+        e_gal = campo("Galones de combustible:", datos.get("cantidad_combustible"))
+        e_orden = combo_campo("🔗 Orden de Servicio (relacionar):",
+                              _valores("combo_orden_servicio"), datos.get("orden_servicio"))
+
+        # ---------------- 4. MONTOS ----------------
+        seccion("💰 Montos")
+        e_sub = campo("Subtotal (base):", "%.2f" % float(datos.get("subtotal") or 0))
+        e_imp = campo("IGV / Impuesto:", "%.2f" % float(datos.get("impuesto") or 0))
+        e_tot = campo("Total (con IGV):", "%.2f" % float(datos.get("total") or 0))
+        e_detp = campo("Detracción / Retención (%):",
+                       "%.2f" % float(datos.get("det_porcentaje") or 0))
+        e_detm = campo("Monto de detracción:", "%.2f" % float(datos.get("det_monto") or 0))
+
+        f_del = ctk.CTkFrame(f, fg_color="transparent")
+        f_del.pack(fill="x", pady=(8, 0))
+        var_del = tk.BooleanVar(value=float(datos.get("delivery") or 0) > 0)
+        ctk.CTkCheckBox(f_del, text="🚚 Delivery (monto fuera de la factura)",
+                        variable=var_del, font=("Arial", 11, "bold"),
+                        checkbox_width=18, checkbox_height=18).pack(anchor="w")
+        e_del = campo("Monto de delivery (suma al débito):",
+                      "%.2f" % float(datos.get("delivery") or 0))
+
+        lbl_neto = ctk.CTkLabel(f, text="", font=("Arial", 12, "bold"), text_color="#1f538d")
+        lbl_neto.pack(anchor="w", pady=(8, 4))
+
+        def _num(entrada, defecto=0.0):
+            try:
+                return float(str(entrada.get()).strip().replace(",", "") or defecto)
+            except Exception:
+                return defecto
+
+        def _calc(*_a):
+            try:
+                neto = _num(e_tot) - _num(e_detm) + (_num(e_del) if var_del.get() else 0.0)
+                lbl_neto.configure(text="Neto a Pagar (con delivery si aplica): %s"
+                                        % formatear_moneda(neto))
+            except Exception:
+                pass
+        for _e in (e_tot, e_detm, e_del):
+            _e.bind("<KeyRelease>", _calc)
+        try:
+            var_del.trace_add("write", lambda *a: _calc())
+        except Exception:
+            pass
+        _calc()
+
+        # ---------------- GUARDAR ----------------
+        def guardar():
+            sub, imp, tot = _num(e_sub), _num(e_imp), _num(e_tot)
+            detp, detm = _num(e_detp), _num(e_detm)
+            delivery = _num(e_del) if var_del.get() else 0.0
+            # el texto guía del desplegable no se guarda como orden
+            orden_guardar = e_orden.get().strip()
+            if orden_guardar == SIN_ORDEN_SERVICIO:
+                orden_guardar = ""
+            try:
                 conn_g = conectar_db(silencioso=True)
                 if not conn_g:
                     return
@@ -7142,17 +7284,13 @@ class FacturasRecibidasTab:
                                         delivery=%s, chofer_asociado=%s, kilometraje=%s,
                                         cantidad_combustible=%s, orden_servicio=%s
                                       WHERE id=%s""",
-                                   (valores["tipo_documento"], valores["numero_documento"],
-                                    valores["fecha"], valores["proveedor"], valores["ruc"],
-                                    valores["categoria"], valores["descripcion"],
-                                    valores["evento_asociado"],
-                                    int(a_num(valores["dias_credito"])),
-                                    a_num(valores["subtotal"]), a_num(valores["impuesto"]),
-                                    a_num(valores["total"]), a_num(valores["det_porcentaje"]),
-                                    a_num(valores["det_monto"]), valores["delivery"],
-                                    valores["chofer_asociado"], valores["kilometraje"],
-                                    a_num(valores["cantidad_combustible"]),
-                                    valores["orden_servicio"], id_factura))
+                                   (c_tipo.get().strip(), e_nro.get().strip(),
+                                    e_fecha.get().strip(), e_prov.get().strip(),
+                                    e_ruc.get().strip(), e_cat.get().strip(),
+                                    e_desc.get().strip(), e_veh.get().strip(),
+                                    int(_num(e_dias)), sub, imp, tot, detp, detm, delivery,
+                                    e_chofer.get().strip(), e_km.get().strip(),
+                                    e_gal.get().strip(), orden_guardar, id_factura))
                     conn_g.commit()
                 finally:
                     liberar_conexion(conn_g)
@@ -7160,19 +7298,35 @@ class FacturasRecibidasTab:
                     cache_sistema.invalidar()
                 except Exception:
                     pass
-                messagebox.showinfo("Factura", "Factura actualizada correctamente.")
-                ventana.destroy()
+                try:
+                    registrar_auditoria(getattr(self.app_padre, "usuario_activo", ""),
+                                        "Facturas Recibidas",
+                                        "Editó la factura ID %s" % id_factura)
+                except Exception:
+                    pass
                 try:
                     self.cargar_datos_tabla(reset_pagina=True)
                 except Exception:
                     pass
+                try:
+                    v.destroy()
+                except Exception:
+                    pass
+                messagebox.showinfo("Factura", "Factura actualizada.",
+                                    parent=ventana_para_mensaje(raiz))
             except Exception as e:
-                messagebox.showerror("Factura", "No se pudo guardar: %s" % e)
+                messagebox.showerror("Factura", "No se pudo guardar: %s" % e,
+                                     parent=ventana_para_mensaje(raiz))
 
-        ctk.CTkButton(marco, text="💾 Guardar cambios", font=("Arial", 12, "bold"),
+        barra = ctk.CTkFrame(v, fg_color="transparent")
+        barra.pack(fill="x", padx=16, pady=10)
+        ctk.CTkButton(barra, text="💾 Guardar", height=36, font=("Arial", 12, "bold"),
                       fg_color="#27ae60", hover_color="#1e8449",
-                      command=guardar).pack(fill="x", pady=(12, 6))
-        return ventana
+                      command=guardar).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(barra, text="❌ Cancelar", height=36, font=("Arial", 12, "bold"),
+                      fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=v.destroy).pack(side="left", expand=True, fill="x", padx=(6, 0))
+        return v
 
     def _mostrar_menu_factura(self, id_factura, event, es_pagos=False):
         """Menú de clic derecho de una factura (lo usan las DOS pestañas)."""
