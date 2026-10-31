@@ -1141,6 +1141,12 @@ class CalculoCobranzaApp:
 
         self.scroll = ctk.CTkScrollableFrame(self.parent, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True, padx=12, pady=12)
+        # 🚫 Se oculta mientras se construye el formulario manual: así NO se ve
+        #    ningún "pantallazo" de las secciones que luego se esconden.
+        try:
+            self.scroll.pack_forget()
+        except Exception:
+            pass
 
         # Mensaje flash (aparece abajo al guardar)
         self.frame_flash = ctk.CTkFrame(self.scroll, fg_color="#27ae60", corner_radius=8)
@@ -1546,6 +1552,11 @@ class CalculoCobranzaApp:
             self.f_header.pack(fill="x", pady=(0, 6))
         except Exception as e:
             print("[Cobranza] modo solo asistente:", e)
+        # Ahora sí se muestra el módulo: solo el encabezado con los dos botones
+        try:
+            self.scroll.pack(fill="both", expand=True, padx=12, pady=12)
+        except Exception as e:
+            print("[Cobranza] no se pudo mostrar el módulo:", e)
         # El módulo se queda en esta pantalla (asistente + Ver Registros):
         # el asistente se abre solo cuando el usuario pulsa el botón.
 
