@@ -1511,12 +1511,12 @@ class ModuloNominaApp:
                 return
         except Exception:
             pass
+        # 📄 El instructivo se abre con el programa EXTERNO del sistema
+        #    (el visor interno se retiró porque daba problemas)
         try:
-            import fitz  # noqa: F401  (PyMuPDF: permite dibujar el PDF dentro del sistema)
-            self._visor = VisorInstructivo(self.parent_frame.winfo_toplevel(), ruta)
-        except Exception as e:
-            print("[Nómina] El instructivo se abrirá con el visor del sistema:", e)
             abrir_documento(ruta)
+        except Exception as e:
+            print("[Nómina] No se pudo abrir el instructivo:", e)
 
     # ---------- ASISTENTE PASO A PASO ----------
     def abrir_asistente(self):

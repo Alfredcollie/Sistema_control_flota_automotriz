@@ -559,6 +559,17 @@ def dias_de_quincena(anio, mes, quincena, feriados):
     return dias
 
 
+def _num_o_vacio(valor, decimales=True):
+    """Devuelve el número formateado, o vacío si es cero (para el PDF)."""
+    try:
+        numero = float(valor or 0)
+    except Exception:
+        return ""
+    if abs(numero) < 0.005:
+        return ""
+    return ("{:,.2f}".format(numero) if decimales else ("%g" % numero))
+
+
 def _etiqueta_rango(rg):
     """Nombre visible de una ZONA o de un rango de distancia.
 
@@ -1057,6 +1068,9 @@ class CalculoCobranzaApp:
                                "ADD COLUMN IF NOT EXISTS zona VARCHAR(80)")
                 cursor.execute("ALTER TABLE cobranza_viajes_detalle "
                                "ADD COLUMN IF NOT EXISTS zona VARCHAR(80)")
+                # 🔹 Cantidad del traslado (permite medios viajes: 0.5)
+                cursor.execute("ALTER TABLE cobranza_viajes_detalle "
+                               "ADD COLUMN IF NOT EXISTS cantidad NUMERIC(12,2) DEFAULT 1")
                 # 🔹 Medios viajes: las cantidades deben aceptar decimales (0.5, 1.5…)
                 for _col in ("viajes_normal", "viajes_domingo", "viajes_feriado",
                              "ded_normal", "ded_domingo", "ded_feriado"):
@@ -2046,6 +2060,7 @@ class CalculoCobranzaApp:
             "vehiculo": vehiculo, "precio": float(precio or 0),
             "monto": float(precio or 0),
             "desde": rg["distancia_desde"], "hasta": rg["distancia_hasta"],
+            "zona": rg.get("nombre", ""),
         })
         self._pintar_viajes_registrados()
         self.pintar_viajes()   # actualiza la tabla de viajes
@@ -2658,7 +2673,9 @@ class CalculoCobranzaApp:
             cursor = conn.cursor()
             id_cob = self.registro_editando
 
-            if id_cob is None:
+            # 🛣️ En el plan Por Punto o Viaje se permiten VARIOS cálculos en el mismo
+            #    mes/periodo: cada guardado crea un registro nuevo (no pregunta nada).
+            if id_cob is None and not es_viaje:
                 cursor.execute(
                     "SELECT id FROM cobranza_quincenas WHERE id_cliente=%s AND anio=%s AND mes=%s AND quincena=%s",
                     (self.cliente_id, anio, mes, quincena))
@@ -2755,10 +2772,13 @@ class CalculoCobranzaApp:
                 for t in self.viajes_registrados:
                     cursor.execute('''
                         INSERT INTO cobranza_viajes_detalle
-                        (id_cobranza, fecha, vehiculo, categoria, distancia_desde, distancia_hasta, precio, monto)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                    ''', (id_cob, t["fecha"].strftime("%d/%m/%Y"), t.get("vehiculo", ""),
-                          t["categoria"], t.get("desde", 0), t.get("hasta", 0),
+                        (id_cobranza, zona, fecha, vehiculo, categoria, cantidad,
+                         distancia_desde, distancia_hasta, precio, monto)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ''', (id_cob, t.get("zona", ""), t["fecha"].strftime("%d/%m/%Y"),
+                          t.get("vehiculo", ""), t["categoria"],
+                          float(t.get("cantidad") or 1),
+                          t.get("desde", 0), t.get("hasta", 0),
                           t.get("precio", 0), t.get("monto", 0)))
 
             # Asientos de deducción con fecha (unidad o rango de distancia) — reemplazo
@@ -2893,6 +2913,19 @@ class CalculoCobranzaApp:
                         or float(dn or 0) or float(dd or 0) or float(df or 0)
                         or abs(float(mb or 0)) > 0.005 or abs(float(sub or 0)) > 0.005):
                     viajes_pdf.append(fila)
+
+            # 🗓️ Traslados individuales CON FECHA (los que registra el asistente)
+            traslados_pdf = []
+            try:
+                cursor.execute("""
+                    SELECT fecha, COALESCE(zona, ''), COALESCE(vehiculo, ''),
+                           COALESCE(categoria, ''), COALESCE(precio, 0), COALESCE(monto, 0),
+                           COALESCE(cantidad, 0)
+                    FROM cobranza_viajes_detalle WHERE id_cobranza=%s ORDER BY fecha, id
+                """, (id_cob,))
+                traslados_pdf = cursor.fetchall()
+            except Exception as e_tras:
+                print("Aviso - traslados del PDF:", e_tras)
 
             # Asientos con fecha (deducciones y horas extras) — detalle uno por uno
             try:
@@ -3123,7 +3156,8 @@ class CalculoCobranzaApp:
         )
         filas_tablas = len(unidades) + len(deducciones_pdf) + len(extras_pdf) + len(feriados_pdf)
         if viajes_pdf:
-            filas_tablas += len(viajes_pdf) * 2     # tabla de viajes + no realizados
+            filas_tablas += len(viajes_pdf)
+        # ---- Constantes de la tabla (alto de fila, letra y saltos) ----
         plan_hoja = _PLANES_HOJA[-1]
         for _plan in _PLANES_HOJA:
             # Filas + encabezados + títulos, subtotales, TOTAL y notas
@@ -3133,17 +3167,13 @@ class CalculoCobranzaApp:
                 plan_hoja = _plan
                 break
         (ALTO_FILA, ALTO_CAB, FUENTE_TABLA, SALTO_TITULO, SALTO_BLOQUE) = plan_hoja
-        # El cuadro por unidad lleva una letra algo mayor, pero solo si la fila
-        # es lo bastante alta (en los planes comprimidos se usa el mismo tamaño).
         FUENTE_UNIDADES = FUENTE_TABLA + (1.0 if FUENTE_TABLA >= 7.5 else 0.0)
-        # Línea base centrada en la fila: deja aire arriba y espacio a los
-        # descendentes abajo, para que el texto nunca toque la fila vecina.
         BASE_TXT = ALTO_FILA / 2.0 + FUENTE_TABLA * 0.35
         BASE_CAB = ALTO_CAB / 2.0 + FUENTE_TABLA * 0.35
-        LINEA_FILA = ALTO_FILA - 1.0             # separador gris entre filas (al pie de la fila)
-        # Saltos calculados para dejar SIEMPRE ~13 pt entre dos líneas de texto
-        SALTO_FIN_TABLA = BASE_TXT + 14.0                                # tras el total de una tabla
-        SALTO_SECCION = 15.0 + BASE_TXT - ALTO_FILA                      # antes del título siguiente
+        LINEA_FILA = ALTO_FILA - 1.0            # separador gris entre filas
+        SALTO_FIN_TABLA = BASE_TXT + 14.0       # tras el total de una tabla
+        SALTO_SECCION = 15.0 + BASE_TXT - ALTO_FILA   # antes del título siguiente
+        listo_layout = True
 
         # ---- Periodo (debajo del bloque del cliente) ----
         y_cli -= 4.0
@@ -3174,122 +3204,157 @@ class CalculoCobranzaApp:
         y -= SALTO_BLOQUE
 
         if viajes_pdf:
-            # ---- Detalle de viajes por distancia ----
+            # 🧾 UN SOLO CUADRO: cada traslado con su fecha (o la zona si no hay detalle)
             c.setFont("Helvetica-Bold", 11)
-            c.drawString(40, y, ("DETALLE DE VIAJES POR ZONA"
-                                 if str(plan).strip() == "Por Punto o Viaje"
-                                 else "DETALLE DE VIAJES POR DISTANCIA"))
+            c.drawString(40, y, "DETALLE DE TRASLADOS")
             y -= SALTO_TITULO
-            if y < 90:
-                c.showPage()
-                y = 750.0
-            # Tabla A: viajes realizados
-            cols_a = [80, 40, 40, 40, 45, 45, 45, 80]
-            xs_a = [40]
-            for w in cols_a:
-                xs_a.append(xs_a[-1] + w)
-            ancho_a = sum(cols_a)
-            cab_a = ["ZONA", "P.NORM", "P.DOM", "P.FER", "V.NORM", "V.DOM", "V.FER", "MONTO"]
 
-            def _cabecera_viajes(cols, xs, ancho, cab):
-                """Encabezado de las tablas de viajes (se repite al cambiar de hoja)."""
+            # filas: (fecha, zona, dia, cantidad, precio, monto)
+            filas_pdf = []
+            if traslados_pdf:
+                for fila_t in traslados_pdf:
+                    # (fecha, zona, vehiculo, categoria, precio, monto, cantidad)
+                    (fecha_t, zona_t, vehiculo_t, cat_t, precio_t, monto_t) = fila_t[:6]
+                    cant_t = float(fila_t[6]) if len(fila_t) > 6 and fila_t[6] else 0.0
+                    monto_fila = float(monto_t or 0) or float(precio_t or 0)
+                    # 🔹 Cantidad real del traslado (0.5 = medio viaje).
+                    #    El precio guardado es la TARIFA de la zona: si el monto no coincide
+                    #    con la tarifa, la cantidad se deduce del monto (registros antiguos).
+                    precio_ref = float(precio_t or 0)
+                    if precio_ref > 0 and abs(monto_fila - precio_ref) > 0.005:
+                        cant_t = monto_fila / precio_ref
+                        precio_unit = precio_ref
+                    else:
+                        cant_t = cant_t if cant_t > 0 else 1.0
+                        precio_unit = (monto_fila / cant_t) if cant_t else precio_ref
+                    cant_t = round(cant_t, 4) or 1.0
+                    # etiqueta corta del día (Normal / Domingo / Feriado)
+                    etiqueta_dia = {"normal": "Normal", "domingo": "Domingo",
+                                    "feriado": "Feriado"}.get(str(cat_t or "").lower())
+                    if not etiqueta_dia:
+                        texto_cat = str(cat_t or "").lower()
+                        if "feriado" in texto_cat:
+                            etiqueta_dia = "Feriado"
+                        elif "domingo" in texto_cat:
+                            etiqueta_dia = "Domingo"
+                        else:
+                            etiqueta_dia = "Normal"
+                    filas_pdf.append((str(fecha_t or ""), str(zona_t or ""),
+                                      etiqueta_dia,
+                                      cant_t, round(precio_unit, 2), monto_fila))
+            else:
+                for v in viajes_pdf:
+                    (zona, desde, hasta, pn, pd, pf, vn, vd, vf,
+                     dn, dd, df, mb, md, sub) = v
+                    nombre = _etiqueta_rango({"nombre": zona, "desde": desde, "hasta": hasta})
+                    for clave, etiqueta_dia, precio in (("normal", "Normal", pn),
+                                                        ("domingo", "Domingo", pd),
+                                                        ("feriado", "Feriado", pf)):
+                        cant = {"normal": vn, "domingo": vd, "feriado": vf}[clave]
+                        cant = float(cant or 0)
+                        if cant:
+                            filas_pdf.append(("", nombre, etiqueta_dia, cant,
+                                              float(precio or 0), cant * float(precio or 0)))
+
+            # 🚫 Columnas sin datos no se imprimen
+            hay_fecha = any(f[0] for f in filas_pdf)
+            hay_precio = any(abs(f[4]) > 0.005 for f in filas_pdf)
+            columnas = []
+            if hay_fecha:
+                columnas.append(("FECHA", 62))
+            columnas += [("ZONA", 118), ("DÍA", 62), ("CANT.", 40)]
+            if hay_precio:
+                columnas.append(("PRECIO", 55))
+            columnas.append(("MONTO", 75))
+
+            xs = [40]
+            for _titulo, _ancho in columnas:
+                xs.append(xs[-1] + _ancho)
+            ancho_tabla = sum(a for _t, a in columnas)
+            cab = [t for t, _a in columnas]
+
+            def _cabecera_filas():
                 nonlocal y
                 c.setFillColorRGB(0.9, 0.93, 0.97)
-                c.rect(40, y - ALTO_CAB, ancho, ALTO_CAB, stroke=0, fill=1)
+                c.rect(40, y - ALTO_CAB, ancho_tabla, ALTO_CAB, stroke=0, fill=1)
                 c.setFillColorRGB(0, 0, 0)
                 c.setFont("Helvetica-Bold", max(FUENTE_TABLA - 1.0, 5.5))
-                for j, (w, txt) in enumerate(zip(cols, cab)):
-                    c.drawCentredString(xs[j] + w / 2, y - BASE_CAB, txt)
+                for j, (_t, w) in enumerate(columnas):
+                    c.drawCentredString(xs[j] + w / 2, y - BASE_CAB, cab[j])
                 c.setFont("Helvetica", FUENTE_TABLA)
                 y -= ALTO_CAB
 
-            _cabecera_viajes(cols_a, xs_a, ancho_a, cab_a)
-            for (zona, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
+            if y < 100:
+                c.showPage()
+                y = 750.0
+            _cabecera_filas()
+            total_tabla = 0.0
+            for (fecha_f, zona_f, dia_f, cant_f, precio_f, monto_f) in filas_pdf:
                 if y < 70:
                     c.showPage()
                     y = 750.0
-                    _cabecera_viajes(cols_a, xs_a, ancho_a, cab_a)
+                    _cabecera_filas()
+                total_tabla += float(monto_f or 0)
                 c.setFillColorRGB(0, 0, 0)
-                c.drawString(xs_a[0] + 3, y - BASE_TXT, _recortar_texto(
-                    c, _nombre_zona_pdf(zona, desde, hasta),
-                    cols_a[0] - 6, "Helvetica", FUENTE_TABLA))
-                c.drawCentredString(xs_a[1] + cols_a[1] / 2, y - BASE_TXT, _recortar_texto(
-                    c, f"{round(float(pn or 0), 2):,.2f}", cols_a[1] - 4, "Helvetica", FUENTE_TABLA))
-                c.drawCentredString(xs_a[2] + cols_a[2] / 2, y - BASE_TXT, _recortar_texto(
-                    c, f"{round(float(pd or 0), 2):,.2f}", cols_a[2] - 4, "Helvetica", FUENTE_TABLA))
-                c.drawCentredString(xs_a[3] + cols_a[3] / 2, y - BASE_TXT, _recortar_texto(
-                    c, f"{round(float(pf or 0), 2):,.2f}", cols_a[3] - 4, "Helvetica", FUENTE_TABLA))
-                c.drawCentredString(xs_a[4] + cols_a[4] / 2, y - BASE_TXT, ("%g" % float(vn or 0)))
-                c.drawCentredString(xs_a[5] + cols_a[5] / 2, y - BASE_TXT, ("%g" % float(vd or 0)))
-                c.drawCentredString(xs_a[6] + cols_a[6] / 2, y - BASE_TXT, ("%g" % float(vf or 0)))
-                c.drawCentredString(xs_a[7] + cols_a[7] / 2, y - BASE_TXT, _recortar_texto(
-                    c, f"{simbolo} {round(float(mb2 or 0), 2):,.2f}", cols_a[7] - 4,
+                col = 0
+                if hay_fecha:
+                    c.drawString(xs[col] + 3, y - BASE_TXT, _recortar_texto(
+                        c, fecha_f, columnas[col][1] - 6, "Helvetica", FUENTE_TABLA))
+                    col += 1
+                c.drawString(xs[col] + 3, y - BASE_TXT, _recortar_texto(
+                    c, zona_f, columnas[col][1] - 6, "Helvetica", FUENTE_TABLA))
+                col += 1
+                c.drawCentredString(xs[col] + columnas[col][1] / 2, y - BASE_TXT,
+                                    _recortar_texto(c, dia_f, columnas[col][1] - 4,
+                                                    "Helvetica", FUENTE_TABLA))
+                col += 1
+                c.drawCentredString(xs[col] + columnas[col][1] / 2, y - BASE_TXT,
+                                    _num_o_vacio(cant_f, False))
+                col += 1
+                if hay_precio:
+                    c.drawCentredString(xs[col] + columnas[col][1] / 2, y - BASE_TXT,
+                                        _num_o_vacio(precio_f))
+                    col += 1
+                c.drawCentredString(xs[col] + columnas[col][1] / 2, y - BASE_TXT, _recortar_texto(
+                    c, ("%s %s" % (simbolo, _num_o_vacio(monto_f))), columnas[col][1] - 4,
                     "Helvetica", FUENTE_TABLA))
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                c.line(40, y - LINEA_FILA, 40 + ancho_a, y - LINEA_FILA)
+                c.line(40, y - LINEA_FILA, 40 + ancho_tabla, y - LINEA_FILA)
                 y -= ALTO_FILA
             c.setStrokeColorRGB(0, 0, 0)
             c.setLineWidth(1)
-            c.line(40, y + 1, 40 + ancho_a, y + 1)
-            # 🚫 La tabla «viajes no realizados» solo se imprime si hay deducciones
-            _hay_no_realizados = any(
-                (float(v[9] or 0) or float(v[10] or 0) or float(v[11] or 0)
-                 or abs(float(v[13] or 0)) > 0.005) for v in viajes_pdf)
-            if _hay_no_realizados:
-                # Tabla B: viajes no realizados (deducción) — en la MISMA hoja
-                y -= ALTO_FILA + 2.0
-                cols_b = [120, 60, 60, 60, 100]
-                xs_b = [40]
-                for w in cols_b:
-                    xs_b.append(xs_b[-1] + w)
-                ancho_b = sum(cols_b)
-                cab_b = ["ZONA", "NR.NORM", "NR.DOM", "NR.FER", "MONTO"]
-                c.setFont("Helvetica-Bold", 9)
-                c.drawString(40, y, "VIAJES NO REALIZADOS (DEDUCCIÓN)")
-                y -= 14.0
-                _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
-                for (zona, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb2, md2, sub) in viajes_pdf:
-                    if y < 70:
-                        c.showPage()
-                        y = 750.0
-                        _cabecera_viajes(cols_b, xs_b, ancho_b, cab_b)
-                    c.setFillColorRGB(0, 0, 0)
-                    c.drawString(xs_b[0] + 3, y - BASE_TXT, _recortar_texto(
-                        c, _nombre_zona_pdf(zona, desde, hasta),
-                        cols_b[0] - 6, "Helvetica", FUENTE_TABLA))
-                    c.drawCentredString(xs_b[1] + cols_b[1] / 2, y - BASE_TXT, numero_2_decimales(dn))
-                    c.drawCentredString(xs_b[2] + cols_b[2] / 2, y - BASE_TXT, numero_2_decimales(dd))
-                    c.drawCentredString(xs_b[3] + cols_b[3] / 2, y - BASE_TXT, numero_2_decimales(df))
-                    c.drawCentredString(xs_b[4] + cols_b[4] / 2, y - BASE_TXT, _recortar_texto(
-                        c, f"{simbolo} {round(float(md2 or 0), 2):,.2f}", cols_b[4] - 4,
-                        "Helvetica", FUENTE_TABLA))
-                    c.setStrokeColorRGB(0.85, 0.85, 0.85)
-                    c.line(40, y - LINEA_FILA, 40 + ancho_b, y - LINEA_FILA)
-                    y -= ALTO_FILA
-                c.setStrokeColorRGB(0, 0, 0)
-                c.setLineWidth(1)
-                c.line(40, y + 1, 40 + ancho_b, y + 1)
+            c.line(40, y + 1, 40 + ancho_tabla, y + 1)
             y -= 8.0
-            # 🧮 Cantidad de viajes por tarifa (lo que se cobra)
-            tot_norm = sum(float(v[6] or 0) for v in viajes_pdf)
-            tot_dom = sum(float(v[7] or 0) for v in viajes_pdf)
-            tot_fer = sum(float(v[8] or 0) for v in viajes_pdf)
+
+            # 🧮 Cantidades por tarifa y totales calculados de esta misma tabla
+            tot_norm = sum(f[3] for f in filas_pdf if f[2] == "Normal")
+            tot_dom = sum(f[3] for f in filas_pdf if f[2] == "Domingo")
+            tot_fer = sum(f[3] for f in filas_pdf if f[2] == "Feriado")
             total_viajes = tot_norm + tot_dom + tot_fer
             c.setFont("Helvetica-Bold", 10)
-            c.drawString(42, y - BASE_TXT,
-                         f"VIAJES: Normal {tot_norm:g}  ·  Domingo {tot_dom:g}  ·  "
-                         f"Feriado {tot_fer:g}  ·  TOTAL {total_viajes:g}")
+            partes = []
+            if tot_norm:
+                partes.append("Normal %g" % tot_norm)
+            if tot_dom:
+                partes.append("Domingo %g" % tot_dom)
+            if tot_fer:
+                partes.append("Feriado %g" % tot_fer)
+            partes.append("TOTAL %g" % total_viajes)
+            c.drawString(42, y - BASE_TXT, "VIAJES: " + "  ·  ".join(partes))
             y -= ALTO_FILA
             c.drawString(42, y - BASE_TXT, "SUBTOTAL (BASE)")
-            c.drawRightString(40 + ancho_a - 2, y - BASE_TXT,
-                              f"{simbolo} {round(float(m_base or 0), 2):,.2f}")
+            c.drawRightString(40 + ancho_tabla - 2, y - BASE_TXT,
+                              f"{simbolo} {round(total_tabla, 2):,.2f}")
             y -= ALTO_FILA
-            # 🚫 La deducción solo se imprime si de verdad hay algo que descontar
-            if abs(float(m_ded or 0)) > 0.005:
+            monto_ded_calc = float(m_ded or 0)
+            if abs(monto_ded_calc) > 0.005:
                 c.drawString(42, y - BASE_TXT, "TOTAL NO REALIZADOS (DEDUCCIÓN)")
-                c.drawRightString(40 + ancho_a - 2, y - BASE_TXT,
-                                  f"- {simbolo} {round(float(m_ded or 0), 2):,.2f}")
+                c.drawRightString(40 + ancho_tabla - 2, y - BASE_TXT,
+                                  f"- {simbolo} {round(monto_ded_calc, 2):,.2f}")
                 y -= ALTO_FILA
+            # ✅ Los totales del documento se recalculan con esta misma tabla
+            total = max(0.0, total_tabla - monto_ded_calc)
+            m_base = total_tabla
             y -= SALTO_SECCION
         else:
             # ---- Cuadro de cobro POR UNIDAD ----
@@ -5303,7 +5368,11 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
             for r in cursor.fetchall():
                 (id_rec, nom, ruc, anio, mes, quincena, plan, total, fecha_reg, pdf) = r
                 periodo = f"{NOMBRES_MESES[mes-1]} {anio}" if mes else ""
-                q_txt = "1ª (1-15)" if quincena == 1 else "2ª (16-fin)"
+                # 🛣️ En el plan Por Punto o Viaje se cobra por MES: la quincena va en blanco
+                if str(plan).strip() == "Por Punto o Viaje":
+                    q_txt = ""
+                else:
+                    q_txt = "1ª (1-15)" if quincena == 1 else "2ª (16-fin)"
                 self.tabla.insert("", tk.END, values=(
                     id_rec, nom, ruc, periodo, q_txt, plan, formatear_moneda(total),
                     fecha_reg or "", "✔ PDF" if pdf else "—"
@@ -5399,6 +5468,50 @@ class AsistenteCobranza(ctk.CTkToplevel):
     PASOS = ("1. Cliente", "2. Configuración", "3. Periodo",
              "4. Registro", "5. Resumen", "6. Guardar y PDF")
 
+    def _abrir_maximizado(self):
+        """Abre la ventana ocupando toda la pantalla (maximizada)."""
+        self.update_idletasks()
+        alto_titulo = 0
+        try:
+            # se deja sitio para la barra de tareas / dock
+            ancho = self.winfo_screenwidth()
+            alto = self.winfo_screenheight() - 40
+        except Exception:
+            ancho, alto = 1280, 720
+        logrado = False
+        if sys.platform == "darwin":
+            try:
+                self.attributes("-zoomed", True)   # macOS
+                logrado = True
+            except Exception:
+                logrado = False
+        else:
+            try:
+                self.state("zoomed")               # Windows
+                logrado = True
+            except Exception:
+                logrado = False
+        if not logrado:
+            try:
+                self.geometry("%dx%d+0+0" % (ancho, alto))
+            except Exception:
+                self.geometry("1180x740")
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+        self._maximizada = True
+
+    def _tamano_minimo_restaurado(self):
+        """Si se restaura la ventana, deja un tamaño usable."""
+        try:
+            if getattr(self, "_maximizada", False) and self.state() == "normal":
+                self._maximizada = False
+                self.geometry("1180x740")
+        except Exception:
+            pass
+
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
@@ -5406,18 +5519,18 @@ class AsistenteCobranza(ctk.CTkToplevel):
         self.paso = 0
 
         self.title("Asistente de Cálculo de Cobranza — paso a paso")
-        self.geometry("980x690")
         self.minsize(860, 580)
         self.transient(parent)
         try:
             self.grab_set()
         except Exception:
             pass
-        self.update_idletasks()
+        # 🖥️ La ventana se abre MAXIMIZADA (Windows: zoomed · macOS: zoomed)
+        self._abrir_maximizado()
+
+        # Si el usuario la restaura, vuelve a un tamaño cómodo
         try:
-            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 490
-            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 345
-            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+            self.after(400, lambda: self._tamano_minimo_restaurado())
         except Exception:
             pass
 
