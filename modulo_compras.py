@@ -4298,23 +4298,47 @@ class FacturasRecibidasTab:
             ventana.transient(self.main_root)
         for hijo in ventana.winfo_children():
             hijo.destroy()
-        ventana.geometry("700x640")
-        ventana.minsize(620, 520)
+        # 📐 La ventana se ajusta a la pantalla (en 768 px de alto se cortaba abajo)
+        try:
+            _sw, _sh = ventana.winfo_screenwidth(), ventana.winfo_screenheight()
+            _ancho = min(760, max(640, _sw - 80))
+            _alto = min(780, max(520, _sh - 80))
+            _x = max(0, (_sw - _ancho) // 2)
+            _y = 0 if _sh >= 800 else 2
+        except Exception:
+            _ancho, _alto, _x, _y = 740, 690, 40, 0
+        ventana.geometry("%dx%d+%d+%d" % (_ancho, _alto, _x, _y))
+        try:
+            ventana.resizable(True, True)
+        except Exception:
+            pass
 
-        ctk.CTkLabel(ventana, text="🖨️ FACTURA ESCANEADA — REVISAR ANTES DE GUARDAR",
+        # 🔻 El pie (botones) se reserva PRIMERO: así nunca queda fuera de la vista
+        f_pie = ctk.CTkFrame(ventana, fg_color="transparent")
+        f_pie.pack(side="bottom", fill="x", padx=14, pady=(2, 10))
+
+        # 📜 Todo el contenido va dentro de un marco desplazable
+        cuerpo = ctk.CTkScrollableFrame(ventana, fg_color="transparent")
+        cuerpo.pack(fill="both", expand=True, padx=2, pady=0)
+        try:
+            ventana.minsize(560, 460)
+        except Exception:
+            pass
+
+        ctk.CTkLabel(cuerpo, text="🖨️ FACTURA ESCANEADA — REVISAR ANTES DE GUARDAR",
                      font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(12, 2))
         info = (f"Páginas: {len(resultado.get('paginas') or [])}   ·   "
                 f"Escáner: {resultado.get('escaner') or 'el configurado'}")
-        ctk.CTkLabel(ventana, text=info, font=("Arial", 10), text_color="gray").pack()
+        ctk.CTkLabel(cuerpo, text=info, font=("Arial", 10), text_color="gray").pack()
         if resultado.get("aviso"):
-            ctk.CTkLabel(ventana, text="⚠️ " + str(resultado["aviso"]), font=("Arial", 10, "bold"),
+            ctk.CTkLabel(cuerpo, text="⚠️ " + str(resultado["aviso"]), font=("Arial", 10, "bold"),
                          text_color="#c0392b", wraplength=640, justify="center").pack(pady=(2, 0))
 
         # 🏢 ¿La factura está a nombre de la empresa configurada?
         colores_destino = {"ok": ("#d4edda", "#155724"), "ajeno": ("#f8d7da", "#721c24"),
                            "sin-datos": ("#fff3cd", "#856404"), "sin-configurar": ("#fff3cd", "#856404")}
         fondo_dest, color_dest = colores_destino.get(estado_destino, ("#f8f9fa", "#2c3e50"))
-        f_destino = ctk.CTkFrame(ventana, fg_color=fondo_dest, corner_radius=6)
+        f_destino = ctk.CTkFrame(cuerpo, fg_color=fondo_dest, corner_radius=6)
         f_destino.pack(fill="x", padx=14, pady=(6, 0))
         ctk.CTkLabel(f_destino, text=mensaje_destino, font=("Arial", 11, "bold"), text_color=color_dest,
                      wraplength=650, justify="left").pack(padx=10, pady=6, anchor="w")
@@ -4339,7 +4363,7 @@ class FacturasRecibidasTab:
         }
         fondo_prov, color_prov, texto_prov = textos_prov.get(estado_prov, ("#f8f9fa", "#2c3e50", ""))
         if texto_prov:
-            f_prov = ctk.CTkFrame(ventana, fg_color=fondo_prov, corner_radius=6)
+            f_prov = ctk.CTkFrame(cuerpo, fg_color=fondo_prov, corner_radius=6)
             f_prov.pack(fill="x", padx=14, pady=(6, 0))
             ctk.CTkLabel(f_prov, text=texto_prov, font=("Arial", 11, "bold"), text_color=color_prov,
                          wraplength=650, justify="left").pack(padx=10, pady=6, anchor="w")
@@ -4349,20 +4373,20 @@ class FacturasRecibidasTab:
             detalle_dup = (f"N° {duplicado.get('numero')}   ·   Proveedor: {duplicado.get('proveedor')}"
                            f"   ·   Fecha: {duplicado.get('fecha')}"
                            f"   ·   Total: {formatear_moneda(duplicado.get('total') or 0)}")
-            f_dup = ctk.CTkFrame(ventana, fg_color="#f8d7da", corner_radius=6)
+            f_dup = ctk.CTkFrame(cuerpo, fg_color="#f8d7da", corner_radius=6)
             f_dup.pack(fill="x", padx=14, pady=(6, 0))
             ctk.CTkLabel(f_dup, text="🚫 ESTE COMPROBANTE YA ESTÁ REGISTRADO — no se permite duplicarlo.\n"
                                      + detalle_dup,
                          font=("Arial", 11, "bold"), text_color="#721c24", wraplength=650,
                          justify="left").pack(padx=10, pady=6, anchor="w")
 
-        f_datos = ctk.CTkFrame(ventana, fg_color="#f8f9fa", corner_radius=8,
+        f_datos = ctk.CTkFrame(cuerpo, fg_color="#f8f9fa", corner_radius=8,
                                border_width=1, border_color="#e0e0e0")
         f_datos.pack(fill="x", padx=14, pady=8)
         ctk.CTkLabel(f_datos, text="🔎 Datos detectados por el OCR", font=("Arial", 12, "bold"),
                      text_color="#1f538d").pack(anchor="w", padx=12, pady=(8, 4))
         # Si no se pudo leer/consultar la razón social, se puede escribir aquí antes de aplicar
-        f_nombre = ctk.CTkFrame(ventana, fg_color="transparent")
+        f_nombre = ctk.CTkFrame(cuerpo, fg_color="transparent")
         f_nombre.pack(fill="x", padx=16, pady=(2, 0))
         ctk.CTkLabel(f_nombre, text="Razón social del proveedor:", font=("Arial", 11, "bold")).pack(side="left")
         ent_prov_nombre = ctk.CTkEntry(f_nombre, font=("Arial", 11))
@@ -4391,7 +4415,7 @@ class FacturasRecibidasTab:
                          text_color=("#2c3e50" if str(valor).strip() else "#c0392b")).pack(side="left")
         ctk.CTkLabel(f_datos, text="", height=4).pack()
 
-        lbl_estado = ctk.CTkLabel(ventana, text="", font=("Arial", 10, "bold"), text_color="#1e8449")
+        lbl_estado = ctk.CTkLabel(f_pie, text="", font=("Arial", 10, "bold"), text_color="#1e8449")
 
         def copiar_texto():
             try:
@@ -4466,7 +4490,7 @@ class FacturasRecibidasTab:
                     self.ent_nro_doc.focus_set()
                 except Exception:
                     pass
-            self._aviso_temporal(ventana, mensaje_final,
+            self._aviso_temporal(cuerpo, mensaje_final,
                                  titulo="Extracción Inteligente", segundos=2,
                                  al_cerrar=ventana.destroy)
 
@@ -4488,8 +4512,8 @@ class FacturasRecibidasTab:
 
         # 🔻 La barra de botones se ancla abajo: siempre visible aunque la ventana
         # sea pequeña o el texto del OCR sea muy largo.
-        f_botones = ctk.CTkFrame(ventana, fg_color="transparent")
-        f_botones.pack(side="bottom", fill="x", padx=14, pady=(2, 10))
+        f_botones = f_pie
+        # (el pie ya quedo empacado arriba)
         lbl_estado.pack(side="bottom", pady=(2, 0))
         btn_aplicar = ctk.CTkButton(f_botones, text="✅ Aplicar al formulario", height=36, font=("Arial", 12, "bold"),
                                     fg_color="#27ae60", hover_color="#1e8449", command=aplicar)
@@ -6812,85 +6836,26 @@ class FacturasRecibidasTab:
                 print("Aviso - abrir el pago:", e)
 
     def abrir_pago_de_factura(self, id_factura, escanear=False):
-        """Abre «Registrar Pago» para una factura concreta (la busca en TODAS las páginas)."""
-        try:
-            cache_sistema.invalidar()
-        except Exception:
-            pass
-        # 📅 Si la factura es de otro mes, se muestra ese mes para poder verla
-        try:
-            conn_mes = conectar_db(silencioso=True)
-            if conn_mes:
-                try:
-                    with conn_mes.cursor() as c_mes:
-                        c_mes.execute("SELECT fecha FROM facturas_recibidas WHERE id = %s", (id_factura,))
-                        fila_mes = c_mes.fetchone()
-                finally:
-                    liberar_conexion(conn_mes)
-                etiqueta_fac = etiqueta_mes_de_fecha(fila_mes[0] if fila_mes else "")
-                if etiqueta_fac and etiqueta_fac != getattr(self, "mes_filtro", ""):
-                    self.mes_filtro = etiqueta_fac
-                    try:
-                        self.combo_mes.set(etiqueta_fac)
-                    except Exception:
-                        pass
-        except Exception as e_mes:
-            print("Aviso - mes de la factura:", e_mes)
-        try:
-            if hasattr(self, "var_ocultar_app") and self.var_ocultar_app.get():
-                self.var_ocultar_app.set(False)
-        except Exception:
-            pass
-        try:
-            self.cargar_datos_pagar(reset_pagina=True)
-        except Exception:
-            pass
-
-        def _seleccionar_si_esta():
-            for item in self.tabla.get_children():
-                valores = self.tabla.item(item, "values")
-                if len(valores) > 1 and str(valores[1]) == str(id_factura):
-                    self.tabla.selection_set(item)
-                    self.tabla.see(item)
-                    self._escanear_soporte_pendiente = bool(escanear)
-                    self.cargar_comprobante_pago()
-                    return True
-            return False
-
-        def buscar_factura(intento=1):
-            if _seleccionar_si_esta():
-                return
-            try:
-                total_paginas = int(getattr(self, "total_paginas", 1) or 1)
-            except Exception:
-                total_paginas = 1
-            original = getattr(self, "pagina_actual", 1)
-            for pagina in range(1, min(total_paginas, 60) + 1):
-                if pagina == original:
-                    continue
-                try:
-                    self.pagina_actual = pagina
-                    self.cargar_datos_pagar()
-                except Exception:
-                    continue
-                if _seleccionar_si_esta():
-                    return
-            try:
-                self.pagina_actual = original
-                self.cargar_datos_pagar()
-            except Exception:
-                pass
-            if intento < 4:
-                try:
-                    self.main_root.after(400 * intento, lambda: buscar_factura(intento + 1))
-                except Exception:
-                    buscar_factura(intento + 1)
-                return
-            messagebox.showinfo(
+        """Abre «Registrar Pago» (pestaña 2) para la factura indicada."""
+        pagos = getattr(self.app_padre, "app_pagos", None)
+        if pagos is None or not hasattr(pagos, "abrir_pago_de_factura"):
+            return messagebox.showwarning(
                 "Registrar Pago",
-                "La factura todavía no aparece en la lista de Cuentas por Pagar." + chr(10)  + chr(10) +
-                "Pulse «🔄 Actualizar» en la pestaña y vuelva a intentarlo.")
-        buscar_factura()
+                "No se encontró la pestaña «2. Control de Pagos y Deudas»." + chr(10) + chr(10) +
+                "Abra esa pestaña y pulse «Registrar Pago».",
+                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+        # se muestra la pestaña de pagos antes de abrir la ventana
+        try:
+            self.app_padre.tabview.set(" 💳 2. Control de Pagos y Deudas ")
+        except Exception:
+            pass
+        try:
+            pagos.abrir_pago_de_factura(id_factura, escanear=escanear)
+        except Exception as e:
+            messagebox.showerror(
+                "Registrar Pago",
+                "No se pudo abrir el registro de pago:" + chr(10) + str(e),
+                parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
     # =====================================================================
     # 🖱️ MENÚ DE CLIC DERECHO (las DOS pestañas usan el MISMO menú)
@@ -8305,6 +8270,12 @@ class CuentasPorPagarTab:
                                  hover_color="#565e64",
                                  command=lambda: menu_columnas(self.tabla, "compras_cuentas_pagar"))
         btn_cols.pack(side="left", padx=5, pady=5)
+
+        # 🧾 Pagar VARIAS facturas con UN solo comprobante (igual que en Eventos)
+        btn_varias = ctk.CTkButton(frame_acciones, text="🧾 Pagar Varias", width=150,
+                                   font=("Arial", 12, "bold"), fg_color="#8e44ad",
+                                   hover_color="#703688", command=self.pagar_varias_facturas)
+        btn_varias.pack(side="left", padx=5, pady=5)
         try:
             aplicar_columnas_visibles(self.tabla, "compras_cuentas_pagar")
         except Exception:
@@ -8773,6 +8744,450 @@ class CuentasPorPagarTab:
         valores = self.tabla.item(sel[0], "values")
         placa = valores[7] if len(valores) > 7 else ""
         abrir_reset_mantenimientos_vehiculo(self.main_root, placa, self.app_padre.usuario_activo)
+
+    def pagar_varias_facturas(self):
+        """🧾 Paga dos o más facturas de una vez, con UN solo comprobante de pago.
+
+        El comprobante (cargado o escaneado) se asigna a TODAS las facturas
+        seleccionadas, y cada una se paga por su saldo pendiente.
+        """
+        raiz_msg = ventana_para_mensaje(getattr(self, "main_root", None))
+        seleccion = self.tabla.selection()
+        if not seleccion:
+            return messagebox.showinfo(
+                "Pagar varias facturas",
+                "Seleccione dos o más facturas de la lista." + chr(10) + chr(10) +
+                "(Mantenga presionada la tecla Ctrl y haga clic en cada una.)",
+                parent=raiz_msg)
+        ids = []
+        for item in seleccion:
+            try:
+                valores = self.tabla.item(item, "values")
+                if len(valores) > 1 and str(valores[1]).strip():
+                    ids.append(int(valores[1]))
+            except Exception:
+                continue
+        if len(ids) < 2:
+            return messagebox.showwarning(
+                "Pagar varias facturas",
+                "Seleccione al menos DOS facturas para pagarlas con un solo comprobante.",
+                parent=raiz_msg)
+
+        # 📋 Saldo pendiente y datos de cada factura
+        pendientes = []
+        try:
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        for idf in ids:
+                            cur.execute("""
+                                SELECT f.numero_documento, f.proveedor, COALESCE(f.categoria, 'GENERAL'),
+                                       COALESCE(f.total, 0), COALESCE(f.impuesto, 0),
+                                       COALESCE(f.det_monto, 0), COALESCE(f.tipo_documento, ''),
+                                       COALESCE((SELECT SUM(monto_pagado) FROM pagos_comprobantes p
+                                                 WHERE p.id_factura = f.id), 0)
+                                FROM facturas_recibidas f WHERE f.id = %s""", (idf,))
+                            fila = cur.fetchone()
+                            if not fila:
+                                continue
+                            tipo_doc = str(fila[6] or "")
+                            total = float(fila[3] or 0)
+                            impuesto = float(fila[4] or 0)
+                            detraccion = float(fila[5] or 0)
+                            pagado = float(fila[7] or 0)
+                            if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc:
+                                neto = total - impuesto - detraccion
+                            else:
+                                neto = total - detraccion
+                            saldo = round(max(0.0, neto - pagado), 2)
+                            pendientes.append({"id": idf, "nro": str(fila[0] or ""),
+                                               "prov": str(fila[1] or ""), "cat": str(fila[2] or ""),
+                                               "saldo": saldo})
+                finally:
+                    liberar_conexion(conn)
+        except Exception as e:
+            print("Aviso - saldos de las facturas:", e)
+        if not pendientes:
+            return messagebox.showinfo("Pagar varias facturas",
+                                       "No se pudieron leer las facturas seleccionadas.",
+                                       parent=raiz_msg)
+
+        canceladas = [p for p in pendientes if p["saldo"] <= 0.01]
+        pagables = [p for p in pendientes if p["saldo"] > 0.01]
+        if not pagables:
+            detalle = chr(10).join("• %s — %s" % (p["nro"] or "s/n", p["prov"]) for p in canceladas[:8])
+            return messagebox.showwarning(
+                "Facturas ya canceladas",
+                "TODAS las facturas seleccionadas ya están PAGADAS/CANCELADAS:" + chr(10) + chr(10)
+                + detalle + chr(10) + chr(10) + "No hay nada por pagar.", parent=raiz_msg)
+        if canceladas:
+            detalle = chr(10).join("• %s — %s" % (p["nro"] or "s/n", p["prov"]) for p in canceladas[:8])
+            if not messagebox.askyesno(
+                    "Algunas facturas ya están canceladas",
+                    "Estas facturas ya están PAGADAS/CANCELADAS:" + chr(10) + chr(10) +
+                    detalle + chr(10) + chr(10) +
+                    "Se pagarán SOLO las %d pendientes." % len(pagables) + chr(10) +
+                    "¿Desea continuar?", parent=raiz_msg):
+                return
+        pendientes = pagables
+
+        bancos = []
+        try:
+            for b in (cargar_bancos() or []):
+                if isinstance(b, dict):
+                    nombre = " - ".join(str(x) for x in (b.get("banco"), b.get("cuenta")) if x).strip(" -")
+                else:
+                    nombre = str(b).strip()
+                if nombre and nombre not in bancos:
+                    bancos.append(nombre)
+        except Exception:
+            pass
+        bancos += ["Efectivo / Caja Chica", "Tarjeta de Crédito", "Tarjeta de Débito", "Cheque", "Otro"]
+
+        v = ctk.CTkToplevel(getattr(self, "main_root", None))
+        v.title("🧾 Pagar Varias Facturas (1 comprobante)")
+        try:
+            sw, sh = v.winfo_screenwidth(), v.winfo_screenheight()
+            alto = min(620, max(480, sh - 90))
+            v.geometry("640x%d+%d+%d" % (alto, max(0, (sw - 640) // 2), 2 if sh < 800 else 40))
+        except Exception:
+            v.geometry("640x600")
+        v.transient(getattr(self, "main_root", None))
+        try:
+            v.grab_set()
+        except Exception:
+            pass
+        f = ctk.CTkFrame(v, fg_color="transparent")
+        f.pack(fill="both", expand=True, padx=16, pady=12)
+
+        ctk.CTkLabel(f, text="📋 %d facturas seleccionadas (se pagarán con UN solo comprobante)"
+                     % len(pendientes), font=("Arial", 12, "bold"), text_color="#1f538d").pack(anchor="w")
+
+        ctk.CTkLabel(f, text="Fecha del pago:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        f_fecha_pago = ctk.CTkFrame(f, fg_color="transparent")
+        f_fecha_pago.pack(fill="x")
+        ent_fecha = ctk.CTkEntry(f_fecha_pago)
+        ent_fecha.pack(side="left", fill="x", expand=True)
+        ent_fecha.insert(0, datetime.now().strftime("%d/%m/%Y"))
+        ctk.CTkButton(f_fecha_pago, text="📅", width=40, fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: CalendarioNativo(v, ent_fecha)).pack(side="left", padx=(5, 0))
+
+        ctk.CTkLabel(f, text="Cuenta / método de pago:", font=("Arial", 11, "bold")).pack(
+            anchor="w", pady=(8, 0))
+        cmb_cuenta = ctk.CTkComboBox(f, values=bancos, width=420, state="readonly")
+        cmb_cuenta.pack(fill="x")
+        if bancos:
+            cmb_cuenta.set(bancos[0])
+
+        ctk.CTkLabel(f, text="N° de Operación (opcional):", font=("Arial", 11, "bold")).pack(
+            anchor="w", pady=(8, 0))
+        ent_oper = ctk.CTkEntry(f)
+        ent_oper.pack(fill="x")
+
+        ctk.CTkLabel(f, text="💰 Monto pagado:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        ent_monto = ctk.CTkEntry(f)
+        ent_monto.pack(fill="x")
+        total_pendiente = sum(max(0.0, p["saldo"]) for p in pendientes)
+        lbl_calc = ctk.CTkLabel(f, text="", font=("Arial", 11, "bold"), text_color="#555555")
+
+        def actualizar_calc(event=None):
+            try:
+                monto = float(str(ent_monto.get()).strip().replace(",", "") or 0)
+            except ValueError:
+                monto = 0.0
+            dif = round(monto - total_pendiente, 2)
+            if dif < -0.005:
+                lbl_calc.configure(text="Total a pagar: %s   ·   Falta: %s"
+                                        % (formatear_moneda(total_pendiente), formatear_moneda(abs(dif))),
+                                   text_color="#c0392b")
+            elif dif > 0.005:
+                lbl_calc.configure(text="Total a pagar: %s   ·   Sobra: %s"
+                                        % (formatear_moneda(total_pendiente), formatear_moneda(dif)),
+                                   text_color="#b9770e")
+            else:
+                lbl_calc.configure(text="Total a pagar: %s   ·   Exacto" % formatear_moneda(total_pendiente),
+                                   text_color="#1e8449")
+
+        ent_monto.bind("<KeyRelease>", actualizar_calc)
+        ent_monto.insert(0, "%.2f" % total_pendiente)
+        lbl_calc.pack(anchor="w", pady=(2, 0))
+        actualizar_calc()
+
+        ctk.CTkLabel(f, text="📎 Comprobante de pago (se asignará a todas):",
+                     font=("Arial", 11, "bold")).pack(anchor="w", pady=(10, 0))
+        estado_comp = {"ruta": ""}
+        lbl_comp = ctk.CTkLabel(f, text="Sin comprobante cargado", font=("Arial", 10),
+                                text_color="#999999", anchor="w")
+
+        def actualizar_lbl_comp():
+            if estado_comp["ruta"]:
+                lbl_comp.configure(text="📎 " + os.path.basename(estado_comp["ruta"]),
+                                   text_color="#1e8449")
+            else:
+                lbl_comp.configure(text="Sin comprobante cargado", text_color="#999999")
+
+        def aplicar_ocr(ruta):
+            """🔎 Lee el comprobante con OCR y rellena el monto y el N° de operación."""
+            try:
+                texto = leer_ocr_windows(ruta)
+                if not texto.strip():
+                    try:
+                        import escaner as _esc
+                        texto = _esc.texto_de_resultados(_esc.ocr_paginas([ruta]))
+                    except Exception:
+                        texto = ""
+            except Exception as e_ocr:
+                print("[OCR comprobante] error:", e_ocr)
+                texto = ""
+            if not texto.strip():
+                return
+            numero, monto = "", 0.0
+            try:
+                numero = extraer_numero_operacion(texto) or ""
+            except Exception:
+                numero = ""
+            try:
+                monto = monto_del_comprobante(texto) or 0.0
+            except Exception:
+                monto = 0.0
+            avisos = []
+            if numero:
+                try:
+                    ent_oper.delete(0, tk.END)
+                    ent_oper.insert(0, str(numero))
+                except Exception:
+                    pass
+                avisos.append("N° de operación: " + str(numero))
+            if monto and float(monto) > 0:
+                try:
+                    ent_monto.delete(0, tk.END)
+                    ent_monto.insert(0, "%.2f" % float(monto))
+                except Exception:
+                    pass
+                actualizar_calc()
+                avisos.append("Monto: %.2f" % float(monto))
+            if avisos:
+                try:
+                    lbl_comp.configure(text="📎 " + os.path.basename(ruta) + "   ·   " + " · ".join(avisos),
+                                       text_color="#1e8449")
+                except Exception:
+                    pass
+
+        f_comp = ctk.CTkFrame(f, fg_color="transparent")
+        f_comp.pack(fill="x", pady=(0, 2))
+
+        def cargar_comp():
+            ruta = _pick_comprobante(v)
+            if ruta:
+                estado_comp["ruta"] = ruta
+                actualizar_lbl_comp()
+                aplicar_ocr(ruta)
+
+        ctk.CTkButton(f_comp, text="📎 Cargar archivo", height=30, font=("Arial", 11, "bold"),
+                      fg_color="#16a085", hover_color="#11806a",
+                      command=cargar_comp).pack(side="left", fill="x", expand=True)
+
+        def escanear_comp():
+            try:
+                import escaner as _esc
+            except Exception as e:
+                return messagebox.showerror("Escáner", "No se pudo cargar el escáner:" + chr(10) + str(e),
+                                            parent=v)
+            try:
+                cfg = cargar_configuracion_regional()
+            except Exception:
+                cfg = {}
+            datos = _esc.config_escaner(cfg)
+            res = _escanear_con_progreso(
+                v, "el comprobante", _esc, _esc.carpeta_escaneos(cfg),
+                dispositivo=datos.get("escaner_dispositivo", ""),
+                dpi=datos.get("escaner_dpi", "300"),
+                color=datos.get("escaner_color", "Escala de grises"),
+                origen=datos.get("escaner_origen", "Cristal (una página a la vez)"),
+                paginas=1,
+                optimizar=str(datos.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+                modo=datos.get("escaner_modo", "Automático (sin ventanas)"))
+            paginas = [p for p in (res.get("paginas") or []) if os.path.exists(str(p))]
+            if not paginas:
+                return messagebox.showerror("Escáner", "No se pudo escanear:" + chr(10) +
+                                            str(res.get("error") or "sin detalle"), parent=v)
+            pdf = os.path.join(os.path.dirname(paginas[0]),
+                               "Comprobante_Varias_%s.pdf" % datetime.now().strftime("%Y%m%d_%H%M%S"))
+            _esc.imagenes_a_pdf(paginas, pdf)
+            estado_comp["ruta"] = pdf
+            actualizar_lbl_comp()
+            aplicar_ocr(pdf)
+            messagebox.showinfo("Comprobante", "Comprobante escaneado:" + chr(10) +
+                                os.path.basename(pdf), parent=v)
+
+        ctk.CTkButton(f_comp, text="🖨️ Escanear comprobante", height=30, font=("Arial", 11, "bold"),
+                      fg_color="#0e7490", hover_color="#155e75",
+                      command=escanear_comp).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ctk.CTkButton(f_comp, text="👁️ Ver", width=64, height=30, font=("Arial", 11, "bold"),
+                      fg_color="#5d6d7e", hover_color="#4a5967",
+                      command=lambda: (abrir_documento(estado_comp["ruta"])
+                                       if estado_comp["ruta"] and os.path.isfile(estado_comp["ruta"])
+                                       else messagebox.showinfo("Comprobante",
+                                                                "Sin comprobante cargado.", parent=v))
+                      ).pack(side="left", padx=(6, 0))
+        lbl_comp.pack(anchor="w", pady=(2, 6))
+        actualizar_lbl_comp()
+
+        resumen_texto = chr(10).join(
+            "• %s — %s (%s)" % (p["nro"] or "s/n", p["prov"], formatear_moneda(max(0.0, p["saldo"])))
+            for p in pendientes)
+        ctk.CTkLabel(f, text=resumen_texto, font=("Arial", 10), justify="left",
+                     text_color="#555555").pack(anchor="w", pady=(4, 8))
+
+        def guardar():
+            fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
+            cuenta = cmb_cuenta.get().strip()
+            oper = ent_oper.get().strip()
+            if not cuenta:
+                return messagebox.showwarning("Pagar varias facturas",
+                                              "Elija la cuenta / método de pago.", parent=v)
+            ruta_bd = ""
+            if estado_comp["ruta"]:
+                try:
+                    ruta_bd = ruta_para_guardar(estado_comp["ruta"]) or estado_comp["ruta"]
+                except Exception:
+                    ruta_bd = estado_comp["ruta"]
+            pagados, errores = 0, []
+            for p in pendientes:
+                if p["saldo"] <= 0:
+                    continue
+                try:
+                    conn = conectar_db()
+                    if not conn:
+                        continue
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO pagos_comprobantes
+                            (id_factura, monto_pagado, archivo_ruta, proveedor_nombre, fecha_pago,
+                             categoria_suministro, codigo_cotizacion, cuenta_origen, numero_operacion)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (p["id"], p["saldo"], ruta_bd, p["prov"], fecha_val,
+                             p["cat"], p["nro"], cuenta, oper))
+                    conn.commit()
+                    liberar_conexion(conn)
+                    pagados += 1
+                except Exception as e:
+                    errores.append("%s: %s" % (p["nro"], str(e)[:60]))
+            try:
+                cache_sistema.invalidar()
+            except Exception:
+                pass
+            try:
+                registrar_auditoria(getattr(getattr(self, "app_padre", None), "usuario_activo", ""),
+                                    "Cuentas por Pagar",
+                                    "Pagó %d facturas con un solo comprobante" % pagados)
+            except Exception:
+                pass
+            try:
+                self.cargar_datos_pagar(reset_pagina=True)
+                self.app_padre.app_facturas.cargar_datos_tabla(reset_pagina=True)
+            except Exception:
+                pass
+            try:
+                v.destroy()
+            except Exception:
+                pass
+            msg = "Se pagaron %d factura(s) con el comprobante." % pagados
+            if errores:
+                msg += chr(10) + chr(10) + "Algunas no se pagaron:" + chr(10) + chr(10).join(errores[:5])
+            messagebox.showinfo("Éxito", msg, parent=ventana_para_mensaje(getattr(self, "main_root", None)))
+
+        barra = ctk.CTkFrame(v, fg_color="transparent")
+        barra.pack(fill="x", padx=16, pady=10)
+        ctk.CTkButton(barra, text="💾 Pagar todas", height=36, font=("Arial", 12, "bold"),
+                      fg_color="#27ae60", hover_color="#1e8449",
+                      command=guardar).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(barra, text="❌ Cancelar", height=36, font=("Arial", 12, "bold"),
+                      fg_color="#7f8c8d", hover_color="#606b6b",
+                      command=v.destroy).pack(side="left", expand=True, fill="x", padx=(6, 0))
+
+    def abrir_pago_de_factura(self, id_factura, escanear=False):
+        """Abre «Registrar Pago» para una factura concreta (la busca en TODAS las páginas)."""
+        try:
+            cache_sistema.invalidar()
+        except Exception:
+            pass
+        # 📅 Si la factura es de otro mes, se muestra ese mes para poder verla
+        try:
+            conn_mes = conectar_db(silencioso=True)
+            if conn_mes:
+                try:
+                    with conn_mes.cursor() as c_mes:
+                        c_mes.execute("SELECT fecha FROM facturas_recibidas WHERE id = %s", (id_factura,))
+                        fila_mes = c_mes.fetchone()
+                finally:
+                    liberar_conexion(conn_mes)
+                etiqueta_fac = etiqueta_mes_de_fecha(fila_mes[0] if fila_mes else "")
+                if etiqueta_fac and etiqueta_fac != getattr(self, "mes_filtro", ""):
+                    self.mes_filtro = etiqueta_fac
+                    try:
+                        self.combo_mes.set(etiqueta_fac)
+                    except Exception:
+                        pass
+        except Exception as e_mes:
+            print("Aviso - mes de la factura:", e_mes)
+        try:
+            if hasattr(self, "var_ocultar_app") and self.var_ocultar_app.get():
+                self.var_ocultar_app.set(False)
+        except Exception:
+            pass
+        try:
+            self.cargar_datos_pagar(reset_pagina=True)
+        except Exception:
+            pass
+
+        def _seleccionar_si_esta():
+            for item in self.tabla.get_children():
+                valores = self.tabla.item(item, "values")
+                if len(valores) > 1 and str(valores[1]) == str(id_factura):
+                    self.tabla.selection_set(item)
+                    self.tabla.see(item)
+                    self._escanear_soporte_pendiente = bool(escanear)
+                    self.cargar_comprobante_pago()
+                    return True
+            return False
+
+        def buscar_factura(intento=1):
+            if _seleccionar_si_esta():
+                return
+            try:
+                total_paginas = int(getattr(self, "total_paginas", 1) or 1)
+            except Exception:
+                total_paginas = 1
+            original = getattr(self, "pagina_actual", 1)
+            for pagina in range(1, min(total_paginas, 60) + 1):
+                if pagina == original:
+                    continue
+                try:
+                    self.pagina_actual = pagina
+                    self.cargar_datos_pagar()
+                except Exception:
+                    continue
+                if _seleccionar_si_esta():
+                    return
+            try:
+                self.pagina_actual = original
+                self.cargar_datos_pagar()
+            except Exception:
+                pass
+            if intento < 4:
+                try:
+                    self.main_root.after(400 * intento, lambda: buscar_factura(intento + 1))
+                except Exception:
+                    buscar_factura(intento + 1)
+                return
+            messagebox.showinfo(
+                "Registrar Pago",
+                "La factura todavía no aparece en la lista de Cuentas por Pagar." + chr(10)  + chr(10) +
+                "Pulse «🔄 Actualizar» en la pestaña y vuelva a intentarlo.")
+        buscar_factura()
+
 
     def cargar_comprobante_pago(self):
         ruta_base = obtener_ruta_base_drive()
