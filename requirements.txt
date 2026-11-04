@@ -11,3 +11,6 @@ cryptography
 
 # --- Lectura de PDF para el módulo de planos (Windows + macOS)
 PyMuPDF==1.28.0
+
+# QR del escáner por teléfono (Python puro, Windows + macOS)
+segno>=1.6.1
