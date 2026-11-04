@@ -40,6 +40,29 @@ jobs:
     - name: Instalar dependencias
       run: pip install psycopg2-binary certifi
 
+    - name: Comprobar que existan los secretos
+      run: |
+        faltan=""
+        for nombre in LICENCIAS_DB_HOST LICENCIAS_DB_PORT LICENCIAS_DB_NAME LICENCIAS_DB_USER LICENCIAS_DB_PASSWORD; do
+          valor="${!nombre}"
+          if [ -z "$valor" ]; then
+            faltan="$faltan $nombre"
+          fi
+        done
+        if [ -n "$faltan" ]; then
+          echo "::error::Faltan estos secretos del repositorio:$faltan"
+          echo "::notice::Agreguelos en Settings > Secrets and variables > Actions"
+          echo "::notice::Ejecute DATOS_PARA_SECRETS_GITHUB.bat (carpeta Flota) para ver los valores"
+          exit 1
+        fi
+        echo "::notice::Credenciales presentes: se hara el ping a la base de licencias"
+      env:
+        LICENCIAS_DB_HOST: ${{ secrets.LICENCIAS_DB_HOST }}
+        LICENCIAS_DB_PORT: ${{ secrets.LICENCIAS_DB_PORT }}
+        LICENCIAS_DB_NAME: ${{ secrets.LICENCIAS_DB_NAME }}
+        LICENCIAS_DB_USER: ${{ secrets.LICENCIAS_DB_USER }}
+        LICENCIAS_DB_PASSWORD: ${{ secrets.LICENCIAS_DB_PASSWORD }}
+
     - name: Ping a la base de licencias (genera actividad de usuario)
       env:
         LICENCIAS_DB_HOST: ${{ secrets.LICENCIAS_DB_HOST }}

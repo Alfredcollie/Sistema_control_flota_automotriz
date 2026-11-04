@@ -42,3 +42,7 @@ keepalive_licencias_log.txt
 config_licencia.json
 config_db.json
 config_local.json
+
+# token local para lanzar la compilación (NO subir)
+github_token.txt
+.github_token

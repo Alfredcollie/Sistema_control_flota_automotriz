@@ -8,3 +8,6 @@ google-genai
 keyring
 certifi
 cryptography
+
+# --- Lectura de PDF para el módulo de planos (Windows + macOS)
+PyMuPDF==1.28.0
