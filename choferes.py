@@ -16,6 +16,10 @@ from datetime import datetime
 
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
+
+# 🏦 Bancos del Perú: la lista vive en 'bancos_peru.py' y la comparten el
+#    módulo de Choferes y la Ficha PDF del chofer.
+from bancos_peru import BANCOS_PERU
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 # 🖼️ Visor interno de documentos
@@ -627,7 +631,10 @@ class ChoferesApp:
                     "ALTER TABLE choferes ADD COLUMN telefono_emergencia VARCHAR(50) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN contacto_emergencia_nombre VARCHAR(150) DEFAULT ''",
                     "ALTER TABLE choferes ADD COLUMN talla_polo VARCHAR(20) DEFAULT ''",
-                    "ALTER TABLE choferes ADD COLUMN talla_casaca VARCHAR(20) DEFAULT ''"
+                    "ALTER TABLE choferes ADD COLUMN talla_casaca VARCHAR(20) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN banco VARCHAR(80) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN cuenta_bancaria VARCHAR(40) DEFAULT ''",
+                    "ALTER TABLE choferes ADD COLUMN cci VARCHAR(30) DEFAULT ''"
                 ]
                 
                 for query in columnas_nuevas:
@@ -986,12 +993,13 @@ class ChoferesApp:
             abrir_documento_local(ruta)
 
     def ejecutar_importacion_ficha_pdf(self):
-        try:
-            from pypdf import PdfReader
-        except ImportError:
-            messagebox.showerror("Librería Faltante", "Para activar el lector de Fichas PDF, ejecute en su consola:\npip install pypdf")
-            return
+        """📥 Importa una Ficha de Chofer en PDF.
 
+        Acepta fichas CON formulario interactivo y también fichas APLANADAS
+        (impresas/convertidas): en ese caso los datos se leen por su posición
+        en el formato oficial. Si no se puede leer nada, el PDF se guarda en la
+        carpeta de expedientes para no perderlo.
+        """
         archivo_pdf = seleccionar_archivo_dialogo(
             titulo="Seleccionar Ficha PDF de Chofer",
             tipos=[("Archivos PDF de Fichas", "*.pdf *.PDF"), ("Todos los Archivos", "*.*")]
@@ -1000,74 +1008,96 @@ class ChoferesApp:
             return
 
         try:
-            reader = PdfReader(archivo_pdf)
-            fields = reader.get_fields()
-            if not fields:
-                messagebox.showwarning("PDF Inválido", "El archivo PDF no contiene un formulario interactivo."); return
-
-            dni = fields.get("dni", {}).get("/V", "").strip()
-            nombres = fields.get("nombres", {}).get("/V", "").strip()
-            ruc = fields.get("ruc", {}).get("/V", "").strip()
-            direccion = fields.get("direccion", {}).get("/V", "").strip()
-            fec_nac = fields.get("fecha_nacimiento", {}).get("/V", "").strip()
-            sexo = fields.get("sexo", {}).get("/V", "").strip()
-            hijos = fields.get("numero_hijos", {}).get("/V", "").strip()
-            telefono = fields.get("telefono", {}).get("/V", "").strip()
-            correo = fields.get("correo", {}).get("/V", "").strip()
-            estado = fields.get("estado_laboral", {}).get("/V", "").strip()
-            licencia = fields.get("licencia", {}).get("/V", "").strip()
-            categoria = fields.get("categoria_licencia", {}).get("/V", "").strip()
-            venc_licencia = fields.get("venc_licencia", {}).get("/V", "").strip()
-
-            def _valor_campo(nombre_campo):
-                """Valor de un campo del PDF (sin fallar si viene vacío o nulo)."""
-                try:
-                    return str((fields.get(nombre_campo, {}) or {}).get("/V", "") or "").strip()
-                except Exception:
-                    return ""
-
-            ini_contrato = _valor_campo("inicio_contrato")
-            fin_contrato = _valor_campo("fin_contrato")
-            sanidad_num = _valor_campo("carnet_sanidad")
-            sanidad_emision = _valor_campo("sanidad_emision") or _valor_campo("emision_sanidad")
-            sanidad_venc = _valor_campo("venc_sanidad")
-            tel_emergencia = _valor_campo("telefono_emergencia")
-            nombre_emergencia = _valor_campo("contacto_emergencia_nombre")
-            talla_polo = _valor_campo("talla_polo")
-            talla_casaca = _valor_campo("talla_casaca")
-
-            # NOTA: la ficha NO trae logística ni seguros (móvil / seguros salud-vida)
-            self.limpiar_formulario()
-            self.ent_dni.insert(0, dni)
-            self.ent_nombres.insert(0, nombres)
-            self.ent_ruc.insert(0, ruc)
-            self.ent_direccion.insert(0, direccion)
-            self.ent_fec_nac.insert(0, fec_nac)
-            if sexo in ("Masculino", "Femenino", "Otro"):
-                self.cmb_sexo.set(sexo)
-            self.ent_hijos.insert(0, hijos)
-            self.ent_telefono.insert(0, telefono)
-            self.ent_emergencia.insert(0, tel_emergencia)
-            self.ent_emergencia_nombre.insert(0, nombre_emergencia)
-            if talla_polo:
-                self.cmb_talla_polo.set(talla_polo)
-            if talla_casaca:
-                self.cmb_talla_casaca.set(talla_casaca)
-            self.ent_correo.insert(0, correo)
-            if estado in ("Activo", "Inactivo", "Suspendido"):
-                self.cmb_estado.set(estado)
-            self.ent_licencia.insert(0, licencia)
-            self.ent_cat_licencia.insert(0, categoria)
-            self.ent_venc_licencia.insert(0, venc_licencia)
-            self.ent_ini_contrato.insert(0, ini_contrato)
-            self.ent_fin_contrato.insert(0, fin_contrato)
-            self.ent_sanidad_num.insert(0, sanidad_num)
-            self.ent_sanidad_emision.insert(0, sanidad_emision)
-            self.ent_sanidad_venc.insert(0, sanidad_venc)
-
-            messagebox.showinfo("Ficha Importada", "¡Datos extraídos del PDF!\nRevisa el formulario y dale a guardar.")
+            from ficha_chofer_lector import leer_ficha
         except Exception as e:
-            messagebox.showerror("Error de Lectura", f"No se pudo procesar el PDF:\n\n{e}")
+            return messagebox.showerror("Librería Faltante",
+                                        "No se encontró el lector de fichas:\n\n%s" % e)
+
+        try:
+            valores, origen, aviso = leer_ficha(archivo_pdf)
+        except Exception as e:
+            return messagebox.showerror("Error de Lectura",
+                                        "No se pudo procesar el PDF:\n\n%s" % e)
+
+        if not valores:
+            # 🗂️ No se pudo leer: se ofrece GUARDAR el PDF en el expediente
+            guardar = messagebox.askyesno(
+                "Ficha sin datos legibles",
+                (aviso or "No se pudieron leer los datos del PDF.") +
+                "\n\n¿Desea guardar el PDF en la carpeta de expedientes para no perderlo?")
+            if guardar:
+                try:
+                    self._guardar_pdf_en_expediente(archivo_pdf)
+                except Exception as e:
+                    messagebox.showerror("Error al guardar", str(e))
+            return
+
+        def _campo(nombre):
+            return str(valores.get(nombre, "") or "").strip()
+
+        self.limpiar_formulario()
+        self.ent_dni.insert(0, _campo("dni"))
+        self.ent_nombres.insert(0, _campo("nombres"))
+        self.ent_ruc.insert(0, _campo("ruc"))
+        self.ent_direccion.insert(0, _campo("direccion"))
+        self.ent_fec_nac.insert(0, _campo("fecha_nacimiento"))
+        sexo = _campo("sexo")
+        if sexo in ("Masculino", "Femenino", "Otro"):
+            self.cmb_sexo.set(sexo)
+        self.ent_hijos.insert(0, _campo("numero_hijos"))
+        self.ent_telefono.insert(0, _campo("telefono"))
+        self.ent_emergencia.insert(0, _campo("telefono_emergencia"))
+        self.ent_emergencia_nombre.insert(0, _campo("contacto_emergencia_nombre"))
+        if _campo("talla_polo"):
+            self.cmb_talla_polo.set(_campo("talla_polo"))
+        if _campo("talla_casaca"):
+            self.cmb_talla_casaca.set(_campo("talla_casaca"))
+        self.ent_correo.insert(0, _campo("correo"))
+        estado = _campo("estado_laboral")
+        if estado in ("Activo", "Inactivo", "Suspendido"):
+            self.cmb_estado.set(estado)
+        self.ent_licencia.insert(0, _campo("licencia"))
+        self.ent_cat_licencia.insert(0, _campo("categoria_licencia"))
+        self.ent_venc_licencia.insert(0, _campo("venc_licencia"))
+        self.ent_ini_contrato.insert(0, _campo("inicio_contrato"))
+        self.ent_fin_contrato.insert(0, _campo("fin_contrato"))
+        self.ent_sanidad_num.insert(0, _campo("carnet_sanidad"))
+        self.ent_sanidad_emision.insert(0, _campo("sanidad_emision"))
+        self.ent_sanidad_venc.insert(0, _campo("venc_sanidad"))
+        # 🏦 Datos bancarios (si la ficha los trae)
+        banco = _campo("banco")
+        if banco:
+            self.cmb_banco.set(banco if banco in BANCOS_PERU else "Otro / Efectivo")
+        self.ent_cuenta.insert(0, _campo("cuenta_bancaria"))
+        self.ent_cci.insert(0, _campo("cci"))
+
+        if origen == "texto":
+            messagebox.showwarning("Ficha importada (sin formulario)", aviso)
+        else:
+            messagebox.showinfo("Ficha Importada",
+                                "¡Datos extraídos del PDF!\n"
+                                "Revisa el formulario y da clic en Guardar / Actualizar.")
+
+        if messagebox.askyesno("Guardar copia",
+                               "¿Desea guardar también una copia del PDF en la carpeta "
+                               "de expedientes del chofer?"):
+            try:
+                self._guardar_pdf_en_expediente(archivo_pdf, _campo("dni"), _campo("nombres"))
+            except Exception as e:
+                messagebox.showerror("Error al guardar", str(e))
+
+    def _guardar_pdf_en_expediente(self, archivo_pdf, dni="", nombres=""):
+        """Copia el PDF a la carpeta de expedientes (nunca lo borra del origen)."""
+        carpeta = _carpeta_expedientes()
+        os.makedirs(carpeta, exist_ok=True)
+        etiqueta = ("%s_%s" % (dni.strip(), nombres.strip().replace(" ", "_"))).strip("_")
+        if not etiqueta:
+            etiqueta = datetime.datetime.now().strftime("ficha_%Y%m%d_%H%M%S")
+        destino = os.path.join(carpeta, "Ficha_%s.pdf" % etiqueta)
+        if os.path.abspath(destino) != os.path.abspath(archivo_pdf):
+            shutil.copy2(archivo_pdf, destino)
+        return messagebox.showinfo("PDF guardado",
+                                   "Copia guardada en:\n\n%s" % destino)
 
     def crear_interfaz(self):
         for widget in self.parent_frame.winfo_children(): widget.destroy()
@@ -1189,6 +1219,19 @@ class ChoferesApp:
         ctk.CTkLabel(self.f_form, text="--- Contrato ---", font=("Arial", 11, "bold"), text_color="#16a085").pack(anchor="w", padx=10, pady=(10,5))
         self.ent_ini_contrato = crear_campo_fecha("Inicio de Contrato:")
         self.ent_fin_contrato = crear_campo_fecha("Culminación de Contrato:")
+
+        # --- Datos Bancarios (para el pago de sus servicios) ---
+        ctk.CTkLabel(self.f_form, text="--- Datos Bancarios (para pagos) ---",
+                     font=("Arial", 11, "bold"), text_color="#1f538d").pack(
+            anchor="w", padx=10, pady=(10, 2))
+        ctk.CTkLabel(self.f_form, text="Banco:", font=("Arial", 10, "bold")).pack(
+            anchor="w", padx=10)
+        self.cmb_banco = ctk.CTkComboBox(self.f_form, values=BANCOS_PERU,
+                                         state="readonly", font=("Arial", 11))
+        self.cmb_banco.pack(fill="x", padx=10, pady=(0, 6))
+        self.cmb_banco.set(BANCOS_PERU[0])
+        self.ent_cuenta = crear_campo("N° de Cuenta:", "Ej: 193-1234567-0-11")
+        self.ent_cci = crear_campo("CCI (Cuenta Interbancaria):", "Ej: 002-193-001234567011-15")
 
         ctk.CTkLabel(self.f_form, text="Estado Laboral:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.cmb_estado = ctk.CTkComboBox(self.f_form, values=["Activo", "Inactivo", "Suspendido"],
@@ -1455,6 +1498,9 @@ class ChoferesApp:
 
         self.ent_ini_contrato.delete(0, tk.END)
         self.ent_fin_contrato.delete(0, tk.END)
+        self.cmb_banco.set(BANCOS_PERU[0])
+        self.ent_cuenta.delete(0, tk.END)
+        self.ent_cci.delete(0, tk.END)
         self.cmb_estado.set("Activo")
         self._estado_anterior = "Activo"
         self._observacion_estado = ""
@@ -1633,6 +1679,11 @@ class ChoferesApp:
 
         ini_contrato = self.ent_ini_contrato.get().strip()
         fin_contrato = self.ent_fin_contrato.get().strip()
+        banco = self.cmb_banco.get().strip()
+        if banco == BANCOS_PERU[0]:
+            banco = ""
+        cuenta_bancaria = self.ent_cuenta.get().strip()
+        cci = self.ent_cci.get().strip()
         estado = self.cmb_estado.get()
         observacion = (self._observacion_estado or "").strip()
 
@@ -1732,13 +1783,15 @@ class ChoferesApp:
                     observacion_estado=%s, carnet_sanidad_num=%s, carnet_sanidad_emision=%s, carnet_sanidad_venc=%s,
                     licencia2=%s, categoria_licencia2=%s, vencimiento_licencia2=%s,
                     telefono_emergencia=%s, contacto_emergencia_nombre=%s,
-                    talla_polo=%s, talla_casaca=%s
+                    talla_polo=%s, talla_casaca=%s,
+                    banco=%s, cuenta_bancaria=%s, cci=%s
                     WHERE id=%s
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
                       sanidad_num, sanidad_emision, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
-                      nombre_emergencia, talla_polo, talla_casaca, self.id_edicion))
+                      nombre_emergencia, talla_polo, talla_casaca,
+                      banco, cuenta_bancaria, cci, self.id_edicion))
                 detalle_estado = f" — marcado INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Actualizó datos de {nombres}{detalle_estado}"[:240])
@@ -1755,13 +1808,14 @@ class ChoferesApp:
                     fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
                     carnet_sanidad_num, carnet_sanidad_emision, carnet_sanidad_venc, licencia2, categoria_licencia2,
                     vencimiento_licencia2, telefono_emergencia, contacto_emergencia_nombre,
-                    talla_polo, talla_casaca)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    talla_polo, talla_casaca, banco, cuenta_bancaria, cci)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (dni, nombres, ruc, tel, correo, licencia, cat, venc, estado,
                       direccion, fec_nac, sexo, hijos, movil, salud_num, salud_venc, vida_num, vida_venc,
                       json_rutas_finales, ini_contrato, fin_contrato, observacion,
                       sanidad_num, sanidad_emision, sanidad_venc, licencia2, cat2, venc2, tel_emergencia,
-                      nombre_emergencia, talla_polo, talla_casaca))
+                      nombre_emergencia, talla_polo, talla_casaca,
+                      banco, cuenta_bancaria, cci))
                 detalle_estado = f" — INACTIVO. Motivo: {observacion}" if estado == "Inactivo" else ""
                 registrar_auditoria(self.usuario_activo, "Choferes",
                                     f"Registró nuevo conductor/personal: {nombres}{detalle_estado}"[:240])
@@ -1818,7 +1872,8 @@ class ChoferesApp:
                 ruta_documentos, fecha_inicio_contrato, fecha_fin_contrato, observacion_estado,
                 carnet_sanidad_num, carnet_sanidad_venc, licencia2, categoria_licencia2,
                 vencimiento_licencia2, telefono_emergencia, contacto_emergencia_nombre,
-                talla_polo, talla_casaca, COALESCE(carnet_sanidad_emision, '')
+                talla_polo, talla_casaca, COALESCE(carnet_sanidad_emision, ''),
+                COALESCE(banco, ''), COALESCE(cuenta_bancaria, ''), COALESCE(cci, '')
                 FROM choferes WHERE id = %s
             """, (vid,))
             r = cursor.fetchone()
@@ -1858,6 +1913,10 @@ class ChoferesApp:
                 self.ent_emergencia_nombre.insert(0, r[29] if len(r) > 29 and r[29] else "")
                 self.cmb_talla_polo.set(str(r[30]) if len(r) > 30 and r[30] else "")
                 self.cmb_talla_casaca.set(str(r[31]) if len(r) > 31 and r[31] else "")
+                if len(r) > 33 and r[33]:
+                    self.cmb_banco.set(r[33] if r[33] in BANCOS_PERU else "Otro / Efectivo")
+                self.ent_cuenta.insert(0, r[34] if len(r) > 34 and r[34] else "")
+                self.ent_cci.insert(0, r[35] if len(r) > 35 and r[35] else "")
                 self.ent_ini_contrato.insert(0, r[20] if len(r) > 20 and r[20] else "")
                 self.ent_fin_contrato.insert(0, r[21] if len(r) > 21 and r[21] else "")
                 self._observacion_estado = (r[22] or "") if len(r) > 22 else ""
