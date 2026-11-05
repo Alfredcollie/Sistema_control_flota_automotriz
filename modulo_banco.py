@@ -5169,8 +5169,31 @@ class ModuloBancoApp:
         ctk.CTkButton(f_comp, text="🖨️ Escanear", width=120, height=30, font=("Arial", 11, "bold"),
                       fg_color="#0e7490", hover_color="#155e75",
                       command=escanear_comprobante).pack(side="left", padx=(6, 0))
+
+        def escanear_comprobante_telefono():
+            """📱 Abre el QR y espera la foto del teléfono."""
+            try:
+                import escaner_movil as _mov
+                _mov.escanear_reusando_flujo(
+                    parent=v,
+                    config=cargar_config(),
+                    funcion=escanear_comprobante,
+                    etiqueta="Banco · comprobante de pago")
+            except Exception as e:
+                messagebox.showerror("Escáner por teléfono", str(e), parent=v)
+
+
         lbl_comprobante.pack(anchor="w", pady=(0, 6))
         actualizar_lbl_comprobante()
+
+        # 📱 Escanear el comprobante con el teléfono (fila propia, ancho completo)
+        _fila_tel_banco = ctk.CTkFrame(f, fg_color="transparent")
+        _fila_tel_banco.pack(fill="x", pady=(0, 6))
+        ctk.CTkButton(_fila_tel_banco, text="📱 Escanear con el teléfono",
+                      height=30, font=("Arial", 11, "bold"),
+                      fg_color="#8e44ad", hover_color="#6c3483",
+                      command=escanear_comprobante_telefono
+                      ).pack(side="left", fill="x", expand=True)
 
         # ------------------------------------------------------------------
         # UNIFICACIÓN CON COMPRAS CRUZADAS (pago a tercero)

@@ -1080,7 +1080,18 @@ def leer_ocr_windows(ruta, idiomas="es-PE,es-MX,es-ES,en-US", dpi=250):
         shutil.rmtree(carpeta, ignore_errors=True)
     except Exception:
         pass
-    return "\n".join(paginas)
+    texto_final = "\n".join(paginas)
+    # 🔄 Si leyó muy poco, se prueba el OCR del sistema con giro automático
+    #    (muchos comprobantes se escanean de costado o de cabeza)
+    if len(texto_final.strip()) < 20:
+        try:
+            import escaner as _esc
+            respaldo = _esc.texto_de_resultados(_esc.ocr_paginas([ruta])) or ""
+            if len(respaldo.strip()) > len(texto_final.strip()):
+                texto_final = respaldo
+        except Exception as e:
+            print("Aviso - respaldo OCR girado:", e)
+    return texto_final
 
 
 def _corregir_digitos_ocr(token):
@@ -2087,12 +2098,59 @@ def montos_en_columnas(texto):
                 return base, igv, total
     return 0.0, 0.0, 0.0
 
-def validar_destinatario(datos, config=None):
-    """Comprueba que la factura esté a nombre de la empresa configurada en el sistema.
+def _parecido_empresa(nombre_leido, nombre_empresa):
+    """Cuán parecidos son dos nombres de empresa (0.0 a 1.0).
+
+    Tolera los errores típicos del OCR: se comparan sin acentos, sin signos y
+    palabra por palabra, además de la similitud global del texto.
+    """
+    import difflib
+    import unicodedata
+
+    def limpiar(texto):
+        texto = unicodedata.normalize("NFKD", str(texto or ""))
+        texto = "".join(c for c in texto if not unicodedata.combining(c))
+        texto = re.sub(r"[^A-Za-z0-9 ]+", " ", texto.upper())
+        return " ".join(texto.split())
+
+    a, b = limpiar(nombre_leido), limpiar(nombre_empresa)
+    if not a or not b:
+        return 0.0
+
+    parecido_texto = difflib.SequenceMatcher(None, a, b).ratio()
+
+    # palabras significativas de la empresa (se ignoran las de relleno)
+    relleno = {"DE", "DEL", "LA", "LAS", "LOS", "EL", "Y", "E", "S", "A", "SA",
+               "SAC", "SRL", "EIRL", "EMPRESA", "SOCIEDAD", "INVERSIONES", "PERU"}
+    palabras = [p for p in b.split() if len(p) >= 4 and p not in relleno]
+    if not palabras:
+        return parecido_texto
+    # cada palabra de la empresa se busca dentro del texto leído (tolerando fallos)
+    encontradas = 0.0
+    for palabra in palabras:
+        if palabra in a:
+            encontradas += 1.0
+        else:
+            trozos = [p for p in a.split() if len(p) >= 3]
+            mejor = 0.0
+            for trozo in trozos:
+                proporcion = difflib.SequenceMatcher(None, palabra, trozo).ratio()
+                if proporcion > mejor:
+                    mejor = proporcion
+            if mejor >= 0.7:
+                encontradas += 0.8
+            elif mejor >= 0.55:
+                encontradas += 0.4
+    parecido_palabras = encontradas / len(palabras)
+    return max(parecido_texto, parecido_palabras)
+
+def validar_destinatario(datos, config=None, texto=""):
+    """Comprueba que la factura esté a nombre de la empresa configurada.
 
     Devuelve (estado, mensaje):
       'ok'             -> la factura es de la empresa configurada
-      'ajeno'          -> es de OTRA empresa (hay que rechazarla)
+      'dudoso'         -> no se pudo confirmar (el OCR leyó mal); el usuario decide
+      'ajeno'          -> es de OTRA empresa (se puede rechazar)
       'sin-configurar' -> falta el RUC/Razón Social en Configuración General
       'sin-datos'      -> no se pudo leer el destinatario en la factura
     """
@@ -2106,21 +2164,51 @@ def validar_destinatario(datos, config=None):
     datos = datos or {}
     cliente_ruc = re.sub(r"\D", "", str(datos.get("cliente_ruc") or ""))
     cliente_nombre = str(datos.get("cliente_nombre") or "").strip()
+    digitos_del_texto = re.sub(r"\D", "", str(texto or ""))
 
+    # 1) El RUC de la empresa aparece en CUALQUIER parte del texto leído
+    if ruc_empresa and ruc_empresa in digitos_del_texto:
+        return "ok", (f"✅ El RUC {ruc_empresa} de la empresa aparece en el comprobante.")
+
+    # 2) RUC del destinatario leído por el OCR
     if ruc_empresa and cliente_ruc:
         if cliente_ruc == ruc_empresa:
             return "ok", f"✅ Factura a nombre de la empresa (RUC {cliente_ruc})."
         detalle = f"RUC {cliente_ruc}" + (f" — {cliente_nombre}" if cliente_nombre else "")
+        # Solo se da por 'dudoso' cuando hay texto del OCR (pudo leer mal los dígitos);
+        # si el RUC se leyó de un PDF o de un archivo, se mantiene el rechazo.
+        if texto and ruc_empresa not in digitos_del_texto:
+            return "dudoso", (f"⚠️ El OCR leyó «{detalle}», pero puede haberse equivocado en algún "
+                              f"dígito.\nLa empresa configurada es RUC {ruc_empresa}"
+                              + (f" — {nombre_empresa}" if nombre_empresa else "")
+                              + ".\nConfirme que la factura esté a nombre de la empresa antes de guardarla.")
         return "ajeno", (f"❌ Esta factura está a nombre de OTRA empresa: {detalle}.\n"
                          f"La empresa configurada es RUC {ruc_empresa}"
                          + (f" — {nombre_empresa}" if nombre_empresa else "") + ".")
 
+    # 3) Nombre del destinatario (con tolerancia a los errores del OCR)
     if nombre_empresa and cliente_nombre:
-        a, b = _normalizar_nombre_empresa(cliente_nombre), _normalizar_nombre_empresa(nombre_empresa)
-        if a and b and (a in b or b in a):
-            return "ok", f"✅ El destinatario '{cliente_nombre}' coincide con la empresa configurada."
-        return "ajeno", (f"❌ Esta factura está a nombre de '{cliente_nombre}', pero la empresa configurada "
-                         f"es '{nombre_empresa}'.")
+        # 🏢 Si el "destinatario" que leyó el OCR es en realidad el PROVEEDOR
+        #    (la factura no trae el bloque del cliente o se leyó mal), no se
+        #    puede afirmar que sea de otra empresa: se avisa como dudoso.
+        nombre_proveedor = str(datos.get("proveedor") or "").strip()
+        if nombre_proveedor and _parecido_empresa(cliente_nombre, nombre_proveedor) >= 0.6:
+            return "dudoso", (f"⚠️ No se pudo distinguir el destinatario del proveedor en el "
+                              f"comprobante (el OCR leyó «{cliente_nombre}»).\n"
+                              f"La empresa configurada es «{nombre_empresa}».\n"
+                              "Revise el comprobante y confirme que esté a nombre de la empresa.")
+
+        parecido = _parecido_empresa(cliente_nombre, nombre_empresa)
+        if parecido >= 0.55:
+            return "ok", (f"✅ El destinatario «{cliente_nombre}» coincide con la empresa "
+                          f"(parecido {int(parecido * 100)}%).")
+        if parecido >= 0.22:
+            return "dudoso", (f"⚠️ El OCR leyó el destinatario como «{cliente_nombre}» "
+                              f"(parecido {int(parecido * 100)}% con «{nombre_empresa}»).\n"
+                              "Puede ser un error de lectura. Confirme que la factura esté a "
+                              "nombre de la empresa antes de guardarla.")
+        return "ajeno", (f"❌ Esta factura está a nombre de «{cliente_nombre}», pero la empresa "
+                         f"configurada es «{nombre_empresa}».")
 
     return "sin-datos", ("⚠️ No se pudo leer el destinatario (RUC o razón social) en la factura. "
                          "Verifique que esté a nombre de la empresa antes de guardarla.")
@@ -2658,6 +2746,194 @@ def construir_condicion_busqueda_compras(filtro):
 # =========================================================
 # CLASE: CALENDARIO NATIVO
 # =========================================================
+MESES_ESPANOL = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
+                 "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+
+# =========================================================
+# 🗓️ AVISO de «mes sin datos»
+# ⚡ Nunca consulta la base mientras se pinta la tabla: usa una caché que se
+#    refresca en segundo plano. Así la interfaz no se queda pegada.
+# =========================================================
+_CACHE_MESES = {}
+_CACHE_TTL = 180          # segundos de validez
+_CACHE_EN_CURSO = set()
+
+
+def _consulta_mes_con_registros(tabla, columna="fecha"):
+    """Consulta la base (SOLO desde un hilo aparte)."""
+    try:
+        from conexion import conectar_db, liberar_conexion
+        conexion = conectar_db()
+        if not conexion:
+            return "", 0, ""
+        try:
+            cursor = conexion.cursor()
+            cursor.execute(
+                "SELECT SPLIT_PART(" + columna + ", '/', 2) AS mes, "
+                "SPLIT_PART(" + columna + ", '/', 3) AS anio, COUNT(*) AS n FROM " + tabla + " "
+                "WHERE " + columna + " IS NOT NULL AND " + columna + " <> '' "
+                "GROUP BY 1, 2 ORDER BY "
+                "NULLIF(SPLIT_PART(MAX(" + columna + "), '/', 3), '')::int DESC NULLS LAST, "
+                "NULLIF(SPLIT_PART(MAX(" + columna + "), '/', 2), '')::int DESC NULLS LAST LIMIT 1")
+            fila = cursor.fetchone()
+            cursor.close()
+        finally:
+            try:
+                liberar_conexion(conexion)
+            except Exception:
+                try:
+                    conexion.close()
+                except Exception:
+                    pass
+        if not fila:
+            return "", 0, ""
+        numero_mes, anio, cantidad = int(fila[0]), str(fila[1]), int(fila[2])
+        if 1 <= numero_mes <= 12:
+            return ("%s %s" % (MESES_ESPANOL[numero_mes - 1], anio), cantidad,
+                    "%02d/%s" % (numero_mes, anio))
+    except Exception as e:
+        print("Aviso - mes con registros:", e)
+    return "", 0, ""
+
+
+def _refrescar_cache_mes(tabla, columna="fecha"):
+    """Lanza la consulta en un hilo aparte (no toca la interfaz)."""
+    clave = (tabla, columna)
+    if clave in _CACHE_EN_CURSO:
+        return
+    _CACHE_EN_CURSO.add(clave)
+
+    def _tarea():
+        try:
+            _CACHE_MESES[clave] = (time.time(), _consulta_mes_con_registros(tabla, columna))
+        except Exception as e:
+            print("Aviso - refrescar meses:", e)
+        finally:
+            _CACHE_EN_CURSO.discard(clave)
+
+    try:
+        threading.Thread(target=_tarea, daemon=True).start()
+    except Exception:
+        _CACHE_EN_CURSO.discard(clave)
+
+
+def mes_con_registros(tabla, columna="fecha"):
+    """Igual que antes, pero usando la caché (para pruebas y usos directos)."""
+    clave = (tabla, columna)
+    info = _CACHE_MESES.get(clave)
+    if info and (time.time() - info[0]) < _CACHE_TTL:
+        return info[1]
+    return _consulta_mes_con_registros(tabla, columna)
+
+
+def _aviso_contenedor(tab):
+    try:
+        return tab.tabla.master
+    except Exception:
+        return None
+
+
+def _ocultar_aviso_vacio(tab):
+    try:
+        if getattr(tab, "_lbl_aviso_vacio", None) is not None:
+            tab._lbl_aviso_vacio.place_forget()
+            tab._btn_aviso_vacio.place_forget()
+    except Exception:
+        pass
+
+
+def _mostrar_aviso_vacio(tab, titulo, detalle, mes_sugerido):
+    try:
+        import customtkinter as _ctk
+        contenedor = _aviso_contenedor(tab)
+        if contenedor is None:
+            return
+        if getattr(tab, "_lbl_aviso_vacio", None) is None:
+            import tkinter as _tk
+            tab._lbl_aviso_vacio = _tk.Label(
+                contenedor, text="", font=("Arial", 12, "bold"),
+                bg="#ffffff", fg="#566573", justify="center", bd=1, relief="solid")
+            # etiqueta clicable (mucho más rápida que un botón la primera vez)
+            tab._btn_aviso_vacio = _tk.Label(
+                contenedor, text="", font=("Arial", 11, "bold", "underline"),
+                bg="#1f538d", fg="#ffffff", cursor="hand2", padx=12, pady=4)
+            tab._btn_aviso_vacio.bind("<Button-1>", lambda _e: _ir_al_mes_sugerido(tab))
+        tab._lbl_aviso_vacio.configure(text=titulo + (("\n" + detalle) if detalle else ""))
+        tab._lbl_aviso_vacio.place(relx=0.5, rely=0.42, anchor="center")
+        if mes_sugerido:
+            tab._mes_sugerido_vacio = mes_sugerido
+            tab._btn_aviso_vacio.configure(text="Ver " + mes_sugerido + "  ➜")
+            tab._btn_aviso_vacio.place(relx=0.5, rely=0.56, anchor="center")
+        else:
+            tab._btn_aviso_vacio.place_forget()
+    except Exception as e:
+        print("Aviso - mostrar:", e)
+
+
+def _ir_al_mes_sugerido(tab):
+    mes = getattr(tab, "_mes_sugerido_vacio", "")
+    if not mes:
+        return
+    try:
+        tab.combo_mes.set(mes)
+    except Exception:
+        pass
+    try:
+        tab.mes_filtro = mes
+        tab.pagina_actual = 1
+    except Exception:
+        pass
+    for nombre in ("cargar_datos_tabla", "cargar_datos_cobrar", "cargar_datos_nc",
+                   "cargar_datos_pagar", "cargar_datos"):
+        metodo = getattr(tab, nombre, None)
+        if metodo is None:
+            continue
+        try:
+            metodo(reset_pagina=True)
+        except TypeError:
+            metodo()
+        return
+
+
+def avisar_tabla_vacia(tab, datos, tabla_sql, que="registros", columna="fecha"):
+    """Si el mes elegido no tiene nada, avisa. NUNCA consulta la base aquí."""
+    try:
+        if datos:
+            _ocultar_aviso_vacio(tab)
+            return
+        mes_filtro = str(getattr(tab, "mes_filtro", "") or "")
+        if not mes_filtro.strip() or "Todos" in mes_filtro:
+            _ocultar_aviso_vacio(tab)
+            return
+
+        clave = (tabla_sql, columna)
+        info = _CACHE_MESES.get(clave)
+        if info and (time.time() - info[0]) < _CACHE_TTL:
+            mes, cantidad, patron = info[1]
+            if mes and mes.strip().lower() != mes_filtro.strip().lower():
+                _mostrar_aviso_vacio(
+                    tab, "No hay %s en %s." % (que, mes_filtro),
+                    "En %s hay %d — pulse para verlos" % (mes, cantidad), mes)
+                return
+            _mostrar_aviso_vacio(tab, "No hay %s en %s." % (que, mes_filtro), "", "")
+            return
+
+        # sin datos en la caché: se muestra el aviso simple y se consulta aparte
+        _mostrar_aviso_vacio(tab, "No hay %s en %s." % (que, mes_filtro), "", "")
+        _refrescar_cache_mes(tabla_sql, columna)
+    except Exception as e:
+        print("Aviso - tabla vacía:", e)
+
+
+# calienta la caché al abrir el programa (en segundo plano, sin tocar la interfaz)
+def _precalentar_cache_meses(tablas=("facturas_emitidas", "facturas_recibidas"),
+                             columna="fecha"):
+    for tabla in tablas:
+        _refrescar_cache_mes(tabla, columna)
+
+
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry, al_elegir=None):
         # 'al_elegir' es opcional: al elegir la fecha se avisa (si se pidió).
@@ -4309,7 +4585,7 @@ class FacturasRecibidasTab:
                 ruc_prov = re.sub(r"\D", "", str(datos_txt.get("ruc") or ""))
                 # 🚫 ¿La factura está a nombre de OTRA empresa? Entonces no se registra
                 #    nada: tampoco el proveedor de esa otra empresa.
-                estado_destino_w, _msg_w = validar_destinatario(datos_txt)
+                estado_destino_w, _msg_w = validar_destinatario(datos_txt, None, resultado.get("texto", ""))
                 resultado["destino"] = estado_destino_w
                 if estado_destino_w == "ajeno":
                     resultado["proveedor"] = {"estado": "ajeno",
@@ -4353,7 +4629,7 @@ class FacturasRecibidasTab:
         self._escaneo_actual = resultado
         config = cargar_configuracion_regional()
         datos = extraer_datos_de_texto(resultado.get("texto", ""))
-        estado_destino, mensaje_destino = validar_destinatario(datos, config)
+        estado_destino, mensaje_destino = validar_destinatario(datos, config, resultado.get("texto", ""))
 
         ventana = reutilizar
         if ventana is None:
@@ -4582,7 +4858,15 @@ class FacturasRecibidasTab:
         btn_aplicar = ctk.CTkButton(f_botones, text="✅ Aplicar al formulario", height=36, font=("Arial", 12, "bold"),
                                     fg_color="#27ae60", hover_color="#1e8449", command=aplicar)
         btn_aplicar.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        if estado_destino == "ajeno":
+        if estado_destino == "dudoso":
+            # ⚠️ El OCR no pudo confirmar el destinatario: se permite continuar,
+            #    pero se avisa para que el usuario lo revise.
+            try:
+                btn_aplicar.configure(fg_color="#e67e22", hover_color="#ca6f1e",
+                                      text="⚠️ Continuar (revisar a nombre de quién está)")
+            except Exception:
+                pass
+        elif estado_destino == "ajeno":
             # 🚫 La factura es de otra empresa: no se puede pasar al formulario
             btn_aplicar.configure(state="disabled", fg_color="#95a5a6",
                                   text="🚫 Factura de otra empresa (rechazada)")
@@ -4697,8 +4981,14 @@ class FacturasRecibidasTab:
         if not datos:
             return
         # 🏢 ¿Está a nombre de la empresa configurada?
-        estado_destino, mensaje_destino = validar_destinatario(datos)
+        estado_destino, mensaje_destino = validar_destinatario(datos, None, (self._escaneo_actual or {}).get("texto", ""))
         self._destino_escaneo = estado_destino
+        if estado_destino == "dudoso":
+            if not messagebox.askyesno(
+                    "Destinatario dudoso",
+                    mensaje_destino + "\n\n¿Está seguro de que la factura es de nuestra empresa?",
+                    parent=ventana_para_mensaje(getattr(self, "main_root", None))):
+                return
         if estado_destino == "ajeno":
             return messagebox.showerror("Factura de otra empresa", mensaje_destino +
                                         "\n\nNo se cargó nada en el formulario.", parent=ventana_para_mensaje(getattr(self, "main_root", None)))
@@ -5382,6 +5672,16 @@ class FacturasRecibidasTab:
             fg_color="#2980b9", hover_color="#1f618d",
             command=self.seleccionar_soporte_tercero)
         self.btn_soporte_tercero_pdf.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        # 📱 Escanear el comprobante del tercero con el teléfono
+        #    (va en su PROPIA fila: en la misma se salía del ancho del panel)
+        _fila_soporte_tel = ctk.CTkFrame(self.f_cruzada, fg_color="transparent")
+        _fila_soporte_tel.pack(fill="x", padx=8, pady=(0, 8))
+        self.btn_soporte_tercero_tel = ctk.CTkButton(
+            _fila_soporte_tel, text="📱 Escanear con el teléfono",
+            font=("Arial", 11, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
+            height=28, command=self.escanear_soporte_tercero_telefono)
+        self.btn_soporte_tercero_tel.pack(side="left", fill="x", expand=True)
         self.ruta_soporte_tercero = ""
 
         # 💰 El monto se puede digitar SIN IGV (monto base) o CON IGV (total del documento)
@@ -6094,6 +6394,26 @@ class FacturasRecibidasTab:
                     text=f"Factura: {formatear_moneda(neto_factura)} — sin comisión interbancaria")
         except Exception:
             pass
+
+
+    def escanear_soporte_tercero_telefono(self):
+        """📱 Escanea el comprobante del pago hecho por el tercero con el teléfono."""
+        try:
+            # 🪟 La pestaña no siempre es una ventana (puede ser un objeto
+            #    controlador): se usa la ventana principal como respaldo.
+            try:
+                padre = self.winfo_toplevel()
+            except Exception:
+                padre = getattr(self, "main_root", None)
+            import escaner_movil as _mov
+            _mov.escanear_reusando_flujo(
+                parent=padre,
+                config=cargar_configuracion_regional(),
+                funcion=self.escanear_soporte_tercero,
+                etiqueta="Compras · pago hecho por un tercero")
+        except Exception as e:
+            messagebox.showerror("Escáner por teléfono", str(e),
+                                 parent=ventana_para_mensaje(getattr(self, "main_root", None)))
 
     def escanear_soporte_tercero(self):
         """🖨️ Escanea el comprobante del pago al tercero y lo deja como soporte."""
@@ -7690,6 +8010,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
         self.lbl_pagina.configure(text=f"Pág {self.pagina_actual} de {self.total_paginas}")
         self.btn_ant.configure(state="normal" if self.pagina_actual > 1 else "disabled")
         self.btn_sig.configure(state="normal" if self.pagina_actual < self.total_paginas else "disabled")
+        avisar_tabla_vacia(self, registros, "facturas_recibidas", "facturas recibidas", "fecha")
 
     def abrir_archivo(self, event):
         sel = self.tabla.selection()
@@ -8801,6 +9122,7 @@ class CuentasPorPagarTab:
         self.lbl_pagina.configure(text=f"Pág {self.pagina_actual} de {self.total_paginas}")
         self.btn_ant.configure(state="normal" if self.pagina_actual > 1 else "disabled")
         self.btn_sig.configure(state="normal" if self.pagina_actual < self.total_paginas else "disabled")
+        avisar_tabla_vacia(self, filas, "facturas_recibidas", "facturas por pagar", "fecha")
 
     def resetear_mantenimientos_vehiculo(self):
         """Abre los mantenimientos del vehículo asociado a la factura seleccionada."""
@@ -9640,7 +9962,9 @@ class CuentasPorPagarTab:
 
         # ❓ Si el pago viene de «Cancelar la factura», se deja ELEGIR por dónde
         #    adjuntar el comprobante (multifuncional / teléfono / archivo).
-        if escanear:
+        if getattr(self, "_escanear_soporte_pendiente", False):
+            self._escanear_soporte_pendiente = False
+
             def elegir_origen_flota():
                 try:
                     import escaner_movil as _mov
