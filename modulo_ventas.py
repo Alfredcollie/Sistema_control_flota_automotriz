@@ -498,6 +498,7 @@ def solicitar_otp(accion, callback_exito, parent_window):
         v_otp.title("Verificación de Seguridad")
         v_otp.geometry("380x250")
         v_otp.grab_set()
+        _al_cerrar_modal(v_otp)
 
         ctk.CTkLabel(v_otp, text="🔒 Verificación en Dos Pasos", font=("Arial", 16, "bold"), text_color="#1f538d").pack(pady=(20, 5))
         ctk.CTkLabel(v_otp, text=f"Se ha enviado un código por {metodo}.\nIngrese los 6 dígitos para autorizar.", font=("Arial", 11)).pack(pady=(0, 15))
@@ -1088,6 +1089,44 @@ def _precalentar_cache_meses(tablas=("facturas_emitidas", "facturas_recibidas"),
 
 
 
+
+# =========================================================
+# 🛡️ BLOQUEOS MODALES: se sueltan SIEMPRE al cerrar la ventana
+# =========================================================
+def _soltar_bloqueo_modal(ventana):
+    """Suelta el bloqueo modal (grab) de una ventana."""
+    try:
+        ventana.grab_release()
+    except Exception:
+        pass
+
+
+def _al_cerrar_modal(ventana):
+    """Garantiza que al destruirse la ventana suelte su bloqueo modal.
+
+    Sin esto, al abrir/cerrar varias ventanas seguidas (p. ej. al cancelar
+    facturas) un bloqueo podía quedar apuntando a una ventana ya destruida y
+    la aplicación dejaba de responder a los clics ("se pegaba").
+    """
+    def _soltar(evento=None):
+        try:
+            if evento is None or getattr(evento, "widget", None) is ventana:
+                ventana.grab_release()
+        except Exception:
+            pass
+    try:
+        ventana.bind("<Destroy>", _soltar, add="+")
+    except Exception:
+        pass
+    try:
+        # sólo ventanas hijas: nunca se toca el cierre de la ventana principal
+        if getattr(ventana, "master", None) is not None:
+            ventana.protocol("WM_DELETE_WINDOW",
+                             lambda _v=ventana: (_soltar(), _v.destroy()))
+    except Exception:
+        pass
+
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry):
         super().__init__(parent)
@@ -1097,6 +1136,7 @@ class CalendarioNativo(ctk.CTkToplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        _al_cerrar_modal(self)
         self.update_idletasks()
         x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (280 // 2)
         y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (320 // 2)
@@ -1199,6 +1239,7 @@ def _escanear_con_progreso(parent, etiqueta, mod_escaner, *args, **kwargs):
             pass
         try:
             prog.grab_set()
+            _al_cerrar_modal(prog)
         except Exception:
             pass
         ctk.CTkLabel(prog, text="🖨️ Escaneando %s..." % (etiqueta or "el comprobante"),
@@ -1409,6 +1450,7 @@ class _MessageBoxVentas:
                     padre.focus_force()
                     try:
                         padre.grab_set()
+                        _al_cerrar_modal(padre)
                     except Exception:
                         pass
                 else:
@@ -1694,6 +1736,7 @@ class FacturasEmitidasTab:
         v_prog.transient(self.main_root)
         try:
             v_prog.grab_set()
+            _al_cerrar_modal(v_prog)
         except Exception:
             pass
         ctk.CTkLabel(v_prog, text="🖨️ Escaneando y leyendo el comprobante...",
@@ -1739,6 +1782,7 @@ class FacturasEmitidasTab:
                 ventana.transient(self.main_root)
                 ventana.attributes("-topmost", True)
                 ventana.grab_set()
+                _al_cerrar_modal(ventana)
             except Exception:
                 pass
             ctk.CTkLabel(ventana, text="📱 Foto recibida — leyendo el documento…",
@@ -3496,6 +3540,7 @@ class FacturasEmitidasTab:
         v_edit.geometry("450x450") 
         v_edit.transient(self.main_root)
         v_edit.grab_set()
+        _al_cerrar_modal(v_edit)
 
         ctk.CTkLabel(v_edit, text=f"Gestión del Registro ID: {id_doc}", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
 
@@ -3628,6 +3673,7 @@ class FacturasEmitidasTab:
                 pass
             v_mod.transient(self.main_root)
             v_mod.grab_set()
+            _al_cerrar_modal(v_mod)
 
             ctk.CTkLabel(v_mod, text="Modificar Datos del Documento", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
 
@@ -3920,6 +3966,7 @@ class FacturasEmitidasTab:
             v_nc.title("Emitir Nota de Crédito")
             v_nc.geometry("400x250")
             v_nc.grab_set()
+            _al_cerrar_modal(v_nc)
 
             ctk.CTkLabel(v_nc, text="⚠️ Anular Factura vía Nota de Crédito", font=("Arial", 14, "bold"), text_color="#c0392b").pack(pady=(15, 10))
             ctk.CTkLabel(v_nc, text="Seleccione el motivo legal para SUNAT:", font=("Arial", 11)).pack(anchor="w", padx=20)
@@ -4277,6 +4324,7 @@ class CuentasPorCobrarTab:
         v_resumen.title("Resumen de Deudas por Cliente")
         v_resumen.geometry("500x400")
         v_resumen.grab_set()
+        _al_cerrar_modal(v_resumen)
 
         ctk.CTkLabel(v_resumen, text="📊 Saldo Pendiente Consolidado por Cliente", font=("Arial", 14, "bold"), text_color="#1f538d").pack(pady=(15, 10))
 
@@ -4401,6 +4449,7 @@ class CuentasPorCobrarTab:
         v.transient(getattr(self, "main_root", None))
         try:
             v.grab_set()
+            _al_cerrar_modal(v)
         except Exception:
             pass
         f = ctk.CTkFrame(v, fg_color="transparent")
@@ -5219,6 +5268,7 @@ class CuentasPorCobrarTab:
         v.transient(getattr(self, "main_root", None))
         try:
             v.grab_set()
+            _al_cerrar_modal(v)
         except Exception:
             pass
         f = ctk.CTkScrollableFrame(v, fg_color="transparent")
@@ -5587,6 +5637,7 @@ class CuentasPorCobrarTab:
         v_edit.geometry("820x400")
         v_edit.transient(self.main_root)
         v_edit.grab_set()
+        _al_cerrar_modal(v_edit)
 
         ctk.CTkLabel(v_edit, text=f"Cobros registrados: {cliente}", font=("Arial", 12, "bold"), text_color="#1f538d").pack(pady=10)
 
@@ -5627,6 +5678,7 @@ class CuentasPorCobrarTab:
             v_mod_cobro.geometry("400x430")
             v_mod_cobro.transient(v_edit)
             v_mod_cobro.grab_set()
+            _al_cerrar_modal(v_mod_cobro)
 
             ctk.CTkLabel(v_mod_cobro, text="Editar Cobro", font=("Arial", 14, "bold")).pack(pady=10)
 
@@ -5803,6 +5855,7 @@ class CuentasPorCobrarTab:
         v_rep.geometry("750x550")
         v_rep.transient(self.main_root)
         v_rep.grab_set()
+        _al_cerrar_modal(v_rep)
 
         ctk.CTkLabel(v_rep, text="📊 REPORTE DE TOTALES FILTRADOS", font=("Arial", 16, "bold"), text_color="#1f538d").pack(pady=(15, 10))
 
@@ -5988,6 +6041,7 @@ class NotasCreditoTab:
         v_sire.title("Conexión Oficial SUNAT SIRE (Ventas)")
         v_sire.geometry("480x300")
         v_sire.grab_set()
+        _al_cerrar_modal(v_sire)
 
         ctk.CTkLabel(v_sire, text="🌐 IMPORTANDO NOTAS DE CRÉDITO (SIRE)", font=("Arial", 14, "bold"), text_color="#166534").pack(pady=(20, 10))
         

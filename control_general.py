@@ -1905,6 +1905,32 @@ class ControlGeneralEventos:
                         
         self.mostrar_pantalla_bienvenida()
 
+
+    def _entrar_pantalla_completa_al_abrir(self):
+        """Pone la aplicación en pantalla completa (sin menú lateral) al abrir un módulo.
+
+        Es el mismo comportamiento del programa de Eventos: el módulo ocupa toda
+        la pantalla y el menú izquierdo se oculta (queda el botón flotante y la
+        tecla Esc para volver).
+        """
+        try:
+            if getattr(self.root, "_pantalla_completa_activa", False):
+                return
+            alternar_pantalla_completa(self.root,
+                                       getattr(self, "btn_pantalla_completa", None))
+        except Exception as e:
+            print("Aviso - pantalla completa al abrir módulo:", e)
+
+    def _salir_pantalla_completa_si_no_hay_modulos(self):
+        """Si ya no queda ningún módulo abierto, vuelve a mostrar el menú lateral."""
+        try:
+            hay = any(not d.get("minimizada") for d in self.ventanas_modulos.values())
+            if not hay and getattr(self.root, "_pantalla_completa_activa", False):
+                alternar_pantalla_completa(self.root,
+                                           getattr(self, "btn_pantalla_completa", None))
+        except Exception as e:
+            print("Aviso - salir de pantalla completa:", e)
+
     def alternar_barra_lateral(self, ocultar):
         """Oculta o vuelve a mostrar el menú lateral (se usa en pantalla completa).
 
@@ -2059,12 +2085,18 @@ class ControlGeneralEventos:
         ctk.CTkButton(barra_titulo, text="✕", width=30, height=22, font=("Arial", 12, "bold"),
                       fg_color="#c0392b", hover_color="#922b21",
                       command=lambda k=clave: self.cerrar_ventana(k)).pack(side="right", padx=3, pady=4)
-        ctk.CTkButton(barra_titulo, text="□", width=30, height=22, font=("Arial", 12, "bold"),
-                      fg_color="#34495e", hover_color="#2c3e50",
-                      command=lambda k=clave: self.alternar_maximizar_ventana(k)).pack(side="right", padx=3, pady=4)
+        btn_max = ctk.CTkButton(barra_titulo, text="□", width=30, height=22,
+                                font=("Arial", 12, "bold"),
+                                fg_color="#34495e", hover_color="#2c3e50",
+                                command=lambda k=clave: self.alternar_maximizar_ventana(k))
+        btn_max.pack(side="right", padx=3, pady=4)
         ctk.CTkButton(barra_titulo, text="—", width=30, height=22, font=("Arial", 12, "bold"),
                       fg_color="#34495e", hover_color="#2c3e50",
                       command=lambda k=clave: self.minimizar_ventana(k)).pack(side="right", padx=3, pady=4)
+        ctk.CTkButton(barra_titulo, text="🔄 Actualizar", width=104, height=22,
+                      font=("Arial", 10, "bold"), fg_color="#16a085", hover_color="#11806a",
+                      command=lambda k=clave: self.actualizar_modulo(k)
+                      ).pack(side="right", padx=(3, 6), pady=4)
 
         cuerpo = ctk.CTkFrame(contenedor, fg_color="transparent")
         cuerpo.pack(fill="both", expand=True, padx=2, pady=2)
@@ -2094,12 +2126,21 @@ class ControlGeneralEventos:
 
         self.ventanas_modulos[clave] = {
             "titulo": titulo, "contenedor": contenedor, "cuerpo": cuerpo,
-            "btn_tarea": btn_tarea, "app": None,
+            "btn_tarea": btn_tarea, "app": None, "btn_max": btn_max,
             "minimizada": False, "maximizada": False, "geometria": None, "geometria_previa": None,
         }
+
+        # 🖥️ El módulo se abre A PANTALLA COMPLETA (el botón □ lo devuelve a su tamaño)
+        try:
+            contenedor.after(120, lambda k=clave: self._abrir_modulo_maximizado(k))
+        except Exception:
+            pass
         self._refrescar_barra_tareas()
         self._colocar_ventana_inicial(clave, ancho_rel, alto_rel)
         self._traer_al_frente(clave)
+        # 🖥️ Al abrir un módulo se pasa a PANTALLA COMPLETA (se oculta el menú
+        #    lateral), igual que en el programa de Eventos.
+        self._entrar_pantalla_completa_al_abrir()
 
         try:
             app = constructor(cuerpo)
@@ -2238,6 +2279,98 @@ class ControlGeneralEventos:
                 print("Aviso - refrescando módulo:", e)
             return
 
+
+    # =========================================================
+    # 🔄 ACTUALIZAR EL MÓDULO CON UN LETRERO (1,5 s)
+    # =========================================================
+    def _letrero_modulo(self, clave, texto, milisegundos=1500):
+        """Muestra un letrero flotante sobre el módulo y lo quita solo.
+
+        No bloquea la aplicación ni abre ventanas ni minimiza nada.
+        """
+        info = self.ventanas_modulos.get(clave)
+        if not info:
+            return
+        cuerpo = info.get("cuerpo") or info.get("contenedor")
+        if cuerpo is None:
+            return
+        try:
+            anterior = info.get("letrero")
+            if anterior is not None:
+                try:
+                    anterior.destroy()
+                except Exception:
+                    pass
+                info["letrero"] = None
+
+            letrero = ctk.CTkLabel(cuerpo, text=str(texto),
+                                   font=("Arial", 13, "bold"), text_color="#ffffff",
+                                   fg_color="#27ae60", corner_radius=10,
+                                   height=40, width=400)
+            letrero.place(relx=0.5, y=14, anchor="n")
+            try:
+                letrero.lift()
+            except Exception:
+                pass
+            info["letrero"] = letrero
+
+            def _quitar():
+                try:
+                    if letrero.winfo_exists():
+                        letrero.destroy()
+                except Exception:
+                    pass
+                if info.get("letrero") is letrero:
+                    info["letrero"] = None
+
+            cuerpo.after(int(milisegundos), _quitar)
+        except Exception as e:
+            print("Aviso - letrero del módulo:", e)
+
+    def actualizar_modulo(self, clave, mostrar_letrero=True):
+        """🔄 Vuelve a leer los datos y avisa con un letrero de 1,5 s.
+
+        La ventana NO se minimiza ni se abre ningún mensaje: se queda en su
+        sitio, al frente y actualizada.
+        """
+        info = self.ventanas_modulos.get(clave)
+        if not info:
+            return 0
+        # si estaba minimizada, se restaura para que se vea el letrero
+        try:
+            if info.get("minimizada"):
+                self.restaurar_ventana(clave)
+        except Exception as e:
+            print("Aviso - restaurar antes de actualizar:", e)
+
+        recargado = 0
+        try:
+            if info.get("app") is not None:
+                self._refrescar_modulo(clave)
+                recargado = 1
+        except Exception as e:
+            print("Aviso - actualizando el módulo:", e)
+
+        # se trae al frente (sin minimizar)
+        try:
+            contenedor = info.get("contenedor")
+            if contenedor is not None:
+                contenedor.lift()
+        except Exception:
+            pass
+        try:
+            self.ventanas_modulos[clave]["minimizada"] = False
+            self._refrescar_barra_tareas()
+        except Exception:
+            pass
+
+        if mostrar_letrero:
+            self._letrero_modulo(
+                clave,
+                "✅ Información actualizada" if recargado else "✅ Módulo al día",
+                1500)
+        return recargado
+
     def _traer_al_frente(self, clave):
         """La ventana indicada pasa al frente de todas las demás."""
         info = self.ventanas_modulos.get(clave)
@@ -2337,6 +2470,19 @@ class ControlGeneralEventos:
             print("Aviso - maximizando ventana de módulo:", e)
         self._traer_al_frente(clave)
 
+    def _abrir_modulo_maximizado(self, clave):
+        """Abre el módulo ocupando todo el escritorio (pantalla completa)."""
+        info = self.ventanas_modulos.get(clave)
+        if not info or info.get("minimizada") or info.get("maximizada"):
+            return
+        try:
+            self.alternar_maximizar_ventana(clave)
+            boton = info.get("btn_max")
+            if boton is not None:
+                boton.configure(text="🗗")
+        except Exception as e:
+            print("Aviso - módulo maximizado:", e)
+
     def alternar_maximizar_ventana(self, clave):
         """Maximiza la ventana dentro del escritorio o la devuelve a su tamaño."""
         info = self.ventanas_modulos.get(clave)
@@ -2349,6 +2495,11 @@ class ControlGeneralEventos:
                                      geo.get("ancho") or 800, geo.get("alto") or 600)
                 info["geometria_previa"] = None
                 info["maximizada"] = False
+                try:
+                    if info.get("btn_max") is not None:
+                        info["btn_max"].configure(text="□")
+                except Exception:
+                    pass
             else:
                 info["geometria_previa"] = self._geometria_actual(info) or info["geometria"]
                 self.escritorio.update_idletasks()
@@ -2383,6 +2534,8 @@ class ControlGeneralEventos:
                     break
         self._refrescar_barra_tareas()
         self._actualizar_bienvenida()
+        # 🖥️ Si ya no queda ningún módulo abierto, se recupera el menú lateral
+        self._salir_pantalla_completa_si_no_hay_modulos()
 
     def cerrar_todas_las_ventanas(self):
         for clave in list(getattr(self, "ventanas_modulos", {}).keys()):
