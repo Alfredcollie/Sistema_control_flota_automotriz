@@ -782,6 +782,7 @@ def cargar_configuracion_general():
         "cuenta_grifo_pagos": "",
         "ruc_empresa": "",
         "razon_social_empresa": "",
+        "domicilio_fiscal_empresa": "",
         "igv_porcentaje": "0",
         "detraccion_porcentaje": "12",
         "renta_mensual_porcentaje": "0",
@@ -1473,7 +1474,8 @@ class ControlGeneralEventos:
             "usuarios": "🛠️ Configurar Usuarios",
             "bitacora": "📜 Bitácora de Auditoría",
             "inspeccion_vehicular": "🔍 Inspección Vehicular",
-            "amonestaciones": "📋 Amonestaciones y Suspensiones"
+            "amonestaciones": "📋 Amonestaciones y Suspensiones",
+            "contratos_actas": "📄 Contratos y Actas"
         }
         self.funciones_modulos = {
             "clientes": self.abrir_modulo_clientes,
@@ -1496,7 +1498,8 @@ class ControlGeneralEventos:
             "usuarios": self.abrir_gestion_usuarios,
             "bitacora": self.abrir_modulo_bitacora,
             "inspeccion_vehicular": self.abrir_modulo_inspeccion_vehicular,
-            "amonestaciones": self.abrir_modulo_amonestaciones
+            "amonestaciones": self.abrir_modulo_amonestaciones,
+            "contratos_actas": self.abrir_modulo_contratos_actas
         }
         self.root.withdraw()
         self.abrir_ventana_login()
@@ -3141,6 +3144,17 @@ class ControlGeneralEventos:
             return app
         self.abrir_ventana_modulo("inspeccion_vehicular", self._titulo_modulo("inspeccion_vehicular"), construir)
 
+    def abrir_modulo_contratos_actas(self):
+        """📄 Contratos y Actas (contratos laborales, renovaciones y actas)."""
+        if not self.tiene_permiso("contratos_actas"):
+            return messagebox.showerror("Denegado", "No tiene permiso para Contratos y Actas.")
+        def construir(cuerpo):
+            import contratos_actas
+            importlib.reload(contratos_actas)
+            return contratos_actas.ContratosActasApp(cuerpo, self.usuario_activo)
+        self.abrir_ventana_modulo("contratos_actas",
+                                  self._titulo_modulo("contratos_actas"), construir)
+
     def abrir_modulo_amonestaciones(self):
         """📋 Amonestaciones y Suspensiones del personal de conducción."""
         if not self.tiene_permiso("amonestaciones"):
@@ -3225,6 +3239,14 @@ class ControlGeneralEventos:
         reg_guardado = config_actual.get("regimen_empresa", "MYPE Tributario")
         cmb_regimen.set(reg_guardado if reg_guardado in regimenes_peru else regimenes_peru[2])
         
+        f_row_domicilio = ctk.CTkFrame(f_empresa, fg_color="transparent")
+        f_row_domicilio.pack(fill="x", padx=15, pady=5)
+        ctk.CTkLabel(f_row_domicilio, text="Domicilio Fiscal:", font=("Arial", 11, "bold"),
+                     width=120, anchor="w").pack(side="left")
+        ent_domicilio_empresa = ctk.CTkEntry(f_row_domicilio, width=520)
+        ent_domicilio_empresa.pack(side="left", padx=5, fill="x", expand=True)
+        ent_domicilio_empresa.insert(0, config_actual.get("domicilio_fiscal_empresa", ""))
+
         f_row2 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row2.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(f_row2, text="IGV (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
@@ -4555,6 +4577,7 @@ class ControlGeneralEventos:
                 "detraccion_porcentaje": ent_detraccion_cfg.get().strip(),
                 "ruc_empresa": ent_ruc_empresa.get().strip(),
                 "razon_social_empresa": ent_razon_social.get().strip(),
+                "domicilio_fiscal_empresa": ent_domicilio_empresa.get().strip(),
                 "igv_porcentaje": ent_igv.get().strip(),
                 "renta_mensual_porcentaje": ent_renta_m.get().strip(),
                 "renta_anual_porcentaje": ent_renta_a.get().strip(),
