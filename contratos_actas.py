@@ -287,21 +287,28 @@ def inicializar_tablas_en_hilo():
     threading.Thread(target=tarea, daemon=True).start()
 
 
-def buscar_choferes(texto=""):
-    """Choferes que coincidan con el texto (nombre, DNI o móvil)."""
+def buscar_choferes(texto="", incluir_inactivos=False):
+    """Choferes que coincidan con el texto (nombre, DNI o móvil).
+
+    Por defecto NO se incluyen los choferes con estado "Inactivo": en este
+    módulo solo tienen sentido los choferes que están trabajando.
+    """
     conexion = conectar_db(silencioso=True)
     if not conexion:
         return []
     try:
         cursor = conexion.cursor()
         patron = "%" + str(texto or "").strip() + "%"
+        filtro_estado = "" if incluir_inactivos else \
+            "AND COALESCE(estado, 'Activo') NOT IN ('Inactivo', 'INACTIVO', 'inactivo')"
         cursor.execute("""
             SELECT id, dni, nombres, direccion, movil_asignado,
                    fecha_inicio_contrato, fecha_fin_contrato, telefono, estado
             FROM choferes
-            WHERE COALESCE(nombres, '') ILIKE %s
+            WHERE (COALESCE(nombres, '') ILIKE %s
                OR COALESCE(dni, '') ILIKE %s
-               OR COALESCE(movil_asignado, '') ILIKE %s
+               OR COALESCE(movil_asignado, '') ILIKE %s)
+              """ + filtro_estado + """
             ORDER BY nombres
             LIMIT 200
         """, (patron, patron, patron))
@@ -412,6 +419,10 @@ class ContratosActasApp:
                      font=(FAMILIA, 11), text_color="#7f8c8d").pack(side="left", padx=12)
         ctk.CTkLabel(cabecera, text="📁 " + ruta_base(), font=(FAMILIA, 9),
                      text_color="#95a5a6").pack(side="right")
+        self.incluir_inactivos = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(cabecera, text="Incluir inactivos", variable=self.incluir_inactivos,
+                        font=(FAMILIA, 10), checkbox_width=16, checkbox_height=16,
+                        command=self._recargar_listas).pack(side="right", padx=(0, 14))
 
         # aviso si falta configurar la empresa
         faltan = falta_configuracion(self.config)
@@ -444,6 +455,30 @@ class ContratosActasApp:
     # -----------------------------------------------------
     # UTILIDADES DE PANTALLA
     # -----------------------------------------------------
+
+
+    def _ver_inactivos(self):
+        """True si el usuario marcó 'Incluir inactivos'."""
+        try:
+            return bool(self.incluir_inactivos.get())
+        except Exception:
+            return False
+
+    def _recargar_listas(self):
+        """Vuelve a cargar las listas respetando la casilla de inactivos."""
+        try:
+            self._buscar_en_contratos()
+        except Exception as error:
+            print("Aviso - recargar contratos:", error)
+        try:
+            self._cargar_choferes_en_renovaciones()
+        except Exception as error:
+            print("Aviso - recargar renovaciones:", error)
+        try:
+            self._cargar_choferes_en_actas()
+        except Exception as error:
+            print("Aviso - recargar actas:", error)
+
     def _tabla(self, padre, columnas, anchos, alto=10):
         marco = ctk.CTkFrame(padre, fg_color="transparent")
         marco.pack(fill="both", expand=True)
@@ -533,8 +568,10 @@ class ContratosActasApp:
         izquierda.pack(side="left", fill="both", expand=True, padx=(0, 6))
         ctk.CTkLabel(izquierda, text="Choferes", font=(FAMILIA, 12, "bold"),
                      text_color=COLOR_AZUL).pack(anchor="w", padx=8, pady=(6, 2))
-        self.tabla_choferes = self._tabla(izquierda, ("DNI", "Nombres", "Móvil", "Vence"),
-                                          (90, 230, 80, 90), alto=12)
+        self.tabla_choferes = self._tabla(izquierda,
+                                          ("DNI", "Nombres", "Móvil", "Estado",
+                                           "Contrato", "Vence contrato"),
+                                          (78, 190, 68, 66, 90, 96), alto=12)
         self.tabla_choferes.bind("<<TreeviewSelect>>", self._on_chofer_contrato)
 
         # ---- datos del contrato
@@ -578,12 +615,13 @@ class ContratosActasApp:
         for fila in self.tabla_choferes.get_children():
             self.tabla_choferes.delete(fila)
         self.choferes_cache = {}
-        for registro in buscar_choferes(texto):
+        for registro in buscar_choferes(texto, self._ver_inactivos()):
             self.choferes_cache[str(registro[0])] = registro
             estado_txt, _dias = estado_contrato(registro[6])
             self.tabla_choferes.insert("", tk.END, iid=str(registro[0]),
                                        values=(registro[1] or "", registro[2] or "",
-                                               registro[4] or "", estado_txt))
+                                               registro[4] or "", registro[8] or "",
+                                               estado_txt, registro[6] or "—"))
         # las otras pestañas pueden no existir todavía al construir la primera
         if hasattr(self, "tabla_renov"):
             self._cargar_choferes_en_renovaciones()
@@ -844,8 +882,9 @@ class ContratosActasApp:
         izquierda.pack(side="left", fill="both", expand=True, padx=(0, 6))
         ctk.CTkLabel(izquierda, text="Choferes", font=(FAMILIA, 12, "bold"),
                      text_color=COLOR_AZUL).pack(anchor="w", padx=8, pady=(6, 2))
-        self.tabla_renov = self._tabla(izquierda, ("DNI", "Nombres", "Vence"),
-                                       (90, 230, 100), alto=12)
+        self.tabla_renov = self._tabla(izquierda,
+                                       ("DNI", "Nombres", "Estado", "Contrato", "Vence contrato"),
+                                       (80, 190, 70, 90, 100), alto=12)
         self.tabla_renov.bind("<<TreeviewSelect>>", self._on_chofer_renovacion)
 
         derecha = ctk.CTkFrame(zona, fg_color="#ffffff", corner_radius=6)
@@ -877,18 +916,19 @@ class ContratosActasApp:
             texto = ""
         for fila in self.tabla_renov.get_children():
             self.tabla_renov.delete(fila)
-        for registro in buscar_choferes(texto):
+        for registro in buscar_choferes(texto, self._ver_inactivos()):
             estado_txt, _dias = estado_contrato(registro[6])
             self.tabla_renov.insert("", tk.END, iid=str(registro[0]),
                                     values=(registro[1] or "", registro[2] or "",
-                                            (registro[6] or "") + "  " + estado_txt))
+                                            registro[8] or "", estado_txt,
+                                            registro[6] or "—"))
 
     def _on_chofer_renovacion(self, _evento=None):
         seleccion = self.tabla_renov.selection()
         if not seleccion:
             return
         identificador = seleccion[0]
-        for registro in buscar_choferes(""):
+        for registro in buscar_choferes("", True):
             if str(registro[0]) == str(identificador):
                 self._elegir_chofer(registro)
                 break
@@ -1116,8 +1156,9 @@ class ContratosActasApp:
         izquierda.pack(side="left", fill="both", expand=True, padx=(0, 6))
         ctk.CTkLabel(izquierda, text="Choferes", font=(FAMILIA, 12, "bold"),
                      text_color=COLOR_AZUL).pack(anchor="w", padx=8, pady=(6, 2))
-        self.tabla_actas_choferes = self._tabla(izquierda, ("DNI", "Nombres", "Móvil"),
-                                                (90, 220, 90), alto=12)
+        self.tabla_actas_choferes = self._tabla(izquierda,
+                                                ("DNI", "Nombres", "Móvil", "Estado"),
+                                                (85, 200, 80, 75), alto=12)
         self.tabla_actas_choferes.bind("<<TreeviewSelect>>", self._on_chofer_acta)
 
         derecha = ctk.CTkFrame(zona, fg_color="#ffffff", corner_radius=6)
@@ -1163,17 +1204,17 @@ class ContratosActasApp:
             texto = ""
         for fila in self.tabla_actas_choferes.get_children():
             self.tabla_actas_choferes.delete(fila)
-        for registro in buscar_choferes(texto):
+        for registro in buscar_choferes(texto, self._ver_inactivos()):
             self.tabla_actas_choferes.insert("", tk.END, iid=str(registro[0]),
                                              values=(registro[1] or "", registro[2] or "",
-                                                     registro[4] or ""))
+                                                     registro[4] or "", registro[8] or ""))
 
     def _on_chofer_acta(self, _evento=None):
         seleccion = self.tabla_actas_choferes.selection()
         if not seleccion:
             return
         identificador = seleccion[0]
-        for registro in buscar_choferes(""):
+        for registro in buscar_choferes("", True):
             if str(registro[0]) == str(identificador):
                 self._elegir_chofer(registro)
                 break
