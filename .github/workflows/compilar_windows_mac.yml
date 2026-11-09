@@ -35,7 +35,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF==1.28.0 requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF==1.28.0 requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography segno
 
     - name: Descargar rclone (Windows)
       run: |
@@ -141,7 +141,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF==1.28.0 requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography pyobjc-framework-Vision pyobjc-framework-Quartz
+        pip install customtkinter psycopg2-binary keyring bcrypt reportlab pdfplumber pypdf PyMuPDF==1.28.0 requests certifi pandas openpyxl Pillow fastapi uvicorn python-multipart google-genai cryptography segno pyobjc-framework-Vision pyobjc-framework-Quartz
 
     - name: Descargar rclone (macOS)
       run: |
