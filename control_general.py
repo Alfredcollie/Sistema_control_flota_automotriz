@@ -1528,6 +1528,13 @@ class ControlGeneralEventos:
                 try:
                     existe = bool(actual.winfo_exists())
                     visible = bool(actual.winfo_viewable())
+                    # 🪟 Una ventana MINIMIZADA sigue "visible" para Tk, pero no se
+                    #    puede usar: si tiene el bloqueo, la aplicación no responde.
+                    try:
+                        if str(actual.state()) == "iconic":
+                            visible = False
+                    except Exception:
+                        pass
                 except Exception:
                     existe = visible = False
 
@@ -1973,8 +1980,13 @@ class ControlGeneralEventos:
         frame_bottom_sidebar = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         frame_bottom_sidebar.pack(side="bottom", fill="x", pady=(5, 10))
         
-        lbl_firma_sidebar = ctk.CTkLabel(frame_bottom_sidebar, text="Software desarrollado por Alfred Collie\nVersión 1.5.4 © 2026", font=("Arial", 9, "italic"), text_color="#7f8c8d")
-        lbl_firma_sidebar.pack(side="bottom", pady=(2, 5))
+        # 🛡️ El pie del menú va protegido: si algo fallara aquí, el programa
+        #    debe entrar igual.
+        try:
+            lbl_firma_sidebar = ctk.CTkLabel(frame_bottom_sidebar, text="Software desarrollado por Alfred Collie\nVersión 1.5.4 © 2026", font=("Arial", 9, "italic"), text_color="#7f8c8d")
+            lbl_firma_sidebar.pack(side="bottom", pady=(2, 5))
+        except Exception as e_firma:
+            print("Aviso - pie del menú:", e_firma)
 
         def cerrar_sistema():
             registrar_auditoria(self.usuario_activo, "Seguridad", "Cerró el sistema")
