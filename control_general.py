@@ -305,6 +305,46 @@ def _sumar_meses_fecha(fecha_txt, meses):
         return ""
 
 
+
+def maximizar_ventana_seguro(ventana):
+    """Maximiza una ventana de forma compatible con Windows y macOS.
+
+    En Windows se usa 'zoomed' (respeta la barra de tareas); en macOS/Linux se
+    cubre la pantalla con geometry(), porque allí 'zoomed' no existe.
+    """
+    try:
+        if sys.platform == "win32":
+            try:
+                ventana.state("zoomed")
+                return True
+            except Exception:
+                pass
+        ancho = ventana.winfo_screenwidth()
+        alto = ventana.winfo_screenheight()
+        # En macOS se deja espacio a la barra de menú (igual que el resto del programa)
+        if sys.platform == "darwin":
+            ventana.geometry("%dx%d+0+0" % (ancho, alto - 30))
+        else:
+            ventana.geometry("%dx%d+0+0" % (ancho, alto))
+        return True
+    except Exception as error:
+        print("Aviso - maximizar ventana:", error)
+        return False
+
+
+def ventana_esta_maximizada(ventana):
+    """¿La ventana está maximizada? (compatible con Windows y macOS)."""
+    try:
+        if sys.platform == "win32":
+            return str(ventana.state()) == "zoomed"
+        ancho = ventana.winfo_width()
+        alto = ventana.winfo_height()
+        return (ancho >= ventana.winfo_screenwidth() - 8
+                and alto >= ventana.winfo_screenheight() - 8)
+    except Exception:
+        return False
+
+
 def maximizar_ventana(ventana):
     """Maximiza la ventana de forma nativa según el sistema operativo."""
     try:
@@ -1356,6 +1396,69 @@ def inicializar_seguridad_db():
 # 🪟 Instancia activa del sistema (para que otros módulos refresquen ventanas)
 INSTANCIA_ACTIVA = None
 
+
+# =========================================================
+# 🪟 AYUDAS DE LAS VENTANAS DE MÓDULOS
+# =========================================================
+def traer_al_frente(ventana, retrasos=(60, 260, 700, 1150)):
+    """Deja la ventana DELANTE de la principal.
+
+    CustomTkinter oculta y vuelve a mostrar cada ventana nueva para pintar su
+    barra de título (y a los 1000 ms reajusta el tamaño mínimo): esos ciclos
+    hacían que la ventana quedara DETRÁS. Por eso se trae al frente varias
+    veces, con un 'topmost' momentáneo que se suelta enseguida.
+    """
+    try:
+        ventana._windows_set_titlebar_color = lambda *a, **k: None
+    except Exception:
+        pass
+
+    def _soltar_topmost():
+        try:
+            if ventana.winfo_exists():
+                ventana.attributes("-topmost", False)
+        except Exception:
+            pass
+
+    def _traer():
+        try:
+            if not ventana.winfo_exists():
+                return
+            ventana.deiconify()
+            ventana.lift()
+            try:
+                ventana.attributes("-topmost", True)
+                ventana.after(450, _soltar_topmost)
+            except Exception:
+                pass
+            ventana.focus_force()
+        except Exception:
+            pass
+
+    for retardo in retrasos:
+        try:
+            ventana.after(retardo, _traer)
+        except Exception:
+            pass
+
+
+def poner_ventana_en_barra_tareas(ventana):
+    """En Windows, da a la ventana su propio botón en la barra de tareas."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetParent(ventana.winfo_id()) or ventana.winfo_id()
+        GWL_EXSTYLE, WS_EX_APPWINDOW = -20, 0x00040000
+        estilo = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, estilo | WS_EX_APPWINDOW)
+        SWP = 0x0020 | 0x0002 | 0x0001 | 0x0004
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP)
+    except Exception:
+        pass
+
+
 class ControlGeneralEventos:
     # =========================================================
     # 🛡️ VIGILANTE DE BLOQUEOS MODALES COLGADOS
@@ -1854,11 +1957,9 @@ class ControlGeneralEventos:
         btn_cambio = ctk.CTkButton(frame_bottom_sidebar, text="🔄 Cambiar Usuario", command=cambiar_usuario, width=240, height=30, font=("Arial", 11, "bold"), fg_color="#555555", hover_color="#333333")
         btn_cambio.pack(side="bottom", pady=(2, 5))
 
-        # Pantalla completa: útil para las tablas anchas (matriz de asistencia, libros, etc.)
-        self.btn_pantalla_completa = ctk.CTkButton(frame_bottom_sidebar, text="⛶ Pantalla completa", command=lambda: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa), width=240, height=30, font=("Arial", 11, "bold"), fg_color="#34495e", hover_color="#2c3e50")
-        # La marca permite que los demás botones de pantalla completa se sincronicen solos
-        self.btn_pantalla_completa._boton_pantalla_completa = True
-        self.btn_pantalla_completa.pack(side="bottom", pady=(2, 5))
+        # 🪟 Sin botón de pantalla completa: el tamaño lo maneja Windows
+        #    (cada ventana de módulo se maximiza y restaura con su botón).
+        self.btn_pantalla_completa = None
 
         # Botón flotante de escape: aparece solo cuando la barra lateral está oculta
         # (pantalla completa), para no dejar al usuario sin forma visible de volver.
@@ -1876,7 +1977,7 @@ class ControlGeneralEventos:
         # Los atajos viven en la ventana principal (siguen funcionando con cualquier
         # módulo abierto y no dejan enlaces huérfanos al cerrarlos).
         try:
-            self.root.bind("<F11>", lambda _e: alternar_pantalla_completa(ventana_al_frente(self.root), self.btn_pantalla_completa))
+            self.root.bind("<F11>", lambda _e: self._al_pulsar_f11())
             self.root.bind("<Escape>", self.salir_pantalla_completa)
         except Exception:
             pass
@@ -1908,6 +2009,25 @@ class ControlGeneralEventos:
                         
         self.mostrar_pantalla_bienvenida()
 
+
+    def _al_pulsar_f11(self):
+        """F11: expande/restaura la ventana del módulo (o la principal), como Eventos."""
+        try:
+            delante = ventana_al_frente(self.root)
+        except Exception:
+            delante = self.root
+        clave_delante = None
+        for clave, info in list(getattr(self, "ventanas_modulos", {}).items()):
+            try:
+                if info.get("ventana") is delante:
+                    clave_delante = clave
+                    break
+            except Exception:
+                continue
+        if clave_delante:
+            return self.alternar_maximizar_ventana(clave_delante)
+        # Sin módulo delante no hay nada que expandir (el tamaño lo maneja Windows)
+        return None
 
     def _entrar_pantalla_completa_al_abrir(self):
         """Pone la aplicación en pantalla completa (sin menú lateral) al abrir un módulo.
@@ -1983,9 +2103,10 @@ class ControlGeneralEventos:
         self._contador_cascada = 0
         self._arrastre = None
 
-        # Barra de tareas: siempre visible al pie del área de trabajo
+        # 🪟 La barra "Módulos abiertos" YA NO SE MUESTRA: cada módulo es ahora una
+        #    ventana real de Windows (aparece en la barra de tareas del sistema).
+        #    Se sigue construyendo (sin empaquetar) por compatibilidad.
         self.barra_tareas = ctk.CTkFrame(self.contenedor_central, height=34, corner_radius=0, fg_color="#1a252c")
-        self.barra_tareas.pack(side="bottom", fill="x")
         self.barra_tareas.pack_propagate(False)
 
         ctk.CTkLabel(self.barra_tareas, text="🗂️ Módulos abiertos:", font=("Arial", 10, "bold"),
@@ -2002,19 +2123,12 @@ class ControlGeneralEventos:
                                               font=("Arial", 10, "italic"), text_color="#7f8c8d")
         self._lbl_sin_ventanas.pack(side="left", padx=6)
 
-        # Escritorio: las ventanas de los módulos se colocan aquí con place()
+        # Área de trabajo: se conserva el marco (otras partes lo usan) pero los
+        # módulos ya NO se colocan aquí: cada uno abre su propia ventana.
         self.escritorio = ctk.CTkFrame(self.contenedor_central, corner_radius=0, fg_color="#e9edf2")
         self.escritorio.pack(side="top", fill="both", expand=True)
         self.escritorio.bind("<Configure>", self._al_redimensionar_escritorio)
-
-        # Un clic en cualquier punto de una ventana la trae al frente
-        # (se engancha una sola vez aunque se reconstruya el dashboard)
-        try:
-            if not getattr(self.root, "_mdi_clic_enganchado", False):
-                self.root.bind_all("<Button-1>", self._traer_ventana_del_clic, add="+")
-                self.root._mdi_clic_enganchado = True
-        except Exception:
-            pass
+        self._enganchar_foco_ventana()
 
     def _preparar_contenedor_modulo(self, widget):
         """Prepara el marco que recibe un módulo.
@@ -2047,179 +2161,299 @@ class ControlGeneralEventos:
         if not hasattr(self.contenedor_central, 'iconbitmap'): self.contenedor_central.iconbitmap = dummy
 
     def abrir_ventana_modulo(self, clave, titulo, constructor, ancho_rel=0.92, alto_rel=0.90):
-        """Abre un módulo en su propia ventana del escritorio.
+        """Abre un módulo en SU PROPIA VENTANA (igual que el programa de Eventos).
 
-        Si el módulo ya está abierto, no se duplica: se restaura (si estaba
-        minimizado) y se trae al frente. Devuelve la instancia del módulo.
+        Cada módulo es una ventana real de Windows: se minimiza a la barra de
+        tareas del sistema, se maximiza/restaura con su botón y se cierra con la X.
+        Si el módulo ya estaba abierto, se trae al frente y se actualiza.
         """
-        escritorio = getattr(self, "escritorio", None)
-        if escritorio is None or not escritorio.winfo_exists():
-            messagebox.showerror("Error", "El escritorio de módulos no está disponible.")
-            return None
-
         info = self.ventanas_modulos.get(clave)
-        if info and info["contenedor"].winfo_exists():
-            self.restaurar_ventana(clave)
-            self._traer_al_frente(clave)
-            self._refrescar_modulo(clave)      # 🔄 datos al día
+        if info and self._ventana_viva(info.get("ventana")):
+            self.traer_al_frente_ventana_modulo(clave)
+            try:
+                self._refrescar_modulo(clave)
+            except Exception:
+                pass
             return info.get("app")
+        self.ventanas_modulos.pop(clave, None)
 
-        contenedor = ctk.CTkFrame(escritorio, corner_radius=8, fg_color="#ffffff",
-                                  border_width=2, border_color="#1f538d")
-        contenedor._clave_modulo = clave
-        # El tamaño de la ventana lo decide el escritorio (no el contenido), así se
-        # puede mover, redimensionar y maximizar con precisión.
+        titulo_ventana = titulo or self._titulo_modulo(clave)
+        ventana = ctk.CTkToplevel(self.root)
+        ventana.title(str(titulo_ventana) + "  |  Sistema de Control de Flota Automotriz")
         try:
-            contenedor.pack_propagate(False)
-            contenedor.grid_propagate(False)
+            ventana.resizable(True, True)
         except Exception:
             pass
 
-        self._preparar_contenedor_modulo(contenedor)
+        # 📐 Tamaño y posición en cascada (después se maximiza)
+        try:
+            pantalla_w = ventana.winfo_screenwidth()
+            pantalla_h = ventana.winfo_screenheight()
+            ancho = min(1280, max(900, pantalla_w - 90))
+            alto = min(820, max(600, pantalla_h - 110))
+            posicion = len(self.ventanas_modulos)
+            x = max(0, min(40 + posicion * 32, pantalla_w - ancho - 30))
+            y = max(0, min(20 + posicion * 28, pantalla_h - alto - 60))
+            ventana.geometry("%dx%d+%d+%d" % (ancho, alto, x, y))
+            ventana.minsize(880, 560)
+        except Exception:
+            pass
 
-        barra_titulo = ctk.CTkFrame(contenedor, height=30, corner_radius=6, fg_color="#1f538d")
-        barra_titulo.pack(fill="x", padx=2, pady=(2, 0))
-        barra_titulo.pack_propagate(False)
+        # ==================================================
+        # 🪟 BARRA DE LA VENTANA: actualizar, minimizar, expandir y cerrar
+        # ==================================================
+        barra = ctk.CTkFrame(ventana, corner_radius=0, fg_color="#1a252c", height=34)
+        barra.pack(side="top", fill="x")
+        ctk.CTkLabel(barra, text="🪟 " + str(titulo_ventana), font=("Arial", 11, "bold"),
+                     text_color="white", anchor="w").pack(side="left", padx=(10, 6), pady=5)
 
-        lbl_titulo = ctk.CTkLabel(barra_titulo, text=f" {titulo}", font=("Arial", 12, "bold"),
-                                  text_color="white", anchor="w")
-        lbl_titulo.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        def _cerrar(c=clave): self.cerrar_ventana(c)
+        def _minimizar(c=clave): self.minimizar_ventana(c)
+        def _expandir(c=clave): self.alternar_maximizar_ventana(c)
+        def _actualizar(c=clave): self.actualizar_modulo(c)
 
-        ctk.CTkButton(barra_titulo, text="✕", width=30, height=22, font=("Arial", 12, "bold"),
-                      fg_color="#c0392b", hover_color="#922b21",
-                      command=lambda k=clave: self.cerrar_ventana(k)).pack(side="right", padx=3, pady=4)
-        btn_max = ctk.CTkButton(barra_titulo, text="□", width=30, height=22,
-                                font=("Arial", 12, "bold"),
-                                fg_color="#34495e", hover_color="#2c3e50",
-                                command=lambda k=clave: self.alternar_maximizar_ventana(k))
-        btn_max.pack(side="right", padx=3, pady=4)
-        ctk.CTkButton(barra_titulo, text="—", width=30, height=22, font=("Arial", 12, "bold"),
-                      fg_color="#34495e", hover_color="#2c3e50",
-                      command=lambda k=clave: self.minimizar_ventana(k)).pack(side="right", padx=3, pady=4)
-        ctk.CTkButton(barra_titulo, text="🔄 Actualizar", width=104, height=22,
-                      font=("Arial", 10, "bold"), fg_color="#16a085", hover_color="#11806a",
-                      command=lambda k=clave: self.actualizar_modulo(k)
-                      ).pack(side="right", padx=(3, 6), pady=4)
+        ctk.CTkButton(barra, text="✖ Cerrar", width=86, height=24, font=("Arial", 10, "bold"),
+                      fg_color="#c0392b", hover_color="#922b21", command=_cerrar
+                      ).pack(side="right", padx=(2, 8), pady=5)
+        btn_max = ctk.CTkButton(barra, text="🗖 Expandir", width=98, height=24,
+                                font=("Arial", 10, "bold"), fg_color="#34495e",
+                                hover_color="#2c3e50", command=_expandir)
+        btn_max.pack(side="right", padx=2, pady=5)
+        ctk.CTkButton(barra, text="🗕 Minimizar", width=100, height=24, font=("Arial", 10, "bold"),
+                      fg_color="#34495e", hover_color="#2c3e50", command=_minimizar
+                      ).pack(side="right", padx=2, pady=5)
+        ctk.CTkButton(barra, text="🔄 Actualizar", width=105, height=24,
+                      font=("Arial", 10, "bold"), fg_color="#1f538d", hover_color="#163b65",
+                      command=_actualizar).pack(side="right", padx=2, pady=5)
+        ctk.CTkLabel(barra, text="Atajos: F5 actualizar · F11 expandir",
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d").pack(side="right", padx=10)
 
-        cuerpo = ctk.CTkFrame(contenedor, fg_color="transparent")
-        cuerpo.pack(fill="both", expand=True, padx=2, pady=2)
-        # El módulo recibe el marco del cuerpo: también se prepara por compatibilidad.
+        cuerpo = ctk.CTkFrame(ventana, corner_radius=0, fg_color="transparent")
+        cuerpo.pack(fill="both", expand=True)
+        cuerpo._clave_modulo = clave
         self._preparar_contenedor_modulo(cuerpo)
 
-        # Asa inferior derecha para redimensionar la ventana
-        asa = ctk.CTkFrame(contenedor, width=16, height=16, corner_radius=0, fg_color="#1f538d")
-        asa.place(relx=1.0, rely=1.0, anchor="se")
-        asa.bind("<ButtonPress-1>", lambda e, k=clave: self._iniciar_redimension(e, k))
-        asa.bind("<B1-Motion>", self._redimensionar_ventana)
-        asa.bind("<ButtonRelease-1>", self._terminar_arrastre)
-        try: asa.configure(cursor="size_nw_se")
-        except Exception: pass
-
-        # Arrastrar la ventana tomándola de su barra de título (doble clic = maximizar)
-        for widget_barra in (barra_titulo, lbl_titulo):
-            widget_barra.bind("<ButtonPress-1>", lambda e, k=clave: self._iniciar_arrastre(e, k))
-            widget_barra.bind("<B1-Motion>", self._arrastrar_ventana)
-            widget_barra.bind("<ButtonRelease-1>", self._terminar_arrastre)
-            widget_barra.bind("<Double-Button-1>", lambda e, k=clave: self.alternar_maximizar_ventana(k))
-
-        btn_tarea = ctk.CTkButton(self.frame_botones_tareas, text=titulo, height=24, width=180,
-                                  font=("Arial", 10, "bold"), fg_color="#34495e", hover_color="#2c3e50",
-                                  anchor="w", command=lambda k=clave: self.alternar_ventana(k))
-        btn_tarea.pack(side="left", padx=3, pady=5)
-
         self.ventanas_modulos[clave] = {
-            "titulo": titulo, "contenedor": contenedor, "cuerpo": cuerpo,
-            "btn_tarea": btn_tarea, "app": None, "btn_max": btn_max,
-            "minimizada": False, "maximizada": False, "geometria": None, "geometria_previa": None,
+            "titulo": titulo_ventana, "contenedor": cuerpo, "cuerpo": cuerpo,
+            "ventana": ventana, "btn_tarea": None, "app": None, "btn_max": btn_max,
+            "minimizada": False, "maximizada": False,
+            "geometria": None, "geometria_previa": None, "letrero": None,
         }
-
-        # 🖥️ El módulo se abre A PANTALLA COMPLETA (el botón □ lo devuelve a su tamaño)
+        ventana._btn_expandir = btn_max
+        ventana._modulo_geometria_previa = ventana.geometry()
+        ventana._modulo_maximizado = False
         try:
-            contenedor.after(120, lambda k=clave: self._abrir_modulo_maximizado(k))
+            ventana.after(120, lambda c=clave: self._maximizar_ventana_modulo(c))
+            ventana.after(220, lambda b=btn_max: b.configure(text="🗗 Restaurar"))
         except Exception:
             pass
-        self._refrescar_barra_tareas()
-        self._colocar_ventana_inicial(clave, ancho_rel, alto_rel)
-        self._traer_al_frente(clave)
-        # 🖥️ Al abrir un módulo se pasa a PANTALLA COMPLETA (se oculta el menú
-        #    lateral), igual que en el programa de Eventos.
-        self._entrar_pantalla_completa_al_abrir()
+        ventana.protocol("WM_DELETE_WINDOW", lambda c=clave: self.cerrar_ventana(c))
+        ventana.bind("<Destroy>", lambda e, c=clave: self._al_destruir_ventana_modulo(e, c), add="+")
+        ventana.bind("<F5>", lambda _e, c=clave: self.actualizar_modulo(c), add="+")
+        ventana.bind("<F11>", lambda _e, c=clave: self.alternar_maximizar_ventana(c), add="+")
+        ventana.bind("<FocusIn>", lambda _e, c=clave: self._marcar_clave_activa(c), add="+")
 
         try:
             app = constructor(cuerpo)
         except Exception as e:
             self.cerrar_ventana(clave)
-            messagebox.showerror("Error", f"Fallo al abrir el módulo:\n{e}")
+            messagebox.showerror("Error", "Fallo al abrir el módulo:\n\n%s" % e)
             return None
         self.ventanas_modulos[clave]["app"] = app
-        # 🪟 Muchas clases de módulo NO son widgets pero usan self.winfo_toplevel()
-        #    como padre de sus diálogos (Flota Automotriz, Choferes, Cronograma…).
-        #    Se les da ese método apuntando al marco del módulo.
+        # 🖥️ Se maximiza otra vez al terminar de construir (los módulos pesados
+        #    tardan varios segundos y el primer intento se perdía).
+        self._maximizar_ventana_modulo(clave)
+        for retardo in (350, 900, 1800):
+            try:
+                ventana.after(retardo, lambda c=clave: self._maximizar_ventana_modulo(c))
+            except Exception:
+                pass
+        # Muchos módulos no son widgets pero usan self.winfo_toplevel() como padre
         try:
             if app is not None and not hasattr(app, "winfo_toplevel"):
-                def _toplevel_del_modulo(_marco=cuerpo):
-                    try:
-                        return _marco.winfo_toplevel()
-                    except Exception:
-                        try:
-                            return tk._default_root
-                        except Exception:
-                            return None
+                def _toplevel_del_modulo(_v=ventana):
+                    return _v
                 app.winfo_toplevel = _toplevel_del_modulo
-        except Exception as e_tl:
-            print("Aviso - winfo_toplevel del módulo:", e_tl)
-        # 🖥️ El módulo queda MAXIMIZADO (el botón □ permite restaurarlo)
-        try:
-            self.escritorio.after(80, lambda k=clave: self.maximizar_ventana_modulo(k))
         except Exception:
             pass
+
+        self._clave_activa = clave
+        # 🪟 La ventana tiene su botón propio en la barra de tareas y se trae al
+        #    frente varias veces (CustomTkinter la mandaba detrás al repintarse).
+        poner_ventana_en_barra_tareas(ventana)
+        traer_al_frente(ventana)
+        self._enganchar_foco_ventana()
+        self._actualizar_bienvenida()
         return app
 
-    def _colocar_ventana_inicial(self, clave, ancho_rel=0.92, alto_rel=0.90):
-        """Coloca la ventana con un tamaño cómodo y en cascada."""
+    # ------------------------------------------------------------------
+    # 🪟 APOYO DEL MODELO DE VENTANAS REALES
+    # ------------------------------------------------------------------
+    def _ventana_del_modulo(self, clave):
         info = self.ventanas_modulos.get(clave)
-        if not info: return
+        return info.get("ventana") if info else None
+
+    def _ventana_viva(self, ventana):
+        """¿La ventana sigue existiendo?"""
         try:
-            self.escritorio.update_idletasks()
-            ancho_total = max(500, self.escritorio.winfo_width())
-            alto_total = max(400, self.escritorio.winfo_height())
-            ancho = min(ancho_total, max(460, int(ancho_total * ancho_rel)))
-            alto = min(alto_total, max(340, int(alto_total * alto_rel)))
-            desfase = (self._contador_cascada % 6) * 36
-            self._contador_cascada += 1
-            x = min(desfase, max(0, ancho_total - ancho))
-            y = min(desfase, max(0, alto_total - alto))
-            self._ubicar_ventana(info, x, y, ancho, alto)
-            info["maximizada"] = False
-        except Exception as e:
-            print("Aviso - colocando ventana de módulo:", e)
+            return ventana is not None and bool(ventana.winfo_exists())
+        except Exception:
+            return False
+
+    def _marcar_clave_activa(self, clave):
+        info = self.ventanas_modulos.get(clave)
+        if not info:
+            return
+        self._clave_activa = clave
+        if info.get("minimizada"):
+            info["minimizada"] = False
+        self._actualizar_bienvenida()
+
+    def traer_al_frente_ventana_modulo(self, clave):
+        """Restaura (si estaba minimizada), trae al frente y enfoca la ventana."""
+        ventana = self._ventana_del_modulo(clave)
+        if not self._ventana_viva(ventana):
+            return
+        info = self.ventanas_modulos.get(clave) or {}
+        try:
+            if str(ventana.state()) == "iconic":
+                ventana.deiconify()
+            info["minimizada"] = False
+        except Exception:
+            pass
+        try:
+            ventana.lift()
+        except Exception:
+            pass
+
+        def _soltar():
+            try:
+                if self._ventana_viva(ventana):
+                    ventana.attributes("-topmost", False)
+            except Exception:
+                pass
+        try:
+            ventana.attributes("-topmost", True)
+            ventana.after(400, _soltar)
+        except Exception:
+            pass
+        try:
+            ventana.focus_force()
+        except Exception:
+            pass
+        self._marcar_clave_activa(clave)
+
+    def _maximizar_ventana_modulo(self, clave):
+        """Maximiza la ventana del módulo (Windows y macOS)."""
+        ventana = self._ventana_del_modulo(clave)
+        if not self._ventana_viva(ventana):
+            return
+        info = self.ventanas_modulos.get(clave) or {}
+        try:
+            if str(ventana.state()) == "iconic":
+                return                      # minimizada a propósito: no se toca
+        except Exception:
+            pass
+        # Se recuerda el tamaño para poder restaurarla
+        try:
+            if not getattr(ventana, "_modulo_geometria_previa", None):
+                ventana._modulo_geometria_previa = ventana.geometry()
+        except Exception:
+            pass
+        try:
+            maximizar_ventana_seguro(ventana)   # Windows y macOS
+        except Exception as error:
+            print("Aviso - maximizar ventana del módulo:", error)
+        try:
+            ventana.deiconify()
+            ventana.lift()
+        except Exception:
+            pass
+        ventana._modulo_maximizado = True
+        info["maximizada"] = True
+        try:
+            if info.get("btn_max") is not None:
+                info["btn_max"].configure(text="🗗 Restaurar")
+        except Exception:
+            pass
+
+    def _enganchar_foco_ventana(self):
+        """Engancha (una sola vez) el foco de la principal para subir el módulo activo."""
+        if getattr(self.root, "_foco_modulo_enganchado", False):
+            return
+        try:
+            self.root.bind("<FocusIn>", self._subir_modulo_activo, add="+")
+            self.root._foco_modulo_enganchado = True
+        except Exception:
+            pass
+
+    def _subir_modulo_activo(self, evento=None):
+        """Si la principal recibe el foco, el módulo activo vuelve a ponerse delante."""
+        clave = getattr(self, "_clave_activa", None)
+        if not clave:
+            return
+        ventana = self._ventana_del_modulo(clave)
+        if not self._ventana_viva(ventana):
+            return
+        try:
+            if str(ventana.state()) == "iconic":
+                return          # el usuario la minimizó a propósito
+        except Exception:
+            return
+        try:
+            ventana.lift()
+            # En Windows se fuerza de verdad al frente (lift() a veces no basta)
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    user32 = ctypes.windll.user32
+                    handle = user32.GetParent(ventana.winfo_id()) or ventana.winfo_id()
+                    user32.ShowWindow(handle, 9)             # SW_RESTORE
+                    user32.SetForegroundWindow(handle)
+                except Exception:
+                    pass
+            ventana.attributes("-topmost", True)
+
+            def _soltar(_v=ventana):
+                try:
+                    if _v.winfo_exists():
+                        _v.attributes("-topmost", False)
+                except Exception:
+                    pass
+            ventana.after(160, _soltar)
+        except Exception:
+            pass
+
+    def _al_destruir_ventana_modulo(self, evento, clave):
+        """Si la ventana se destruye por fuera, se limpia el registro."""
+        try:
+            if getattr(evento, "widget", None) is not self._ventana_del_modulo(clave):
+                return
+        except Exception:
+            pass
+        info = self.ventanas_modulos.pop(clave, None)
+        if info and self._clave_activa == clave:
+            self._clave_activa = None
+        self._actualizar_bienvenida()
+
+    def _colocar_ventana_inicial(self, clave, ancho_rel=0.92, alto_rel=0.90):
+        """Compatibilidad: la ventana la coloca Windows (cascada al abrir)."""
+        return None
 
     def _geometria_actual(self, info):
-        """Posición y tamaño actuales de la ventana (o None si no se pudo leer)."""
+        """Geometría de la ventana del módulo (la da Windows)."""
         try:
-            contenedor = info["contenedor"]
-            datos = contenedor.place_info()
-            ancho = int(float(datos.get("width") or 0)) or contenedor.winfo_width()
-            alto = int(float(datos.get("height") or 0)) or contenedor.winfo_height()
-            return {"x": int(float(datos.get("x") or 0)), "y": int(float(datos.get("y") or 0)),
-                    "ancho": int(ancho), "alto": int(alto)}
+            ventana = (info or {}).get("ventana")
+            if ventana is None or not ventana.winfo_exists():
+                return None
+            datos = ventana.geometry().split("+")[0].split("x")
+            return {"ancho": int(datos[0]), "alto": int(datos[1])}
         except Exception:
             return None
 
     def _ubicar_ventana(self, info, x, y, ancho, alto):
-        """Coloca la ventana en el escritorio y recuerda su geometría.
-
-        CustomTkinter exige que el ancho/alto se configuren en el widget y no en
-        place(), por eso se separa: primero el tamaño, luego la posición.
-        """
-        ancho = max(300, int(ancho))
-        alto = max(200, int(alto))
-        try:
-            info["contenedor"].configure(width=ancho, height=alto)
-        except Exception:
-            pass
-        info["contenedor"].place(x=int(x), y=int(y))
-        info["geometria"] = {"x": int(x), "y": int(y), "ancho": ancho, "alto": alto}
+        """Compatibilidad: no se usa con ventanas reales."""
+        return None
 
     def _acomodar_modulo_pantalla_completa(self, activa):
         """Módulo de adelante: se estira en pantalla completa y vuelve al salir."""
@@ -2229,30 +2463,8 @@ class ControlGeneralEventos:
             self._aplicar_acomodo_modulo(activa)
 
     def _aplicar_acomodo_modulo(self, activa):
-        clave = getattr(self, "_clave_activa", None)
-        info = (getattr(self, "ventanas_modulos", None) or {}).get(clave) if clave else None
-        if not info:
-            return
-        try:
-            if activa:
-                if not info.get("maximizada"):
-                    info["geometria_previa"] = self._geometria_actual(info) or info.get("geometria")
-                    self.escritorio.update_idletasks()
-                    self._ubicar_ventana(info, 0, 0,
-                                         self.escritorio.winfo_width(),
-                                         self.escritorio.winfo_height())
-                    info["maximizada"] = True
-                    info["_maximizada_por_pantalla"] = True
-            else:
-                if info.get("_maximizada_por_pantalla"):
-                    geo = info.get("geometria_previa") or info.get("geometria") or {}
-                    self._ubicar_ventana(info, geo.get("x") or 0, geo.get("y") or 0,
-                                         geo.get("ancho") or 800, geo.get("alto") or 600)
-                    info["geometria_previa"] = None
-                    info["maximizada"] = False
-                    info["_maximizada_por_pantalla"] = False
-        except Exception as e:
-            print("Aviso - módulo en pantalla completa:", e)
+        """Ya no se usa: los módulos son ventanas reales que maneja Windows."""
+        return None
 
     def _refrescar_modulo(self, clave):
         """🔄 Vuelve a leer los datos del módulo (por si cambiaron en otro módulo)."""
@@ -2375,226 +2587,188 @@ class ControlGeneralEventos:
         return recargado
 
     def _traer_al_frente(self, clave):
-        """La ventana indicada pasa al frente de todas las demás."""
-        info = self.ventanas_modulos.get(clave)
-        if not info: return
-        try:
-            info["contenedor"].lift()
-        except Exception:
-            pass
-        self._clave_activa = clave
-        self._refrescar_barra_tareas()
-        self._actualizar_bienvenida()
+        """La ventana indicada pasa al frente."""
+        self.traer_al_frente_ventana_modulo(clave)
 
     def _traer_ventana_del_clic(self, evento=None):
-        """Clic dentro de una ventana de módulo => esa ventana pasa al frente."""
-        try:
-            widget = getattr(evento, "widget", None)
-            escritorio = getattr(self, "escritorio", None)
-            if widget is None or escritorio is None or not self.ventanas_modulos:
-                return
-            actual = widget
-            while actual is not None:
-                if getattr(actual, "master", None) is escritorio:
-                    break
-                actual = getattr(actual, "master", None)
-            if actual is None or actual is widget:
-                return
-            clave = getattr(actual, "_clave_modulo", None)
-            if not clave or clave == self._clave_activa:
-                return
-            if self.ventanas_modulos.get(clave, {}).get("minimizada"):
-                return
-            self._traer_al_frente(clave)
-            self._refrescar_modulo(clave)      # 🔄 datos al día
-        except Exception:
-            pass
+        """Ya no se usa: las ventanas de los módulos son ventanas reales."""
+        return None
 
     def minimizar_ventana(self, clave):
-        """Oculta la ventana y la deja en la barra de tareas."""
+        """Minimiza la ventana del módulo a la barra de tareas de Windows."""
         info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"]: return
-        geo = self._geometria_actual(info)
-        if geo: info["geometria"] = geo
+        if not info:
+            return
+        ventana = info.get("ventana")
+        if not self._ventana_viva(ventana):
+            return
         try:
-            info["contenedor"].place_forget()
-        except Exception:
-            pass
+            ventana.iconify()
+        except Exception as error:
+            print("Aviso - minimizar ventana:", error)
         info["minimizada"] = True
         if self._clave_activa == clave:
             self._clave_activa = None
-        self._refrescar_barra_tareas()
         self._actualizar_bienvenida()
 
     def restaurar_ventana(self, clave):
-        """Vuelve a mostrar una ventana minimizada en su sitio."""
+        """Restaura una ventana minimizada (la vuelve a mostrar)."""
         info = self.ventanas_modulos.get(clave)
-        if not info or not info["minimizada"]: return
-        geo = info["geometria"] or {}
+        if not info:
+            return
+        ventana = info.get("ventana")
+        if not self._ventana_viva(ventana):
+            return
         try:
-            self.escritorio.update_idletasks()
-            ancho_total = max(500, self.escritorio.winfo_width())
-            alto_total = max(400, self.escritorio.winfo_height())
-            ancho = min(int(geo.get("ancho") or ancho_total), ancho_total)
-            alto = min(int(geo.get("alto") or alto_total), alto_total)
-            x = max(0, min(int(geo.get("x") or 0), max(0, ancho_total - ancho)))
-            y = max(0, min(int(geo.get("y") or 0), max(0, alto_total - alto)))
-            self._ubicar_ventana(info, x, y, ancho, alto)
-        except Exception as e:
-            print("Aviso - restaurando ventana de módulo:", e)
+            ventana.deiconify()
+            ventana.lift()
+        except Exception as error:
+            print("Aviso - restaurar ventana:", error)
         info["minimizada"] = False
-        self._refrescar_barra_tareas()
+        self._clave_activa = clave
         self._actualizar_bienvenida()
 
     def alternar_ventana(self, clave):
-        """Botón de la barra de tareas: restaura, trae al frente o minimiza."""
+        """Restaura / minimiza la ventana del módulo."""
         info = self.ventanas_modulos.get(clave)
-        if not info: return
-        if info["minimizada"]:
-            self.restaurar_ventana(clave)
-            self._traer_al_frente(clave)
-        elif self._clave_activa == clave:
-            self.minimizar_ventana(clave)
+        if not info:
+            return
+        ventana = info.get("ventana")
+        try:
+            minimizada = self._ventana_viva(ventana) and str(ventana.state()) == "iconic"
+        except Exception:
+            minimizada = bool(info.get("minimizada"))
+        if minimizada:
+            self.traer_al_frente_ventana_modulo(clave)
         else:
-            self._traer_al_frente(clave)
+            self.minimizar_ventana(clave)
 
     def maximizar_ventana_modulo(self, clave):
-        """🖥️ Expande el módulo a todo el escritorio (se usa al abrirlo)."""
-        info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"] or info["maximizada"]:
-            return
-        try:
-            info["geometria_previa"] = self._geometria_actual(info) or info["geometria"]
-            self.escritorio.update_idletasks()
-            self._ubicar_ventana(info, 0, 0,
-                                 self.escritorio.winfo_width(), self.escritorio.winfo_height())
-            info["maximizada"] = True
-        except Exception as e:
-            print("Aviso - maximizando ventana de módulo:", e)
-        self._traer_al_frente(clave)
+        """Maximiza la ventana del módulo."""
+        self._maximizar_ventana_modulo(clave)
 
     def _abrir_modulo_maximizado(self, clave):
-        """Abre el módulo ocupando todo el escritorio (pantalla completa)."""
-        info = self.ventanas_modulos.get(clave)
-        if not info or info.get("minimizada") or info.get("maximizada"):
-            return
+        """Compatibilidad: maximiza la ventana del módulo."""
+        self._maximizar_ventana_modulo(clave)
+        info = self.ventanas_modulos.get(clave) or {}
         try:
-            self.alternar_maximizar_ventana(clave)
-            boton = info.get("btn_max")
-            if boton is not None:
-                boton.configure(text="🗗")
-        except Exception as e:
-            print("Aviso - módulo maximizado:", e)
+            if info.get("btn_max") is not None:
+                info["btn_max"].configure(text="🗗 Restaurar")
+        except Exception:
+            pass
 
     def alternar_maximizar_ventana(self, clave):
-        """Maximiza la ventana dentro del escritorio o la devuelve a su tamaño."""
+        """Expande la ventana del módulo o la devuelve a su tamaño anterior.
+
+        Funciona igual en Windows y en macOS (allí no se usa state("zoomed")).
+        """
         info = self.ventanas_modulos.get(clave)
-        if not info or info["minimizada"]: return
-        try:
-            if info["maximizada"]:
-                # Vuelve al tamaño y la posición que tenía antes de maximizarse
-                geo = info.get("geometria_previa") or info["geometria"] or {}
-                self._ubicar_ventana(info, geo.get("x") or 0, geo.get("y") or 0,
-                                     geo.get("ancho") or 800, geo.get("alto") or 600)
-                info["geometria_previa"] = None
-                info["maximizada"] = False
+        if not info:
+            return
+        ventana = info.get("ventana")
+        if not self._ventana_viva(ventana):
+            return
+        if getattr(ventana, "_modulo_maximizado", False):
+            # 🔽 Restaurar: se vuelve al tamaño y posición que tenía antes
+            try:
+                if sys.platform == "win32":
+                    ventana.state("normal")
+            except Exception:
+                pass
+            geometria = getattr(ventana, "_modulo_geometria_previa", None)
+            if geometria:
                 try:
-                    if info.get("btn_max") is not None:
-                        info["btn_max"].configure(text="□")
+                    ventana.geometry(geometria)
                 except Exception:
                     pass
-            else:
-                info["geometria_previa"] = self._geometria_actual(info) or info["geometria"]
-                self.escritorio.update_idletasks()
-                self._ubicar_ventana(info, 0, 0, self.escritorio.winfo_width(), self.escritorio.winfo_height())
-                info["maximizada"] = True
-        except Exception as e:
-            print("Aviso - maximizando ventana de módulo:", e)
-        self._traer_al_frente(clave)
+            ventana._modulo_maximizado = False
+            info["maximizada"] = False
+            texto = "🗖 Expandir"
+        else:
+            try:
+                if not getattr(ventana, "_modulo_geometria_previa", None):
+                    ventana._modulo_geometria_previa = ventana.geometry()
+            except Exception:
+                pass
+            try:
+                maximizar_ventana_seguro(ventana)
+            except Exception as error:
+                print("Aviso - maximizar ventana del módulo:", error)
+            ventana._modulo_maximizado = True
+            info["maximizada"] = True
+            texto = "🗗 Restaurar"
+        try:
+            if info.get("btn_max") is not None:
+                info["btn_max"].configure(text=texto)
+        except Exception:
+            pass
+        try:
+            ventana.deiconify()
+            ventana.lift()
+        except Exception:
+            pass
 
     def cerrar_ventana(self, clave):
-        """Cierra la ventana del módulo (y libera sus recursos de interfaz)."""
+        """Cierra la ventana del módulo."""
         info = self.ventanas_modulos.pop(clave, None)
-        if not info: return
-        # Antes de destruir la ventana se anulan sus temporizadores: así ningún
-        # sondeo en segundo plano intenta pintar sobre widgets que ya no existen.
+        if not info:
+            return
+        # Se anulan los temporizadores del módulo antes de destruirlo
         for marco in (info.get("contenedor"), info.get("cuerpo")):
-            if marco is None: continue
+            if marco is None:
+                continue
             try:
                 marco.after = lambda *a, **k: None
                 marco.after_cancel = lambda *a, **k: None
             except Exception:
                 pass
-        try: info["btn_tarea"].destroy()
-        except Exception: pass
-        try: info["contenedor"].destroy()
-        except Exception: pass
+        try:
+            if info.get("btn_tarea") is not None:
+                info["btn_tarea"].destroy()
+        except Exception:
+            pass
+        ventana = info.get("ventana")
+        try:
+            if ventana is not None and ventana.winfo_exists():
+                ventana.destroy()
+        except Exception:
+            pass
+        try:
+            info["contenedor"].destroy()
+        except Exception:
+            pass
         if self._clave_activa == clave:
             self._clave_activa = None
-            for otra, datos in reversed(list(self.ventanas_modulos.items())):
-                if not datos["minimizada"]:
-                    self._traer_al_frente(otra)
-                    break
-        self._refrescar_barra_tareas()
         self._actualizar_bienvenida()
-        # 🖥️ Si ya no queda ningún módulo abierto, se recupera el menú lateral
-        self._salir_pantalla_completa_si_no_hay_modulos()
 
     def cerrar_todas_las_ventanas(self):
         for clave in list(getattr(self, "ventanas_modulos", {}).keys()):
             self.cerrar_ventana(clave)
 
     def _refrescar_barra_tareas(self):
-        """Pinta los botones de la barra de tareas (ventana activa / minimizada)."""
-        try:
-            if not hasattr(self, "frame_botones_tareas"): return
-            if hasattr(self, "_lbl_sin_ventanas"):
-                if self.ventanas_modulos:
-                    self._lbl_sin_ventanas.pack_forget()
-                elif not self._lbl_sin_ventanas.winfo_ismapped():
-                    self._lbl_sin_ventanas.pack(side="left", padx=6)
-            for clave, info in self.ventanas_modulos.items():
-                btn = info.get("btn_tarea")
-                if btn is None: continue
-                if info["minimizada"]:
-                    btn.configure(fg_color="#7f8c8d", hover_color="#606b6b", text=f"🗗 {info['titulo']}")
-                elif clave == self._clave_activa:
-                    btn.configure(fg_color="#1f538d", hover_color="#163b65", text=info["titulo"])
-                else:
-                    btn.configure(fg_color="#34495e", hover_color="#2c3e50", text=info["titulo"])
-        except Exception:
-            pass
+        """La barra "Módulos abiertos" ya no se usa (cada módulo es una ventana)."""
+        return None
 
     def _actualizar_bienvenida(self):
-        """La pantalla de bienvenida solo se ve cuando no hay ventanas a la vista."""
+        """El dashboard queda siempre visible en la ventana principal.
+
+        Los módulos son ventanas aparte, así que el escritorio de atrás nunca
+        debe quedar en blanco: se muestra la pantalla de bienvenida.
+        """
         bienvenida = getattr(self, "frame_bienvenida", None)
-        if bienvenida is None: return
+        if bienvenida is None:
+            return
         try:
-            if not bienvenida.winfo_exists(): return
-            hay_visible = any((not d["minimizada"]) for d in self.ventanas_modulos.values())
-            if hay_visible:
-                if bienvenida.winfo_ismapped():
-                    bienvenida.pack_forget()
-            elif not bienvenida.winfo_ismapped():
+            if not bienvenida.winfo_exists():
+                return
+            if not bienvenida.winfo_ismapped():
                 bienvenida.pack(fill="both", expand=True, padx=20, pady=20)
-                for datos in self.ventanas_modulos.values():
-                    if not datos["minimizada"]:
-                        datos["contenedor"].lift()
         except Exception:
             pass
 
     def _al_redimensionar_escritorio(self, evento=None):
-        """Si cambia el tamaño del escritorio, las ventanas maximizadas se reajustan."""
-        try:
-            if evento is not None and getattr(evento, "widget", None) is not self.escritorio:
-                return
-            ancho = self.escritorio.winfo_width()
-            alto = self.escritorio.winfo_height()
-            for info in self.ventanas_modulos.values():
-                if info["maximizada"] and not info["minimizada"]:
-                    self._ubicar_ventana(info, 0, 0, ancho, alto)
-        except Exception:
-            pass
+        """Ya no se usa: los módulos son ventanas reales (las maneja Windows)."""
+        return None
 
     def _iniciar_arrastre(self, evento, clave):
         info = self.ventanas_modulos.get(clave)
@@ -4694,6 +4868,10 @@ class ControlGeneralEventos:
         x = max(0, (v_usr.winfo_screenwidth() // 2) - (ancho // 2))
         y = max(0, (v_usr.winfo_screenheight() // 2) - (alto // 2))
         v_usr.geometry(f"{ancho}x{alto}+{x}+{y}")
+        try:
+            v_usr.after(60, lambda v=v_usr: maximizar_ventana_seguro(v))
+        except Exception:
+            pass
         v_usr.lift()
         v_usr.grab_set()
 
