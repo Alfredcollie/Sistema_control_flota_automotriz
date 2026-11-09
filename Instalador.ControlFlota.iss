@@ -4,7 +4,10 @@
 ; ============================================================
 
 #define MyAppName "Control Flota Automotriz"
-#define MyAppVersion "1.0.0"
+; La versión se puede sobrescribir desde el workflow con:  /DMyAppVersion=x.y.z
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppExeName "ControlFlota.exe"
 
 [Setup]
@@ -18,6 +21,8 @@ DisableProgramGroupPage=yes
 OutputDir=dist
 OutputBaseFilename=Instalador.ControlFlota
 SetupIconFile=Ico_Collie_Software.ico
+; 🖼️ Icono que muestra Windows en "Aplicaciones y características" (el del desinstalador)
+UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

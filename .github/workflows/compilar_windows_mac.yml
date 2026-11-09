@@ -114,7 +114,13 @@ jobs:
       run: choco install innosetup -y --no-progress
 
     - name: Generar instalador (Inno Setup)
-      run: iscc "Instalador.ControlFlota.iss"
+      shell: pwsh
+      run: |
+        $v = "1.0.0"
+        if ($env:GITHUB_REF_TYPE -eq "tag") { $v = $env:GITHUB_REF_NAME }
+        $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+        if (-not (Test-Path $iscc)) { $iscc = "ISCC.exe" }
+        & $iscc /DMyAppVersion=$v "Instalador.ControlFlota.iss"
 
     - name: Comprimir en ZIP (Windows)
       run: Compress-Archive -Path "dist/ControlFlota" -DestinationPath "dist/ControlFlota-Windows.zip" -Force
