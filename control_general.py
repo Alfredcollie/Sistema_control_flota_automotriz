@@ -1459,6 +1459,48 @@ def poner_ventana_en_barra_tareas(ventana):
         pass
 
 
+METODOS_RECARGA_MODULOS = ('cargar_datos', 'cargar_datos_tabla', 'cargar_tabla', 'refrescar_datos', 'actualizar_tabla', 'recargar_datos', 'refrescar', 'cargar_vehiculos', 'cargar_clientes_tabla', 'cargar_proveedores_tabla', 'refrescar_saldos', 'cargar_datos_pagar', 'cargar_datos_cobrar', 'refrescar_tree', 'cargar_historial', 'cargar_datos_nc', 'cargar_historial_ordenes', 'cargar_registros', 'cargar_solicitudes_tab', 'cargar_datos_diario', 'cargar_datos_mayor', 'cargar_datos_db', 'cargar_kpis', 'cargar_categorias', 'cargar_combos', 'refrescar_transferencias', 'refrescar_tabla_categorias', 'cargar_datos_iniciales', 'cargar_matriz_asistencia', 'cargar_panel', 'cargar_tareas_tabla', 'cargar_inspecciones', 'cargar_empleados', 'cargar_asignaciones', 'cargar_rangos_viaje', 'cargar_unidades_cliente', 'cargar_clientes', 'refrescar_combos_globales', 'cargar_personas_reloj', 'cargar_flota_activa', 'cargar_papeletas', 'cargar_parte', 'cargar_rendiciones', 'cargar_zonas', 'cargar_vehiculos_tabla', 'cargar_ordenes', 'cargar_facturas', 'cargar_pagos_clientes', 'cargar_cobros', 'cargar_comprobantes', 'cargar_saldos')
+
+
+def _acepta_reset_pagina(metodo):
+    """¿El método de recarga acepta el argumento reset_pagina?"""
+    try:
+        import inspect
+        return "reset_pagina" in inspect.signature(metodo).parameters
+    except Exception:
+        return False
+
+
+def _buscar_metodos_recarga(objeto, encontrados, vistos, profundidad=0):
+    """Busca los métodos de recarga dentro del módulo y sus pestañas.
+
+    Entra también en los paneles internos (las pestañas) pero nunca en los
+    widgets: sus métodos no recargan datos y son cientos.
+    """
+    if objeto is None or id(objeto) in vistos or profundidad > 2:
+        return
+    vistos.add(id(objeto))
+    for nombre in dir(objeto):
+        if nombre.startswith("_"):
+            continue
+        try:
+            valor = getattr(objeto, nombre)
+        except Exception:
+            continue
+        if callable(valor):
+            if nombre in METODOS_RECARGA_MODULOS:
+                encontrados.append(valor)
+        elif not isinstance(valor, (str, bytes, int, float, bool, list, tuple, dict, set)):
+            try:
+                import tkinter as _tk
+                if isinstance(valor, _tk.Misc):
+                    continue
+            except Exception:
+                pass
+            _buscar_metodos_recarga(valor, encontrados, vistos, profundidad + 1)
+
+
+
 class ControlGeneralEventos:
     # =========================================================
     # 🛡️ VIGILANTE DE BLOQUEOS MODALES COLGADOS
@@ -2467,32 +2509,32 @@ class ControlGeneralEventos:
         return None
 
     def _refrescar_modulo(self, clave):
-        """🔄 Vuelve a leer los datos del módulo (por si cambiaron en otro módulo)."""
+        """🔄 Vuelve a leer los datos del módulo (también los de sus pestañas).
+
+        Devuelve cuántos apartados se recargaron (0 si el módulo no expone
+        ninguno y solo se actualiza con sus propios botones).
+        """
         info = self.ventanas_modulos.get(clave) or {}
         app = info.get("app")
         if app is None:
-            return
-        metodos = ("cargar_datos", "cargar_datos_tabla", "cargar_tabla", "refrescar_datos",
-                   "actualizar_tabla", "refrescar", "cargar_vehiculos", "cargar_clientes_tabla",
-                   "cargar_proveedores_tabla", "refrescar_saldos", "cargar_datos_pagar",
-                   "cargar_datos_cobrar", "refrescar_tree", "cargar_historial")
-        for nombre in metodos:
-            metodo = getattr(app, nombre, None)
-            if not callable(metodo):
-                continue
+            return 0
+        encontrados = []
+        try:
+            _buscar_metodos_recarga(app, encontrados, set())
+        except Exception as error:
+            print("Aviso - buscando recargas del módulo:", error)
+            return 0
+        ejecutados = 0
+        for metodo in encontrados:
             try:
-                metodo()
-                return
-            except TypeError:
-                pass
-            except Exception as e:
-                print("Aviso - refrescando módulo:", e)
-                return
-            try:
-                metodo(reset_pagina=False)
-            except Exception as e:
-                print("Aviso - refrescando módulo:", e)
-            return
+                if _acepta_reset_pagina(metodo):
+                    metodo(reset_pagina=True)
+                else:
+                    metodo()
+                ejecutados += 1
+            except Exception as error:
+                print("Aviso - recargando apartado del módulo:", error)
+        return ejecutados
 
 
     # =========================================================
@@ -2561,8 +2603,7 @@ class ControlGeneralEventos:
         recargado = 0
         try:
             if info.get("app") is not None:
-                self._refrescar_modulo(clave)
-                recargado = 1
+                recargado = self._refrescar_modulo(clave) or 0
         except Exception as e:
             print("Aviso - actualizando el módulo:", e)
 
@@ -2582,7 +2623,8 @@ class ControlGeneralEventos:
         if mostrar_letrero:
             self._letrero_modulo(
                 clave,
-                "✅ Información actualizada" if recargado else "✅ Módulo al día",
+                "✅ Información actualizada" if recargado
+                else "ℹ️ Este módulo se actualiza con sus propios botones",
                 1500)
         return recargado
 

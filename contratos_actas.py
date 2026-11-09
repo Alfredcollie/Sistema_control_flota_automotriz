@@ -104,14 +104,30 @@ def ruta_base():
 
 
 def movil_valido(texto):
-    """Devuelve la placa solo si es un dato real (descarta 'Ninguno / Sin Asignar')."""
+    """Devuelve SOLO la placa del móvil asignado.
+
+    En la ficha del chofer el móvil se guarda como "CHD-817 | DFSK C35" o
+    "BSK758 / RAM V700": aquí se queda únicamente con la placa ("CHD-817").
+    Devuelve "" si no hay móvil real (por ejemplo "Ninguno / Sin Asignar").
+    """
     valor = str(texto or "").strip()
     if not valor:
         return ""
-    if valor.upper() in ("NINGUNO", "SIN ASIGNAR", "NINGUNO / SIN ASIGNAR", "-", "N/A",
-                         "NINGUNO/SIN ASIGNAR", "SIN PLACA"):
-        return ""
     if "SIN ASIGNAR" in valor.upper():
+        return ""
+    if valor.upper() in ("NINGUNO", "-", "N/A", "SIN PLACA", "NINGUNO/SIN ASIGNAR"):
+        return ""
+    # se corta lo que venga después de "|", "/" o un guion separador
+    for separador in ("|", "/", " - ", " – ", ","):
+        if separador in valor:
+            valor = valor.split(separador)[0].strip()
+            break
+    # si quedaron dos palabras (placa + marca), se toma la primera
+    partes = valor.split()
+    if len(partes) > 1:
+        valor = partes[0]
+    valor = valor.strip(" .-")
+    if valor.upper() in ("NINGUNO", "SIN", "NA"):
         return ""
     return valor
 
@@ -345,6 +361,27 @@ def datos_vehiculo(placa):
         liberar_conexion(conexion)
 
 
+
+def chofer_por_id(id_chofer):
+    """Datos completos de un chofer (para refrescar su información)."""
+    conexion = conectar_db(silencioso=True)
+    if not conexion:
+        return None
+    try:
+        cursor = conexion.cursor()
+        cursor.execute("""
+            SELECT id, dni, nombres, direccion, movil_asignado,
+                   fecha_inicio_contrato, fecha_fin_contrato, telefono, estado
+            FROM choferes WHERE id = %s LIMIT 1
+        """, (id_chofer,))
+        return cursor.fetchone()
+    except Exception as error:
+        print("Aviso - chofer por id:", error)
+        return None
+    finally:
+        liberar_conexion(conexion)
+
+
 def contratos_del_chofer(id_chofer):
     """Historial de contratos y renovaciones de un chofer."""
     conexion = conectar_db(silencioso=True)
@@ -463,6 +500,74 @@ class ContratosActasApp:
             return bool(self.incluir_inactivos.get())
         except Exception:
             return False
+
+    # =====================================================
+    # 🔄 ACTUALIZAR (botón de la ventana y F5)
+    # =====================================================
+    def cargar_datos(self):
+        """Vuelve a leer TODO desde la base (el botón Actualizar del módulo).
+
+        Sirve cuando se cambió algo en otro módulo, por ejemplo el móvil
+        asignado de un chofer en "Control de Choferes".
+        """
+        try:
+            self._buscar_en_contratos()          # lista de choferes (3 pestañas)
+        except Exception as error:
+            print("Aviso - refrescando choferes:", error)
+        try:
+            self._cargar_historicos()
+        except Exception as error:
+            print("Aviso - refrescando históricos:", error)
+
+        # si había un chofer elegido, se vuelven a leer sus datos
+        if self.chofer and self.chofer.get("id"):
+            try:
+                fila = chofer_por_id(self.chofer["id"])
+                if fila:
+                    self._elegir_chofer(fila)
+                    self._aplicar_datos_chofer()
+            except Exception as error:
+                print("Aviso - refrescando el chofer elegido:", error)
+        return True
+
+    def _aplicar_datos_chofer(self):
+        """Refresca en pantalla los datos del chofer elegido (sin borrar lo escrito)."""
+        if not self.chofer:
+            return
+        try:
+            # pestaña Contratos: sólo se actualizan los datos que vienen de la ficha
+            if not self.ent_trabajador.get().strip():
+                self._poner(self.ent_trabajador, self.chofer["nombres"])
+            if not self.ent_dni.get().strip():
+                self._poner(self.ent_dni, self.chofer["dni"])
+            self._poner(self.ent_direccion, self.chofer["direccion"])
+            if self.chofer.get("fecha_fin_contrato"):
+                self._poner(self.ent_fin, self.chofer["fecha_fin_contrato"])
+        except Exception as error:
+            print("Aviso - datos del chofer en Contratos:", error)
+        try:
+            # pestaña Actas: la placa asignada
+            self._poner(self.ent_placa, movil_valido(self.chofer.get("movil")))
+            self._traer_vehiculo_del_chofer()
+        except Exception as error:
+            print("Aviso - datos del chofer en Actas:", error)
+        try:
+            # pestaña Renovaciones: la situación
+            estado_txt, dias = estado_contrato(self.chofer.get("fecha_fin_contrato"))
+            extra = ""
+            if dias is not None:
+                extra = ("  ·  venció hace %d día(s)" % abs(dias) if dias < 0
+                         else "  ·  quedan %d día(s)" % dias)
+            self.lbl_situacion.configure(
+                text="Trabajador: " + self.chofer["nombres"] + "\n"
+                     "DNI: " + self.chofer["dni"] + "\n"
+                     "Fecha de inicio ORIGINAL: " +
+                     (self.chofer["fecha_inicio_contrato"] or "(sin registrar)") + "\n"
+                     "Vencimiento actual: " +
+                     (self.chofer["fecha_fin_contrato"] or "(sin registrar)") + "\n"
+                     "Estado: " + estado_txt + extra)
+        except Exception as error:
+            print("Aviso - datos del chofer en Renovaciones:", error)
 
     def _recargar_listas(self):
         """Vuelve a cargar las listas respetando la casilla de inactivos."""

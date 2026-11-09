@@ -626,6 +626,16 @@ class AmonestacionesApp(ctk.CTkFrame):
             self.f_suspension.pack_forget()
         self._actualizar_previa()
 
+
+    def cargar_datos(self):
+        """🔄 Relee la lista de choferes (botón Actualizar de la ventana)."""
+        try:
+            self._cargar_choferes()
+            return True
+        except Exception as error:
+            print("[amonestaciones] recarga:", error)
+            return False
+
     def insertar_hechos(self):
         """Rellena el cuadro con el texto sugerido de la descripción de los hechos."""
         try:
