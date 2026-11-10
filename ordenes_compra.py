@@ -5,6 +5,7 @@ import customtkinter as ctk
 from datetime import datetime
 import sys
 import os
+from formato_numeros import formatear_numero
 import subprocess
 import webbrowser
 import urllib.parse
@@ -575,7 +576,7 @@ class OrdenesCompraApp:
             except: costo_val = 0.0
             
             factura_vinculada = str(r[9]).strip() if len(r) > 9 and r[9] else "— sin factura —"
-            row_vals = (r[0], n_imprimir, r[3], r[6], r[5], r[7], f"{costo_val:,.2f}", factura_vinculada)
+            row_vals = (r[0], n_imprimir, r[3], r[6], r[5], r[7], f"{formatear_numero(costo_val)}", factura_vinculada)
             self.tree_historial.insert("", tk.END, values=row_vals)
             
         if self.pagina_actual > 1:
@@ -746,15 +747,15 @@ class OrdenesCompraApp:
         
         c.setFont("Helvetica", 10)
         c.drawString(380, y_pos - 10, "SUBTOTAL APROX:")
-        c.drawString(480, y_pos - 10, f"S/ {subtotal:,.2f}")
+        c.drawString(480, y_pos - 10, f"S/ {formatear_numero(subtotal)}")
         
         c.drawString(380, y_pos - 25, "IGV (18%):")
-        c.drawString(480, y_pos - 25, f"S/ {igv:,.2f}")
+        c.drawString(480, y_pos - 25, f"S/ {formatear_numero(igv)}")
         
         c.setFont("Helvetica-Bold", 12)
         c.drawString(380, y_pos - 45, "COSTO ACORDADO:")
         c.setFillColorRGB(0.75, 0.22, 0.16)
-        c.drawString(500, y_pos - 45, f"S/ {total_orden:,.2f}")
+        c.drawString(500, y_pos - 45, f"S/ {formatear_numero(total_orden)}")
 
         c.save()
         return nombre_archivo

@@ -4,6 +4,7 @@ from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 from datetime import datetime
 import os
+from formato_numeros import formatear_numero
 import sys
 import shutil
 import json
@@ -70,7 +71,7 @@ def formatear_moneda(valor):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     try: valor = float(valor)
     except: valor = 0.0
-    return f"{simbolo} {valor:,.2f}"
+    return f"{simbolo} {formatear_numero(valor)}"
 
 
 _SCHEMA_OC_CLIENTES_OK = False

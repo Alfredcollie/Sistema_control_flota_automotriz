@@ -17,6 +17,7 @@ Optimizado para máximo rendimiento y compatibilidad nativa en Windows y macOS.
 # =========================================================
 import sys
 import os
+from formato_numeros import formatear_numero
 import traceback
 
 _RUTA_LOG_ERROR = None
@@ -3144,7 +3145,7 @@ class ControlGeneralEventos:
                             except Exception:
                                 pass
                         if ventas_vencidas > 0:
-                            alertas.append({"tipo": "peligro", "icono": "⚠️", "titulo": "Cobros Vencidos", "mensaje": f"Tienes {ventas_vencidas} factura(s) de clientes atrasada(s) (S/. {deuda_ventas:,.2f})"})
+                            alertas.append({"tipo": "peligro", "icono": "⚠️", "titulo": "Cobros Vencidos", "mensaje": f"Tienes {ventas_vencidas} factura(s) de clientes atrasada(s) (S/. {formatear_numero(deuda_ventas)})"})
                     except Exception:
                         pass
 
@@ -3567,7 +3568,7 @@ class ControlGeneralEventos:
                 if not digitos:
                     return s
                 num = float(digitos)
-            texto = f"{num:,.2f}"
+            texto = f"{formatear_numero(num)}"
             if es_latino:
                 texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
             return texto

@@ -43,6 +43,7 @@ from tkinter import ttk, messagebox
 import customtkinter as ctk
 import calendar
 import os
+from formato_numeros import formatear_numero
 import sys
 import json
 import ssl
@@ -241,9 +242,9 @@ def formatear_moneda(valor):
     except Exception:
         valor = 0.0
     if formato == "1.000,00":
-        str_val = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        str_val = f"{formatear_numero(valor)}".replace(",", "X").replace(".", ",").replace("X", ".")
     else:
-        str_val = f"{valor:,.2f}"
+        str_val = f"{formatear_numero(valor)}"
     return f"{simbolo} {str_val}"
 
 
@@ -567,7 +568,10 @@ def _num_o_vacio(valor, decimales=True):
         return ""
     if abs(numero) < 0.005:
         return ""
-    return ("{:,.2f}".format(numero) if decimales else ("%g" % numero))
+    if decimales:
+        from formato_numeros import formatear_numero as _formato_config
+        return _formato_config(numero)
+    return "%g" % numero
 
 
 def _etiqueta_rango(rg):
@@ -3379,13 +3383,13 @@ class CalculoCobranzaApp:
             y -= ALTO_FILA
             c.drawString(42, y - BASE_TXT, "SUBTOTAL (BASE)")
             c.drawRightString(40 + ancho_tabla - 2, y - BASE_TXT,
-                              f"{simbolo} {round(total_tabla, 2):,.2f}")
+                              f"{simbolo} {formatear_numero(round(total_tabla, 2))}")
             y -= ALTO_FILA
             monto_ded_calc = float(m_ded or 0)
             if abs(monto_ded_calc) > 0.005:
                 c.drawString(42, y - BASE_TXT, "TOTAL NO REALIZADOS (DEDUCCIÓN)")
                 c.drawRightString(40 + ancho_tabla - 2, y - BASE_TXT,
-                                  f"- {simbolo} {round(monto_ded_calc, 2):,.2f}")
+                                  f"- {simbolo} {formatear_numero(round(monto_ded_calc, 2))}")
                 y -= ALTO_FILA
             # ✅ Los totales del documento se recalculan con esta misma tabla
             total = max(0.0, total_tabla - monto_ded_calc)
@@ -3436,13 +3440,13 @@ class CalculoCobranzaApp:
                 c.drawCentredString(xs_u[1] + cols_u[1] / 2, y - BASE_TXT,
                                     formato_horas_minutos(hd, etiqueta_cero="0 h"))
                 c.drawCentredString(xs_u[2] + cols_u[2] / 2, y - BASE_TXT,
-                                    f"{simbolo} {round(float(pn or 0), 2):,.2f}")
+                                    f"{simbolo} {formatear_numero(round(float(pn or 0), 2))}")
                 c.drawCentredString(xs_u[3] + cols_u[3] / 2, y - BASE_TXT,
-                                    f"{simbolo} {round(float(pd or 0), 2):,.2f}")
+                                    f"{simbolo} {formatear_numero(round(float(pd or 0), 2))}")
                 c.drawCentredString(xs_u[4] + cols_u[4] / 2, y - BASE_TXT,
-                                    f"{simbolo} {round(float(pf or 0), 2):,.2f}")
+                                    f"{simbolo} {formatear_numero(round(float(pf or 0), 2))}")
                 c.drawCentredString(xs_u[5] + cols_u[5] / 2, y - BASE_TXT,
-                                    f"{simbolo} {base_u:,.2f}")
+                                    f"{simbolo} {formatear_numero(base_u)}")
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
                 c.line(40, y - LINEA_FILA, 40 + ancho_tabla, y - LINEA_FILA)
                 y -= ALTO_FILA
@@ -3452,7 +3456,7 @@ class CalculoCobranzaApp:
             c.setFont("Helvetica-Bold", 10)
             c.drawString(xs_u[0] + 4, y - BASE_TXT, "SUBTOTAL (BASE)")
             c.drawRightString(40 + ancho_tabla, y - BASE_TXT,
-                              f"{simbolo} {round(float(m_base or 0), 2):,.2f}")
+                              f"{simbolo} {formatear_numero(round(float(m_base or 0), 2))}")
             y -= ALTO_FILA + SALTO_SECCION
 
         # ---- Asientos con fecha: deducciones y horas extras (uno por uno) ----
@@ -3530,7 +3534,7 @@ class CalculoCobranzaApp:
                 c.drawString(xs_dd[4] + 3, y - BASE_TXT, texto_mot)
                 c.setFont("Helvetica", FUENTE_TABLA)
                 c.drawCentredString(xs_dd[5] + cols_dd[5] / 2, y - BASE_TXT,
-                                    f"{simbolo} {round(monto_v, 2):,.2f}")
+                                    f"{simbolo} {formatear_numero(round(monto_v, 2))}")
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
                 c.line(40, y - LINEA_FILA, 40 + ancho_dd, y - LINEA_FILA)
                 y -= ALTO_FILA
@@ -3541,7 +3545,7 @@ class CalculoCobranzaApp:
             c.setFont("Helvetica-Bold", 10)
             c.drawString(42, y - BASE_TXT - 1.0, etiqueta_total)
             c.drawRightString(40 + ancho_dd, y - BASE_TXT - 1.0,
-                              f"{signo}{simbolo} {total_asientos:,.2f}")
+                              f"{signo}{simbolo} {formatear_numero(total_asientos)}")
             y -= SALTO_FIN_TABLA
             if monto_declarado is not None:
                 diferencia_ded = round(float(monto_declarado) - total_asientos, 2)
@@ -3550,7 +3554,7 @@ class CalculoCobranzaApp:
                     c.setFillColorRGB(0.4, 0.4, 0.4)
                     c.drawString(42, y - BASE_TXT + 1.0,
                                  "Además hay deducciones registradas sin asiento detallado: "
-                                 f"{simbolo} {diferencia_ded:,.2f}")
+                                 f"{simbolo} {formatear_numero(diferencia_ded)}")
                     c.setFillColorRGB(0, 0, 0)
                     y -= ALTO_FILA - 3.0
             y -= SALTO_FIN_TABLA
@@ -3569,7 +3573,7 @@ class CalculoCobranzaApp:
         c.setFillColorRGB(0, 0, 0)
         c.setFont("Helvetica-Bold", 13)
         c.drawString(48, y - 14, "TOTAL A COBRAR")
-        c.drawRightString(460, y - 14, f"{simbolo} {round(float(total or 0), 2):,.2f}")
+        c.drawRightString(460, y - 14, f"{simbolo} {formatear_numero(round(float(total or 0), 2))}")
         y -= 30.0
 
         # Las notas se dibujan mientras quede sitio: nunca sobre el pie de página.
