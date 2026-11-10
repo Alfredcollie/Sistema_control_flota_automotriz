@@ -439,6 +439,7 @@ def cargar_configuracion_regional():
     config = {
         "simbolo_moneda": "S/.",
         "formato_numero": "1,000.00",
+        "detraccion_umbral": "400", "detraccion_porcentaje": "4",
         "formato_fecha": "DD/MM/AAAA",
         "ruta_drive": "",
         "impresora": "",

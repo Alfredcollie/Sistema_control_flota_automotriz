@@ -19,11 +19,11 @@
   "neto"
  ],
  "compras_cuentas_pagar": [
-  "num",
   "fecha",
-  "hora",
   "nro_doc",
   "proveedor",
+  "ruc",
+  "kilometraje",
   "cantidad",
   "concepto",
   "metodo_pago",

@@ -335,6 +335,7 @@ def cargar_configuracion_regional():
     config = {
         "simbolo_moneda": "S/.",
         "formato_numero": "1,000.00",
+        "detraccion_umbral": "400", "detraccion_porcentaje": "4",
         "formato_fecha": "DD/MM/AAAA",
         "ruta_drive": "",
         "impresora": "",
@@ -877,8 +878,21 @@ UMBRAL_DETRACCION_VENTAS = 400.0      # soles
 PORCENTAJE_DETRACCION_VENTAS = 4.0    # %
 
 
-def porcentaje_detraccion_ventas(total, umbral=UMBRAL_DETRACCION_VENTAS,
-                                 porcentaje=PORCENTAJE_DETRACCION_VENTAS):
+def _numero_config(clave, por_defecto):
+    try:
+        valor = CONFIG_REGIONAL.get(clave)
+        if valor in (None, ""):
+            return float(por_defecto)
+        return float(str(valor).replace(",", "."))
+    except Exception:
+        return float(por_defecto)
+
+
+def porcentaje_detraccion_ventas(total, umbral=None, porcentaje=None):
+    if umbral is None:
+        umbral = _numero_config("detraccion_umbral", UMBRAL_DETRACCION_VENTAS)
+    if porcentaje is None:
+        porcentaje = _numero_config("detraccion_porcentaje", PORCENTAJE_DETRACCION_VENTAS)
     """4% si el total SUPERA los S/ 400; si no, 0% (no hay detracción)."""
     try:
         texto = str(total).replace("S/", "").replace("s/", "").strip()
@@ -3779,7 +3793,7 @@ class FacturasEmitidasTab:
                     ent_det.insert(0, "0")
             else:
                 lbl_tit_det.configure(text="Detracción (%):")
-                ent_det.insert(0, str(reg[8]) if reg[8] else CONFIG_REGIONAL.get("detraccion_porcentaje", "12"))
+                ent_det.insert(0, ("%g" % float(reg[8] or 0)))   # se muestra lo guardado (0 incluido)
 
             def guardar_cambios():
                 tipo = cmb_tipo.get()
@@ -3807,7 +3821,7 @@ class FacturasEmitidasTab:
 
                 if "Factura" in tipo: 
                     imp = redondear_centavos(sub * 0.18); tot_bruto = redondear_centavos(sub + imp)
-                    det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
+                    det_pct = porcentaje_detraccion_ventas(tot_bruto); det_monto = tot_bruto * (det_pct / 100.0)
                     det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
                     neto_nuevo = redondear_centavos(tot_bruto - det_monto)
                 elif "Recibo" in tipo: 
@@ -3815,7 +3829,7 @@ class FacturasEmitidasTab:
                     det_pct = 0.0; det_monto = 0.0
                     neto_nuevo = redondear_centavos(sub - imp)
                 else: 
-                    imp = 0.0; tot_bruto = redondear_centavos(sub); det_pct = ui_pct
+                    imp = 0.0; tot_bruto = redondear_centavos(sub); det_pct = porcentaje_detraccion_ventas(tot_bruto)
                     det_monto = tot_bruto * (det_pct / 100.0)
                     det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
                     neto_nuevo = redondear_centavos(tot_bruto - det_monto)
