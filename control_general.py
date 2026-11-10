@@ -3487,7 +3487,10 @@ class ControlGeneralEventos:
         ent_renta_a = ctk.CTkEntry(f_row2, width=60); ent_renta_a.pack(side="left", padx=5); ent_renta_a.insert(0, config_actual.get("renta_anual_porcentaje", "0"))
         ctk.CTkLabel(f_row2, text="Detracción (%):", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
         ent_detraccion_cfg = ctk.CTkEntry(f_row2, width=60); ent_detraccion_cfg.pack(side="left", padx=5); ent_detraccion_cfg.insert(0, config_actual.get("detraccion_porcentaje", "12"))
+        ctk.CTkLabel(f_row2, text="No aplica hasta (con IGV): S/", font=("Arial", 11, "bold")).pack(side="left", padx=(15, 5))
+        ent_det_umbral = ctk.CTkEntry(f_row2, width=90); ent_det_umbral.pack(side="left", padx=5); ent_det_umbral.insert(0, str(config_actual.get("detraccion_umbral", "400")))
         
+        ctk.CTkLabel(f_row2, text=("El porcentaje de detracción se aplica SOLO si el total con IGV SUPERA ese monto (si es igual o menor, no hay detracción)."), font=("Arial", 9), text_color="#7a7a7a", justify="left", wraplength=820).pack(anchor="w", padx=15)
         f_row3 = ctk.CTkFrame(f_empresa, fg_color="transparent")
         f_row3.pack(fill="x", padx=15, pady=10)
         ctk.CTkLabel(f_row3, text="Última Factura SUNAT:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
@@ -4233,20 +4236,6 @@ class ControlGeneralEventos:
         cmb_fecha.pack(side="left")
         cmb_fecha.set(config_actual.get("formato_fecha", "DD/MM/AAAA"))
 
-        # REGLA AUTOMATICA DEL SPOT (detraccion)
-        f_det = ctk.CTkFrame(f_region, fg_color="transparent")
-        f_det.pack(fill="x", padx=15, pady=5)
-        ctk.CTkLabel(f_det, text="Detracción: no aplica hasta (con IGV):",
-                     font=("Arial", 11, "bold"), width=280, anchor="w").pack(side="left")
-        ent_det_umbral = ctk.CTkEntry(f_det, width=110)
-        ent_det_umbral.pack(side="left")
-        ent_det_umbral.insert(0, str(config_actual.get("detraccion_umbral", "400")))
-        ctk.CTkLabel(f_region,
-                     text=("El porcentaje se aplica SOLO si el total con IGV SUPERA ese monto. "
-                           "Si la factura es igual o menor, no corresponde detraccion "
-                           "(ejemplo: 400 exactos no llevan; 400.01 si lleva)."),
-                     font=("Arial", 9), text_color="#7a7a7a", justify="left",
-                     wraplength=780).pack(anchor="w", padx=15, pady=(0, 6))
 
         ctk.CTkLabel(f_region, text="☁️ Sincronización en la Nube (Rclone - Google Drive)", font=("Arial", 12, "bold")).pack(anchor="w", padx=15, pady=(15, 5))
 
