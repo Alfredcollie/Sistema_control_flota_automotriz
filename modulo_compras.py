@@ -3001,6 +3001,16 @@ def _registrar_escaner(mensaje):
         pass
 
 
+
+def _documento_con_igv(tipo):
+    """¿El documento lleva IGV? Factura o BOLETA CON IGV (la boleta sin IGV no)."""
+    texto = str(tipo or "")
+    if "Factura" in texto:
+        return True
+    if "Boleta" in texto and "Sin" not in texto and "IGV" in texto:
+        return True
+    return False
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry, al_elegir=None):
         # 'al_elegir' es opcional: al elegir la fecha se avisa (si se pidió).
@@ -5134,7 +5144,7 @@ class FacturasRecibidasTab:
                     monto_total = float(datos["total"])
                 elif datos.get("subtotal"):
                     base_leida = float(datos["subtotal"])
-                    if "Factura" in self.combo_tipo.get():
+                    if _documento_con_igv(self.combo_tipo.get()):
                         monto_total = base_leida * (1.105 if "10.5%" in self.combo_tipo.get() else 1.18)
                     else:
                         monto_total = base_leida
@@ -5411,7 +5421,7 @@ class FacturasRecibidasTab:
                     tot_node = monetary.find('PayableAmount')
                     if tot_node is not None and tot_node.text:
                         val_tot = float(tot_node.text.strip())
-                        val_sub = val_tot / 1.18 if "Factura" in self.combo_tipo.get() else val_tot
+                        val_sub = val_tot / 1.18 if _documento_con_igv(self.combo_tipo.get()) else val_tot
                         self.ent_subtotal.delete(0, tk.END)
                         self.ent_subtotal.insert(0, f"{val_sub:.2f}")
 
@@ -5583,7 +5593,8 @@ class FacturasRecibidasTab:
         tipos_doc = [
             "Factura (18% IGV)", 
             "Factura (10.5% IGV) Restaurantes", 
-            "Boleta (Sin IGV)", 
+            "Boleta (Sin IGV)",
+        "Boleta (18% IGV)", 
             "Recibo por Honorarios (8% Retención)", 
             "Recibo por Honorarios (Sin Retención)"
         ]
@@ -6170,7 +6181,7 @@ class FacturasRecibidasTab:
             self.ent_detraccion.delete(0, tk.END)
             if "8%" in choice: self.ent_detraccion.insert(0, "8")
             else: self.ent_detraccion.insert(0, "0")
-        elif "Factura" in choice:
+        elif _documento_con_igv(choice):
             self.lbl_titulo_det.configure(text="Detracción (%):")
             self.al_seleccionar_proveedor()
         else:
@@ -6198,7 +6209,7 @@ class FacturasRecibidasTab:
             if res:
                 ruc_db, det_db = res
                 self.ent_detraccion.configure(state="normal")
-                if "Factura" in self.combo_tipo.get():
+                if _documento_con_igv(self.combo_tipo.get()):
                     self.ent_detraccion.delete(0, tk.END)
                     try:
                         valor_det = str(float(det_db)) if det_db not in (None, "") else "0"
@@ -6217,7 +6228,7 @@ class FacturasRecibidasTab:
                 if not self.bloquear_autocompletado_ruc:
                     self.ent_desc.delete(0, tk.END)
                 self._ruc_autocompletado = False
-                if "Factura" in self.combo_tipo.get():
+                if _documento_con_igv(self.combo_tipo.get()):
                     self.ent_detraccion.configure(state="normal")
                     self.ent_detraccion.delete(0, tk.END)
                     self.ent_detraccion.insert(0, "0")
@@ -6691,7 +6702,7 @@ class FacturasRecibidasTab:
             if hasattr(self, "ent_recargo"):
                 self.ent_recargo.delete(0, tk.END)
                 self.ent_recargo.insert(0, "0")
-            if hasattr(self, "ent_detraccion") and "Factura" in self.combo_tipo.get():
+            if hasattr(self, "ent_detraccion") and _documento_con_igv(self.combo_tipo.get()):
                 self.ent_detraccion.delete(0, tk.END)
                 self.ent_detraccion.insert(0, "0")
             # 🎫 Datos del carné de sanidad del documento anterior
@@ -6916,7 +6927,7 @@ class FacturasRecibidasTab:
     # 💰 MONTO BASE (SIN IGV)  /  MONTO CON IGV (TOTAL)
     # =========================================================================
     def _es_factura(self):
-        return "Factura" in self.combo_tipo.get()
+        return _documento_con_igv(self.combo_tipo.get())
 
     def _tasa_igv(self):
         """Tasa de IGV según el tipo de documento elegido."""
@@ -7010,7 +7021,7 @@ class FacturasRecibidasTab:
         except ValueError:
             return
 
-        if "Factura" in tipo:
+        if _documento_con_igv(tipo):
             txt_igv = "10.5%" if "10.5%" in tipo else "18%"
             det = total * (ui_pct / 100.0)
             neto = total - det
@@ -7149,7 +7160,7 @@ class FacturasRecibidasTab:
                     print("Aviso - verificación de documentos duplicados:", e_dup)
                 finally: liberar_conexion(conn_check)
 
-        if "Factura" in tipo: 
+        if _documento_con_igv(tipo): 
             imp = imp_calculado
             tot_bruto = total_calculado
             det_pct = ui_pct
@@ -8419,7 +8430,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
         estado_edit = {"modo": "BASE"}
 
         def _es_factura_edit():
-            return "Factura" in str(ent_tipo.get() or "")
+            return _documento_con_igv(str(ent_tipo.get()) or "")
 
         def _es_boleta_edit():
             return "Boleta" in str(ent_tipo.get() or "")
@@ -10972,7 +10983,7 @@ class CuentasPorPagarTab:
                         
                         tot_bruto += sub_val
 
-                        if tipo_doc and "Factura" in tipo_doc:
+                        if tipo_doc and _documento_con_igv(tipo_doc):
                             tot_igv += imp_val
                             tot_det += det_val
                             neto = tot_val - det_val

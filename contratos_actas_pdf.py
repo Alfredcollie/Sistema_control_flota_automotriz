@@ -238,18 +238,74 @@ def _historia(bloques, valores, estilos):
     return historia
 
 
+
+# =========================================================
+# 📄 HOJA MEMBRETADA (se aplica a TODAS las hojas generadas)
+# =========================================================
+MARGEN_INFERIOR_MEMBRETE = 5.6      # cm: deja libre el logo y la franja del membrete
+
+
+def _ruta_membrete():
+    """Busca el PDF de la hoja membretada junto al programa (o compilado)."""
+    candidatos = []
+    try:
+        candidatos.append(os.path.join(getattr(__import__("sys"), "_MEIPASS", ""),
+                                       "hoja_membretada.pdf"))
+    except Exception:
+        pass
+    carpeta = os.path.dirname(os.path.abspath(__file__))
+    candidatos.append(os.path.join(carpeta, "hoja_membretada.pdf"))
+    candidatos.append(os.path.join(carpeta, "recursos", "hoja_membretada.pdf"))
+    for ruta in candidatos:
+        if ruta and os.path.isfile(ruta):
+            return ruta
+    return ""
+
+
+def aplicar_membretado(ruta_pdf):
+    """Pone la hoja membretada en TODAS las páginas del PDF (queda de fondo)."""
+    membrete = _ruta_membrete()
+    if not membrete or not os.path.isfile(str(ruta_pdf)):
+        return False
+    try:
+        import fitz
+    except Exception as error:
+        print("[membrete] no se pudo cargar PyMuPDF:", error)
+        return False
+    try:
+        origen = fitz.open(str(ruta_pdf))
+        plantilla = fitz.open(membrete)
+        salida = fitz.open()
+        for pagina in origen:
+            hoja = salida.new_page(width=pagina.rect.width, height=pagina.rect.height)
+            hoja.show_pdf_page(hoja.rect, plantilla, 0)          # fondo: el membrete
+            hoja.show_pdf_page(hoja.rect, origen, pagina.number)  # encima: el documento
+        temporal = str(ruta_pdf) + ".tmp"
+        salida.save(temporal, garbage=3, deflate=True)
+        salida.close(); origen.close(); plantilla.close()
+        os.replace(temporal, str(ruta_pdf))
+        return True
+    except Exception as error:
+        print("[membrete] no se pudo aplicar:", error)
+        return False
+
+
 def _crear_pdf(ruta, historia, margenes):
     """Escribe el PDF con los márgenes indicados (en cm)."""
     izquierda, derecha, superior, inferior = margenes
     carpeta = os.path.dirname(ruta)
     if carpeta and not os.path.isdir(carpeta):
         os.makedirs(carpeta, exist_ok=True)
+    # 📄 si hay hoja membretada, el texto no baja hasta el logo ni la franja inferior
+    if _ruta_membrete():
+        inferior = max(inferior, MARGEN_INFERIOR_MEMBRETE)
     documento = SimpleDocTemplate(
         ruta, pagesize=A4,
         leftMargin=izquierda * cm, rightMargin=derecha * cm,
         topMargin=superior * cm, bottomMargin=inferior * cm,
         title=os.path.basename(ruta), author="Sistema de Control de Flota")
     documento.build(historia)
+    aplicar_membretado(ruta)          # 👈 el membrete va en TODAS las hojas
     return ruta
 
 
