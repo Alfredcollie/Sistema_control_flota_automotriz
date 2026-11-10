@@ -10,6 +10,7 @@ Regla de oro: al renovar SOLO se actualiza la fecha de vencimiento del chofer
 """
 import json
 import os
+import shutil
 import re
 import sys
 import threading
@@ -1459,6 +1460,12 @@ class ContratosActasApp:
                                              "Descripción", "Usuario"),
                                             (120, 100, 200, 80, 240, 100), alto=16)
         self.tabla_historicos.bind("<Double-1>", lambda _e: self._abrir_historico_seleccionado())
+        # 🖱️ Clic derecho (Windows) / clic secundario (Mac): editar o eliminar el documento
+        for secuencia in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+            try:
+                self.tabla_historicos.bind(secuencia, self._menu_historico)
+            except Exception:
+                pass
 
         botones = ctk.CTkFrame(cuerpo, fg_color="transparent")
         botones.pack(fill="x", pady=6)
@@ -1467,6 +1474,18 @@ class ContratosActasApp:
         self.lbl_total_historicos = ctk.CTkLabel(botones, text="", font=(FAMILIA, 10, "italic"),
                                                  text_color="#7f8c8d")
         self.lbl_total_historicos.pack(side="left", padx=12)
+        # 🖱️ Leyenda para el usuario: qué se puede hacer con el botón derecho
+        ctk.CTkLabel(botones,
+                     text=("🖱️ Clic derecho sobre un documento (en Mac: Ctrl + clic o doble "
+                           "dedo en el trackpad) para EDITAR, ABRIR o ELIMINAR."),
+                     font=(FAMILIA, 10, "bold"), text_color="#1f538d",
+                     justify="left").pack(side="right", padx=6)
+        ctk.CTkLabel(cuerpo,
+                     text=("Doble clic: abrir el PDF  ·  Clic derecho / Ctrl + clic: menú para "
+                           "editar o eliminar  ·  El PDF eliminado se guarda en la carpeta "
+                           "«Eliminados»."),
+                     font=(FAMILIA, 9), text_color="#7f8c8d", justify="left",
+                     wraplength=900).pack(anchor="w", pady=(0, 4))
 
         self._cargar_historicos()
 
@@ -1509,6 +1528,191 @@ class ContratosActasApp:
             self.lbl_total_historicos.configure(text=str(len(documentos)) + " documento(s)")
         except Exception:
             pass
+
+    # =========================================================
+    # 🖱️ Menú del clic derecho sobre un documento del histórico
+    #    (multiplataforma: Windows = clic derecho · Mac = clic secundario / Ctrl+clic)
+    # =========================================================
+    def _menu_historico(self, evento=None):
+        """Abre el menú contextual de la fila señalada."""
+        try:
+            if evento is not None:
+                fila = self.tabla_historicos.identify_row(evento.y)
+                if fila:
+                    self.tabla_historicos.selection_set(fila)
+        except Exception:
+            pass
+        seleccion = self.tabla_historicos.selection()
+        if not seleccion:
+            return "break"
+        menu = tk.Menu(self.parent_frame, tearoff=0)
+        menu.add_command(label="✏️ Editar documento", command=self._editar_historico)
+        menu.add_command(label="📄 Abrir PDF", command=self._abrir_historico_seleccionado)
+        menu.add_separator()
+        menu.add_command(label="🗑️ Eliminar documento", command=self._eliminar_historico)
+        try:
+            if evento is not None:
+                menu.tk_popup(evento.x_root, evento.y_root)
+            else:
+                menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+        return "break"
+
+    def _datos_historico(self, id_documento):
+        """Lee el documento del histórico desde la base."""
+        datos = None
+        conexion = conectar_db(silencioso=True)
+        if not conexion:
+            return None
+        try:
+            with conexion.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, COALESCE(tipo,''), COALESCE(trabajador,''), COALESCE(dni,''),
+                           COALESCE(descripcion,''), COALESCE(archivo,''), COALESCE(usuario,''),
+                           COALESCE(creado,'')
+                    FROM contratos_documentos WHERE id = %s
+                """, (id_documento,))
+                datos = cursor.fetchone()
+        except Exception as error:
+            print("[contratos] datos del histórico:", error)
+        finally:
+            liberar_conexion(conexion)
+        return datos
+
+    def _editar_historico(self):
+        """Permite corregir el tipo, DNI, trabajador y descripción del documento."""
+        seleccion = self.tabla_historicos.selection()
+        if not seleccion:
+            return
+        try:
+            id_documento = int(str(seleccion[0]))
+        except Exception:
+            return
+        datos = self._datos_historico(id_documento)
+        if not datos:
+            return messagebox.showwarning("Histórico", "No se encontró el documento.",
+                                          parent=self.parent_frame)
+        (_, tipo, trabajador, dni, descripcion, archivo, usuario, creado) = datos
+
+        ventana = ctk.CTkToplevel(self.parent_frame)
+        ventana.title("Editar documento del histórico")
+        ventana.geometry("520x430")
+        try:
+            ventana.transient(self.parent_frame)
+            ventana.grab_set()
+        except Exception:
+            pass
+        marco = ctk.CTkFrame(ventana, fg_color="transparent")
+        marco.pack(fill="both", expand=True, padx=16, pady=12)
+        ctk.CTkLabel(marco, text="✏️ Editar documento", font=(FAMILIA, 15, "bold"),
+                     text_color="#1f538d").pack(anchor="w", pady=(0, 8))
+
+        def campo(etiqueta, valor):
+            ctk.CTkLabel(marco, text=etiqueta, font=(FAMILIA, 11, "bold")).pack(anchor="w")
+            entrada = ctk.CTkEntry(marco)
+            entrada.pack(fill="x", pady=(0, 8))
+            entrada.insert(0, str(valor or ""))
+            return entrada
+
+        ent_tipo = campo("Tipo (Inicial / Renovación / Acta):", tipo)
+        ent_trabajador = campo("Trabajador:", trabajador)
+        ent_dni = campo("DNI:", dni)
+        ent_desc = campo("Descripción:", descripcion)
+        ctk.CTkLabel(marco, text="Registrado: %s   ·   Usuario: %s" % (creado, usuario),
+                     font=(FAMILIA, 9), text_color="#7a7a7a").pack(anchor="w", pady=(0, 8))
+
+        botones = ctk.CTkFrame(marco, fg_color="transparent")
+        botones.pack(fill="x", pady=(4, 0))
+
+        def guardar():
+            conexion = conectar_db(silencioso=True)
+            if not conexion:
+                return messagebox.showwarning("Histórico", "Sin conexión a la base de datos.",
+                                              parent=ventana)
+            try:
+                with conexion.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE contratos_documentos
+                        SET tipo = %s, trabajador = %s, dni = %s, descripcion = %s
+                        WHERE id = %s
+                    """, (ent_tipo.get().strip(), ent_trabajador.get().strip(),
+                          ent_dni.get().strip(), ent_desc.get().strip(), id_documento))
+                conexion.commit()
+            except Exception as error:
+                messagebox.showerror("Histórico", "No se pudo guardar:\n%s" % error,
+                                     parent=ventana)
+                return
+            finally:
+                liberar_conexion(conexion)
+            ventana.destroy()
+            self._cargar_historicos()
+            messagebox.showinfo("Histórico", "Documento actualizado correctamente.", parent=self.parent_frame)
+
+        ctk.CTkButton(botones, text="💾 Guardar", width=140, fg_color="#27ae60",
+                      hover_color="#1e8449", font=(FAMILIA, 12, "bold"),
+                      command=guardar).pack(side="left", padx=4)
+        ctk.CTkButton(botones, text="❌ Cancelar", width=130, fg_color="#7f8c8d",
+                      hover_color="#606b6b", font=(FAMILIA, 12, "bold"),
+                      command=ventana.destroy).pack(side="left", padx=4)
+
+    def _eliminar_historico(self):
+        """Borra el documento del histórico (guarda una copia del PDF antes)."""
+        seleccion = self.tabla_historicos.selection()
+        if not seleccion:
+            return
+        try:
+            id_documento = int(str(seleccion[0]))
+        except Exception:
+            return
+        datos = self._datos_historico(id_documento)
+        if not datos:
+            return
+        (_, tipo, trabajador, dni, descripcion, archivo, usuario, creado) = datos
+        if not messagebox.askyesno(
+                "Eliminar documento",
+                "¿Eliminar este documento del histórico?" + chr(10) + chr(10) +
+                "Tipo: %s" % tipo + chr(10) +
+                "Trabajador: %s (DNI %s)" % (trabajador, dni) + chr(10) +
+                "Descripción: %s" % descripcion + chr(10) +
+                "Registrado: %s" % creado + chr(10) + chr(10) +
+                "El PDF se moverá a una carpeta «Eliminados» (no se borra del todo).",
+                parent=self.parent_frame):
+            return
+        # 📁 copia de seguridad del archivo
+        aviso_pdf = ""
+        try:
+            if archivo and os.path.isfile(str(archivo)):
+                carpeta_eliminados = os.path.join(os.path.dirname(str(archivo)), "Eliminados")
+                os.makedirs(carpeta_eliminados, exist_ok=True)
+                destino = os.path.join(carpeta_eliminados, os.path.basename(str(archivo)))
+                if os.path.exists(destino):
+                    base, extension = os.path.splitext(destino)
+                    destino = base + "_" + datetime.now().strftime("%Y%m%d_%H%M%S") + extension
+                shutil.move(str(archivo), destino)
+                aviso_pdf = chr(10) + "PDF guardado en: " + destino
+        except Exception as error:
+            print("[contratos] no se pudo mover el PDF:", error)
+            aviso_pdf = chr(10) + "(No se pudo mover el PDF: %s)" % error
+        conexion = conectar_db(silencioso=True)
+        if not conexion:
+            return
+        try:
+            with conexion.cursor() as cursor:
+                cursor.execute("DELETE FROM contratos_documentos WHERE id = %s", (id_documento,))
+            conexion.commit()
+        except Exception as error:
+            messagebox.showerror("Histórico", "No se pudo eliminar:\n%s" % error, parent=self.parent_frame)
+            return
+        finally:
+            liberar_conexion(conexion)
+        self._historicos.pop(str(id_documento), None)
+        self._cargar_historicos()
+        messagebox.showinfo("Histórico", "Documento eliminado del histórico." + aviso_pdf,
+                            parent=self.parent_frame)
 
     def _abrir_historico_seleccionado(self):
         seleccion = self.tabla_historicos.selection()
