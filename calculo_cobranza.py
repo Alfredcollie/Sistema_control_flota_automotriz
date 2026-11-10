@@ -5382,6 +5382,13 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
         scr.pack(side="right", fill="y", pady=10, padx=(0, 10))
         self.tabla.bind("<Double-1>", lambda e: self.editar_registro())
 
+        # 🖱️ Al pasar el mouse por un registro se muestran las fechas de sus traslados
+        self._fechas_cache = {}
+        self._tip_fechas = None
+        self._tip_item = None
+        self.tabla.bind("<Motion>", self._mostrar_tip_fechas)
+        self.tabla.bind("<Leave>", lambda _e: self._ocultar_tip_fechas())
+
         f_btns = ctk.CTkFrame(self, fg_color="transparent")
         f_btns.pack(fill="x", padx=15, pady=10)
         btn_edit = ctk.CTkButton(f_btns, text="✏️ Editar", width=140, font=(familia_fuente, 12, "bold"),
@@ -5430,6 +5437,95 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
             messagebox.showerror("Error", f"No se pudieron cargar los registros:\n{e}", parent=self)
         finally:
             liberar_conexion(conn)
+
+    # =========================================================
+    # 🖱️ Fechas de los traslados al pasar el mouse por un registro
+    # =========================================================
+    def _fechas_de_traslados(self, id_registro):
+        """Devuelve [(fecha, categoria, cantidad), ...] de ese registro."""
+        if id_registro in self._fechas_cache:
+            return self._fechas_cache[id_registro]
+        detalle = []
+        conn = conectar_db(silencioso=True)
+        if conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT fecha, COALESCE(categoria, ''), COUNT(*)
+                        FROM cobranza_viajes_detalle
+                        WHERE id_cobranza = %s AND COALESCE(fecha, '') <> ''
+                        GROUP BY fecha, COALESCE(categoria, '')
+                        ORDER BY MIN(id)
+                    """, (id_registro,))
+                    detalle = [(str(f or "").strip(), str(c or "").strip(), int(n or 0))
+                               for f, c, n in cursor.fetchall()]
+            except Exception as error:
+                print("[cobranza] fechas de traslados:", error)
+            finally:
+                liberar_conexion(conn)
+        self._fechas_cache[id_registro] = detalle
+        return detalle
+
+    def _ocultar_tip_fechas(self):
+        """Cierra el cuadro de fechas."""
+        self._tip_item = None
+        try:
+            if self._tip_fechas is not None:
+                self._tip_fechas.destroy()
+        except Exception:
+            pass
+        self._tip_fechas = None
+
+    def _mostrar_tip_fechas(self, evento):
+        """Muestra un cuadro con las fechas de los traslados del registro señalado."""
+        try:
+            item = self.tabla.identify_row(evento.y)
+        except Exception:
+            item = ""
+        if not item:
+            self._ocultar_tip_fechas()
+            return
+        if item == self._tip_item and self._tip_fechas is not None:
+            try:
+                self._tip_fechas.geometry("+%d+%d" % (evento.x_root + 18, evento.y_root + 14))
+                return
+            except Exception:
+                pass
+        self._ocultar_tip_fechas()
+        try:
+            valores = self.tabla.item(item, "values")
+            id_registro = int(str(valores[0]).strip())
+        except Exception:
+            return
+        detalle = self._fechas_de_traslados(id_registro)
+        if not detalle:
+            return
+        lineas = ["📅 Traslados del registro N° %s" % id_registro]
+        total = 0
+        for fecha, categoria, cantidad in detalle[:16]:
+            total += cantidad
+            etiqueta = "%s  (%d)" % (fecha, cantidad)
+            if categoria and categoria.upper() not in ("NORMAL", "NORMALES"):
+                etiqueta += "  · " + categoria
+            lineas.append(etiqueta)
+        if len(detalle) > 16:
+            lineas.append("… y %d fecha(s) más" % (len(detalle) - 16))
+        lineas.append("— %d traslado(s) en %d fecha(s)" % (total, len(detalle)))
+        self._tip_item = item
+        tip = tk.Toplevel(self)
+        tip.overrideredirect(True)
+        try:
+            tip.attributes("-topmost", True)
+        except Exception:
+            pass
+        ctk.CTkLabel(tip, text="\n".join(lineas), justify="left", anchor="w",
+                     font=("Arial", 10), fg_color="#1f2937", text_color="#ffffff",
+                     corner_radius=8).pack(ipadx=10, ipady=6)
+        try:
+            tip.geometry("+%d+%d" % (evento.x_root + 18, evento.y_root + 14))
+        except Exception:
+            pass
+        self._tip_fechas = tip
 
     def _id_seleccionado(self):
         sel = self.tabla.selection()
