@@ -2670,7 +2670,7 @@ class CalculoCobranzaApp:
                     f" − deducciones {formatear_moneda(uc['monto_deducciones'])}{texto_extra}"
                     f" = {formatear_moneda(uc['subtotal'])}")
             self.pintar_unidades()  # refresca la tabla con los subtotales
-        lineas.append(f"SUBTOTAL (base): {formatear_moneda(r['monto_base'])}")
+        lineas.append(f"{formatear_moneda(r['monto_base'])}")
         if r.get("monto_extras"):
             lineas.append(f"HORAS EXTRAS: + {formatear_moneda(r['monto_extras'])}"
                           f"  ({r.get('horas_extras', 0):g} h)")
@@ -3381,7 +3381,7 @@ class CalculoCobranzaApp:
             partes.append("TOTAL %g" % total_viajes)
             c.drawString(42, y - BASE_TXT, "VIAJES: " + "  ·  ".join(partes))
             y -= ALTO_FILA
-            c.drawString(42, y - BASE_TXT, "SUBTOTAL (BASE)")
+            c.drawString(42, y - BASE_TXT, "")
             c.drawRightString(40 + ancho_tabla - 2, y - BASE_TXT,
                               f"{simbolo} {formatear_numero(round(total_tabla, 2))}")
             y -= ALTO_FILA
@@ -3454,7 +3454,7 @@ class CalculoCobranzaApp:
             c.setLineWidth(1)
             c.line(40, y + 1, 40 + ancho_tabla, y + 1)
             c.setFont("Helvetica-Bold", 10)
-            c.drawString(xs_u[0] + 4, y - BASE_TXT, "SUBTOTAL (BASE)")
+            c.drawString(xs_u[0] + 4, y - BASE_TXT, "")
             c.drawRightString(40 + ancho_tabla, y - BASE_TXT,
                               f"{simbolo} {formatear_numero(round(float(m_base or 0), 2))}")
             y -= ALTO_FILA + SALTO_SECCION

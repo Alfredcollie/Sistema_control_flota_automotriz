@@ -773,6 +773,27 @@ def normalizar_fecha(s):
     return s
 
 
+
+def _dias_entre_fechas(fecha_a, fecha_b):
+    """Diferencia en días entre dos fechas de texto (dd/mm/aaaa o aaaa-mm-dd)."""
+    def partes(valor):
+        texto = str(valor or "").strip()
+        try:
+            if "-" in texto and len(texto.split("-")[0]) == 4:      # AAAA-MM-DD
+                a, m, d = [int(x) for x in texto.split("-")[:3]]
+            else:                                                    # DD/MM/AAAA
+                d, m, a = [int(x) for x in texto.replace("-", "/").split("/")[:3]]
+                if a < 100:
+                    a += 2000
+            return datetime(a, m, d).date()
+        except Exception:
+            return None
+    fa, fb = partes(fecha_a), partes(fecha_b)
+    if not fa or not fb:
+        return 999
+    return abs((fa - fb).days)
+
+
 def fecha_para_mostrar(valor):
     """Devuelve la fecha como DD/MM/AAAA para mostrarla (aunque venga en ISO)."""
     f = normalizar_fecha(valor)
@@ -983,6 +1004,14 @@ def parsear_movimientos(texto):
         fecha_raw = fechas[0][0]
         partes = fecha_raw.split("/")
         if len(partes) == 2 and anio:
+            fecha_raw = "%s/%s/%d" % (partes[0], partes[1], anio)
+        elif len(partes) == 3 and anio and str(partes[2]) != str(anio):
+            # 🛡️ Punto 4: el estado de cuenta trae un año equivocado -> se ajusta al del período
+            try:
+                print("[Conciliación] año corregido: %s -> %s/%s/%d"
+                      % (fecha_raw, partes[0], partes[1], anio))
+            except Exception:
+                pass
             fecha_raw = "%s/%s/%d" % (partes[0], partes[1], anio)
         seleccion = _seleccionar_monto(resto, montos)
         if seleccion is None:
@@ -2422,7 +2451,23 @@ class ModuloBancoApp:
         except Exception as exc:
             messagebox.showerror("Transferencia", str(exc), parent=self.parent_frame)
 
+    def _avisar_ya_conciliados(self):
+        """Avisa cuántos movimientos ya estaban conciliados (y reinicia el contador)."""
+        pendientes = int(getattr(self, "_ya_conciliados", 0) or 0)
+        if pendientes <= 0:
+            return
+        self._ya_conciliados = 0
+        try:
+            messagebox.showinfo(
+                "Conciliación",
+                "%d movimiento(s) ya estaban conciliados y no se volvieron a registrar." % pendientes,
+                parent=self.parent_frame)
+        except Exception as error:
+            print("[Conciliación] aviso de ya conciliados:", error)
+
     def cargar_movimientos_sistema(self, banco, mes=None):
+
+        self._avisar_ya_conciliados()
         """Compatibilidad: movimientos de un banco (consulta la base de datos)."""
         return self._movimientos_de_banco(banco, mes=mes)
 
@@ -3378,6 +3423,8 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns, text="🔄 Cargar Movimientos del Sistema", font=("Arial", 12, "bold"),
                       fg_color="#1f538d", hover_color="#163b65",
                       command=self.generar_reporte).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns, text="🧠 Conciliar inteligente", width=190, fg_color="#6c3483", hover_color="#4a235a",
+                      command=self.abrir_conciliacion_inteligente).pack(side="left", padx=5)
         ctk.CTkButton(f_btns, text="✅ Conciliar Seleccionados", font=("Arial", 12, "bold"),
                       fg_color="#27ae60", hover_color="#1e8449",
                       command=self.conciliar_seleccionados).pack(side="left", padx=4)
@@ -3516,6 +3563,538 @@ class ModuloBancoApp:
             self.cmb_banco.set(et)
         self.tabview.set(" 🧾 Conciliación Bancaria ")
 
+    # =========================================================
+    # 🧠 CONCILIACIÓN INTELIGENTE (pantalla de revisión)
+    #    Motor: conciliacion_inteligente.py
+    #    Nada se concilia solo: aquí se APRUEBA o RECHAZA.
+    # =========================================================
+    def abrir_conciliacion_inteligente(self):
+        """Analiza el estado de cuenta cargado y muestra las propuestas."""
+        try:
+            import conciliacion_inteligente as ci
+        except Exception as error:
+            messagebox.showerror("Conciliación inteligente",
+                                 "No se encontró el motor conciliacion_inteligente.py\n%s"
+                                 % error, parent=self.parent_frame)
+            return
+        banco = self.banco_seleccionado()
+        if not banco:
+            messagebox.showinfo("Conciliación inteligente",
+                                "Primero seleccione el banco a conciliar.",
+                                parent=self.parent_frame)
+            return
+        movs = getattr(self, "movimientos_pdf", None) or []
+        if not movs:
+            try:
+                movs = self._cargar_movimientos_pdf(banco) or []
+            except Exception:
+                movs = []
+        if not movs:
+            messagebox.showinfo("Conciliación inteligente",
+                                "Primero suba el Estado de Cuenta (PDF).",
+                                parent=self.parent_frame)
+            return
+        ventana = ctk.CTkToplevel(self.parent_frame)
+        ventana.title("🧠 Conciliación inteligente · revisar propuestas")
+        ventana.geometry("1180x620")
+        try:
+            ventana.transient(self.parent_frame)
+            ventana.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        barra = ctk.CTkFrame(ventana)
+        barra.pack(fill="x", padx=10, pady=8)
+        ctk.CTkLabel(barra, text="Movimiento del banco", font=("Arial", 12, "bold")).pack(side="left", padx=6)
+        ctk.CTkLabel(barra, text="   ·   ").pack(side="left")
+        ctk.CTkLabel(barra, text="Días de desfase:", font=("Arial", 11)).pack(side="left", padx=(16, 4))
+        ent_dias = ctk.CTkEntry(barra, width=60)
+        # 5 días por defecto; se recuerda el último valor usado en esta sesión
+        try:
+            dias_guardados = int(getattr(self, "_dias_desfase", 5) or 5)
+        except Exception:
+            dias_guardados = 5
+        ent_dias.insert(0, str(dias_guardados))
+        ent_dias.pack(side="left")
+        ctk.CTkLabel(barra, text="(días después de la fecha contable)",
+                     font=("Arial", 10), text_color="#7f8c8d").pack(side="left", padx=4)
+
+        marco = ctk.CTkFrame(ventana)
+        marco.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        columnas = ("fecha_banco", "desc_banco", "importe", "fecha_cont", "desc_cont",
+                    "dias", "estado", "confianza")
+        tabla = ttk.Treeview(marco, columns=columnas, show="headings", height=18)
+        titulos = {"fecha_banco": ("Fecha banco", 100), "desc_banco": ("Descripción banco", 260),
+                   "importe": ("Importe", 90), "fecha_cont": ("Fecha contable", 100),
+                   "desc_cont": ("Descripción contable", 260), "dias": ("Días", 50),
+                   "estado": ("Estado", 190), "confianza": ("Confianza", 80)}
+        for col in columnas:
+            texto, ancho = titulos[col]
+            tabla.heading(col, text=texto)
+            tabla.column(col, width=ancho, anchor="center" if col in ("dias", "confianza", "importe") else "w")
+        desplaz = ttk.Scrollbar(marco, orient="vertical", command=tabla.yview)
+        tabla.configure(yscrollcommand=desplaz.set)
+        tabla.pack(side="left", fill="both", expand=True)
+        desplaz.pack(side="right", fill="y")
+
+        estado_ventana = {"propuestas": []}
+
+        def _cargar_propuestas():
+            for fila in tabla.get_children():
+                tabla.delete(fila)
+            dias = 5
+            try:
+                dias = int(str(ent_dias.get()).strip() or 5)
+            except Exception:
+                dias = 5
+            self._dias_desfase = dias
+            movimientos = [{"id": m.get("id") or i + 1, "banco": banco.get("banco", ""),
+                            "cuenta": banco.get("cuenta", ""),
+                            "fecha": m.get("fecha"), "descripcion": m.get("descripcion"),
+                            "monto": m.get("monto"), "pagina": m.get("pagina")}
+                           for i, m in enumerate(movs)]
+            asientos = self._asientos_para_conciliar(banco)
+            propuestas = ci.proponer(movimientos, asientos, ventana_dias=dias)
+            estado_ventana["propuestas"] = propuestas
+            if not propuestas:
+                messagebox.showinfo(
+                    "Conciliación inteligente",
+                    "No hay propuestas para este banco.\n\n"
+                    "• Movimientos del estado de cuenta: %d\n"
+                    "• Asientos pendientes de conciliar: %d\n\n"
+                    "%s" % (len(movimientos), len(asientos),
+                            "Todos los asientos de este banco ya figuran como CONCILIADOS."
+                            if asientos == [] else
+                            "Los asientos pendientes no tienen monto/fecha que coincidan "
+                            "dentro de los %d días." % dias),
+                    parent=ventana)
+            for indice, p in enumerate(propuestas):
+                tabla.insert("", "end", iid=str(indice + 1), values=(
+                    str(p["fecha_banco"])[:10], str(p["descripcion_banco"])[:60],
+                    "%9.2f" % p["importe_banco"], str(p["fecha_contable"])[:10],
+                    str(p["descripcion_contable"])[:60], p["dias_desfase"],
+                    p["estado"], "%d%%" % p["confianza"]))
+            self._resumen_revision = ci.resumen(propuestas, movimientos, asientos)
+
+        def _aprobar():
+            seleccion = tabla.selection()
+            if not seleccion:
+                return
+            propuesta = estado_ventana["propuestas"][int(seleccion[0]) - 1]
+            if self._aplicar_conciliacion_inteligente(banco, propuesta, "APROBADO"):
+                messagebox.showinfo(
+                    "Conciliación aprobada",
+                    "✅ Conciliado y registrado en la auditoría:\n\n"
+                    "%s\nS/ %.2f\n\nLa fila se quita de la lista." % (
+                        str(propuesta["descripcion_contable"])[:50],
+                        float(propuesta["importe_banco"] or 0)),
+                    parent=ventana)
+                _cargar_propuestas()
+
+        def _rechazar():
+            seleccion = tabla.selection()
+            if not seleccion:
+                return
+            propuesta = estado_ventana["propuestas"][int(seleccion[0]) - 1]
+            if self._aplicar_conciliacion_inteligente(banco, propuesta, "RECHAZADO"):
+                _cargar_propuestas()
+
+        pie = ctk.CTkFrame(ventana)
+        pie.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(pie, text="✅ Aprobar", width=140, fg_color="#1e8449",
+                      hover_color="#145a32", command=_aprobar).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="✖ Rechazar", width=140, fg_color="#922b21",
+                      hover_color="#641e16", command=_rechazar).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="🔄 Recalcular", width=140, fg_color="#1f538d",
+                      hover_color="#163b65", command=_cargar_propuestas).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="📊 Reporte", width=130, fg_color="#b9770e",
+                      hover_color="#7e5109",
+                      command=lambda: self._mostrar_reporte_conciliacion(
+                          estado_ventana["propuestas"], movs,
+                          self._asientos_para_conciliar(banco),
+                          int(str(ent_dias.get()).strip() or 5))).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="📉 Saldos", width=120, fg_color="#1f538d",
+                      hover_color="#163b65",
+                      command=lambda: self._mostrar_validacion_saldos(
+                          banco, estado_ventana["propuestas"])).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="🕘 Historial", width=130, fg_color="#7d6608",
+                      hover_color="#5b4a06",
+                      command=lambda: self._historial_conciliaciones(banco)).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="Cerrar", width=100, fg_color="#7f8c8d",
+                      hover_color="#5d6d6e", command=ventana.destroy).pack(side="right", padx=6)
+        _cargar_propuestas()
+
+    def _mostrar_reporte_conciliacion(self, propuestas, movimientos, asientos, ventana):
+        """📊 Reporte A–I de la conciliación (con exportación a Excel)."""
+        try:
+            import conciliacion_inteligente as ci
+        except Exception as error:
+            messagebox.showerror("Reporte", str(error), parent=self.parent_frame)
+            return
+        grupos = ci.reporte(propuestas, movimientos, asientos, ventana_dias=ventana)
+        ventana_rep = ctk.CTkToplevel(self.parent_frame)
+        ventana_rep.title("📊 Reporte de conciliación")
+        ventana_rep.geometry("900x560")
+        try:
+            ventana_rep.transient(self.parent_frame)
+            ventana_rep.attributes("-topmost", True)
+        except Exception:
+            pass
+        marco = ctk.CTkFrame(ventana_rep)
+        marco.pack(fill="both", expand=True, padx=10, pady=10)
+        total = sum(len(v) for v in grupos.values())
+        ctk.CTkLabel(marco, text="Reporte de conciliación bancaria",
+                     font=("Arial", 16, "bold")).pack(anchor="w", padx=8, pady=(8, 4))
+        for clave in sorted(grupos):
+            ctk.CTkLabel(marco, text="%s · %-46s %d" % (clave, ci.CATEGORIAS[clave], len(grupos[clave])),
+                         font=("Arial", 12), anchor="w").pack(anchor="w", padx=16, pady=1)
+        ctk.CTkLabel(marco, text="\nTotal de partidas analizadas: %d" % total,
+                     font=("Arial", 12, "bold")).pack(anchor="w", padx=16, pady=(8, 0))
+
+        def _exportar():
+            try:
+                import openpyxl
+                from openpyxl.styles import Font
+            except Exception as error:
+                messagebox.showerror("Reporte", "Falta openpyxl: %s" % error, parent=ventana_rep)
+                return
+            ruta = seleccionar_archivo_guardar(titulo="Guardar reporte de conciliación",
+                                               nombre="Reporte conciliacion.xlsx")
+            if not ruta:
+                return
+            libro = openpyxl.Workbook()
+            hoja = libro.active
+            hoja.title = "Reporte"
+            hoja["A1"] = "REPORTE DE CONCILIACIÓN BANCARIA"
+            hoja["A1"].font = Font(bold=True, size=13)
+            fila = 3
+            for clave in sorted(grupos):
+                hoja.cell(row=fila, column=1, value="%s · %s" % (clave, ci.CATEGORIAS[clave])).font = Font(bold=True)
+                fila += 1
+                for item in grupos[clave]:
+                    if "descripcion_banco" in item:
+                        hoja.cell(row=fila, column=1, value=str(item.get("fecha_banco")))
+                        hoja.cell(row=fila, column=2, value=item.get("descripcion_banco"))
+                        hoja.cell(row=fila, column=3, value=item.get("importe_banco"))
+                        hoja.cell(row=fila, column=4, value=str(item.get("fecha_contable")))
+                        hoja.cell(row=fila, column=5, value=item.get("descripcion_contable"))
+                        hoja.cell(row=fila, column=6, value=item.get("estado"))
+                        hoja.cell(row=fila, column=7, value=item.get("confianza"))
+                    else:
+                        hoja.cell(row=fila, column=1, value=str(item.get("fecha")))
+                        hoja.cell(row=fila, column=2, value=str(item.get("descripcion")))
+                        hoja.cell(row=fila, column=3, value=item.get("monto"))
+                    fila += 1
+                fila += 1
+            libro.save(ruta)
+            messagebox.showinfo("Reporte", "Reporte guardado en:\n%s" % ruta, parent=ventana_rep)
+
+        pie = ctk.CTkFrame(ventana_rep)
+        pie.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(pie, text="📥 Exportar a Excel", width=170, fg_color="#1e8449",
+                      hover_color="#145a32", command=_exportar).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="Cerrar", width=100, fg_color="#7f8c8d",
+                      hover_color="#5d6d6e", command=ventana_rep.destroy).pack(side="right", padx=6)
+
+    def _mostrar_validacion_saldos(self, banco, propuestas):
+        """📉 Valida los saldos del banco contra el sistema y explica la diferencia."""
+        try:
+            import conciliacion_inteligente as ci
+        except Exception as error:
+            messagebox.showerror("Saldos", str(error), parent=self.parent_frame)
+            return
+        saldos = []
+        conn = conectar_db(silencioso=True)
+        if conn:
+            try:
+                with conn.cursor() as c:
+                    c.execute("""SELECT saldo FROM conciliacion_movimientos_pdf
+                                 WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                   AND saldo IS NOT NULL ORDER BY id""",
+                              (banco.get("banco", ""),))
+                    saldos = [float(f[0]) for f in c.fetchall() if f[0] is not None]
+            except Exception as error:
+                print("[Conciliación] saldos:", error)
+            finally:
+                liberar_conexion(conn)
+        inicial_banco = saldos[0] if saldos else 0.0
+        final_banco = saldos[-1] if saldos else 0.0
+        asientos = self._asientos_para_conciliar(banco)
+        try:
+            neto_sistema = round(sum(float(a.get("monto") or 0) for a in asientos), 2)
+        except Exception:
+            neto_sistema = 0.0
+        resultado = ci.validar_saldos(inicial_banco, final_banco, 0, neto_sistema, propuestas)
+
+        ventana_s = ctk.CTkToplevel(self.parent_frame)
+        ventana_s.title("📉 Validación de saldos · %s" % banco.get("banco", ""))
+        ventana_s.geometry("620x420")
+        try:
+            ventana_s.transient(self.parent_frame)
+            ventana_s.attributes("-topmost", True)
+        except Exception:
+            pass
+        marco = ctk.CTkFrame(ventana_s)
+        marco.pack(fill="both", expand=True, padx=12, pady=12)
+        ctk.CTkLabel(marco, text="Validación de saldos", font=("Arial", 16, "bold")).pack(anchor="w", pady=(6, 10))
+        filas = [("Saldo inicial del banco", resultado["saldo_inicial_banco"]),
+                 ("Saldo final del banco", resultado["saldo_final_banco"]),
+                 ("Importe conciliado", resultado["importe_conciliado"]),
+                 ("Neto del sistema (asientos)", resultado["saldo_final_sistema"]),
+                 ("Diferencia banco − sistema", resultado["diferencia_final"])]
+        for etiqueta, valor in filas:
+            fila = ctk.CTkFrame(marco, fg_color="transparent")
+            fila.pack(fill="x", padx=10, pady=2)
+            ctk.CTkLabel(fila, text=etiqueta, font=("Arial", 12), width=280,
+                         anchor="w").pack(side="left")
+            ctk.CTkLabel(fila, text="S/ %s" % formatear_moneda(valor),
+                         font=("Arial", 12, "bold"), anchor="e").pack(side="right")
+        explicacion = ("Los saldos coinciden." if abs(resultado["diferencia_final"]) < 0.01 else
+                       "La diferencia corresponde a partidas en tránsito: movimientos del banco "
+                       "sin asiento contable y/o asientos sin movimiento bancario (ver Reporte).")
+        ctk.CTkLabel(marco, text=explicacion, font=("Arial", 11), wraplength=560,
+                     justify="left", text_color="#7f8c8d").pack(anchor="w", padx=12, pady=(12, 0))
+        ctk.CTkButton(marco, text="Cerrar", width=100, fg_color="#7f8c8d",
+                      hover_color="#5d6d6e", command=ventana_s.destroy).pack(pady=14)
+
+    def _historial_conciliaciones(self, banco):
+        """🕘 Historial de decisiones con opción de REVERTIR."""
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            messagebox.showerror("Historial", "Sin conexión a la base.", parent=self.parent_frame)
+            return
+        filas = []
+        try:
+            with conn.cursor() as c:
+                c.execute("""SELECT id, fecha_banco, descripcion_banco, importe_banco,
+                                    fecha_contable, descripcion_contable, estado, confianza,
+                                    creado, id_asiento
+                             FROM conciliacion_auditoria
+                             WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                             ORDER BY id DESC LIMIT 300""", (banco.get("banco", ""),))
+                filas = c.fetchall()
+        except Exception as error:
+            print("[Conciliación] historial:", error)
+        finally:
+            liberar_conexion(conn)
+
+        ventana_h = ctk.CTkToplevel(self.parent_frame)
+        ventana_h.title("🕘 Historial de conciliaciones · %s" % banco.get("banco", ""))
+        ventana_h.geometry("1000x520")
+        try:
+            ventana_h.transient(self.parent_frame)
+            ventana_h.attributes("-topmost", True)
+        except Exception:
+            pass
+        marco = ctk.CTkFrame(ventana_h)
+        marco.pack(fill="both", expand=True, padx=10, pady=10)
+        columnas = ("fecha", "desc_banco", "importe", "estado", "confianza", "creado")
+        tabla = ttk.Treeview(marco, columns=columnas, show="headings", height=16)
+        for col, titulo, ancho in (("fecha", "Fecha banco", 100), ("desc_banco", "Descripción banco", 300),
+                                   ("importe", "Importe", 90), ("estado", "Estado", 110),
+                                   ("confianza", "Conf.", 60), ("creado", "Registrado", 130)):
+            tabla.heading(col, text=titulo)
+            tabla.column(col, width=ancho)
+        tabla.pack(fill="both", expand=True, side="left")
+        datos = {}
+        for f in filas:
+            iid = str(f[0])
+            datos[iid] = f
+            tabla.insert("", "end", iid=iid, values=(str(f[1])[:10], str(f[2])[:50],
+                                                     "%.2f" % float(f[3] or 0), f[6],
+                                                     "%d%%" % float(f[7] or 0), str(f[8])[:16]))
+
+        def _revertir():
+            seleccion = tabla.selection()
+            if not seleccion:
+                messagebox.showinfo("Historial", "Seleccione una conciliación.", parent=ventana_h)
+                return
+            fila = datos[seleccion[0]]
+            if fila[6] != "APROBADO":
+                messagebox.showinfo("Historial", "Solo se puede revertir una conciliación APROBADA.",
+                                    parent=ventana_h)
+                return
+            if not messagebox.askyesno("Revertir",
+                                       "¿Revertir esta conciliación?\n\n%s\nS/ %.2f"
+                                       % (str(fila[4])[:40], float(fila[3] or 0)),
+                                       parent=ventana_h):
+                return
+            self._revertir_conciliacion(int(seleccion[0]), fila[9], fila[1])
+            ventana_h.destroy()
+            self._historial_conciliaciones(banco)
+
+        pie = ctk.CTkFrame(ventana_h)
+        pie.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(pie, text="↩ Revertir la seleccionada", width=200, fg_color="#922b21",
+                      hover_color="#641e16", command=_revertir).pack(side="left", padx=6)
+        ctk.CTkButton(pie, text="Cerrar", width=100, fg_color="#7f8c8d",
+                      hover_color="#5d6d6e", command=ventana_h.destroy).pack(side="right", padx=6)
+
+    def _revertir_conciliacion(self, id_auditoria, id_asiento, fecha_banco):
+        """Revierte una conciliación: deja el asiento como pendiente y audita."""
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return False
+        try:
+            with conn.cursor() as c:
+                c.execute("""UPDATE conciliacion_auditoria
+                             SET estado='REVERTIDO', activo=FALSE,
+                                 modificado=%s
+                             WHERE id=%s""",
+                          (datetime.now().strftime("%Y-%m-%d %H:%M"), id_auditoria))
+                if id_asiento:
+                    c.execute("""UPDATE conciliacion_bancaria
+                                 SET estado='pendiente', fecha_conciliacion=NULL
+                                 WHERE id=%s""", (id_asiento,))
+                c.execute("""INSERT INTO conciliacion_auditoria
+                    (id_asiento, fecha_banco, estado, confianza, reglas, origen_decision,
+                     creado, activo)
+                    VALUES (%s,%s,'REVERTIDO',0,%s,'manual',%s,TRUE)""",
+                          (id_asiento, fecha_banco,
+                           "reversión de la conciliación %s" % id_auditoria,
+                           datetime.now().strftime("%Y-%m-%d %H:%M")))
+            conn.commit()
+            return True
+        except Exception as error:
+            print("[Conciliación] no se pudo revertir:", error)
+            messagebox.showerror("Revertir", "No se pudo revertir:\n%s" % error,
+                                 parent=self.parent_frame)
+            return False
+        finally:
+            liberar_conexion(conn)
+
+    def _asientos_para_conciliar(self, banco):
+        """Asientos para el motor: pagos, cobros y facturas del App_grifo.
+
+        Fuentes (sin tocar Compras ni Ventas):
+          · pagos_comprobantes  → pagos a proveedores (egresos)
+          · pagos_clientes      → cobros de clientes (ingresos)
+          · facturas_recibidas con categoría «Combustible y Peajes» (App_grifo),
+            que ya están 100 % canceladas y se cobran en Interbank
+        """
+        asientos = []
+        nombre_banco = str(banco.get("banco") or "")
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return asientos
+        try:
+            with conn.cursor() as c:
+                # 1) asientos propios de la conciliación (los del módulo Banco)
+                try:
+                    c.execute("""SELECT id, fecha, descripcion, monto
+                                 FROM conciliacion_bancaria
+                                 WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                 ORDER BY fecha""", (nombre_banco,))
+                    for f in c.fetchall():
+                        asientos.append({"id": f[0], "id_asiento": f[0], "tabla": "conciliacion_bancaria",
+                                         "fecha": f[1], "descripcion": f[2], "monto": f[3],
+                                         "banco": nombre_banco, "documento": ""})
+                except Exception as error:
+                    print("[Conciliación] asientos del banco:", error)
+                    conn.rollback()
+                # 2) pagos a proveedores
+                try:
+                    c.execute("""SELECT p.id, p.fecha_pago, p.monto_pagado, p.archivo_ruta,
+                                        COALESCE(p.proveedor_nombre,''), p.cuenta_origen,
+                                        COALESCE(f.numero_documento,'')
+                                 FROM pagos_comprobantes p
+                                 LEFT JOIN facturas_recibidas f ON f.id = p.id_factura
+                                 WHERE COALESCE(p.monto_pagado,0) > 0""")
+                    for f in c.fetchall():
+                        cuenta = str(f[5] or "")
+                        if cuenta and nombre_banco and nombre_banco.upper() not in cuenta.upper():
+                            continue
+                        asientos.append({"id": "pc:%s" % f[0], "id_asiento": None,
+                                         "tabla": "pagos_comprobantes",
+                                         "fecha": f[1],
+                                         "descripcion": ("%s %s" % (f[4], f[6])).strip(),
+                                         "monto": -abs(float(f[2] or 0)), "banco": nombre_banco,
+                                         "documento": f[3] or ""})
+                except Exception as error:
+                    print("[Conciliación] pagos:", error)
+                    conn.rollback()
+                # 3) cobros de clientes
+                try:
+                    c.execute("""SELECT p.id, p.fecha_pago, p.monto_pagado, p.archivo_ruta,
+                                        COALESCE(p.cliente_nombre,''), p.cuenta_destino
+                                 FROM pagos_clientes p WHERE COALESCE(p.monto_pagado,0) > 0""")
+                    for f in c.fetchall():
+                        cuenta = str(f[5] or "")
+                        if cuenta and nombre_banco and nombre_banco.upper() not in cuenta.upper():
+                            continue
+                        asientos.append({"id": "pc2:%s" % f[0], "id_asiento": None,
+                                         "tabla": "pagos_clientes",
+                                         "fecha": f[1], "descripcion": f[4],
+                                         "monto": abs(float(f[2] or 0)), "banco": nombre_banco,
+                                         "documento": f[3] or ""})
+                except Exception as error:
+                    print("[Conciliación] cobros:", error)
+                    conn.rollback()
+                # 4) facturas del App_grifo (100 % canceladas, se cobran en Interbank)
+                if "INTERBANK" in nombre_banco.upper():
+                    try:
+                        c.execute("""SELECT id, fecha, proveedor, total, archivo_ruta,
+                                            COALESCE(numero_documento,'')
+                                     FROM facturas_recibidas
+                                     WHERE categoria = 'Combustible y Peajes'
+                                       AND COALESCE(total,0) > 0""")
+                        for f in c.fetchall():
+                            asientos.append({"id": "fr:%s" % f[0], "id_asiento": None,
+                                             "tabla": "facturas_recibidas",
+                                             "fecha": f[1],
+                                             "descripcion": ("%s %s" % (f[2] or "", f[5])).strip(),
+                                             "monto": -abs(float(f[3] or 0)),
+                                             "banco": nombre_banco, "documento": f[4] or ""})
+                    except Exception as error:
+                        print("[Conciliación] facturas App_grifo:", error)
+                        conn.rollback()
+        except Exception as error:
+            print("[Conciliación] asientos:", error)
+        finally:
+            liberar_conexion(conn)
+        return asientos
+
+    def _aplicar_conciliacion_inteligente(self, banco, propuesta, decision):
+        """Marca el asiento como conciliado (solo si se APRUEBA) y audita."""
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            messagebox.showerror("Conciliación", "Sin conexión a la base de datos.",
+                                 parent=self.parent_frame)
+            return False
+        try:
+            with conn.cursor() as c:
+                if decision == "APROBADO" and propuesta.get("id_asiento"):
+                    c.execute("""UPDATE conciliacion_bancaria
+                                 SET estado='conciliado', fecha_conciliacion=%s
+                                 WHERE id=%s""",
+                              (datetime.now().strftime("%d/%m/%Y"), propuesta["id_asiento"]))
+                c.execute("""INSERT INTO conciliacion_auditoria
+                    (id_asiento, banco, cuenta, fecha_contable, fecha_banco, dias_desfase,
+                     descripcion_contable, descripcion_banco, importe_contable, importe_banco,
+                     diferencia, sentido, referencia, pagina_pdf, nivel, estado, confianza,
+                     reglas, observacion, accion_sugerida, origen_decision, aprobado_por,
+                     creado, activo)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (propuesta["id_asiento"], propuesta["banco"], propuesta.get("cuenta", ""),
+                     propuesta["fecha_contable"], propuesta["fecha_banco"],
+                     propuesta["dias_desfase"], propuesta["descripcion_contable"],
+                     propuesta["descripcion_banco"], propuesta["importe_contable"],
+                     propuesta["importe_banco"], propuesta.get("diferencia", 0),
+                     propuesta["sentido"], propuesta.get("referencia", ""),
+                     propuesta.get("pagina_pdf"), propuesta["nivel"], decision,
+                     propuesta["confianza"], propuesta["reglas"],
+                     propuesta.get("observacion", ""), propuesta.get("accion_sugerida", ""),
+                     "manual", "", datetime.now().strftime("%Y-%m-%d %H:%M"), True))
+            conn.commit()
+            return True
+        except Exception as error:
+            print("[Conciliación] no se pudo aplicar:", error)
+            messagebox.showerror("Conciliación", "No se pudo aplicar:\n%s" % error,
+                                 parent=self.parent_frame)
+            return False
+        finally:
+            liberar_conexion(conn)
+
     def _guardar_movimientos_pdf(self, banco, movs):
         """Guarda las líneas del estado de cuenta (PDF) para no perderlas al salir."""
         if not banco or not movs:
@@ -3525,6 +4104,21 @@ class ModuloBancoApp:
             return
         try:
             with conn.cursor() as c:
+                # 🛡️ ¿ya estaba cargado este mismo estado de cuenta? (mismas líneas y mismo total)
+                try:
+                    c.execute("""SELECT COUNT(*), COALESCE(SUM(monto), 0)
+                                 FROM conciliacion_movimientos_pdf WHERE banco = %s""",
+                              (banco.get("banco", ""),))
+                    fila_previa = c.fetchone() or (0, 0)
+                    total_nuevo = round(sum(float(m.get("monto") or 0) for m in movs), 2)
+                    if (int(fila_previa[0] or 0) == len(movs)
+                            and abs(float(fila_previa[1] or 0) - total_nuevo) < 0.01
+                            and len(movs) > 0):
+                        print("[Conciliación] El estado de cuenta ya estaba cargado "
+                              "(%d líneas · %.2f): se vuelve a guardar igual y se sigue "
+                              "con la conciliación." % (len(movs), total_nuevo))
+                except Exception as error_repetido:
+                    print("[Conciliación] revisión de estado repetido:", error_repetido)
                 c.execute("DELETE FROM conciliacion_movimientos_pdf WHERE banco = %s",
                           (banco.get("banco", ""),))
                 for m in movs:
@@ -4341,6 +4935,55 @@ class ModuloBancoApp:
                 continue
         return ""
 
+    def _documento_de_asiento(self, fila):
+        """Busca el PDF (factura o comprobante) asociado a un asiento de la tabla."""
+        candidatos = []
+        try:
+            if fila.get("soporte"):
+                candidatos.append(fila.get("soporte"))
+        except Exception:
+            pass
+        consultas = []
+        origen = str(fila.get("origen") or "")
+        id_movimiento = fila.get("id_movimiento")
+        if id_movimiento:
+            if "pagos_comprobantes" in origen:
+                consultas.append(("SELECT archivo_ruta FROM pagos_comprobantes WHERE id = %s",
+                                  id_movimiento))
+            elif "pagos_clientes" in origen:
+                consultas.append(("SELECT archivo_ruta FROM pagos_clientes WHERE id = %s",
+                                  id_movimiento))
+        if fila.get("id_gasto_compras"):
+            consultas.append(("SELECT archivo_ruta FROM facturas_recibidas WHERE id = %s",
+                              fila.get("id_gasto_compras")))
+        if fila.get("id_factura"):
+            consultas.append(("SELECT archivo_ruta FROM facturas_emitidas WHERE id = %s",
+                              fila.get("id_factura")))
+        if not consultas:
+            return ""
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return ""
+        try:
+            with conn.cursor() as c:
+                for consulta, parametro in consultas:
+                    try:
+                        c.execute(consulta, (parametro,))
+                        resultado = c.fetchone()
+                        if resultado and resultado[0]:
+                            candidatos.append(resultado[0])
+                            break
+                    except Exception:
+                        conn.rollback()
+        except Exception as error:
+            print("[Banco] búsqueda del documento:", error)
+        finally:
+            liberar_conexion(conn)
+        for ruta in candidatos:
+            if ruta and self._ruta_existente(ruta):
+                return ruta
+        return candidatos[0] if candidatos else ""
+
     def _menu_contextual_movimiento(self, event, tabla, movimientos, acciones=True):
         """Clic derecho: abre un menú para ver la factura y el comprobante.
 
@@ -4356,6 +4999,14 @@ class ModuloBancoApp:
             if idx < 0 or idx >= len(movimientos):
                 return "break"
             f = movimientos[idx]
+            # 📄 si la fila no trae el archivo, se busca en la base
+            try:
+                if not f.get("archivo_ruta"):
+                    documento = self._documento_de_asiento(f)
+                    if documento:
+                        f["archivo_ruta"] = documento
+            except Exception as error:
+                print("[Banco] documento del asiento:", error)
         except Exception:
             return "break"
 
@@ -4523,7 +5174,40 @@ class ModuloBancoApp:
                                  WHERE banco=%s AND origen=%s AND COALESCE(fecha,'')=%s
                                    AND ABS(COALESCE(monto,0)-%s) < 0.005""",
                               (banco_nombre, origen_persist, fecha, monto))
-                if c.fetchone()[0] == 0:
+                ya_existia = c.fetchone()[0] > 0
+                if ya_existia:
+                    # 🛡️ ya estaba conciliado: se cuenta para avisar al usuario
+                    try:
+                        self._ya_conciliados = getattr(self, "_ya_conciliados", 0) + 1
+                    except Exception:
+                        pass
+                reutilizado = 0
+                if not ya_existia:
+                    # 🛡️ Punto 1: mismo banco + monto y fecha ±2 días -> se reutiliza esa fila
+                    try:
+                        c.execute("""SELECT id, fecha FROM conciliacion_bancaria
+                                     WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                       AND ABS(ABS(COALESCE(monto,0)) - ABS(%s)) < 0.01
+                                     ORDER BY id LIMIT 25""", (banco_nombre, monto))
+                        for _id_reuso, _fecha_reuso in (c.fetchall() or []):
+                            # 🏦 el banco puede tardar hasta 4 días en reflejar la
+                            #    transacción en el estado de cuenta
+                            if _dias_entre_fechas(_fecha_reuso, fecha) <= 4:
+                                reutilizado = _id_reuso
+                                break
+                    except Exception as _e_reuso:
+                        print("[Conciliación] búsqueda de asiento equivalente:", _e_reuso)
+                    if reutilizado:
+                        c.execute("""UPDATE conciliacion_bancaria
+                                     SET estado='conciliado', fecha_conciliacion=%s
+                                     WHERE id=%s""",
+                                  (datetime.now().strftime("%d/%m/%Y"), reutilizado))
+                        conn.commit()
+                        try:
+                            self._ya_conciliados = getattr(self, "_ya_conciliados", 0) + 1
+                        except Exception:
+                            pass
+                if not ya_existia and not reutilizado:
                     c.execute("""INSERT INTO conciliacion_bancaria
                         (banco, cuenta, fecha, descripcion, monto, tipo, origen, id_movimiento, estado, fecha_conciliacion)
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'conciliado',%s)""",
