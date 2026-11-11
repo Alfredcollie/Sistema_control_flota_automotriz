@@ -161,7 +161,8 @@ def proponer(movimientos_banco, asientos, ventana_dias=DIAS_DESFASE_POR_DEFECTO,
         # ¿hay otro candidato igual de bueno para el mismo movimiento? -> AMBIGUO
         rivales = [x for x in candidatos
                    if x is not c and x["i_banco"] == c["i_banco"] and x["i_as"] not in usados_as
-                   and abs(x["puntaje"] - c["puntaje"]) <= 5]
+                   and abs(x["puntaje"] - c["puntaje"]) <= 5
+                   and x["dias"] == c["dias"]]
         unico = not rivales
         mov, asiento = movimientos_banco[c["i_banco"]], asientos[c["i_as"]]
         confianza = _confianza(True, c["dias"], c["similitud"], False, unico)

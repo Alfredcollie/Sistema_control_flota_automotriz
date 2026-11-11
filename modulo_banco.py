@@ -3596,7 +3596,8 @@ class ModuloBancoApp:
             return
         ventana = ctk.CTkToplevel(self.parent_frame)
         ventana.title("🧠 Conciliación inteligente · revisar propuestas")
-        ventana.geometry("1180x620")
+        ventana.geometry("1250x640")
+        ventana.resizable(True, True)
         try:
             ventana.transient(self.parent_frame)
             ventana.attributes("-topmost", True)
@@ -3621,13 +3622,13 @@ class ModuloBancoApp:
 
         marco = ctk.CTkFrame(ventana)
         marco.pack(fill="both", expand=True, padx=10, pady=(0, 8))
-        columnas = ("fecha_banco", "desc_banco", "importe", "fecha_cont", "desc_cont",
-                    "dias", "estado", "confianza")
+        columnas = ("fecha_banco", "desc_banco", "monto_banco", "fecha_cont", "desc_cont",
+                    "monto_sistema", "dias", "estado", "confianza")
         tabla = ttk.Treeview(marco, columns=columnas, show="headings", height=18)
-        titulos = {"fecha_banco": ("Fecha banco", 100), "desc_banco": ("Descripción banco", 260),
-                   "importe": ("Importe", 90), "fecha_cont": ("Fecha contable", 100),
-                   "desc_cont": ("Descripción contable", 260), "dias": ("Días", 50),
-                   "estado": ("Estado", 190), "confianza": ("Confianza", 80)}
+        titulos = {"fecha_banco": ("Fecha banco", 100), "desc_banco": ("Descripción banco", 250),
+                   "monto_banco": ("Monto banco", 100), "fecha_cont": ("Fecha contable", 100),
+                   "desc_cont": ("Descripción contable", 250), "monto_sistema": ("Monto sistema", 100),
+                   "dias": ("Días", 50), "estado": ("Estado", 180), "confianza": ("Confianza", 80)}
         for col in columnas:
             texto, ancho = titulos[col]
             tabla.heading(col, text=texto)
@@ -3670,34 +3671,43 @@ class ModuloBancoApp:
                     parent=ventana)
             for indice, p in enumerate(propuestas):
                 tabla.insert("", "end", iid=str(indice + 1), values=(
-                    str(p["fecha_banco"])[:10], str(p["descripcion_banco"])[:60],
+                    str(p["fecha_banco"])[:10], str(p["descripcion_banco"])[:55],
                     "%9.2f" % p["importe_banco"], str(p["fecha_contable"])[:10],
-                    str(p["descripcion_contable"])[:60], p["dias_desfase"],
+                    str(p["descripcion_contable"])[:55],
+                    "%9.2f" % p["importe_contable"], p["dias_desfase"],
                     p["estado"], "%d%%" % p["confianza"]))
             self._resumen_revision = ci.resumen(propuestas, movimientos, asientos)
 
-        def _aprobar():
+        def _aplicar_varias(decision):
             seleccion = tabla.selection()
             if not seleccion:
+                messagebox.showinfo("Conciliación",
+                                    "Seleccione una o más filas (Ctrl+clic o Shift+clic).",
+                                    parent=ventana)
                 return
-            propuesta = estado_ventana["propuestas"][int(seleccion[0]) - 1]
-            if self._aplicar_conciliacion_inteligente(banco, propuesta, "APROBADO"):
+            aplicadas = 0
+            for iid in seleccion:
+                try:
+                    propuesta = estado_ventana["propuestas"][int(iid) - 1]
+                except Exception:
+                    continue
+                if self._aplicar_conciliacion_inteligente(banco, propuesta, decision):
+                    aplicadas += 1
+            if aplicadas:
                 messagebox.showinfo(
-                    "Conciliación aprobada",
-                    "✅ Conciliado y registrado en la auditoría:\n\n"
-                    "%s\nS/ %.2f\n\nLa fila se quita de la lista." % (
-                        str(propuesta["descripcion_contable"])[:50],
-                        float(propuesta["importe_banco"] or 0)),
+                    "Conciliación",
+                    "%d movimiento(s) %s." % (
+                        aplicadas,
+                        "conciliados y registrados en la auditoría"
+                        if decision == "APROBADO" else "rechazados"),
                     parent=ventana)
-                _cargar_propuestas()
+            _cargar_propuestas()
+
+        def _aprobar():
+            _aplicar_varias("APROBADO")
 
         def _rechazar():
-            seleccion = tabla.selection()
-            if not seleccion:
-                return
-            propuesta = estado_ventana["propuestas"][int(seleccion[0]) - 1]
-            if self._aplicar_conciliacion_inteligente(banco, propuesta, "RECHAZADO"):
-                _cargar_propuestas()
+            _aplicar_varias("RECHAZADO")
 
         pie = ctk.CTkFrame(ventana)
         pie.pack(fill="x", padx=10, pady=(0, 10))
@@ -4095,6 +4105,87 @@ class ModuloBancoApp:
         finally:
             liberar_conexion(conn)
 
+    def _auto_seleccionar_periodo(self, movs, texto_pdf=""):
+        """Detecta el mes del estado de cuenta, lo selecciona y baja los movimientos."""
+        try:
+            def _fecha_de(txt):
+                limpio = str(txt or "").strip().replace("-", "/")
+                partes = [x for x in limpio.split("/") if x.strip()]
+                try:
+                    if len(partes) >= 3:
+                        a, b, c = int(partes[0]), int(partes[1]), int(partes[2])
+                        return datetime.date(a, b, c) if a > 31 else datetime.date(c, b, a)
+                except Exception:
+                    pass
+                return None
+            fechas = [f for f in (_fecha_de(m.get("fecha")) for m in (movs or [])) if f]
+            if not fechas:
+                print("[Conciliación] no se pudo leer la fecha de los movimientos del PDF")
+                return
+            ultima = max(fechas)
+            meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
+                     "Agosto", "Setiembre", "Octubre", "Noviembre", "Diciembre"]
+            etiqueta = "%s %d" % (meses[ultima.month - 1], ultima.year)
+            try:
+                valores = list(self.cmb_mes.cget("values") or [])
+                elegido = ""
+                for valor in valores:
+                    if etiqueta.lower() in str(valor).lower():
+                        elegido = valor
+                        break
+                if elegido:
+                    self.cmb_mes.set(elegido)
+                    print("[Conciliación] mes detectado en el PDF:", elegido)
+            except Exception as error:
+                print("[Conciliación] mes del PDF:", error)
+            # 🏦 detectar el banco por palabras del estado de cuenta
+            try:
+                pistas = " ".join(str(m.get("descripcion") or "") for m in (movs or []))
+                pistas += " " + str(texto_pdf or "") + " " + str(getattr(self, "texto_pdf", "") or "")
+                crudo = pistas
+                pistas = pistas.upper()
+                # 🔢 números de cuenta que aparecen en el PDF (ej. 297-3007235833)
+                import re as _re
+                cuentas_pdf = set()
+                for hallado in _re.finditer(r"\d[\d\-\.]{6,}", crudo):
+                    solo_digitos = _re.sub(r"\D", "", hallado.group(0))
+                    if len(solo_digitos) >= 8:
+                        cuentas_pdf.add(solo_digitos)
+                for banco in (self.bancos or []):
+                    cuenta_banco = _re.sub(r"\D", "", str(banco.get("cuenta") or ""))
+                    if cuenta_banco and any(cuenta_banco in c or c in cuenta_banco
+                                            for c in cuentas_pdf):
+                        etiqueta = construir_etiqueta_banco(banco)
+                        if self.cmb_banco.get() != etiqueta:
+                            self.cmb_banco.set(etiqueta)
+                            print("[Conciliación] banco por número de cuenta:", etiqueta)
+                        break
+                nombres = {"INTERBANK": "INTERBANK", "BCP": "BCP", "BANCO DE CREDITO": "BCP",
+                           "BBVA": "BBVA", "CONTINENTAL": "BBVA", "SCOTIABANK": "SCOTIABANK",
+                           "BANBIF": "BANBIF", "PICHINCHA": "PICHINCHA", "NACION": "NACION"}
+                detectado = ""
+                for clave, nombre in nombres.items():
+                    if clave in pistas:
+                        detectado = nombre
+                        break
+                if detectado:
+                    for banco in (self.bancos or []):
+                        etiqueta = construir_etiqueta_banco(banco)
+                        if detectado in etiqueta.upper():
+                            if self.cmb_banco.get() != etiqueta:
+                                self.cmb_banco.set(etiqueta)
+                                print("[Conciliación] banco detectado en el PDF:", etiqueta)
+                            break
+            except Exception as error:
+                print("[Conciliación] banco del PDF:", error)
+            try:
+                self.actualizar_saldos_boton()
+                print("[Conciliación] movimientos del sistema actualizados para ese período.")
+            except Exception as error:
+                print("[Conciliación] carga automática:", error)
+        except Exception as error:
+            print("[Conciliación] selección automática:", error)
+
     def _guardar_movimientos_pdf(self, banco, movs):
         """Guarda las líneas del estado de cuenta (PDF) para no perderlas al salir."""
         if not banco or not movs:
@@ -4211,6 +4302,10 @@ class ModuloBancoApp:
                 _banco_pdf = self.banco_seleccionado()
                 if _banco_pdf and self.movimientos_pdf:
                     self._guardar_movimientos_pdf(_banco_pdf, self.movimientos_pdf)
+                    try:
+                        self._auto_seleccionar_periodo(movs, getattr(self, 'texto_pdf', ''))
+                    except Exception as _e_periodo:
+                        print('[Conciliación] período automático:', _e_periodo)
                     self._banco_pdf = _banco_pdf.get("banco", "")
             except Exception as _e_pdf:
                 print("[Conciliación] No se pudo guardar el estado de cuenta:", _e_pdf)
