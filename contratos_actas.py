@@ -1692,7 +1692,35 @@ class ContratosActasApp:
                 if os.path.exists(destino):
                     base, extension = os.path.splitext(destino)
                     destino = base + "_" + datetime.now().strftime("%Y%m%d_%H%M%S") + extension
-                shutil.move(str(archivo), destino)
+                # 🔁 si el PDF está abierto en el visor, Windows lo bloquea:
+                #    se reintenta unas cuantas veces antes de rendirse
+                import time as _time
+                movido = False
+                for intento in range(5):
+                    try:
+                        shutil.move(str(archivo), destino)
+                        movido = True
+                        break
+                    except PermissionError:
+                        print("[Contratos] el PDF está abierto, reintentando (%d/5)…"
+                              % (intento + 1))
+                        _time.sleep(2)
+                    except OSError as error_mover:
+                        if getattr(error_mover, "winerror", None) in (32, 33):
+                            print("[Contratos] archivo en uso, reintentando (%d/5)…"
+                                  % (intento + 1))
+                            _time.sleep(2)
+                        else:
+                            raise
+                if not movido:
+                    messagebox.showwarning(
+                        "PDF en uso",
+                        "El PDF está abierto (Adobe, Edge u otro visor) y Windows no "
+                        "permite moverlo." + chr(10) + chr(10) +
+                        "Cerrá el archivo y volvé a intentar la eliminación. "
+                        "El registro NO se borró.",
+                        parent=self.parent_frame)
+                    return
                 aviso_pdf = chr(10) + "PDF guardado en: " + destino
         except Exception as error:
             print("[contratos] no se pudo mover el PDF:", error)

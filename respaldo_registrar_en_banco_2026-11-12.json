@@ -1,0 +1,560 @@
+[
+ {
+  "id": 1052,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -3004.8,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 161409 23:41 BMOC02 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1053,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -1730.0,
+  "descripcion": "PAGO IMPUES 783499514¥ BPI 111-034 013394 19:10 SNTPEA 4708",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1054,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -1195.31,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 522248 21:18 BMOA61 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1055,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -1004.8,
+  "descripcion": "TRANSF.BCO.INTERBANK ¥ BPI 111-023 625304 21:44 BMO980 4710",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1056,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -971.98,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 440167 21:19 BMO118 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1057,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -472.77,
+  "descripcion": "PAGOS AFP INTEGRA BPI 111-041 004838 19:01 AFNA01 4753",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1058,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -176.54,
+  "descripcion": "PAGOS AFP HABITAT BPI 111-041 004836 19:01 AFNA01 4753",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1059,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-01",
+  "monto": -0.2,
+  "descripcion": "IMPUESTO ITF INT - 0909",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1060,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -455.48,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 796066 12:52 BMOE39 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1061,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -139.99,
+  "descripcion": "SAFT000000840739 BPI 111-023 387747 13:01 BMO823 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1062,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -30.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 062001 16:14 BMO804 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1063,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -25.3,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 727707 12:49 BMO844 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1064,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -15.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 713083 12:47 BMOA70 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1065,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -15.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 707922 12:48 BMOE63 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1066,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -15.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 711531 12:48 BMO999 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1067,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -15.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 706510 12:48 BMO128 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1068,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-02",
+  "monto": -15.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 726916 12:48 BMO914 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1069,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-04",
+  "monto": -351.93,
+  "descripcion": "E S ORRANTIA POS 111-014 158824 10:18 TBQA55 4302",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1070,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-07",
+  "monto": -400.02,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 837386 13:14 BMO296 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1071,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-07",
+  "monto": -304.8,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 850071 13:12 BMOB90 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1072,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-07",
+  "monto": -209.65,
+  "descripcion": "ENTE000936267833 BPI 111-023 873428 13:17 BMO691 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1073,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-11",
+  "monto": -94.8,
+  "descripcion": "TRAN.CEL.BM.INTERBANK BPI 111-023 412598 17:41 BMO793 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1074,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-11",
+  "monto": -69.8,
+  "descripcion": "TRAN.CEL.BM.INTERBANK BPI 111-023 253578 12:25 BMOB83 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1075,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-13",
+  "monto": -304.8,
+  "descripcion": "TRANSF.BCO.INTERBANK ¥ BPI 111-023 466816 07:38 BMOE27 4710",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1076,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -1379.71,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 809005 17:52 BMO315 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1077,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -1359.8,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 891244 18:02 BMO771 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1078,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -886.18,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 800031 17:51 BMO250 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1079,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -674.24,
+  "descripcion": "RIMA001180259363 BPI 111-023 824456 17:54 BMO044 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1080,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -346.52,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 864876 18:00 BMOE13 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1081,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -302.72,
+  "descripcion": "RIMA001181407084 BPI 111-023 827628 17:55 BMO148 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1082,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -295.84,
+  "descripcion": "RIMA001180223768 BPI 111-023 810132 17:53 BMO427 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1083,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -188.13,
+  "descripcion": "MAPF020613993682 BPI 111-023 913592 18:06 BMCB85 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1084,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -99.9,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 861323 17:59 BMO638 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1085,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -8.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 881991 18:01 BMO377 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1086,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": -1.0,
+  "descripcion": "IMPUESTO ITF INT - 0909",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1087,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-14",
+  "monto": 18845.7,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 133893 16:30 BMO724 2701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1088,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -3000.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 559732 18:04 BMO747 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1089,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -1262.68,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 444333 17:53 BMOD76 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1090,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -1204.8,
+  "descripcion": "TRANSF.BCO.INTERBANK ¥ BPI 111-023 530951 18:02 BMOB81 4710",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1091,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -1092.03,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 435399 17:53 BMO625 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1092,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -1055.23,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 436945 17:52 BMOD57 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1093,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -1021.06,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 427427 17:51 BMO921 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1094,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -1000.0,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 459532 17:56 BMOC92 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1095,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -578.94,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 461849 17:55 BMOB97 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1096,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -92.65,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 694945 18:18 BMOB88 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1097,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -43.8,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 747380 18:24 BMOD01 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1098,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-15",
+  "monto": -10.0,
+  "descripcion": "MANT TD ADIC NEG ¥ INT 373-000 926272 4936",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1099,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-16",
+  "monto": -835.43,
+  "descripcion": "TRANSF.BCO.BBVA BPI 111-023 833343 08:28 BMOC42 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1100,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-24",
+  "monto": -139.99,
+  "descripcion": "SAFT000000627699 BPI 111-023 250696 19:30 BMOB74 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1101,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-25",
+  "monto": -360.17,
+  "descripcion": "E S ORRANTIA POS 111-014 769173 15:24 TBPA33 4302",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1102,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-26",
+  "monto": -98.73,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 928679 13:28 BMO048 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1103,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-26",
+  "monto": -56.3,
+  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 900297 13:25 BMO036 4701",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1104,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-26",
+  "monto": -7.9,
+  "descripcion": "APPARKA APS FULL JOC POS 111-014 466065 12:10 TBSA06 4302",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1105,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-29",
+  "monto": -3306.8,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 835406 19:27 BMO328 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1106,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-29",
+  "monto": -1.05,
+  "descripcion": "IMPUESTO ITF INT - 0909",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1107,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-30",
+  "monto": -1104.8,
+  "descripcion": "TRANSF.BCO.INTERBANK ¥ BPI 111-023 792841 21:45 BMOE41 4710",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1108,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-30",
+  "monto": -1035.94,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 335083 21:07 BMOB64 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1109,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-30",
+  "monto": -820.04,
+  "descripcion": "TRANSF.BCO.BBVA BPI 111-023 329136 21:06 BMOE95 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1110,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-30",
+  "monto": -793.09,
+  "descripcion": "TRANSF.BCO.BBVA BPI 111-023 166860 16:31 BMOE19 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1111,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-30",
+  "monto": -184.8,
+  "descripcion": "TRANSF.BCO.BBVA BPI 111-023 985021 19:07 BMOC85 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1112,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-30",
+  "monto": -54.8,
+  "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 351048 21:08 BMO01Z 4703",
+  "estado": "conciliado"
+ },
+ {
+  "id": 1113,
+  "banco": "BCP",
+  "cuenta": "1937218112021",
+  "fecha": "2026-09-30",
+  "monto": -0.2,
+  "descripcion": "IMPUESTO ITF INT - 0909",
+  "estado": "conciliado"
+ }
+]

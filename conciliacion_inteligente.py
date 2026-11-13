@@ -15,7 +15,7 @@ import datetime
 import re
 import unicodedata
 
-TOLERANCIA_IMPORTE = 0.01
+TOLERANCIA_IMPORTE = 0.005   # importes idénticos (sin diferencia de céntimos)
 DIAS_DESFASE_POR_DEFECTO = 5
 
 # Ruido habitual de las descripciones bancarias
@@ -108,7 +108,7 @@ def _confianza(importe_ok, dias, similitud, referencia_ok, unico):
     elif importe_ok and dias <= 5:
         # 🎯 coincidencia ÚNICA por monto. Si además no comparten ninguna palabra
         #    de la descripción, se marca para revisar (75) en vez de 100.
-        return 100 if similitud >= 0.01 else 75
+        return 100                        # único por monto: se concilia (la descripción no importa)
     return min(99, puntos)
 
 
@@ -166,6 +166,11 @@ def proponer(movimientos_banco, asientos, ventana_dias=DIAS_DESFASE_POR_DEFECTO,
         unico = not rivales
         mov, asiento = movimientos_banco[c["i_banco"]], asientos[c["i_as"]]
         confianza = _confianza(True, c["dias"], c["similitud"], False, unico)
+        # 💰 si el importe no es EXACTO (diferencia de céntimos) va a revisión
+        diferencia = round(abs(normalizar_monto(asiento.get("monto"))
+                               - normalizar_monto(mov.get("monto"))), 2)
+        if diferencia > 0.005:
+            confianza = min(confianza, 70)
         propuestas.append({
             "i_banco": c["i_banco"], "i_asiento": c["i_as"],
             "id_movimiento_banco": mov.get("id"), "id_asiento": asiento.get("id"),
@@ -176,11 +181,24 @@ def proponer(movimientos_banco, asientos, ventana_dias=DIAS_DESFASE_POR_DEFECTO,
             "descripcion_banco": mov.get("descripcion"),
             "importe_contable": normalizar_monto(asiento.get("monto")),
             "importe_banco": normalizar_monto(mov.get("monto")),
-            "diferencia": 0.0, "sentido": _sentido(mov.get("monto"), mov.get("descripcion")),
+            "diferencia": diferencia, "sentido": _sentido(mov.get("monto"), mov.get("descripcion")),
             "referencia": mov.get("referencia", ""), "pagina_pdf": mov.get("pagina"),
             "nivel": 2 if c["dias"] else 1,
             "estado": "AMBIGUO" if not unico else _clasificar(1, c["dias"]),
             "confianza": confianza,
+            # 🔎 Cuántos candidatos equivalentes hay para esta línea del banco:
+            #    con 1 se concilia solo; con 2+ hay que elegir a mano.
+            "rivales": len(rivales),
+            "candidatos": len(rivales) + 1,
+            # Detalle de TODOS los candidatos, para que la pantalla los muestre.
+            "candidatos_detalle": [
+                {"id_asiento": asientos[x["i_as"]].get("id"),
+                 "descripcion": asientos[x["i_as"]].get("descripcion"),
+                 "fecha": asientos[x["i_as"]].get("fecha"),
+                 "tabla": asientos[x["i_as"]].get("tabla", ""),
+                 "dias": x["dias"]}
+                for x in ([c] + rivales)
+            ],
             "reglas": "importe exacto; mismo banco; sentido igual; desfase %d día(s); "
                       "similitud %.2f" % (c["dias"], c["similitud"]),
             "observacion": "Varios candidatos equivalentes" if not unico else "",

@@ -1525,6 +1525,30 @@ def _serie_ocr_normalizada(serie):
     return serie[:1] + serie[1:].translate(tabla) if len(serie) > 1 else serie
 
 
+def normalizar_numero_comprobante(numero, rellenar_hasta=8):
+    """Devuelve el N° de comprobante completo, conservando los ceros.
+
+    El OCR (o el parseo) puede dejar el correlativo sin sus ceros a la
+    izquierda: F001-6485 -> F001-00006485. El formato SUNAT de las facturas
+    y boletas electrónicas usa 8 dígitos, así que se completa hasta 8.
+    Si el texto no tiene forma de serie-correlativo, se devuelve igual.
+    """
+    texto = str(numero or "").strip().upper()
+    if not texto:
+        return ""
+    m = re.fullmatch(r"([A-Z0-9]{4})\s*[-\u2013\u2014:.]?\s*(\d{1,12})", texto)
+    if not m:
+        return texto
+    serie = _serie_ocr_normalizada(m.group(1))
+    correlativo = m.group(2)
+    try:
+        rellenar = int(rellenar_hasta or 0)
+    except Exception:
+        rellenar = 0
+    if rellenar and len(correlativo) < rellenar:
+        correlativo = correlativo.zfill(rellenar)
+    return "%s-%s" % (serie, correlativo)
+
 def _limpiar_numero_operacion(token):
     """Deja el N° de operación legible (corrige O->0, I->1... si es numérico)."""
     token = str(token or "").strip(" .,:;#-")
@@ -1755,14 +1779,15 @@ def numero_comprobante_desde_texto(texto):
     texto = str(texto or "")
     m = re.search(r"\b([EFB][0-9A-Z]{3})\s*[-:\u2013\u2014]?\s*(\d{1,8})", texto)
     if m:
-        # Se respetan los ceros tal como vienen (F001-00001234)
-        return f"{_serie_ocr_normalizada(m.group(1))}-{m.group(2)}"
+        # Se conservan los ceros y se completa el correlativo a 8 dígitos
+        return normalizar_numero_comprobante(
+            f"{_serie_ocr_normalizada(m.group(1))}-{m.group(2)}")
     # 🔎 El OCR confunde la letra inicial con un dígito ("F37B" -> "1376")
     m = re.search(r"\b([0-9][0-9A-Z]{3})\s*[-\u2013\u2014]\s*(\d{5,8})\b", texto)
     if m:
-        return f"{m.group(1)}-{m.group(2)}"
+        return normalizar_numero_comprobante(f"{m.group(1)}-{m.group(2)}")
     m = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
-    return m.group(1).replace(" ", "") if m else ""
+    return normalizar_numero_comprobante(m.group(1).replace(" ", "")) if m else ""
 
 
 def _mismo_proveedor(nombre_a, nombre_b):
@@ -2253,9 +2278,11 @@ def extraer_datos_de_texto(texto):
          re.search(r"\b([EFB])\s*0*(\d{2,3})\s*[-–—:.]?\s*(\d{1,8})\b", plano))
     if m:
         if m.lastindex == 2:
-            datos["numero"] = f"{_serie_ocr(m.group(1))}-{int(m.group(2))}"
+            datos["numero"] = normalizar_numero_comprobante(
+                f"{_serie_ocr(m.group(1))}-{m.group(2)}")
         else:
-            datos["numero"] = f"{m.group(1)}{int(m.group(2)):03d}-{int(m.group(3))}"
+            datos["numero"] = normalizar_numero_comprobante(
+                f"{m.group(1)}{int(m.group(2)):03d}-{m.group(3)}")
 
     # --- RUC del EMISOR (proveedor) ---
     #     👉 En una factura hay DOS RUC: el del que emite (arriba, en el membrete)
@@ -5254,14 +5281,16 @@ class FacturasRecibidasTab:
             numero_leido = numero_comprobante_desde_texto(texto)
             if not numero_leido:
                 nro_match = re.search(r"([EFB][0-9A-Z]{3}\s*-\s*\d+)", texto)
-                numero_leido = nro_match.group(1).replace(" ", "") if nro_match else ""
+                numero_leido = (normalizar_numero_comprobante(nro_match.group(1).replace(" ", ""))
+                                if nro_match else "")
             # Si el OCR lo leyó mal (empieza con dígito) manda el nombre del archivo
             try:
                 if not numero_leido or numero_leido[:1].isdigit():
                     _m_nombre = re.search(r"([A-Z][0-9A-Z]{3})\s*[-–]\s*(\d{4,8})",
                                           os.path.basename(str(ruta)).upper())
                     if _m_nombre:
-                        numero_leido = "%s-%s" % (_m_nombre.group(1), _m_nombre.group(2))
+                        numero_leido = normalizar_numero_comprobante(
+                            "%s-%s" % (_m_nombre.group(1), _m_nombre.group(2)))
             except Exception:
                 pass
             if numero_leido:
@@ -5622,10 +5651,16 @@ class FacturasRecibidasTab:
         self.ent_dias = ctk.CTkEntry(self.f_form); self.ent_dias.pack(fill="x", padx=10, pady=(0, 8)); self.ent_dias.insert(0, "0")
 
         ctk.CTkLabel(self.f_form, text="Nombre del Proveedor:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.combo_proveedor = ctk.CTkComboBox(self.f_form, command=self.al_seleccionar_proveedor)
-        activar_busqueda_rapida(self.combo_proveedor, al_elegir=self.al_seleccionar_proveedor)
+        f_prov = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        f_prov.pack(fill="x", padx=10, pady=(0, 8))
+        self.combo_proveedor = ctk.CTkComboBox(f_prov, command=self.al_seleccionar_proveedor)
+        self.combo_proveedor.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(f_prov, text="🔍 Buscar", width=90, font=("Arial", 11, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: self._abrir_busqueda_proveedor(
+                          self.combo_proveedor, al_elegir=self.al_seleccionar_proveedor,
+                          parent=self.main_root)).pack(side="right", padx=(6, 0))
         self.combo_proveedor.bind("<KeyRelease>", self._al_teclear_proveedor)
-        self.combo_proveedor.pack(fill="x", padx=10, pady=(0, 8))
         self.cargar_proveedores_bd()
 
         ctk.CTkLabel(self.f_form, text="R.U.C.:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
@@ -6188,6 +6223,138 @@ class FacturasRecibidasTab:
             self.lbl_titulo_det.configure(text="Detracción (%):")
             self.ent_detraccion.delete(0, tk.END); self.ent_detraccion.insert(0, "0")
         self.actualizar_totales()
+
+    def _abrir_busqueda_proveedor(self, combo, al_elegir=None, parent=None):
+        """🔍 Buscador de proveedor por nombre (el mismo del editor de facturas)."""
+        try:
+            nombres = [str(n).strip() for n in (combo.cget("values") or []) if str(n).strip()]
+            nombres = [n for n in nombres if n not in (
+                "CTkComboBox", "Cargando proveedores...", "Sin proveedores registrados")]
+        except Exception:
+            nombres = []
+        padre = parent or getattr(self, "main_root", None)
+        if not nombres:
+            return messagebox.showinfo(
+                "Buscar proveedor",
+                "No hay proveedores cargados. Escriba el nombre directamente en el campo.",
+                parent=ventana_para_mensaje(padre))
+        try:
+            grab_previo = padre.grab_current() if padre is not None else None
+        except Exception:
+            grab_previo = None
+        top = ctk.CTkToplevel(padre)
+        top.title("🔍 Buscar proveedor por nombre")
+        try:
+            ancho_padre = padre.winfo_width() if padre is not None else 500
+            _x_top = (padre.winfo_rootx() + max(0, (ancho_padre - 500) // 2)
+                      if padre is not None else 0)
+            _y_top = padre.winfo_rooty() + 80 if padre is not None else 80
+            top.geometry("500x430+%d+%d" % (max(0, _x_top), max(0, _y_top)))
+        except Exception:
+            top.geometry("500x430")
+        try:
+            top.transient(padre)
+        except Exception:
+            pass
+        top.grab_set()
+        _al_cerrar_modal(top)
+
+        def _restaurar_grab(evento=None):
+            try:
+                if ((evento is None or getattr(evento, "widget", None) is top)
+                        and grab_previo is not None):
+                    grab_previo.grab_set()
+            except Exception:
+                pass
+
+        top.bind("<Destroy>", _restaurar_grab, add="+")
+        ctk.CTkLabel(top, text="Escriba parte del nombre del proveedor:",
+                     font=("Arial", 11, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
+        ent_buscar = ctk.CTkEntry(top, placeholder_text="Ej. LINGNAN, COESTI, RIMAC...")
+        ent_buscar.pack(fill="x", padx=12, pady=(0, 4))
+        lbl_cuenta = ctk.CTkLabel(top, text="", font=("Arial", 10), text_color="gray", anchor="w")
+        lbl_cuenta.pack(fill="x", padx=14)
+        lista = tk.Listbox(top, activestyle="none", exportselection=False,
+                           selectbackground="#2c3e50", selectforeground="white",
+                           font=("Arial", 11))
+        lista.pack(fill="both", expand=True, padx=12, pady=(4, 4))
+        ctk.CTkLabel(top, text="clic para elegir  ·  Enter acepta  ·  Esc cierra",
+                     font=("Arial", 10), text_color="gray").pack(pady=(0, 8))
+
+        def _plano(texto):
+            texto = str(texto or "")
+            try:
+                import unicodedata
+                texto = "".join(c for c in unicodedata.normalize("NFD", texto)
+                                if unicodedata.category(c) != "Mn")
+            except Exception:
+                pass
+            return texto.casefold().strip()
+
+        def _cerrar():
+            try:
+                top.destroy()
+            except Exception:
+                pass
+            try:
+                if grab_previo is not None:
+                    grab_previo.grab_set()
+            except Exception:
+                pass
+
+        def pintar(_evento=None):
+            texto = _plano(ent_buscar.get())
+            hallados = [n for n in nombres if not texto or texto in _plano(n)]
+            lista.delete(0, tk.END)
+            for nombre in hallados:
+                lista.insert(tk.END, nombre)
+            lbl_cuenta.configure(text="%d resultado(s)" % len(hallados))
+            if hallados:
+                lista.selection_clear(0, tk.END)
+                lista.selection_set(0)
+                lista.activate(0)
+            return "break"
+
+        def elegir(_evento=None):
+            seleccion = lista.curselection()
+            if not seleccion:
+                return "break"
+            nombre = lista.get(seleccion[0])
+            try:
+                valores = [str(x) for x in (combo.cget("values") or [])]
+                if nombre not in valores:
+                    valores.insert(0, nombre)
+                    combo.configure(values=valores)
+                combo.set(nombre)
+                try:
+                    combo._valores_completos = list(valores)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            _cerrar()
+            try:
+                if callable(al_elegir):
+                    al_elegir()
+                else:
+                    combo.event_generate("<<ComboboxSelected>>")
+            except Exception as e_sel:
+                print("Aviso - proveedor elegido:", e_sel)
+            return "break"
+
+        ent_buscar.bind("<KeyRelease>", pintar)
+        ent_buscar.bind("<Return>", elegir)
+        ent_buscar.bind("<Escape>", lambda e: _cerrar())
+        ent_buscar.bind("<Down>", lambda e: (lista.focus_set(), lista.selection_set(0), "break")[2])
+        lista.bind("<ButtonRelease-1>", elegir)
+        lista.bind("<Return>", elegir)
+        lista.bind("<Escape>", lambda e: _cerrar())
+        top.bind("<Escape>", lambda e: _cerrar())
+        pintar()
+        try:
+            ent_buscar.focus_set()
+        except Exception:
+            pass
 
     def al_seleccionar_proveedor(self, choice=None):
         prov = self.combo_proveedor.get().strip()
@@ -7555,7 +7722,7 @@ class FacturasRecibidasTab:
                                     categoria, descripcion, evento_asociado, dias_credito,
                                     subtotal, impuesto, total, det_porcentaje, det_monto,
                                     delivery, chofer_asociado, kilometraje, cantidad_combustible,
-                                    orden_servicio
+                                    orden_servicio, COALESCE(archivo_ruta, '')
                              FROM facturas_recibidas WHERE id = %s""", (id_factura,))
                 fila = c.fetchone()
                 if not fila:
@@ -7564,7 +7731,7 @@ class FacturasRecibidasTab:
                             "categoria", "descripcion", "evento_asociado", "dias_credito",
                             "subtotal", "impuesto", "total", "det_porcentaje", "det_monto",
                             "delivery", "chofer_asociado", "kilometraje", "cantidad_combustible",
-                            "orden_servicio")
+                            "orden_servicio", "archivo_ruta")
                 datos = dict(zip(columnas, fila))
         finally:
             liberar_conexion(conn)
@@ -7594,6 +7761,27 @@ class FacturasRecibidasTab:
 
         f = ctk.CTkScrollableFrame(v, fg_color="transparent")
         f.pack(fill="both", expand=True, padx=12, pady=(12, 0))
+
+        # 🖨️ Escanear la factura desde el propio editor (deja el PDF listo para adjuntar)
+        archivo_actual = str(datos.get("archivo_ruta") or "").strip()
+        ruta_escaneada = [archivo_actual]
+
+        def _texto_adjunto():
+            if not ruta_escaneada[0]:
+                return "📎 Sin archivo adjunto"
+            sufijo = "" if ruta_escaneada[0] == archivo_actual else " (se guardará al aceptar)"
+            return "📎 " + os.path.basename(str(ruta_escaneada[0])) + sufijo
+
+        f_scan = ctk.CTkFrame(f, fg_color="#eaf2f8", corner_radius=8)
+        f_scan.pack(fill="x", pady=(0, 4))
+        ctk.CTkButton(f_scan, text="🖨️ Escanear factura (OCR)", height=34,
+                      font=("Arial", 12, "bold"), fg_color="#0e7490", hover_color="#155e75",
+                      command=lambda: escanear_factura_editor()).pack(
+            side="left", padx=(8, 6), pady=8)
+        lbl_adjunto = ctk.CTkLabel(f_scan, text=_texto_adjunto(), font=("Arial", 10),
+                                   text_color="#1f538d", anchor="w", justify="left",
+                                   wraplength=300)
+        lbl_adjunto.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=8)
 
         def _valores(combo_attr):
             try:
@@ -7654,9 +7842,161 @@ class FacturasRecibidasTab:
 
         # ---------------- 2. PROVEEDOR ----------------
         seccion("🏭 Proveedor")
-        e_prov = combo_campo("Nombre del proveedor:", _valores("combo_proveedor"),
-                             datos.get("proveedor"))
+        ctk.CTkLabel(f, text="Nombre del proveedor:", font=("Arial", 11, "bold")).pack(
+            anchor="w", pady=(6, 0))
+        f_prov = ctk.CTkFrame(f, fg_color="transparent")
+        f_prov.pack(fill="x", pady=(0, 2))
+        e_prov = ctk.CTkComboBox(f_prov, values=_valores("combo_proveedor"))
+        e_prov.pack(side="left", fill="x", expand=True)
+        if datos.get("proveedor"):
+            try:
+                vals_prov = [str(x) for x in (e_prov.cget("values") or [])]
+                if str(datos["proveedor"]) not in vals_prov:
+                    vals_prov = [str(datos["proveedor"])] + vals_prov
+                    e_prov.configure(values=vals_prov)
+                e_prov.set(str(datos["proveedor"]))
+            except Exception:
+                pass
+        else:
+            try:
+                e_prov.set("")
+            except Exception:
+                pass
+        ctk.CTkButton(f_prov, text="🔍 Buscar", width=90, font=("Arial", 11, "bold"),
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: buscar_proveedor_editor()).pack(side="right", padx=(6, 0))
         e_ruc = campo("R.U.C.:", datos.get("ruc"))
+
+        def _al_elegir_proveedor():
+            """Completa el R.U.C. que tiene registrado el proveedor elegido."""
+            nombre = e_prov.get().strip()
+            if not nombre:
+                return
+            conn = conectar_db(silencioso=True)
+            if not conn:
+                return
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COALESCE(ruc, '') FROM proveedores WHERE nombre = %s",
+                                (nombre,))
+                    fila_prov = cur.fetchone()
+                if fila_prov and str(fila_prov[0] or "").strip():
+                    e_ruc.delete(0, tk.END)
+                    e_ruc.insert(0, str(fila_prov[0]).strip())
+            except Exception:
+                pass
+            finally:
+                liberar_conexion(conn)
+
+        def buscar_proveedor_editor():
+            """🔍 Busca el proveedor por nombre y lo coloca en el campo."""
+            try:
+                nombres = [str(n).strip() for n in (e_prov.cget("values") or []) if str(n).strip()]
+                nombres = [n for n in nombres if n not in (
+                    "CTkComboBox", "Cargando proveedores...", "Sin proveedores registrados")]
+            except Exception:
+                nombres = []
+            if not nombres:
+                return messagebox.showinfo(
+                    "Buscar proveedor",
+                    "No hay proveedores cargados. Escriba el nombre directamente en el campo.",
+                    parent=v)
+            top = ctk.CTkToplevel(v)
+            top.title("🔍 Buscar proveedor por nombre")
+            try:
+                _x_top = v.winfo_rootx() + max(0, (v.winfo_width() - 500) // 2)
+                _y_top = v.winfo_rooty() + 80
+                top.geometry("500x430+%d+%d" % (max(0, _x_top), max(0, _y_top)))
+            except Exception:
+                top.geometry("500x430")
+            top.transient(v)
+            top.grab_set()
+            _al_cerrar_modal(top)
+
+            def _restaurar_grab(evento=None):
+                try:
+                    if evento is None or getattr(evento, "widget", None) is top:
+                        v.grab_set()
+                except Exception:
+                    pass
+
+            top.bind("<Destroy>", _restaurar_grab, add="+")
+            ctk.CTkLabel(top, text="Escriba parte del nombre del proveedor:",
+                         font=("Arial", 11, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
+            ent_buscar = ctk.CTkEntry(top, placeholder_text="Ej. LINGNAN, COESTI, RIMAC...")
+            ent_buscar.pack(fill="x", padx=12, pady=(0, 4))
+            lbl_cuenta = ctk.CTkLabel(top, text="", font=("Arial", 10), text_color="gray", anchor="w")
+            lbl_cuenta.pack(fill="x", padx=14)
+            lista = tk.Listbox(top, activestyle="none", exportselection=False,
+                               selectbackground="#2c3e50", selectforeground="white",
+                               font=("Arial", 11))
+            lista.pack(fill="both", expand=True, padx=12, pady=(4, 4))
+            ctk.CTkLabel(top, text="clic para elegir  ·  Enter acepta  ·  Esc cierra",
+                         font=("Arial", 10), text_color="gray").pack(pady=(0, 8))
+
+            def _plano(texto):
+                texto = str(texto or "")
+                try:
+                    import unicodedata
+                    texto = "".join(c for c in unicodedata.normalize("NFD", texto)
+                                    if unicodedata.category(c) != "Mn")
+                except Exception:
+                    pass
+                return texto.casefold().strip()
+
+            def _cerrar():
+                try:
+                    top.destroy()
+                except Exception:
+                    pass
+                try:
+                    v.grab_set()
+                except Exception:
+                    pass
+
+            def pintar(_evento=None):
+                texto = _plano(ent_buscar.get())
+                hallados = [n for n in nombres if not texto or texto in _plano(n)]
+                lista.delete(0, tk.END)
+                for nombre in hallados:
+                    lista.insert(tk.END, nombre)
+                lbl_cuenta.configure(text="%d resultado(s)" % len(hallados))
+                if hallados:
+                    lista.selection_clear(0, tk.END)
+                    lista.selection_set(0)
+                    lista.activate(0)
+                return "break"
+
+            def elegir(_evento=None):
+                seleccion = lista.curselection()
+                if not seleccion:
+                    return "break"
+                nombre = lista.get(seleccion[0])
+                try:
+                    valores = [str(x) for x in (e_prov.cget("values") or [])]
+                    if nombre not in valores:
+                        valores.insert(0, nombre)
+                        e_prov.configure(values=valores)
+                    e_prov.set(nombre)
+                except Exception:
+                    pass
+                _cerrar()
+                _al_elegir_proveedor()
+                return "break"
+
+            ent_buscar.bind("<KeyRelease>", pintar)
+            ent_buscar.bind("<Return>", elegir)
+            ent_buscar.bind("<Escape>", lambda e: _cerrar())
+            ent_buscar.bind("<Down>", lambda e: (lista.focus_set(), lista.selection_set(0), "break")[2])
+            lista.bind("<ButtonRelease-1>", elegir)
+            lista.bind("<Return>", elegir)
+            lista.bind("<Escape>", lambda e: _cerrar())
+            top.bind("<Escape>", lambda e: _cerrar())
+            pintar()
+            try:
+                ent_buscar.focus_set()
+            except Exception:
+                pass
 
         ctk.CTkLabel(f, text="Categoría de Gasto:", font=("Arial", 11, "bold")).pack(
             anchor="w", pady=(6, 0))
@@ -7732,6 +8072,205 @@ class FacturasRecibidasTab:
             pass
         _calc()
 
+        def _leer_datos_ocr(ruta_pdf):
+            """Texto y datos detectados en el PDF escaneado ('' si no se pudo leer)."""
+            try:
+                texto = leer_ocr_windows(ruta_pdf)
+            except Exception as e_ocr:
+                print("Aviso - OCR de la factura:", e_ocr)
+                texto = ""
+            if not str(texto or "").strip():
+                return {}, ""
+            try:
+                return extraer_datos_de_texto(texto), texto
+            except Exception as e_datos:
+                print("Aviso - datos del OCR:", e_datos)
+                return {}, texto
+
+        def _poner_campo(entrada, valor):
+            try:
+                entrada.delete(0, tk.END)
+                if valor not in (None, ""):
+                    entrada.insert(0, str(valor))
+            except Exception:
+                pass
+
+        def _aplicar_datos_ocr(datos_ocr):
+            """Vuelca en el formulario lo leído por el OCR (el usuario puede corregirlo)."""
+            tipo = str(datos_ocr.get("tipo") or datos_ocr.get("tipo_documento") or "").strip()
+            if tipo:
+                try:
+                    valores = [str(x) for x in (c_tipo.cget("values") or [])]
+                    if tipo not in valores:
+                        valores.append(tipo)
+                        c_tipo.configure(values=valores)
+                    c_tipo.set(tipo)
+                except Exception:
+                    pass
+            if datos_ocr.get("numero"):
+                _poner_campo(e_nro, datos_ocr["numero"])
+            if datos_ocr.get("fecha"):
+                _poner_campo(e_fecha, datos_ocr["fecha"])
+            if datos_ocr.get("proveedor"):
+                nombre = str(datos_ocr["proveedor"]).strip()
+                try:
+                    valores = [str(x) for x in (e_prov.cget("values") or [])]
+                    if nombre not in valores:
+                        valores.insert(0, nombre)
+                        e_prov.configure(values=valores)
+                    e_prov.set(nombre)
+                except Exception:
+                    pass
+            if datos_ocr.get("ruc"):
+                _poner_campo(e_ruc, datos_ocr["ruc"])
+            try:
+                total = float(datos_ocr.get("total") or 0)
+            except Exception:
+                total = 0.0
+            try:
+                subtotal_leido = float(datos_ocr.get("subtotal") or 0)
+            except Exception:
+                subtotal_leido = 0.0
+            try:
+                igv_leido = float(datos_ocr.get("igv") or 0)
+            except Exception:
+                igv_leido = 0.0
+            tipo_doc = tipo or c_tipo.get()
+            if total <= 0 and subtotal_leido > 0:
+                if _documento_con_igv(tipo_doc):
+                    tasa = 0.105 if "10.5%" in tipo_doc else 0.18
+                    total = subtotal_leido * (1.0 + tasa)
+                else:
+                    total = subtotal_leido
+            if total > 0:
+                if (subtotal_leido > 0 and igv_leido > 0
+                        and abs(subtotal_leido + igv_leido - total) <= 0.02):
+                    base, igv = subtotal_leido, igv_leido
+                elif _documento_con_igv(tipo_doc):
+                    tasa = 0.105 if "10.5%" in tipo_doc else 0.18
+                    base = total / (1.0 + tasa)
+                    igv = total - base
+                else:
+                    base, igv = total, 0.0
+                _poner_campo(e_sub, "%.2f" % base)
+                _poner_campo(e_imp, "%.2f" % igv)
+                _poner_campo(e_tot, "%.2f" % total)
+            _al_elegir_proveedor()
+            _calc()
+
+        def escanear_factura_editor():
+            """🖨️ Escanea la factura y deja el PDF listo para adjuntarlo al guardar."""
+            try:
+                import escaner as _esc
+            except Exception as e_esc:
+                return messagebox.showerror(
+                    "Escáner", "No se pudo cargar el módulo de escaneo:\n%s" % e_esc, parent=v)
+            if not _esc.sistema_soportado():
+                return messagebox.showinfo(
+                    "Escáner",
+                    "El escaneo con la multifuncional está disponible en Windows y en macOS.",
+                    parent=v)
+            if archivo_actual and resolver_ruta_archivo(archivo_actual):
+                if not messagebox.askyesno(
+                        "Reemplazar archivo",
+                        "Esta factura ya tiene un archivo adjunto:\n%s\n\n"
+                        "¿Desea reemplazarlo por el nuevo escaneo?"
+                        % os.path.basename(archivo_actual), parent=v):
+                    return
+            try:
+                _cfg = cargar_configuracion_regional()
+                _datos_esc = _esc.config_escaner(_cfg)
+                try:
+                    _res = _escanear_con_progreso(
+                        v, "la factura", _esc,
+                        _esc.carpeta_escaneos(_cfg),
+                        dispositivo=_datos_esc.get("escaner_dispositivo", ""),
+                        dpi=_datos_esc.get("escaner_dpi", "300"),
+                        color=_datos_esc.get("escaner_color", "Escala de grises"),
+                        origen=_datos_esc.get("escaner_origen", "Cristal (una página a la vez)"),
+                        paginas=1,
+                        optimizar=str(_datos_esc.get("escaner_optimizar", "Sí")).lower().startswith("s"),
+                        modo=_datos_esc.get("escaner_modo", "Automático (sin ventanas)"))
+                finally:
+                    try:
+                        v.grab_set()
+                    except Exception:
+                        pass
+                _pags = [p for p in (_res.get("paginas") or []) if os.path.exists(str(p))]
+                if not _pags:
+                    return messagebox.showerror(
+                        "Escáner", "No se pudo escanear la factura:\n%s"
+                        % (_res.get("error") or "sin detalle"), parent=v)
+                _pdf = os.path.join(
+                    os.path.dirname(_pags[0]),
+                    "Factura_%s_%s.pdf" % (id_factura, datetime.now().strftime("%Y%m%d_%H%M%S")))
+                _esc.imagenes_a_pdf(_pags, _pdf)
+                _ruta_bd = _pdf
+                try:
+                    _ruta_bd = ruta_para_guardar(_pdf) or _pdf
+                except Exception:
+                    pass
+                ruta_escaneada[0] = _ruta_bd
+                try:
+                    lbl_adjunto.configure(text=_texto_adjunto())
+                except Exception:
+                    pass
+                _aviso = self._aviso_procesando("⏳ Leyendo la factura escaneada... (OCR)")
+                try:
+                    _datos_ocr, _ = _leer_datos_ocr(_pdf)
+                finally:
+                    self._cerrar_aviso(_aviso)
+                    try:
+                        v.grab_set()
+                    except Exception:
+                        pass
+                _prov_leido = _datos_ocr.get("proveedor") or ""
+                if isinstance(_prov_leido, (tuple, list)):
+                    _prov_leido = (_prov_leido[1] if len(_prov_leido) > 1
+                                   else (_prov_leido[0] if _prov_leido else ""))
+                _prov_leido = re.sub(r"^\s*\d{11}\s*[-\u2013:.|]?\s*", "",
+                                     str(_prov_leido)).strip()
+                _datos_ocr["proveedor"] = _prov_leido
+                _resumen = []
+                if _datos_ocr.get("tipo_documento"):
+                    _resumen.append("Tipo: %s" % _datos_ocr["tipo_documento"])
+                if _datos_ocr.get("numero"):
+                    _resumen.append("N° documento: %s" % _datos_ocr["numero"])
+                if _datos_ocr.get("fecha"):
+                    _resumen.append("Fecha: %s" % _datos_ocr["fecha"])
+                if _prov_leido:
+                    _resumen.append("Proveedor: %s" % _prov_leido)
+                if _datos_ocr.get("ruc"):
+                    _resumen.append("R.U.C.: %s" % _datos_ocr["ruc"])
+                try:
+                    _total_leido = float(_datos_ocr.get("total") or 0)
+                except Exception:
+                    _total_leido = 0.0
+                if _total_leido > 0:
+                    _resumen.append("Total: %s" % formatear_moneda(_total_leido))
+                if not _resumen:
+                    return messagebox.showinfo(
+                        "Factura escaneada",
+                        "La factura quedó lista para adjuntarse al registro.\n\n"
+                        "El OCR no pudo leer los datos: complete el formulario a mano y "
+                        "pulse «💾 Guardar» para conservar el archivo.",
+                        parent=v)
+                if messagebox.askyesno(
+                        "Factura escaneada",
+                        "La factura quedó lista para adjuntarse al registro.\n\n"
+                        "Datos detectados por el OCR:\n\n%s\n\n"
+                        "¿Desea cargarlos en el formulario?\n"
+                        "(Puede corregirlos antes de guardar.)" % "\n".join(_resumen),
+                        parent=v):
+                    _aplicar_datos_ocr(_datos_ocr)
+                    messagebox.showinfo(
+                        "Datos cargados",
+                        "Revise los datos, corrija lo que haga falta y pulse «💾 Guardar».",
+                        parent=v)
+            except Exception as e_scan:
+                messagebox.showerror(
+                    "Escáner", "No se pudo escanear la factura:\n%s" % e_scan, parent=v)
+
         # ---------------- GUARDAR ----------------
         def guardar():
             sub, imp, tot = _num(e_sub), _num(e_imp), _num(e_tot)
@@ -7753,7 +8292,8 @@ class FacturasRecibidasTab:
                                         evento_asociado=%s, dias_credito=%s, subtotal=%s,
                                         impuesto=%s, total=%s, det_porcentaje=%s, det_monto=%s,
                                         delivery=%s, chofer_asociado=%s, kilometraje=%s,
-                                        cantidad_combustible=%s, orden_servicio=%s
+                                        cantidad_combustible=%s, orden_servicio=%s,
+                                        archivo_ruta=%s
                                       WHERE id=%s""",
                                    (c_tipo.get().strip(), e_nro.get().strip(),
                                     e_fecha.get().strip(), e_prov.get().strip(),
@@ -7761,7 +8301,8 @@ class FacturasRecibidasTab:
                                     e_desc.get().strip(), e_veh.get().strip(),
                                     int(_num(e_dias)), sub, imp, tot, detp, detm, delivery,
                                     e_chofer.get().strip(), e_km.get().strip(),
-                                    e_gal.get().strip(), orden_guardar, id_factura))
+                                    e_gal.get().strip(), orden_guardar,
+                                    (ruta_escaneada[0] or None), id_factura))
                     conn_g.commit()
                 finally:
                     liberar_conexion(conn_g)
@@ -7960,7 +8501,7 @@ class FacturasRecibidasTab:
         # 🔃 Se cargan TODOS los registros del filtro/mes para poder ordenar por
         # cualquier columna afectando a todas las páginas (la paginación se hace al pintar)
         ocultar_app = bool(self.var_ocultar_app.get())
-        clave_cache = f"compras_recibidas_v4_{filtro}_mes_{self.mes_filtro}_app_{int(ocultar_app)}"
+        clave_cache = f"compras_recibidas_v5_{filtro}_mes_{self.mes_filtro}_app_{int(ocultar_app)}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -7981,6 +8522,7 @@ class FacturasRecibidasTab:
                 try:
                     cursor = conn.cursor()
                     query_base = "SELECT id, fecha, numero_documento, dias_credito, tipo_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(orden_servicio, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), \
+COALESCE(delivery, 0), \
 COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factura = facturas_recibidas.id), 0) FROM facturas_recibidas"
                     
                     condiciones = []
@@ -8059,6 +8601,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
             #    "unsupported operand type(s) for -: 'decimal.Decimal' and 'float'".
             tipo_doc = r[4]; cat = r[13] if r[13] else "GENERAL"
             impuesto = a_float(r[9]); tot_bruto = a_float(r[10]); det_monto = a_float(r[11])
+            delivery_val = a_float(r[23]) if len(r) > 23 else 0.0
             km_val = r[14] if r[14] else "-"
             cant_val = r[15] if r[15] else "-"
             ruc_val = r[16] if len(r) > 16 and r[16] else "-"
@@ -8089,8 +8632,10 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
                     nota += f" · comisión {formatear_moneda(comision_cruz)}"
                 metodo_pago = f"{metodo_pago} · {nota}" if metodo_pago else nota
 
-            if "Recibo" in tipo_doc and "8%" in tipo_doc: neto = tot_bruto - impuesto - det_monto
-            else: neto = tot_bruto - det_monto
+            if "Recibo" in tipo_doc and "8%" in tipo_doc:
+                neto = tot_bruto - impuesto - det_monto + delivery_val
+            else:
+                neto = tot_bruto - det_monto + delivery_val
                 
             # 🟢 Verde = cancelada; 🟣 violeta = pago parcial; 🔴 rojo = sin pagos
             try:
@@ -8209,7 +8754,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
         if not conn: return
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT tipo_documento, ruc, proveedor, numero_documento, fecha, evento_asociado, kilometraje, cantidad_combustible, descripcion, subtotal, impuesto, total, COALESCE(id_orden_servicio, 0), COALESCE(orden_servicio, ''), COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(det_monto, 0) FROM facturas_recibidas WHERE id = %s", (id_doc,))
+            cursor.execute("SELECT tipo_documento, ruc, proveedor, numero_documento, fecha, evento_asociado, kilometraje, cantidad_combustible, descripcion, subtotal, impuesto, total, COALESCE(id_orden_servicio, 0), COALESCE(orden_servicio, ''), COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(det_monto, 0), COALESCE(delivery, 0) FROM facturas_recibidas WHERE id = %s", (id_doc,))
             reg = cursor.fetchone()
             # 💳 Pagos ya registrados (para saber si la factura figura pagada)
             cursor.execute("""SELECT id, COALESCE(monto_pagado, 0), COALESCE(cuenta_origen, ''),
@@ -8221,7 +8766,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
             
         if not reg: return
         (e_tipo, e_ruc, e_prov, e_nro, e_fec, e_placa, e_km, e_gal, e_desc, e_sub, e_imp, e_tot,
-         e_orden_id, e_orden_txt, e_tercero, e_cruzada, e_comision, e_inter, e_det) = reg
+         e_orden_id, e_orden_txt, e_tercero, e_cruzada, e_comision, e_inter, e_det, e_delivery) = reg
         try:
             e_orden_id = int(e_orden_id or 0)
         except (TypeError, ValueError):
@@ -8314,7 +8859,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
         def actualizar_total_cruzada_edit(*_a):
             """Muestra el total pagado al tercero: factura + comisión interbancaria."""
             try:
-                neto = max(0.0, _num_edit(ent_tot) - float(e_det or 0))
+                neto = max(0.0, _num_edit(ent_tot) - float(e_det or 0) + float(e_delivery or 0))
             except Exception:
                 neto = 0.0
             try:
@@ -9041,7 +9586,7 @@ class CuentasPorPagarTab:
         # 🔃 Se cargan TODOS los registros del filtro/mes para ordenar por cualquier
         # columna afectando a todas las páginas (la paginación se hace al pintar)
         ocultar_app = bool(self.var_ocultar_app.get())
-        clave_cache = f"pagos_compras_v3_{filtro}_mes_{self.mes_filtro}_app_{int(ocultar_app)}"
+        clave_cache = f"pagos_compras_v4_{filtro}_mes_{self.mes_filtro}_app_{int(ocultar_app)}"
         datos = cache_sistema.obtener(clave_cache)
 
         if datos is not None:
@@ -9082,7 +9627,7 @@ class CuentasPorPagarTab:
 
                     # Se traen TODOS los comprobantes del filtro/mes (sin LIMIT) para
                     # poder ordenar por cualquier columna en todas las páginas
-                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE) FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
+                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(delivery, 0) FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
                     registros = cursor.fetchall()
                     
                     ids_actuales = [r[0] for r in registros]
@@ -9101,7 +9646,7 @@ class CuentasPorPagarTab:
                         (id_factura, fecha, nro_doc, proveedor, evento, concepto, subtotal, impuesto,
                          tot_bruto, det_monto, tipo_doc, km_val, cant_val, ruc_db,
                          tercero, es_cruzada, soporte_cruzada,
-                         comision_cruz, interbancario_cruz) = reg
+                         comision_cruz, interbancario_cruz, delivery_val) = reg
                         tercero = str(tercero or "")
                         es_cruzada = bool(es_cruzada)
                         soporte_cruzada = str(soporte_cruzada or "")
@@ -9109,11 +9654,12 @@ class CuentasPorPagarTab:
                         imp_val = float(impuesto or 0.0)
                         tot_bruto_val = float(tot_bruto or 0.0)
                         det_monto_val = float(det_monto or 0.0)
+                        delivery_val = float(delivery_val or 0.0)
                         
                         if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc:
-                            neto_facturado = tot_bruto_val - imp_val - det_monto_val
+                            neto_facturado = tot_bruto_val - imp_val - det_monto_val + delivery_val
                         else:
-                            neto_facturado = tot_bruto_val - det_monto_val
+                            neto_facturado = tot_bruto_val - det_monto_val + delivery_val
                         
                         pagos_factura = mapa_detalle_pagos.get(id_factura, [])
                         monto_pagado = 0.0
@@ -9294,6 +9840,7 @@ class CuentasPorPagarTab:
                                 SELECT f.numero_documento, f.proveedor, COALESCE(f.categoria, 'GENERAL'),
                                        COALESCE(f.total, 0), COALESCE(f.impuesto, 0),
                                        COALESCE(f.det_monto, 0), COALESCE(f.tipo_documento, ''),
+                                       COALESCE(f.delivery, 0),
                                        COALESCE((SELECT SUM(monto_pagado) FROM pagos_comprobantes p
                                                  WHERE p.id_factura = f.id), 0)
                                 FROM facturas_recibidas f WHERE f.id = %s""", (idf,))
@@ -9304,11 +9851,12 @@ class CuentasPorPagarTab:
                             total = float(fila[3] or 0)
                             impuesto = float(fila[4] or 0)
                             detraccion = float(fila[5] or 0)
-                            pagado = float(fila[7] or 0)
+                            delivery = float(fila[7] or 0)
+                            pagado = float(fila[8] or 0)
                             if tipo_doc and "Recibo" in tipo_doc and "8%" in tipo_doc:
-                                neto = total - impuesto - detraccion
+                                neto = total - impuesto - detraccion + delivery
                             else:
-                                neto = total - detraccion
+                                neto = total - detraccion + delivery
                             saldo = round(max(0.0, neto - pagado), 2)
                             pendientes.append({"id": idf, "nro": str(fila[0] or ""),
                                                "prov": str(fila[1] or ""), "cat": str(fila[2] or ""),
@@ -10076,7 +10624,7 @@ class CuentasPorPagarTab:
                     with conn_com.cursor() as c_com:
                         c_com.execute("""SELECT COALESCE(comision_interbancaria, 0), COALESCE(es_compra_cruzada, FALSE),
                                                 COALESCE(total, 0), COALESCE(det_monto, 0), COALESCE(impuesto, 0),
-                                                COALESCE(tipo_documento, '')
+                                                COALESCE(tipo_documento, ''), COALESCE(delivery, 0)
                                          FROM facturas_recibidas WHERE id = %s""", (id_factura,))
                         fila_com = c_com.fetchone()
                         if fila_com:
@@ -10086,10 +10634,11 @@ class CuentasPorPagarTab:
                             det_fac = float(fila_com[3] or 0)
                             imp_fac = float(fila_com[4] or 0)
                             tipo_fac = str(fila_com[5] or "")
+                            delivery_fac = float(fila_com[6] or 0)
                             if "Recibo" in tipo_fac and "8%" in tipo_fac:
-                                neto_factura = max(0.0, total_fac - imp_fac - det_fac)
+                                neto_factura = max(0.0, total_fac - imp_fac - det_fac + delivery_fac)
                             else:
-                                neto_factura = max(0.0, total_fac - det_fac)
+                                neto_factura = max(0.0, total_fac - det_fac + delivery_fac)
                         c_com.execute("SELECT COALESCE(SUM(monto_pagado), 0) FROM pagos_comprobantes WHERE id_factura = %s",
                                       (id_factura,))
                         ya_pagado = float((c_com.fetchone() or [0])[0] or 0)
@@ -10952,7 +11501,7 @@ class CuentasPorPagarTab:
                     c.execute("SELECT id_factura, COALESCE(SUM(monto_pagado), 0) FROM pagos_comprobantes GROUP BY id_factura")
                     pagos_dict = {row[0]: float(row[1]) for row in c.fetchall()}
 
-                    c.execute("SELECT id, fecha, proveedor, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento FROM facturas_recibidas")
+                    c.execute("SELECT id, fecha, proveedor, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, COALESCE(delivery, 0) FROM facturas_recibidas")
                     
                     tot_bruto = 0.0
                     tot_igv = 0.0
@@ -10963,7 +11512,7 @@ class CuentasPorPagarTab:
                     proveedores_desglose = {}
 
                     for r in c.fetchall():
-                        id_fac, fecha, prov, sub, imp, tot, det, tipo_doc = r
+                        id_fac, fecha, prov, sub, imp, tot, det, tipo_doc, delivery = r
                         nombre_prov = str(prov).strip() if prov else "SIN PROVEEDOR"
                         
                         if prov_filtro != "Todos" and nombre_prov != prov_filtro: continue
@@ -10980,22 +11529,23 @@ class CuentasPorPagarTab:
                         imp_val = float(imp or 0.0)
                         tot_val = float(tot or 0.0)
                         det_val = float(det or 0.0)
+                        delivery_val = float(delivery or 0.0)
                         
                         tot_bruto += sub_val
 
                         if tipo_doc and _documento_con_igv(tipo_doc):
                             tot_igv += imp_val
                             tot_det += det_val
-                            neto = tot_val - det_val
+                            neto = tot_val - det_val + delivery_val
                         elif tipo_doc and "Recibo" in tipo_doc:
                             if "8%" in tipo_doc:
                                 tot_det += imp_val
-                                neto = tot_val - imp_val - det_val
+                                neto = tot_val - imp_val - det_val + delivery_val
                             else:
-                                neto = tot_val - det_val
+                                neto = tot_val - det_val + delivery_val
                         else:
                             tot_det += det_val
-                            neto = tot_val - det_val
+                            neto = tot_val - det_val + delivery_val
 
                         pagado = pagos_dict.get(id_fac, 0.0)
                         saldo = max(0.0, neto - pagado)

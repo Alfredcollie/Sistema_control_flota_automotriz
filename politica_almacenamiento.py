@@ -36,7 +36,7 @@ import json
 import time
 import hashlib
 
-from app_paths import DATA_DIR, CONFIG_FILE, obtener_device_id
+from app_paths import DATA_DIR, CONFIG_FILE, obtener_device_id, es_ruta_de_windows
 
 try:
     from config_nube import cargar_rclone_sync, obtener_rclone_token
@@ -82,7 +82,7 @@ def normalizar_ruta(ruta):
     if not ruta:
         return ""
     ruta = os.path.expanduser(str(ruta).strip())
-    if sys.platform != "win32" and len(ruta) > 2 and ruta[1] == ":" and ruta[2] in ("\\", "/"):
+    if sys.platform != "win32" and es_ruta_de_windows(ruta):
         return ""
     return ruta
 

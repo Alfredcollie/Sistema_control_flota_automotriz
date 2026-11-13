@@ -1,0 +1,998 @@
+[
+ {
+  "id": 9018,
+  "fecha": "2026-09-01",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -4.23
+ },
+ {
+  "id": 9019,
+  "fecha": "2026-09-01",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.85
+ },
+ {
+  "id": 9020,
+  "fecha": "2026-09-01",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.92
+ },
+ {
+  "id": 9021,
+  "fecha": "2026-09-01",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.21
+ },
+ {
+  "id": 9022,
+  "fecha": "2026-09-01",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -50.0
+ },
+ {
+  "id": 9023,
+  "fecha": "2026-09-01",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -58.01
+ },
+ {
+  "id": 9024,
+  "fecha": "2026-09-02",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -2.87
+ },
+ {
+  "id": 9025,
+  "fecha": "2026-09-02",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.93
+ },
+ {
+  "id": 9026,
+  "fecha": "2026-09-02",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.15
+ },
+ {
+  "id": 9027,
+  "fecha": "2026-09-02",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.23
+ },
+ {
+  "id": 9028,
+  "fecha": "2026-09-02",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.11
+ },
+ {
+  "id": 9029,
+  "fecha": "2026-09-02",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -30.16
+ },
+ {
+  "id": 9030,
+  "fecha": "2026-09-02",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -50.0
+ },
+ {
+  "id": 9031,
+  "fecha": "2026-09-03",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -4.48
+ },
+ {
+  "id": 9032,
+  "fecha": "2026-09-03",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -4.73
+ },
+ {
+  "id": 9033,
+  "fecha": "2026-09-03",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.98
+ },
+ {
+  "id": 9034,
+  "fecha": "2026-09-03",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.11
+ },
+ {
+  "id": 9035,
+  "fecha": "2026-09-03",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.15
+ },
+ {
+  "id": 9036,
+  "fecha": "2026-09-03",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.56
+ },
+ {
+  "id": 9037,
+  "fecha": "2026-09-04",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -4.09
+ },
+ {
+  "id": 9038,
+  "fecha": "2026-09-04",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.64
+ },
+ {
+  "id": 9039,
+  "fecha": "2026-09-04",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.25
+ },
+ {
+  "id": 9040,
+  "fecha": "2026-09-04",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.0
+ },
+ {
+  "id": 9041,
+  "fecha": "2026-09-04",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.35
+ },
+ {
+  "id": 9042,
+  "fecha": "2026-09-04",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -43.59
+ },
+ {
+  "id": 9043,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -3.65
+ },
+ {
+  "id": 9044,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -3.94
+ },
+ {
+  "id": 9045,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.35
+ },
+ {
+  "id": 9046,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.64
+ },
+ {
+  "id": 9047,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -5.7
+ },
+ {
+  "id": 9048,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -6.67
+ },
+ {
+  "id": 9049,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -6.9
+ },
+ {
+  "id": 9050,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S LA CALER",
+  "monto": -7.18
+ },
+ {
+  "id": 9051,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S MONTREAL",
+  "monto": -7.25
+ },
+ {
+  "id": 9052,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.55
+ },
+ {
+  "id": 9053,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.56
+ },
+ {
+  "id": 9054,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.69
+ },
+ {
+  "id": 9055,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.5
+ },
+ {
+  "id": 9056,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.88
+ },
+ {
+  "id": 9057,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.97
+ },
+ {
+  "id": 9058,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.01
+ },
+ {
+  "id": 9059,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.1
+ },
+ {
+  "id": 9060,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.73
+ },
+ {
+  "id": 9061,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.99
+ },
+ {
+  "id": 9062,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -24.91
+ },
+ {
+  "id": 9063,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -30.0
+ },
+ {
+  "id": 9064,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -50.0
+ },
+ {
+  "id": 9065,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -55.96
+ },
+ {
+  "id": 9066,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -56.66
+ },
+ {
+  "id": 9067,
+  "fecha": "2026-09-07",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -60.0
+ },
+ {
+  "id": 9068,
+  "fecha": "2026-09-08",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.09
+ },
+ {
+  "id": 9069,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -3.6
+ },
+ {
+  "id": 9070,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -3.65
+ },
+ {
+  "id": 9071,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.85
+ },
+ {
+  "id": 9072,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -6.53
+ },
+ {
+  "id": 9073,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -8.94
+ },
+ {
+  "id": 9074,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.08
+ },
+ {
+  "id": 9075,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS E S MONTREAL",
+  "monto": -10.28
+ },
+ {
+  "id": 9076,
+  "fecha": "2026-09-09",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.33
+ },
+ {
+  "id": 9077,
+  "fecha": "2026-09-10",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.52
+ },
+ {
+  "id": 9078,
+  "fecha": "2026-09-10",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.68
+ },
+ {
+  "id": 9079,
+  "fecha": "2026-09-10",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -50.75
+ },
+ {
+  "id": 9080,
+  "fecha": "2026-09-11",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -3.51
+ },
+ {
+  "id": 9081,
+  "fecha": "2026-09-11",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.42
+ },
+ {
+  "id": 9082,
+  "fecha": "2026-09-11",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.12
+ },
+ {
+  "id": 9083,
+  "fecha": "2026-09-11",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.91
+ },
+ {
+  "id": 9084,
+  "fecha": "2026-09-11",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.14
+ },
+ {
+  "id": 9085,
+  "fecha": "2026-09-13",
+  "descripcion": "TRAN TIL Transf BLACK 1650067 INTERNO",
+  "monto": 300.0
+ },
+ {
+  "id": 9086,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -5.84
+ },
+ {
+  "id": 9087,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -6.58
+ },
+ {
+  "id": 9088,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -6.62
+ },
+ {
+  "id": 9089,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.47
+ },
+ {
+  "id": 9090,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.84
+ },
+ {
+  "id": 9091,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.76
+ },
+ {
+  "id": 9092,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.08
+ },
+ {
+  "id": 9093,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.36
+ },
+ {
+  "id": 9094,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S MONTREAL",
+  "monto": -12.41
+ },
+ {
+  "id": 9095,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.81
+ },
+ {
+  "id": 9096,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.14
+ },
+ {
+  "id": 9097,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.46
+ },
+ {
+  "id": 9098,
+  "fecha": "2026-09-14",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -53.03
+ },
+ {
+  "id": 9099,
+  "fecha": "2026-09-15",
+  "descripcion": "TRAN TIL Transf BLACK 1291887 INTERNO",
+  "monto": 1200.0
+ },
+ {
+  "id": 9100,
+  "fecha": "2026-09-15",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -6.58
+ },
+ {
+  "id": 9101,
+  "fecha": "2026-09-15",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.02
+ },
+ {
+  "id": 9102,
+  "fecha": "2026-09-15",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -11.18
+ },
+ {
+  "id": 9103,
+  "fecha": "2026-09-15",
+  "descripcion": "CONSUMO POS E S MONTREAL",
+  "monto": -12.52
+ },
+ {
+  "id": 9104,
+  "fecha": "2026-09-16",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -3.38
+ },
+ {
+  "id": 9105,
+  "fecha": "2026-09-16",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.38
+ },
+ {
+  "id": 9106,
+  "fecha": "2026-09-16",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.86
+ },
+ {
+  "id": 9107,
+  "fecha": "2026-09-16",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -55.75
+ },
+ {
+  "id": 9108,
+  "fecha": "2026-09-17",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -7.32
+ },
+ {
+  "id": 9109,
+  "fecha": "2026-09-17",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.46
+ },
+ {
+  "id": 9110,
+  "fecha": "2026-09-17",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.62
+ },
+ {
+  "id": 9111,
+  "fecha": "2026-09-17",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.69
+ },
+ {
+  "id": 9112,
+  "fecha": "2026-09-17",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -52.68
+ },
+ {
+  "id": 9113,
+  "fecha": "2026-09-17",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -54.37
+ },
+ {
+  "id": 9114,
+  "fecha": "2026-09-17",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -60.09
+ },
+ {
+  "id": 9115,
+  "fecha": "2026-09-18",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.93
+ },
+ {
+  "id": 9116,
+  "fecha": "2026-09-18",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -6.22
+ },
+ {
+  "id": 9117,
+  "fecha": "2026-09-18",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -6.61
+ },
+ {
+  "id": 9118,
+  "fecha": "2026-09-18",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.2
+ },
+ {
+  "id": 9119,
+  "fecha": "2026-09-18",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.35
+ },
+ {
+  "id": 9120,
+  "fecha": "2026-09-18",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -50.0
+ },
+ {
+  "id": 9121,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.78
+ },
+ {
+  "id": 9122,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.62
+ },
+ {
+  "id": 9123,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.62
+ },
+ {
+  "id": 9124,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.65
+ },
+ {
+  "id": 9125,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.74
+ },
+ {
+  "id": 9126,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.85
+ },
+ {
+  "id": 9127,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.07
+ },
+ {
+  "id": 9128,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.55
+ },
+ {
+  "id": 9129,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.73
+ },
+ {
+  "id": 9130,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.14
+ },
+ {
+  "id": 9131,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -14.33
+ },
+ {
+  "id": 9132,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -40.0
+ },
+ {
+  "id": 9133,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -52.57
+ },
+ {
+  "id": 9134,
+  "fecha": "2026-09-21",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -91.06
+ },
+ {
+  "id": 9135,
+  "fecha": "2026-09-22",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -1.5
+ },
+ {
+  "id": 9136,
+  "fecha": "2026-09-22",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -5.35
+ },
+ {
+  "id": 9137,
+  "fecha": "2026-09-22",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -6.85
+ },
+ {
+  "id": 9138,
+  "fecha": "2026-09-22",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.07
+ },
+ {
+  "id": 9139,
+  "fecha": "2026-09-22",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.89
+ },
+ {
+  "id": 9140,
+  "fecha": "2026-09-23",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -6.64
+ },
+ {
+  "id": 9141,
+  "fecha": "2026-09-23",
+  "descripcion": "CONSUMO POS E S MAGDALEN",
+  "monto": -9.97
+ },
+ {
+  "id": 9142,
+  "fecha": "2026-09-23",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.06
+ },
+ {
+  "id": 9143,
+  "fecha": "2026-09-23",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -11.49
+ },
+ {
+  "id": 9144,
+  "fecha": "2026-09-23",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.76
+ },
+ {
+  "id": 9145,
+  "fecha": "2026-09-24",
+  "descripcion": "CONSUMO POS E S SALAVERR",
+  "monto": -3.87
+ },
+ {
+  "id": 9146,
+  "fecha": "2026-09-24",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.97
+ },
+ {
+  "id": 9147,
+  "fecha": "2026-09-24",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -9.93
+ },
+ {
+  "id": 9148,
+  "fecha": "2026-09-24",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -10.76
+ },
+ {
+  "id": 9149,
+  "fecha": "2026-09-24",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.8
+ },
+ {
+  "id": 9150,
+  "fecha": "2026-09-25",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -8.65
+ },
+ {
+  "id": 9151,
+  "fecha": "2026-09-25",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.56
+ },
+ {
+  "id": 9152,
+  "fecha": "2026-09-25",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.69
+ },
+ {
+  "id": 9153,
+  "fecha": "2026-09-25",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -58.52
+ },
+ {
+  "id": 9154,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -4.47
+ },
+ {
+  "id": 9155,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -5.96
+ },
+ {
+  "id": 9156,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -6.96
+ },
+ {
+  "id": 9157,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.43
+ },
+ {
+  "id": 9158,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.44
+ },
+ {
+  "id": 9159,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -9.48
+ },
+ {
+  "id": 9160,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -11.33
+ },
+ {
+  "id": 9161,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -11.83
+ },
+ {
+  "id": 9162,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.15
+ },
+ {
+  "id": 9163,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -12.48
+ },
+ {
+  "id": 9164,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -12.53
+ },
+ {
+  "id": 9165,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -13.23
+ },
+ {
+  "id": 9166,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S MONTREAL",
+  "monto": -13.56
+ },
+ {
+  "id": 9167,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -14.08
+ },
+ {
+  "id": 9168,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -14.22
+ },
+ {
+  "id": 9169,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -37.05
+ },
+ {
+  "id": 9170,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -45.81
+ },
+ {
+  "id": 9171,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -50.0
+ },
+ {
+  "id": 9172,
+  "fecha": "2026-09-28",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -60.0
+ },
+ {
+  "id": 9173,
+  "fecha": "2026-09-29",
+  "descripcion": "TRAN TIL Transf BLACK 1616965 INTERNO",
+  "monto": 1100.0
+ },
+ {
+  "id": 9174,
+  "fecha": "2026-09-29",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -4.01
+ },
+ {
+  "id": 9175,
+  "fecha": "2026-09-29",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -6.15
+ },
+ {
+  "id": 9176,
+  "fecha": "2026-09-29",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.6
+ },
+ {
+  "id": 9177,
+  "fecha": "2026-09-29",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -40.0
+ },
+ {
+  "id": 9178,
+  "fecha": "2026-09-29",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -50.0
+ },
+ {
+  "id": 9179,
+  "fecha": "2026-09-30",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -7.44
+ },
+ {
+  "id": 9180,
+  "fecha": "2026-09-30",
+  "descripcion": "CONSUMO POS Grifos Espi",
+  "monto": -8.32
+ },
+ {
+  "id": 9181,
+  "fecha": "2026-09-30",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -8.56
+ },
+ {
+  "id": 9182,
+  "fecha": "2026-09-30",
+  "descripcion": "CONSUMO POS E S ORRANTIA",
+  "monto": -10.83
+ },
+ {
+  "id": 9183,
+  "fecha": "2026-09-30",
+  "descripcion": "CONSUMO POS Estacion Or",
+  "monto": -46.29
+ }
+]

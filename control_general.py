@@ -51,6 +51,7 @@ import sys
 import os
 import shutil
 import json
+import time
 import importlib
 import urllib.request
 import urllib.error
@@ -1426,6 +1427,9 @@ def traer_al_frente(ventana, retrasos=(60, 260, 700, 1150)):
         try:
             if not ventana.winfo_exists():
                 return
+            # 🛡️ Si el usuario ya la minimizó, no se vuelve a mostrar
+            if str(ventana.state()) == "iconic":
+                return
             ventana.deiconify()
             ventana.lift()
             try:
@@ -2452,19 +2456,26 @@ class ControlGeneralEventos:
         if not self._ventana_viva(ventana):
             return
         try:
-            if str(ventana.state()) == "iconic":
-                return          # el usuario la minimizó a propósito
+            # 🛡️ Si se acaba de minimizar, Windows devuelve el foco a la principal:
+            #    no hay que subir nada (si no, la ventana minimizada vuelve sola).
+            if time.time() - getattr(self, "_ultima_minimizacion", 0.0) < 0.8:
+                return
+            if str(ventana.state()) != "normal":
+                return          # minimizada a propósito: NO se restaura
+            if not ventana.winfo_viewable():
+                return
         except Exception:
             return
         try:
             ventana.lift()
-            # En Windows se fuerza de verdad al frente (lift() a veces no basta)
+            # En Windows se fuerza al frente SIN restaurar (antes se usaba
+            # SW_RESTORE, que "desminimizaba" la ventana que el usuario acababa
+            # de minimizar: por eso no se podía minimizar con 2 módulos abiertos).
             if sys.platform == "win32":
                 try:
                     import ctypes
                     user32 = ctypes.windll.user32
                     handle = user32.GetParent(ventana.winfo_id()) or ventana.winfo_id()
-                    user32.ShowWindow(handle, 9)             # SW_RESTORE
                     user32.SetForegroundWindow(handle)
                 except Exception:
                     pass
@@ -2650,21 +2661,71 @@ class ControlGeneralEventos:
         """Ya no se usa: las ventanas de los módulos son ventanas reales."""
         return None
 
+    def _registrar_minimizacion(self, texto):
+        """Deja una línea en minimizar.log (diagnóstico en el equipo del cliente)."""
+        try:
+            ruta = os.path.join(str(DATA_DIR), "minimizar.log")
+            if os.path.exists(ruta) and os.path.getsize(ruta) > 200000:
+                os.replace(ruta, ruta + ".1")
+            with open(ruta, "a", encoding="utf-8") as archivo:
+                archivo.write("%s | %s\n"
+                              % (datetime.now().strftime("%d/%m/%Y %H:%M:%S"), texto))
+        except Exception:
+            pass
+
     def minimizar_ventana(self, clave):
-        """Minimiza la ventana del módulo a la barra de tareas de Windows."""
+        """Minimiza la ventana del módulo a la barra de tareas de Windows.
+
+        Se minimiza un instante DESPUÉS del clic (hacerlo dentro del propio clic
+        hacía que la ventana volviera) y, mientras tanto, se avisa para que el
+        vigilante del foco no la restaure. Si Windows no la minimiza, se usa la
+        API del sistema como respaldo.
+        """
         info = self.ventanas_modulos.get(clave)
         if not info:
             return
         ventana = info.get("ventana")
         if not self._ventana_viva(ventana):
             return
-        try:
-            ventana.iconify()
-        except Exception as error:
-            print("Aviso - minimizar ventana:", error)
-        info["minimizada"] = True
+        self._ultima_minimizacion = time.time()
         if self._clave_activa == clave:
             self._clave_activa = None
+        info["minimizada"] = True
+        try:
+            ventana.attributes("-topmost", False)
+        except Exception:
+            pass
+
+        def _minimizar():
+            if not self._ventana_viva(ventana):
+                return
+            estado_antes = estado_despues = ""
+            try:
+                estado_antes = str(ventana.state())
+                ventana.iconify()
+            except Exception as error:
+                print("Aviso - minimizar ventana:", error)
+            try:
+                estado_despues = str(ventana.state())
+            except Exception:
+                pass
+            if estado_despues != "iconic":
+                try:
+                    if sys.platform == "win32":
+                        u = ctypes.windll.user32
+                        hwnd = u.GetParent(ventana.winfo_id()) or ventana.winfo_id()
+                        u.ShowWindow(hwnd, 6)          # 6 = SW_MINIMIZE
+                        estado_despues = str(ventana.state())
+                except Exception as error:
+                    print("Aviso - minimizar (API):", error)
+            self._registrar_minimizacion(
+                "modulo=%s ventanas_abiertas=%s antes=%s despues=%s"
+                % (clave, len(self.ventanas_modulos), estado_antes, estado_despues))
+
+        try:
+            ventana.after(1, _minimizar)
+        except Exception:
+            _minimizar()
         self._actualizar_bienvenida()
 
     def restaurar_ventana(self, clave):

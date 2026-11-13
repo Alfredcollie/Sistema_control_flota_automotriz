@@ -183,7 +183,8 @@ def probar_ventanas(modulo):
 
 
 MODULOS = ["control_general", "app_paths", "escaner", "escaner_movil", "clientes",
-           "modulo_compras", "modulo_ventas"]
+           "modulo_compras", "modulo_ventas", "modulo_banco", "conciliacion_inteligente",
+           "politica_almacenamiento"]
 
 
 def main():
@@ -217,7 +218,8 @@ def main():
     carpeta = os.path.dirname(os.path.abspath(__file__))
     archivos = []
     for nombre in ("modulo_compras.py", "modulo_ventas.py", "clientes.py",
-                   "contratos_actas.py", "control_general.py"):
+                   "contratos_actas.py", "control_general.py", "modulo_banco.py",
+                   "escaner.py", "app_paths.py", "libro_diario.py", "libro_mayor.py"):
         ruta = os.path.join(carpeta, nombre)
         if os.path.isfile(ruta):
             archivos.append((nombre, ruta))

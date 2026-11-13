@@ -1,4 +1,4 @@
-﻿name: Compilar y publicar (Windows + macOS)
+name: Compilar y publicar (Windows + macOS)
 
 on:
   # 🏷️ Se compila SOLO al subir una etiqueta de versión (V1.5.7) o a mano.
@@ -235,6 +235,18 @@ jobs:
     - name: Forzar Modo Claro en la app (macOS)
       run: |
         plutil -replace NSRequiresAquaSystemAppearance -bool YES "$PWD/dist/ControlFlota.app/Contents/Info.plist" 2>/dev/null || plutil -insert NSRequiresAquaSystemAppearance -bool YES "$PWD/dist/ControlFlota.app/Contents/Info.plist" || true
+
+    # 🔎 Red local: el escáner (eSCL/AirScan), el descubrimiento Bonjour y el
+    # servidor del teléfono (http://IP:8765) necesitan este permiso. Sin estas
+    # claves, macOS 14/15 deniega el acceso y la app "no encuentra" el escáner.
+    - name: Permiso de red local para el escáner (macOS)
+      run: |
+        PLIST="$PWD/dist/ControlFlota.app/Contents/Info.plist"
+        plutil -replace NSLocalNetworkUsageDescription -string "Control Flota usa la red local para encontrar la multifuncional (escaneo de comprobantes) y para recibir fotos del teléfono." "$PLIST" 2>/dev/null \
+          || plutil -insert NSLocalNetworkUsageDescription -string "Control Flota usa la red local para encontrar la multifuncional (escaneo de comprobantes) y para recibir fotos del teléfono." "$PLIST" || true
+        plutil -replace NSBonjourServices -json '["_uscan._tcp","_uscans._tcp","_ipp._tcp","_ipps._tcp","_http._tcp"]' "$PLIST" 2>/dev/null \
+          || plutil -insert NSBonjourServices -json '["_uscan._tcp","_uscans._tcp","_ipp._tcp","_ipps._tcp","_http._tcp"]' "$PLIST" || true
+        plutil -p "$PLIST" | grep -E "NSLocalNetwork|NSBonjour" || echo "Aviso: no se pudieron escribir las claves de red local."
 
     # Firma ESTABLE: con el mismo certificado en cada compilaciÃ³n macOS
     # reconoce siempre la misma aplicaciÃ³n y conserva los permisos que el

@@ -224,6 +224,14 @@ def liberar_conexion(conn):
     """Devuelve la conexión al pool para que sea reutilizada por otro proceso."""
     global _connection_pool
     if _connection_pool and conn:
+        # 🛡️ Nunca devolver al pool una conexión con una transacción abierta o
+        #    abortada: la siguiente consulta que la tomara fallaría con
+        #    «current transaction is aborted» y el error aparecería en OTRO módulo.
+        try:
+            if not getattr(conn, "closed", 0):
+                conn.rollback()
+        except Exception:
+            pass
         try:
             _connection_pool.putconn(conn)
         except Exception:

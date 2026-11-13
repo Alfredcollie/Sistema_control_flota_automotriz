@@ -1,0 +1,430 @@
+{
+ "espejos": [
+  {
+   "id": 999,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -815.24,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 546,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1004,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -1031.14,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 550,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1015,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "01/10/2026",
+   "monto": -250.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 552,
+   "descripcion": "Alquiler cochera Octubre, Lucy Borja"
+  },
+  {
+   "id": 1024,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "05/10/2026",
+   "monto": -100.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 597,
+   "descripcion": "Compra escritorios (Ugaz Joffre)"
+  },
+  {
+   "id": 1028,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "01/10/2026",
+   "monto": -579.91,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 555,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1032,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "01/10/2026",
+   "monto": -350.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 554,
+   "descripcion": "Alquiler cochera Septiembre, Herrera fernandez"
+  },
+  {
+   "id": 1035,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "01/10/2026",
+   "monto": -300.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 553,
+   "descripcion": "Alquiler cochera Octubre, Vargas Della"
+  },
+  {
+   "id": 1038,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "02/10/2026",
+   "monto": -3302.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 540,
+   "descripcion": "Pago cuota prestamos de 90.000 soles"
+  },
+  {
+   "id": 1042,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "04/10/2026",
+   "monto": -4.8,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 924,
+   "descripcion": "Comisión transferencia Eduardo"
+  },
+  {
+   "id": 1014,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -579.41,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 543,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1044,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -1042.96,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 544,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1029,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -1051.85,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 541,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1023,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -50.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 542,
+   "descripcion": "Bono"
+  },
+  {
+   "id": 1012,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "02/10/2026",
+   "monto": -345.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 565,
+   "descripcion": "Otros"
+  },
+  {
+   "id": 1002,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -50.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 551,
+   "descripcion": "Bono"
+  },
+  {
+   "id": 1000,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "30/09/2026",
+   "monto": -50.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 545,
+   "descripcion": "Bono"
+  },
+  {
+   "id": 1184,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "31/10/2026",
+   "monto": -1339.38,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 860,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1191,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "15/10/2026",
+   "monto": -1653.35,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 708,
+   "descripcion": "1ra quincena de Octubre"
+  },
+  {
+   "id": 1192,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "04/11/2026",
+   "monto": -389.97,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 883,
+   "descripcion": "Liquidacion Angel"
+  },
+  {
+   "id": 1193,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "15/10/2026",
+   "monto": -652.45,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 709,
+   "descripcion": "1ra quincena de octubre"
+  },
+  {
+   "id": 1196,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "15/10/2026",
+   "monto": -1629.35,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 715,
+   "descripcion": "1ra quincena de octubre"
+  },
+  {
+   "id": 1198,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "31/10/2026",
+   "monto": -5.5,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 862,
+   "descripcion": "Envio de estado de cuenta"
+  },
+  {
+   "id": 1200,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "15/10/2026",
+   "monto": -1187.21,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 714,
+   "descripcion": "1ra quincena de octubre"
+  },
+  {
+   "id": 1201,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "09/10/2026",
+   "monto": -22.2,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 674,
+   "descripcion": "Aprobacion Prorroga trabajador extrangero"
+  },
+  {
+   "id": 1206,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "02/11/2026",
+   "monto": -4.8,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 854,
+   "descripcion": "Comision bancaria pago factura F003-175 F003-174"
+  },
+  {
+   "id": 1210,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "13/10/2026",
+   "monto": -177.59,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 688,
+   "descripcion": "Pago AFP"
+  },
+  {
+   "id": 1211,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "13/10/2026",
+   "monto": -435.7,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 687,
+   "descripcion": "Pago AFP"
+  },
+  {
+   "id": 1213,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "12/10/2026",
+   "monto": -39.9,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 673,
+   "descripcion": "Pago documento"
+  },
+  {
+   "id": 1220,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "31/10/2026",
+   "monto": -35.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 861,
+   "descripcion": "Com. Mantenimiento bancario"
+  },
+  {
+   "id": 1221,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "31/10/2026",
+   "monto": -300.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 857,
+   "descripcion": "Alquiler cochera"
+  },
+  {
+   "id": 1223,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "31/10/2026",
+   "monto": -250.0,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 856,
+   "descripcion": "Alquiler cochera"
+  },
+  {
+   "id": 1227,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "31/10/2026",
+   "monto": -1388.41,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 859,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1232,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "15/10/2026",
+   "monto": -1340.78,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 710,
+   "descripcion": "!ra quincena de Octubre"
+  },
+  {
+   "id": 1234,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "31/10/2026",
+   "monto": -991.54,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 858,
+   "descripcion": "Sueldo"
+  },
+  {
+   "id": 1230,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "22/10/2026",
+   "monto": -55.4,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 785,
+   "descripcion": "Tarxi para daniel"
+  },
+  {
+   "id": 1224,
+   "banco": "BCP",
+   "cuenta": "BCP - 1937218112021",
+   "fecha": "26/10/2026",
+   "monto": -4.8,
+   "origen": "s:pagos_comprobantes",
+   "id_movimiento": 811,
+   "descripcion": "Comision interbancaria F001-00000491"
+  }
+ ],
+ "manuales": [
+  {
+   "id": 26,
+   "banco": "BCP",
+   "fecha": "01/10/2026",
+   "monto": -55.1,
+   "id_gasto_compras": 559,
+   "descripcion": "Gastos Operativos - Movilidad - Pago de taxis"
+  },
+  {
+   "id": 25,
+   "banco": "BCP",
+   "fecha": "01/10/2026",
+   "monto": -350.0,
+   "id_gasto_compras": 558,
+   "descripcion": "Gastos Fijos - Alquiler - Alquiler cochera Septiembre, Herrera fernandez"
+  },
+  {
+   "id": 31,
+   "banco": "BCP",
+   "fecha": "04/10/2026",
+   "monto": -423.0,
+   "id_gasto_compras": 599,
+   "descripcion": "Gastos Operativos - Alimentacion - Alimentacion Gerencia"
+  },
+  {
+   "id": 32,
+   "banco": "BCP",
+   "fecha": "05/10/2026",
+   "monto": -310.5,
+   "id_gasto_compras": 600,
+   "descripcion": "Gastos Fijos - Gastos de oficina - Compra varias oficina"
+  },
+  {
+   "id": 33,
+   "banco": "BCP",
+   "fecha": "03/10/2026",
+   "monto": -49.0,
+   "id_gasto_compras": 601,
+   "descripcion": "Gastos Operativos - Movilidad - Transporte Nevera"
+  },
+  {
+   "id": 1116,
+   "banco": "BCP",
+   "fecha": "2026-09-01",
+   "monto": -1730.0,
+   "id_gasto_compras": 0,
+   "descripcion": "PAGO IMPUES 783499514¥ BPI 111-034 013394 19:10 SNTPEA 4708"
+  },
+  {
+   "id": 1120,
+   "banco": "BCP",
+   "fecha": "2026-09-01",
+   "monto": -472.77,
+   "id_gasto_compras": 0,
+   "descripcion": "PAGOS AFP INTEGRA BPI 111-041 004838 19:01 AFNA01 4753"
+  },
+  {
+   "id": 1121,
+   "banco": "BCP",
+   "fecha": "2026-09-01",
+   "monto": -176.54,
+   "id_gasto_compras": 0,
+   "descripcion": "PAGOS AFP HABITAT BPI 111-041 004836 19:01 AFNA01 4753"
+  }
+ ]
+}

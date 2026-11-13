@@ -298,7 +298,15 @@ def _crear_pdf(ruta, historia, margenes):
         os.makedirs(carpeta, exist_ok=True)
     # 📄 si hay hoja membretada, el texto no baja hasta el logo ni la franja inferior
     if _ruta_membrete():
-        inferior = max(inferior, MARGEN_INFERIOR_MEMBRETE)
+        # márgenes que respetan el membrete (valores en cm)
+        # las ACTAS llevan 5 mm menos arriba para que las firmas no salten de hoja
+        if "acta" in os.path.basename(str(ruta)).lower():
+            superior = 1.0
+        else:
+            superior = min(superior, 1.5)  # sin margen arriba (lo pide el membrete)
+        inferior = max(inferior, 5.3)      # pie ajustado (el membrete empieza en 5,2 cm)
+        izquierda = 2.5                    # 2,5 cm (1 cm más por lado)
+        derecha = 2.5                      # 2,5 cm
     documento = SimpleDocTemplate(
         ruta, pagesize=A4,
         leftMargin=izquierda * cm, rightMargin=derecha * cm,
@@ -373,14 +381,14 @@ def generar_acta(datos, ruta):
                 else:
                     historia.append(_parrafo_con_negritas(limpia, estilos["parrafo"], valores))
                     if limpia.lower().startswith("los siguientes bienes"):
-                        historia.append(Spacer(1, 0.2 * cm))
+                        historia.append(Spacer(1, 0.1 * cm))
                         historia.append(_tabla_bienes(datos, estilos))
-                        historia.append(Spacer(1, 0.3 * cm))
+                        historia.append(Spacer(1, 0.1 * cm))
         else:
             historia.append(_parrafo_con_negritas(texto, estilos["parrafo"], valores))
 
     # 🖊️ firmas
-    historia.append(Spacer(1, 1.6 * cm))
+    historia.append(Spacer(1, 1.2 * cm))    # firmas 1 cm más abajo
     historia.append(_bloque_firmas(valores, estilos))
 
     return _crear_pdf(ruta, historia, (3.17, 3.17, 2.54, 2.54))

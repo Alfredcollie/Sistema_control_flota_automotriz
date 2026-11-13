@@ -24,6 +24,13 @@ import subprocess
 import tempfile
 from datetime import datetime
 
+# 🪟➡️🍎 Validación de rutas por sistema operativo (descarta rutas de Windows en Mac).
+try:
+    from app_paths import ruta_utilizable
+except Exception:  # pragma: no cover - app_paths siempre va en el build
+    def ruta_utilizable(ruta):
+        return os.path.expanduser(str(ruta or "").strip())
+
 # =========================================================
 # OPCIONES QUE SE MUESTRAN EN CONFIGURACIÓN GENERAL
 # =========================================================
@@ -113,10 +120,13 @@ def carpeta_escaneos(config=None):
     base = str(datos.get("escaner_carpeta") or "").strip()
     if not base and isinstance(config, dict):
         base = str(config.get("ruta_drive") or "").strip()
+    # 🪟➡️🍎 Una ruta de Windows no sirve en macOS/Linux: se descarta y se usa la
+    #    carpeta de datos del usuario (escribible y FUERA del .app).
+    base = ruta_utilizable(base)
     if not base:
         try:
-            from app_paths import CONFIG_DIR
-            base = str(CONFIG_DIR)
+            from app_paths import DATA_DIR
+            base = str(DATA_DIR)
         except Exception:
             base = os.path.join(os.path.expanduser("~"), "BlackCube_Seguro")
     # 📁 Los escaneos son archivos de trabajo: van dentro de Compras/_Escaneos
