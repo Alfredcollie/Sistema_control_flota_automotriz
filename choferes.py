@@ -1433,6 +1433,68 @@ class ChoferesApp:
         self._estado_anterior = "Inactivo"
         self._actualizar_lbl_observacion()
 
+    def _avisar_unidad_queda_sin_chofer(self, movil, id_chofer=None):
+        """⚠️ Al dar de baja a un chofer, avisa si su unidad queda sin chofer activo.
+
+        La unidad sigue asignada en el cálculo de cobranza y ese módulo muestra el
+        nombre del chofer ACTIVO de la placa; si no queda ninguno, hay que asignar
+        la unidad a otro chofer en este módulo para que la cobranza no siga
+        mostrando al chofer que fue dado de baja.
+        """
+        movil = str(movil or "").strip()
+        if not movil or movil.lower().startswith("ninguno"):
+            return
+        placa = movil.split("|")[0].strip().upper()
+        if not placa:
+            return
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return
+        try:
+            cursor = conn.cursor()
+            # ¿Otro chofer ACTIVO ya tiene esta misma unidad? Entonces no hay nada que avisar.
+            cursor.execute("""
+                SELECT COUNT(*) FROM choferes
+                WHERE COALESCE(estado, 'Activo') = 'Activo'
+                  AND UPPER(TRIM(SPLIT_PART(COALESCE(movil_asignado, ''), '|', 1))) = %s
+                  AND id <> %s
+            """, (placa, int(id_chofer or -1)))
+            if int((cursor.fetchone() or [0])[0] or 0) > 0:
+                cursor.close()
+                return
+            # Clientes del cálculo de cobranza que tienen asignada esa unidad
+            cursor.execute("""
+                SELECT DISTINCT COALESCE(c.nombre_empresa, ''), COALESCE(cu.unidad, '')
+                FROM clientes_unidades cu
+                JOIN flota_vehiculos v ON v.id = cu.id_vehiculo
+                LEFT JOIN clientes c ON c.id = cu.id_cliente
+                WHERE UPPER(TRIM(COALESCE(v.placa, ''))) = %s
+                ORDER BY 1
+            """, (placa,))
+            filas = cursor.fetchall()
+            cursor.close()
+        except Exception as e:
+            print("[Aviso baja chofer]", e)
+            return
+        finally:
+            liberar_conexion(conn)
+        if not filas:
+            return
+        detalle = "\n".join("   • " + (str(cli) or "(cliente)") + " — " + str(uni)
+                            for cli, uni in filas[:8])
+        if len(filas) > 8:
+            detalle += "\n   • … y %d más" % (len(filas) - 8)
+        mensaje = ("El chofer quedó INACTIVO y la unidad %s sigue asignada en el "
+                   "cálculo de cobranza:\n\n%s\n\n"
+                   "Asígnale esta unidad a otro chofer ACTIVO en este módulo "
+                   "(campo «Móvil»). El cálculo de cobranza tomará el nombre del "
+                   "nuevo chofer automáticamente.") % (placa, detalle)
+        try:
+            messagebox.showwarning("Unidad sin chofer activo", mensaje,
+                                   parent=self.parent_frame.winfo_toplevel())
+        except Exception:
+            messagebox.showwarning("Unidad sin chofer activo", mensaje)
+
     def pagina_anterior(self):
         if self.pagina_actual > 1:
             self.pagina_actual -= 1
@@ -1772,7 +1834,12 @@ class ChoferesApp:
         if not conn: return
         try:
             cursor = conn.cursor()
+            estado_previo = None
             if self.id_edicion:
+                cursor.execute("SELECT COALESCE(estado, 'Activo') FROM choferes WHERE id=%s",
+                               (self.id_edicion,))
+                _fila_estado = cursor.fetchone()
+                estado_previo = str(_fila_estado[0] or "Activo") if _fila_estado else None
                 cursor.execute("""
                     UPDATE choferes SET 
                     dni=%s, nombres=%s, ruc=%s, telefono=%s, correo=%s, licencia=%s, 
@@ -1849,6 +1916,10 @@ class ChoferesApp:
 
             conn.commit()
             cache_sistema.invalidar() # 🚀 FIX: Borrar caché
+            # ⚠️ Chofer dado de baja con unidad asignada: avisar que esa unidad debe
+            #    pasar a otro chofer activo (cobranza toma el nombre del chofer activo).
+            if estado == "Inactivo" and estado_previo != "Inactivo":
+                self._avisar_unidad_queda_sin_chofer(movil, self.id_edicion)
             # 🚀 RECARGA COMPLETA: la vista se reconstruye para poder seguir registrando/editando
             self.parent_frame.after(150, self.recargar_interfaz)
         except Exception as e:

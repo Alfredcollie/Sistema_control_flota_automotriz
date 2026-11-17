@@ -156,18 +156,6 @@
   "estado": ""
  },
  {
-  "id": 716,
-  "banco": "Interbank",
-  "cuenta": "",
-  "fecha": "16/09/2026",
-  "descripcion": "COESTI S.A",
-  "monto": -7.2,
-  "tipo": "egreso",
-  "origen": "s:facturas_recibidas",
-  "id_movimiento": 460,
-  "estado": ""
- },
- {
   "id": 717,
   "banco": "Interbank",
   "cuenta": "",
@@ -3045,18 +3033,6 @@
   "tipo": "egreso",
   "origen": "s:facturas_recibidas",
   "id_movimiento": 462,
-  "estado": ""
- },
- {
-  "id": 957,
-  "banco": "Interbank",
-  "cuenta": "",
-  "fecha": "16/09/2026",
-  "descripcion": "COESTI S.A E/S ORRANTIA",
-  "monto": -7.2,
-  "tipo": "egreso",
-  "origen": "s:facturas_recibidas",
-  "id_movimiento": 463,
   "estado": ""
  },
  {

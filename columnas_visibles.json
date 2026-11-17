@@ -5,14 +5,11 @@
   "c"
  ],
  "compras_facturas": [
+  "num",
   "fecha",
-  "hora",
   "nro_doc",
   "orden",
-  "proveedor",
   "ruc",
-  "evento",
-  "kilometraje",
   "cantidad",
   "desc",
   "metodo_pago",

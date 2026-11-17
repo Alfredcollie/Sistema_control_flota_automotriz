@@ -2,7 +2,9 @@
 """
 MODULO_BANCO.PY - MODULO DE BANCO (SALDOS Y CONCILIACION BANCARIA)
 - Saldo de cada cuenta bancaria configurada en "Configuracion General":
-    Saldo = Saldo Inicial + Ingresos Cobrados - Egresos Pagados.
+    Saldo = Saldo Inicial + movimientos del banco. En los meses con estado de
+    cuenta cargado se usan sus lineas (conciliadas o no); en los meses sin
+    estado se usan los cobros/pagos/transferencias y los movimientos manuales.
 - Conciliacion bancaria: subir el PDF del estado de cuenta del banco,
   extraer sus movimientos, compararlos contra los movimientos registrados
   en el sistema (cobros y pagos) y generar un reporte en pantalla.
@@ -815,6 +817,112 @@ def _dias_entre_fechas(fecha_a, fecha_b):
     if not fa or not fb:
         return 999
     return abs((fa - fb).days)
+
+
+def _monto_coincide_banco(monto_banco, monto_asiento, comision=0.0):
+    """¿El importe del asiento corresponde a la línea del banco?
+
+    Acepta el mismo importe o el importe del sistema + la comisión que el banco
+    muestra incluida en una sola línea (ej.: 1,200.00 + 4.80 = 1,204.80).
+    """
+    try:
+        bm = float(monto_banco)
+        mm = float(monto_asiento)
+    except (TypeError, ValueError):
+        return False
+    if abs(bm - mm) <= 0.02:
+        return True
+    if bm * mm > 0 and abs(abs(bm) - abs(mm) - float(comision or 0)) <= 0.02:
+        return True
+    return False
+
+
+def _es_duplicado_manual_claro(asiento, linea, principal=None, comision=0.0):
+    """¿El asiento manual es una COPIA clara de una línea del banco?
+
+    Se exige que la descripción coincida con la línea (el manual se creó desde
+    el estado de cuenta) o que sea el caso de una transferencia donde el sistema
+    registra el principal y el manual el total con comisión. Así no se borran
+    manuales que sólo coinciden en importe pero son movimientos distintos.
+    """
+    if str((asiento or {}).get("origen", "")) != "manual":
+        return False
+    if (_norm_texto(asiento.get("descripcion"))
+            == _norm_texto((linea or {}).get("descripcion"))):
+        return True
+    if principal is None or not str(principal.get("origen", "")).startswith("s:"):
+        return False
+    try:
+        return (abs(abs(float(asiento.get("monto") or 0))
+                    - abs(float((linea or {}).get("monto") or 0))) <= 0.02
+                and abs(abs(float((linea or {}).get("monto") or 0))
+                        - abs(float(principal.get("monto") or 0))
+                        - float(comision or 0)) <= 0.02)
+    except (TypeError, ValueError):
+        return False
+
+
+def _mejor_linea_banco(asiento, lineas, usados, comision=0.0, solo_usadas=False):
+    """Índice de la mejor línea del banco para un asiento (o None)."""
+    mejor = None
+    for j, linea in enumerate(lineas):
+        if solo_usadas:
+            if j not in usados:
+                continue
+        elif j in usados:
+            continue
+        if not _monto_coincide_banco(linea.get("monto"), asiento.get("monto"), comision):
+            continue
+        dias = _dias_entre_fechas(asiento.get("fecha"), linea.get("fecha"))
+        if dias > 31:
+            continue
+        exacto_fecha = (dias == 0)
+        try:
+            exacto_monto = abs(float(linea.get("monto") or 0)
+                              - float(asiento.get("monto") or 0)) <= 0.02
+        except (TypeError, ValueError):
+            exacto_monto = False
+        categoria = 0 if (exacto_fecha and exacto_monto) else (
+            1 if exacto_fecha else (2 if exacto_monto else 3))
+        candidato = (categoria, dias, j)
+        if mejor is None or candidato < mejor:
+            mejor = candidato
+    return mejor[2] if mejor else None
+
+
+def emparejar_asientos_banco(asientos, lineas, comision=0.0):
+    """Empareja asientos (sistema/manuales) con líneas del estado de cuenta.
+
+    Cada línea del banco se usa UNA sola vez. Devuelve:
+      * match:      {indice_asiento: indice_linea}  (asiento único)
+      * duplicados: [(indice_asiento, indice_linea)] (la línea ya estaba usada)
+      * sobrantes:  [indice_asiento]  (asiento sin línea en el banco)
+      * faltantes:  [indice_linea]    (línea del banco sin asiento)
+
+    El orden de prioridad se toma de 'asiento["_prioridad"]' (menor = primero):
+    así el asiento del sistema gana sobre el manual y no se cuenta dos veces.
+    """
+    asientos = list(asientos or [])
+    lineas = list(lineas or [])
+    orden = sorted(range(len(asientos)),
+                   key=lambda i: (asientos[i].get("_prioridad", 9),
+                                  normalizar_fecha(asientos[i].get("fecha")) or ""))
+    usados = set()
+    match = {}
+    duplicados = []
+    for i in orden:
+        j = _mejor_linea_banco(asientos[i], lineas, usados, comision)
+        if j is not None:
+            usados.add(j)
+            match[i] = j
+            continue
+        j = _mejor_linea_banco(asientos[i], lineas, usados, comision, solo_usadas=True)
+        if j is not None:
+            duplicados.append((i, j))
+    dup_idx = {i for i, _ in duplicados}
+    sobrantes = [i for i in range(len(asientos)) if i not in match and i not in dup_idx]
+    faltantes = [j for j in range(len(lineas)) if j not in usados]
+    return match, duplicados, sobrantes, faltantes
 
 
 def fecha_para_mostrar(valor):
@@ -1805,6 +1913,7 @@ class ModuloBancoApp:
         self.usuario_activo = usuario_activo or "Desconocido"
         self.config = cargar_config()
         self.bancos = []               # se cargan enseguida, en segundo plano
+        self._cache_saldos_extra = {}  # estados de cuenta/manuales por cuenta
         self.movimientos_pdf = []
         self.texto_pdf = ""
         self.filas_conciliacion = []
@@ -2172,6 +2281,25 @@ class ModuloBancoApp:
             except Exception:
                 pass
 
+    def _cargar_extras_saldos(self, bancos=None):
+        """Líneas de estado de cuenta y manuales por cuenta, para el saldo.
+
+        Se llama en segundo plano: así el saldo puede usar el banco sin
+        congelar la ventana con consultas a Supabase.
+        """
+        extras = {}
+        for b in (bancos or self.bancos or []):
+            clave = (str(b.get("banco", "")), str(b.get("cuenta", "") or ""))
+            try:
+                extras[clave] = {
+                    "pdf": self._cargar_movimientos_pdf(b) or [],
+                    "manuales": self.cargar_manuales(b) or [],
+                }
+            except Exception as error:
+                print("[Saldos] no se pudieron cargar los extras:", error)
+                extras[clave] = {"pdf": [], "manuales": []}
+        return extras
+
     def _cargar_datos_iniciales(self):
         """Trae de Supabase lo pesado SIN congelar la ventana."""
         self._mostrar_cargando()
@@ -2180,6 +2308,8 @@ class ModuloBancoApp:
             self.inicializar_db()                      # sólo la primera vez por equipo
             bancos = cargar_bancos()
             estado["bancos"] = bancos
+            # Estados de cuenta y manuales de cada cuenta (para el saldo real).
+            estado["extras_saldos"] = self._cargar_extras_saldos(bancos)
             # 3 consultas para TODOS los bancos; el reparto por banco y el filtro
             # del periodo elegido se aplican después, al dibujar las tarjetas.
             estado["datos"] = self._cargar_movimientos_crudos()
@@ -2194,6 +2324,7 @@ class ModuloBancoApp:
             messagebox.showerror("Banco", str(estado["error"]), parent=self.parent_frame)
             return
         self.bancos = estado.get("bancos") or []
+        self._cache_saldos_extra = estado.get("extras_saldos") or {}
         self._actualizar_combos_bancos()
         # 🔄 Si la pestaña de Conciliación ya está abierta, se carga ahora que hay bancos
         try:
@@ -2214,6 +2345,26 @@ class ModuloBancoApp:
                 pass
         self._pintar_transferencias(estado.get("transferencias") or [])
 
+    def actualizar_conciliacion_banco(self):
+        """Recarga la pestaña visible al pulsar el 🔄 Actualizar de la ventana.
+
+        Antes el botón solo recargaba saldos/la tabla, pero NO volvía a calcular
+        el cruce: el aviso naranja y la barra de diferencia quedaban viejos.
+        """
+        try:
+            pestana = str(self.tabview.get())
+        except Exception:
+            pestana = ""
+        try:
+            if "Conciliaci" in pestana:
+                self.generar_reporte()
+            elif "Transferencia" in pestana:
+                self.refrescar_transferencias()
+            else:
+                self.actualizar_saldos_boton()
+        except Exception as error:
+            print("[Banco] actualizar pestaña:", error)
+
     def _al_cambiar_pestana(self, nombre=None):
         """Recalcula los saldos cada vez que se entra a la pestaña de saldos.
 
@@ -2227,6 +2378,15 @@ class ModuloBancoApp:
                 nombre = self.tabview.get()
             except Exception:
                 nombre = ""
+        if "Conciliaci" in (nombre or ""):
+            # 🔄 Al entrar a Conciliación se recarga sola: en Compras/Cobranza
+            #    pudieron registrarse pagos o borrarse facturas. Así el botón
+            #    «Cargar Movimientos» queda sólo para forzar la actualización.
+            try:
+                self.generar_reporte()
+            except Exception as error:
+                print("Aviso - refresco de conciliación al entrar:", error)
+            return
         if "Saldo de Bancos" not in (nombre or ""):
             return
         try:
@@ -2243,12 +2403,14 @@ class ModuloBancoApp:
 
         def _trabajo(estado):
             estado["datos"] = self._cargar_movimientos_crudos()
+            estado["extras_saldos"] = self._cargar_extras_saldos(self.bancos)
 
         def _terminar(estado):
             if estado.get("error"):
                 self._mostrar_cargando("❌ No se pudieron actualizar los saldos.")
                 messagebox.showerror("Banco", str(estado["error"]), parent=self.parent_frame)
                 return
+            self._cache_saldos_extra = estado.get("extras_saldos") or {}
             self.refrescar_saldos(estado["datos"])
 
         ejecutar_en_hilo(self.parent_frame, _trabajo, al_terminar=_terminar)
@@ -2259,8 +2421,8 @@ class ModuloBancoApp:
     def construir_tab_saldos(self):
         f_top = ctk.CTkFrame(self.tab_saldos, fg_color="transparent")
         f_top.pack(fill="x", pady=(5, 10))
-        ctk.CTkLabel(f_top, text="Saldo calculado como: Saldo Inicial + Ingresos Cobrados − Egresos Pagados.",
-                     font=(FAMILIA, 12, "italic"), text_color="gray").pack(side="left")
+        ctk.CTkLabel(f_top, text="Saldo según banco: estados de cuenta cargados + movimientos de meses sin estado.",
+                     font=(FAMILIA, 11, "italic"), text_color="gray").pack(side="left")
         ctk.CTkButton(f_top, text="🔄 Actualizar", width=130, font=(FAMILIA, 12, "bold"),
                       fg_color="#1f538d", hover_color="#163b65",
                       command=self.actualizar_saldos_boton).pack(side="right")
@@ -2412,9 +2574,95 @@ class ModuloBancoApp:
                       fg_color="#1f538d", hover_color="#163b65",
                       command=lambda b=banco: self.ir_a_conciliacion(b)).pack(side="left")
 
+    def _movimientos_para_saldo(self, banco, movs_sistema):
+        """Movimientos que debe sumar la tarjeta de saldo.
+
+        En los meses con estado de cuenta cargado manda el BANCO: se usan sus
+        líneas tal cual, estén o no conciliadas, porque el saldo bancario incluye
+        efectivo, transferencias, comisiones, etc. En los meses sin estado (por
+        ejemplo, el mes en curso) se usan los movimientos del sistema y los
+        manuales que no dupliquen uno del sistema.
+        """
+        movs_sistema = list(movs_sistema or [])
+
+        # 0) Lo cargado en segundo plano (si está) evita consultar Supabase aquí.
+        clave_cache = (str(banco.get("banco", "")), str(banco.get("cuenta", "") or ""))
+        extras = (getattr(self, "_cache_saldos_extra", None) or {}).get(clave_cache) or {}
+        lineas_pdf = extras.get("pdf")
+        if lineas_pdf is None:
+            try:
+                lineas_pdf = self._cargar_movimientos_pdf(banco) or []
+            except Exception as error:
+                print("[Saldos] no se pudieron leer los estados de cuenta:", error)
+                lineas_pdf = []
+
+        # 1) Líneas del estado de cuenta, agrupadas por período (AAAA-MM).
+        pdf_por_mes = {}
+        try:
+            for linea in lineas_pdf:
+                monto = float(linea.get("monto") or 0)
+                if abs(monto) < 0.0001:
+                    continue
+                mes = str(linea.get("periodo") or "") or clave_fecha(linea.get("fecha"))[:7]
+                if not mes:
+                    continue
+                pdf_por_mes.setdefault(mes, []).append({
+                    "id": None,
+                    "fecha": linea.get("fecha", ""),
+                    "descripcion": linea.get("descripcion", ""),
+                    "monto": monto,
+                    "tipo": "Banco",
+                    "origen": "estado_cuenta",
+                    "tabla": "conciliacion_movimientos_pdf",
+                    "documento": "",
+                    "archivo_ruta": "",
+                })
+        except Exception as error:
+            print("[Saldos] no se pudieron leer los estados de cuenta:", error)
+            pdf_por_mes = {}
+
+        # 2) Manuales que no estén ya como movimiento del sistema.
+        manuales = extras.get("manuales")
+        if manuales is None:
+            try:
+                manuales = self.cargar_manuales(banco) or []
+            except Exception as error:
+                print("[Saldos] no se pudieron leer los movimientos manuales:", error)
+                manuales = []
+        pendientes_sistema = {}
+        for m in movs_sistema:
+            clave = (clave_fecha(m.get("fecha")), round(float(m.get("monto") or 0), 2))
+            pendientes_sistema[clave] = pendientes_sistema.get(clave, 0) + 1
+        manuales_por_mes = {}
+        for m in manuales:
+            clave = (clave_fecha(m.get("fecha")), round(float(m.get("monto") or 0), 2))
+            if pendientes_sistema.get(clave, 0) > 0:
+                pendientes_sistema[clave] -= 1
+                continue
+            mes = clave_fecha(m.get("fecha"))[:7]
+            manuales_por_mes.setdefault(mes, []).append(m)
+
+        # 3) Cada mes se toma de UNA sola fuente para no duplicar.
+        sistema_por_mes = {}
+        for m in movs_sistema:
+            sistema_por_mes.setdefault(clave_fecha(m.get("fecha"))[:7], []).append(m)
+        salida = []
+        for mes in sorted(set(pdf_por_mes) | set(sistema_por_mes) | set(manuales_por_mes)):
+            if mes in pdf_por_mes:
+                salida.extend(pdf_por_mes[mes])
+            else:
+                salida.extend(sistema_por_mes.get(mes, []))
+                salida.extend(manuales_por_mes.get(mes, []))
+        return salida
+
     def calcular_resumen(self, banco, datos=None, mes=None):
         """Saldo del banco. Si se pasa 'datos' (movimientos crudos ya leídos de
         la base) no se vuelve a consultar Supabase.
+
+        El saldo se arma con los movimientos REALES del banco: en los meses con
+        estado de cuenta cargado se usan sus líneas (conciliadas o no) y en los
+        meses sin estado se usan los movimientos del sistema y los manuales.
+        Así entran efectivo, transferencias, comisiones, etc.
 
         Si 'mes' (formato 'YYYY-MM') viene informado, los importes mostrados
         son los del MES y el saldo es el de CIERRE de ese mes
@@ -2423,7 +2671,10 @@ class ModuloBancoApp:
         """
         if mes is None:
             mes = getattr(self, "mes_saldos", None)
-        movs_todos = self._movimientos_de_banco(banco, datos)
+        movs_sistema = self._movimientos_de_banco(banco, datos)
+        # 🏦 El saldo usa el estado de cuenta en los meses cargados y, en los
+        #    meses sin estado, los movimientos del sistema y los manuales.
+        movs_todos = self._movimientos_para_saldo(banco, movs_sistema)
         saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
 
         # 📌 'fecha' de la cuenta = desde cuándo rige el saldo inicial. Lo movido
@@ -2590,6 +2841,7 @@ class ModuloBancoApp:
                     "monto": -monto_v, "tipo": "transferencia",
                     "origen": "sistema", "tabla": "transferencias_bancarias",
                     "documento": str(referencia_tx or ""), "archivo_ruta": archivo_tx or "",
+                    "comision": com_v,
                 })
                 # 🏦 Asiento de la comisión interbancaria en la cuenta EMISORA
                 if com_v > 0:
@@ -2763,6 +3015,8 @@ class ModuloBancoApp:
                 tipo_txt = "Comisión interbancaria"
             elif m.get("tipo") == "transferencia":
                 tipo_txt = "Transferencia (Ingreso)" if m["monto"] > 0 else "Transferencia (Egreso)"
+            elif m.get("tipo") == "Banco" or m.get("origen") == "estado_cuenta":
+                tipo_txt = "Ingreso (Banco)" if m["monto"] > 0 else "Egreso (Banco)"
             else:
                 tipo_txt = "Ingreso (Cobro)" if m["monto"] > 0 else "Egreso (Pago)"
             return (fecha_para_mostrar(m["fecha"]), m.get("documento", ""), m["descripcion"],
@@ -2966,7 +3220,7 @@ class ModuloBancoApp:
                      font=(FAMILIA, 13, "bold"), text_color="#1f538d").pack(anchor="w", padx=5, pady=(0, 4))
         f_tabla = ctk.CTkFrame(self.tab_transferencias, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True, padx=5, pady=(0, 5))
-        columnas = ("fecha", "origen", "destino", "descripcion", "monto", "comision", "referencia")
+        columnas = ("fecha", "origen", "destino", "descripcion", "monto", "comision", "total", "referencia")
         self.tabla_tx = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="extended")
         for col, txt, w, anc in (("fecha", "Fecha", 100, "center"),
                                  ("origen", "Banco Origen", 200, "center"),
@@ -2974,6 +3228,7 @@ class ModuloBancoApp:
                                  ("descripcion", "Descripción", 260, "w"),
                                  ("monto", "Monto", 130, "e"),
                                  ("comision", "Comisión", 100, "e"),
+                                 ("total", "Total debitado", 130, "e"),
                                  ("referencia", "Referencia", 150, "w")):
             self.tabla_tx.heading(col, text=txt)
             self.tabla_tx.column(col, width=w, anchor=anc)
@@ -3141,7 +3396,7 @@ class ModuloBancoApp:
         ctk.CTkLabel(ventana, text="COMPROBANTE ESCANEADO - REVISE ANTES DE USAR",
                      font=(FAMILIA, 14, "bold"), text_color="#1f538d").pack(pady=(10, 2))
         datos = resultado.get("datos") or {}
-        monto_txt = ("%.2f" % float(datos.get("monto") or 0)) if datos.get("monto") else "sin dato"
+        monto_txt = formatear_monto(datos.get("monto")) if datos.get("monto") else "sin dato"
         ctk.CTkLabel(ventana, text="Fecha: " + str(datos.get("fecha") or "sin dato")
                      + "   ·   Monto: " + monto_txt
                      + "   ·   Referencia: " + str(datos.get("referencia") or "sin dato"),
@@ -3478,8 +3733,8 @@ class ModuloBancoApp:
             messagebox.showinfo("Éxito", "Transferencia actualizada correctamente.", parent=self.parent_frame)
         else:
             messagebox.showinfo("Éxito", f"Transferencia de {formatear_monto(monto)} registrada:\n"
-                                         f"• Egreso en {origen}: {formatear_monto(monto)}\n"
-                                         f"• Comisión separada: {formatear_monto(comision)}\n"
+                                         f"• Egreso total en {origen}: {formatear_monto(monto + comision)} "
+                                         f"({formatear_monto(monto)} + comisión {formatear_monto(comision)})\n"
                                          f"• Ingreso en {destino}: {formatear_monto(monto)}", parent=self.parent_frame)
 
     def cargar_transferencias(self):
@@ -3524,7 +3779,10 @@ class ModuloBancoApp:
             self.tabla_tx.insert("", tk.END, iid=str(t["id"]),
                                  values=(fecha_para_mostrar(t["fecha"]), t["origen"], t["destino"],
                                          t["descripcion"], formatear_monto(t["monto"]),
-                                         formatear_monto(t.get("comision", 0)), t.get("referencia", "")))
+                                         formatear_monto(t.get("comision", 0)),
+                                         formatear_monto(float(t["monto"] or 0)
+                                                         + float(t.get("comision", 0) or 0)),
+                                         t.get("referencia", "")))
 
     def refrescar_transferencias(self):
         try:
@@ -3669,9 +3927,9 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns, text="📚 Estados cargados", width=170, font=(FAMILIA, 12, "bold"),
                       fg_color="#7d6608", hover_color="#5b4a06",
                       command=self.mostrar_estados_cargados).pack(side="left", padx=4)
-        ctk.CTkButton(f_btns, text="🔄 Cargar Movimientos del Sistema", font=(FAMILIA, 12, "bold"),
-                      fg_color="#1f538d", hover_color="#163b65",
-                      command=self.generar_reporte).pack(side="left", padx=4)
+        # (El botón «Cargar Movimientos del Sistema» se quitó: la conciliación se
+        #  recarga sola al cambiar banco/mes, al entrar a la pestaña y tras cada
+        #  acción. Para forzar la lectura está F5.)
         ctk.CTkButton(f_btns, text="🧠 Conciliar inteligente", width=190, fg_color="#6c3483", hover_color="#4a235a",
                       command=self.abrir_conciliacion_inteligente).pack(side="left", padx=5)
         ctk.CTkButton(f_btns, text="✅ Conciliar Seleccionados", font=(FAMILIA, 12, "bold"),
@@ -3695,9 +3953,30 @@ class ModuloBancoApp:
         ctk.CTkButton(f_btns2, text="♻️ Restaurar Eliminados", font=(FAMILIA, 12, "bold"),
                       fg_color="#16a085", hover_color="#117a65",
                       command=self.restaurar_ignorados).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns2, text="🗑️ Eliminar Ocultos", font=(FAMILIA, 12, "bold"),
+                      fg_color="#922b21", hover_color="#641e16",
+                      command=self.eliminar_ocultos_definitivo).pack(side="left", padx=4)
         ctk.CTkButton(f_btns2, text="💾 Exportar", font=(FAMILIA, 12, "bold"),
                       fg_color="#7f8c8d", hover_color="#606b6b",
                       command=self.exportar_reporte).pack(side="left", padx=4)
+
+        # 📊 Fila propia para las herramientas de control (antes se cortaban abajo).
+        f_btns3 = ctk.CTkFrame(self.tab_conciliacion, fg_color="transparent")
+        f_btns3.pack(fill="x", padx=5, pady=(0, 4))
+        ctk.CTkButton(f_btns3, text="📋 Faltantes / Sobrantes", width=210,
+                      font=(FAMILIA, 12, "bold"), fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: self._mostrar_faltantes_banco(
+                          self.banco_seleccionado(), [], self.movimientos_pdf)
+                      ).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns3, text="🧹 Duplicados", width=150,
+                      font=(FAMILIA, 12, "bold"), fg_color="#7d6608", hover_color="#5b4a06",
+                      command=self.limpiar_duplicados).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns3, text="📊 Resumen del período", width=200,
+                      font=(FAMILIA, 12, "bold"), fg_color="#117a65", hover_color="#0b5345",
+                      command=self.mostrar_resumen).pack(side="left", padx=4)
+        ctk.CTkButton(f_btns3, text="🔍 Diferencias por asiento", width=210,
+                      font=(FAMILIA, 12, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
+                      command=self.mostrar_diferencias_importe).pack(side="left", padx=4)
 
         self.f_resumen = ctk.CTkFrame(self.tab_conciliacion, fg_color="#eaf2f8",
                                       border_width=1, border_color="#d4e6f1", corner_radius=8)
@@ -3787,6 +4066,7 @@ class ModuloBancoApp:
         self.tabla_conc.bind("<Control-Button-1>", lambda e: self._menu_contextual_movimiento(
             e, self.tabla_conc, self.filas_conciliacion))
         self.tabla_conc.tag_configure("conciliado", background="#d5f5e3")
+        self.tabla_conc.tag_configure("pendiente", background="#fef9e7")
         self.tabla_conc.tag_configure("diferencia", background="#fadbd8")
         self.tabla_conc.tag_configure("estado_cuenta", background="#d6eaf8")
         # Asiento de un mes SIN estado de cuenta cargado (mes en curso): gris.
@@ -3797,14 +4077,8 @@ class ModuloBancoApp:
         ctk.CTkButton(f_pie, text="👁 Ver Texto Extraído del PDF", width=220, font=(FAMILIA, 11),
                       fg_color="#7f8c8d", hover_color="#606b6b",
                       command=self.mostrar_texto_pdf).pack(side="left")
-        # 📋 Cuadro con las DOS listas: faltantes (banco sin asiento) y sobrantes
-        #    (asiento sin banco). Antes estaba en la barra naranja y el texto
-        #    largo lo aplastaba hasta dejarlo ilegible.
-        ctk.CTkButton(f_pie, text="📋 Faltantes / Sobrantes", width=210,
-                      font=(FAMILIA, 11, "bold"), fg_color="#1f538d", hover_color="#163b65",
-                      command=lambda: self._mostrar_faltantes_banco(
-                          self.banco_seleccionado(), [], self.movimientos_pdf)
-                      ).pack(side="left", padx=(10, 0))
+        # (Los botones Faltantes / Duplicados / Resumen están en la fila de abajo:
+        #  acá no entraban y se veían cortados.)
         # 🎨 Leyenda de colores: el color indica el estado de CONCILIACIÓN,
         #    no si está pagado o cancelado (eso se ve en el módulo de Compras).
         #    Se usan cuadraditos de texto («■») con color propio: los emojis de
@@ -4084,9 +4358,9 @@ class ModuloBancoApp:
             for indice, p in enumerate(propuestas):
                 tabla.insert("", "end", iid=str(indice + 1), values=(
                     str(p["fecha_banco"])[:10], str(p["descripcion_banco"])[:55],
-                    "%9.2f" % p["importe_banco"], str(p["fecha_contable"])[:10],
+                    formatear_monto(p["importe_banco"]), str(p["fecha_contable"])[:10],
                     str(p["descripcion_contable"])[:55],
-                    "%9.2f" % p["importe_contable"], p["dias_desfase"],
+                    formatear_monto(p["importe_contable"]), p["dias_desfase"],
                     p["estado"] if not p.get("rivales")
                     else "%s · %d candidatos" % (p["estado"], p.get("candidatos") or 2),
                     "%d%%" % p["confianza"]))
@@ -4289,6 +4563,821 @@ class ModuloBancoApp:
         # 🚀 El cálculo va en un hilo: _pintar() cierra el letrero al terminar.
         _cargar_propuestas()
 
+    def _buscar_duplicados(self, banco, mes=None):
+        """Asientos MANUALES que copian una línea del banco ya cubierta.
+
+        Antes se agrupaba por (fecha, importe exacto), así que no veía los casos
+        en que el sistema registra el principal y el manual el total con comisión
+        (1,200.00 vs 1,204.80). Ahora se empareja cada asiento con su línea real
+        del estado de cuenta y se marca el manual que sobra.
+
+        Devuelve grupos con 'fecha', 'monto', 'asientos' (tuplas de la base) y
+        'lineas'. Sólo se proponen manuales: nunca se borra un asiento del sistema.
+        """
+        if mes:
+            try:
+                lineas = self._cargar_movimientos_pdf(banco, mes) or []
+            except Exception as error:
+                print("[Conciliación] líneas para duplicados:", error)
+                lineas = []
+        else:
+            try:
+                lineas = self._cargar_movimientos_pdf(banco) or []
+            except Exception as error:
+                print("[Conciliación] líneas para duplicados:", error)
+                lineas = []
+        if not lineas:
+            return []           # sin estado de cuenta no hay contra qué comparar
+
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return []
+        try:
+            with conn.cursor() as c:
+                # 📄 Se trae el NÚMERO DE FACTURA de cada asiento: dos facturas con
+                #    el mismo importe y fecha pero número distinto NO son duplicados.
+                c.execute("""SELECT b.id, b.fecha, b.monto, COALESCE(b.origen,''),
+                                    COALESCE(b.estado,''), COALESCE(b.descripcion,''),
+                                    UPPER(TRIM(COALESCE(f.numero_documento,
+                                                        f2.numero_documento, ''))),
+                                    COALESCE(b.tabla,''), COALESCE(b.id_movimiento,0)
+                             FROM conciliacion_bancaria b
+                             LEFT JOIN pagos_comprobantes p
+                                    ON (b.tabla = 'pagos_comprobantes' AND p.id = b.id_movimiento)
+                             LEFT JOIN facturas_recibidas f
+                                    ON f.id = NULLIF(p.id_factura, 0)
+                             LEFT JOIN facturas_recibidas f2
+                                    ON f2.id = NULLIF(b.id_gasto_compras, 0)
+                             WHERE UPPER(COALESCE(b.banco,'')) = UPPER(%s)
+                               AND COALESCE(b.cuenta,'') = %s""",
+                          (banco.get("banco", ""), banco.get("cuenta", "") or ""))
+                filas = c.fetchall()
+        except Exception as error:
+            print("[Conciliación] buscar duplicados:", error)
+            return []
+        finally:
+            liberar_conexion(conn)
+
+        asientos = []
+        sistema_en_tabla = set()
+        sistema_claves = set()
+        for fila in filas:
+            if mes and not clave_fecha(fila[1]).startswith(mes):
+                continue
+            origen = str(fila[3] or "")
+            if origen.startswith("s:"):
+                sistema_en_tabla.add((str(fila[7] or ""), int(fila[8] or 0)))
+                sistema_claves.add((clave_fecha(fila[1]),
+                                    round(float(fila[2] or 0), 2)))
+            asientos.append({
+                "id": fila[0], "fecha": fila[1], "monto": float(fila[2] or 0),
+                "origen": origen, "estado": str(fila[4] or ""),
+                "descripcion": str(fila[5] or ""), "numero": str(fila[6] or ""),
+                "_prioridad": self._prioridad_asiento(origen, fila[4]),
+                "_raw": fila,
+            })
+        # 🧩 La tabla conciliacion_bancaria no siempre tiene TODOS los pagos del
+        #    sistema (los que nunca se conciliaron). Se agregan para comparar
+        #    contra el banco igual que hace el Resumen; nunca se borran.
+        try:
+            for s in (self._movimientos_de_banco(banco, mes=mes) or []):
+                if s.get("espejo_banco"):
+                    continue
+                tabla = str(s.get("tabla") or "")
+                idm = int(s.get("id") or 0)
+                if (tabla, idm) in sistema_en_tabla:
+                    continue
+                clave = (clave_fecha(s.get("fecha")),
+                         round(float(s.get("monto") or 0), 2))
+                if clave in sistema_claves:
+                    continue
+                origen_s = "s:%s" % (tabla or "sistema")
+                raw = (0, s.get("fecha", ""), float(s.get("monto") or 0),
+                       origen_s, "conciliado", s.get("descripcion", ""),
+                       str(s.get("documento") or ""), tabla, idm)
+                asientos.append({
+                    "id": 0, "fecha": s.get("fecha", ""),
+                    "monto": float(s.get("monto") or 0), "origen": origen_s,
+                    "estado": "conciliado",
+                    "descripcion": str(s.get("descripcion") or ""),
+                    "numero": str(s.get("documento") or ""),
+                    "_prioridad": self._prioridad_asiento(origen_s, "conciliado"),
+                    "_raw": raw,
+                })
+        except Exception as error:
+            print("[Conciliación] sistema para duplicados:", error)
+        try:
+            comision = cargar_comision_interbancaria()
+        except Exception:
+            comision = 0.0
+        match, duplicados, _sobrantes, _faltantes = emparejar_asientos_banco(
+            asientos, lineas, comision)
+        principal_por_linea = {j: i for i, j in match.items()}
+
+        grupos = {}
+        for i, j in duplicados:
+            asiento = asientos[i]
+            # 🔒 Sólo se propone borrar manuales. Los asientos del sistema y los
+            #    del estado de cuenta (e) nunca se tocan.
+            if asiento["origen"] != "manual":
+                continue
+            linea = lineas[j]
+            pi = principal_por_linea.get(j)
+            principal = asientos[pi] if pi is not None else None
+            if not _es_duplicado_manual_claro(asiento, linea, principal, comision):
+                continue
+            grupo = grupos.setdefault(j, {"linea": linea, "asientos": []})
+            if principal is not None and principal not in grupo["asientos"]:
+                grupo["asientos"].insert(0, principal)
+            if asiento not in grupo["asientos"]:
+                grupo["asientos"].append(asiento)
+
+        resultado = []
+        for j, grupo in grupos.items():
+            crudos = [a["_raw"] for a in grupo["asientos"]]
+            if not any(str(a[3] or "") == "manual" for a in crudos):
+                continue
+            linea = grupo["linea"]
+            resultado.append({
+                "fecha": clave_fecha(linea.get("fecha")),
+                "monto": abs(float(linea.get("monto") or 0)),
+                "asientos": crudos,
+                "fechas": {clave_fecha(a.get("fecha")) for a in grupo["asientos"]},
+                "lineas": 1,
+            })
+        return sorted(resultado, key=lambda g: (g["fecha"], -g["monto"]))
+
+    def _quitar_de_respaldos(self, banco, fecha, monto):
+        """Borra de los archivos respaldo_*.json las entradas de ese movimiento.
+
+        Los respaldos que guarda el módulo (respaldo_*.json) también se limpian:
+        si el movimiento se elimina, no debe quedar ni en la base ni en el JSON.
+        """
+        try:
+            import glob
+            from app_paths import DATA_DIR as _DATA
+        except Exception:
+            import glob
+            _DATA = None
+        carpetas = {os.path.dirname(os.path.abspath(__file__))}
+        try:
+            if _DATA:
+                carpetas.add(str(_DATA))
+        except Exception:
+            pass
+        _fecha_iso = normalizar_fecha(fecha)
+        _fecha_dma = fecha_para_mostrar(fecha)
+        try:
+            _monto = abs(float(monto or 0))
+        except Exception:
+            _monto = 0.0
+
+        def _es_el_mismo(item):
+            if not isinstance(item, dict):
+                return False
+            try:
+                if abs(abs(float(item.get("monto") or item.get("importe_banco") or 0)) - _monto) > 0.02:
+                    return False
+            except Exception:
+                return False
+            fecha_item = normalizar_fecha(item.get("fecha") or item.get("fecha_banco")
+                                          or item.get("fecha_pago") or "")
+            return fecha_item in (_fecha_iso, normalizar_fecha(_fecha_dma))
+
+        for carpeta in carpetas:
+            for ruta_json in glob.glob(os.path.join(carpeta, "respaldo_*.json")):
+                try:
+                    with open(ruta_json, "r", encoding="utf-8") as archivo:
+                        contenido = json.load(archivo)
+                except Exception:
+                    continue
+                cambiado = False
+                # 🧹 Si el respaldo ya estaba vacío, se borra el archivo y listo.
+                if ((isinstance(contenido, list) and not contenido)
+                        or (isinstance(contenido, dict)
+                            and not any(v for v in contenido.values() if v))):
+                    try:
+                        os.remove(ruta_json)
+                        print("[Conciliación] respaldo vacío eliminado:",
+                              os.path.basename(ruta_json))
+                    except Exception as error:
+                        print("[Conciliación] no se pudo borrar el respaldo vacío:", error)
+                    continue
+                if isinstance(contenido, list):
+                    nuevo = [x for x in contenido if not _es_el_mismo(x)]
+                    if len(nuevo) != len(contenido):
+                        contenido = nuevo
+                        cambiado = True
+                elif isinstance(contenido, dict):
+                    for clave, valor in list(contenido.items()):
+                        if isinstance(valor, list):
+                            nuevo = [x for x in valor if not _es_el_mismo(x)]
+                            if len(nuevo) != len(valor):
+                                contenido[clave] = nuevo
+                                cambiado = True
+                if cambiado:
+                    # 🧹 Si el respaldo quedó vacío, se borra el archivo directamente.
+                    _vacio = ((isinstance(contenido, list) and not contenido)
+                              or (isinstance(contenido, dict)
+                                  and not any(v for v in contenido.values() if v)))
+                    try:
+                        if _vacio:
+                            os.remove(ruta_json)
+                            print("[Conciliación] respaldo vacío eliminado:",
+                                  os.path.basename(ruta_json))
+                        else:
+                            with open(ruta_json, "w", encoding="utf-8") as archivo:
+                                json.dump(contenido, archivo, ensure_ascii=False, indent=1)
+                            print("[Conciliación] entrada quitada del respaldo:",
+                                  os.path.basename(ruta_json))
+                    except Exception as error:
+                        print("[Conciliación] no se pudo limpiar el respaldo:", error)
+
+    def _prioridad_asiento(self, origen, estado):
+        """Qué asiento se CONSERVA en un grupo duplicado (menor = se queda).
+
+        Se conserva el que viene del SISTEMA (pago real), después el que vino del
+        estado de cuenta, y por último el manual que se cargó desde el módulo.
+        """
+        origen = str(origen or "")
+        if origen == "s:pagos_comprobantes":
+            return 0
+        if origen.startswith("s:"):
+            return 1
+        if origen == "e":
+            return 2
+        return 3
+
+    def limpiar_duplicados(self):
+        """🧹 Quita los asientos sobrantes de cada grupo duplicado.
+
+        Deja UN asiento por (fecha, importe) — priorizando el del sistema — y borra
+        el resto. Antes de borrar guarda un respaldo JSON en la carpeta del sistema.
+        """
+        banco = self.banco_seleccionado() if hasattr(self, "banco_seleccionado") else None
+        if not banco:
+            messagebox.showerror("Duplicados", "Elija un banco primero.",
+                                 parent=self.parent_frame)
+            return
+        mes = mes_etiqueta_a_key(self.cmb_mes.get()) if hasattr(self, "cmb_mes") else ""
+        grupos = self._buscar_duplicados(banco, mes or None)
+        if not grupos:
+            messagebox.showinfo("Duplicados",
+                                "✅ No hay duplicados: cada línea tiene su asiento.",
+                                parent=self.parent_frame)
+            return
+        detalle = []
+        a_borrar = []
+        for grupo in grupos:
+            ordenados = sorted(
+                grupo["asientos"],
+                key=lambda a: (self._prioridad_asiento(a[3], a[4]),
+                               0 if clave_fecha(a[1]) in grupo.get("fechas", set()) else 1,
+                               a[0]))
+            # Se conservan tantos asientos como líneas tenga el estado de cuenta
+            # (mínimo 1). Antes se conservaba uno solo y se borraban de más.
+            cuantos = max(1, int(grupo["lineas"]))
+            conservar = ordenados[0]
+            sobran = ordenados[cuantos:]
+            detalle.append("   %s  %10s  línea(s): %d · asientos: %d"
+                           % (grupo["fecha"], formatear_monto(grupo["monto"]),
+                              grupo["lineas"], len(grupo["asientos"])))
+            for sobra in sobran:
+                # 🔒 Nunca se borra un asiento del SISTEMA (s:*) ni uno del estado
+                #    de cuenta (e): sólo los manuales que duplican a otro.
+                if str(sobra[3] or "") != "manual":
+                    continue
+                a_borrar.append({"grupo": grupo, "conservar": conservar, "borrar": sobra})
+        if not messagebox.askyesno(
+                "Limpiar duplicados",
+                "Se encontraron %d grupo(s) con asientos de más.\n"
+                "Se va a conservar el asiento DEL SISTEMA y borrar el resto.\n\n"
+                "%s\n\n¿Continuar? (se guarda un respaldo antes)"
+                % (len(grupos), "\n".join(detalle[:12])),
+                parent=self.parent_frame):
+            return
+        respaldo = {"creado": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "banco": banco.get("banco", ""), "cuenta": banco.get("cuenta", ""),
+                    "grupos": [{"fecha": g["fecha"], "monto": g["monto"],
+                                "conservar": {"id": g["asientos"][0][0]},
+                                "asientos": [{"id": a[0], "fecha": a[1],
+                                              "monto": float(a[2] or 0), "origen": a[3],
+                                              "estado": a[4], "descripcion": a[5]}
+                                             for a in g["asientos"]]}
+                               for g in grupos]}
+        ruta_respaldo = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "respaldo_duplicados_%s.json" % datetime.now().strftime("%Y-%m-%d_%H%M"))
+        try:
+            with open(ruta_respaldo, "w", encoding="utf-8") as archivo:
+                json.dump(respaldo, archivo, ensure_ascii=False, indent=1)
+        except Exception as error:
+            print("[Conciliación] respaldo duplicados:", error)
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return
+        borrados = 0
+        try:
+            with conn.cursor() as c:
+                for item in a_borrar:
+                    sobra = item["borrar"]
+                    c.execute("DELETE FROM conciliacion_bancaria WHERE id = %s", (sobra[0],))
+                    borrados += c.rowcount
+                    c.execute("""INSERT INTO conciliacion_auditoria
+                        (banco, cuenta, fecha_banco, descripcion_banco, importe_banco,
+                         sentido, estado, confianza, reglas, observacion, origen_decision,
+                         creado, activo)
+                        VALUES (%s,%s,%s,%s,%s,%s,'DUPLICADO_BORRADO',100,%s,%s,'auto',%s,TRUE)""",
+                              (banco.get("banco", ""), banco.get("cuenta", ""),
+                               str(sobra[1] or ""), str(sobra[5] or ""), float(sobra[2] or 0),
+                               "ingreso" if float(sobra[2] or 0) > 0 else "egreso",
+                               "se conserva el asiento id=%s" % item["conservar"][0],
+                               "duplicado en conciliación",
+                               datetime.now().strftime("%Y-%m-%d %H:%M")))
+            conn.commit()
+        except Exception as error:
+            print("[Conciliación] limpiar duplicados:", error)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            messagebox.showerror("Duplicados", "No se pudo limpiar:\n%s" % error,
+                                 parent=self.parent_frame)
+            return
+        finally:
+            liberar_conexion(conn)
+        self._cache_asientos = None
+        self._cache_saldos_extra = None
+        messagebox.showinfo(
+            "Duplicados",
+            "🧹 %d asiento(s) duplicado(s) eliminado(s) en %d grupo(s).\n"
+            "Se conservó el asiento del sistema.\n\nRespaldo: %s"
+            % (borrados, len(grupos), os.path.basename(ruta_respaldo)),
+            parent=self.parent_frame)
+        try:
+            self.generar_reporte()
+        except Exception:
+            pass
+
+    def mostrar_diferencias_importe(self, diferencias=None, periodo=None):
+        """🔍 Lista los asientos emparejados cuyo importe no coincide exacto.
+
+        Sirve para ubicar diferencias de centavos (redondeo) o comisiones que
+        antes solo se veían como un total en el Resumen del período.
+        """
+        datos = list(diferencias if diferencias is not None else
+                     (getattr(self, "_diferencias_importe", None) or []))
+        if not datos:
+            messagebox.showinfo(
+                "Diferencias de importe",
+                "No hay diferencias de importe entre los asientos y el banco.",
+                parent=self.parent_frame)
+            return
+        banco = self.banco_seleccionado()
+        etiqueta_banco = construir_etiqueta_banco(banco) if banco else ""
+        periodo_txt = (" · " + str(periodo)) if periodo else ""
+        v = ctk.CTkToplevel(self.parent_frame)
+        v.title("🔍 Diferencias de importe · %s%s" % (etiqueta_banco, periodo_txt))
+        v.geometry("1080x560")
+        try:
+            v.transient(self.parent_frame)
+            v.resizable(True, True)
+        except Exception:
+            pass
+        traer_al_frente(v)
+
+        marco = ctk.CTkFrame(v)
+        marco.pack(fill="both", expand=True, padx=10, pady=10)
+        ctk.CTkLabel(marco, text="Diferencias por asiento",
+                     font=(FAMILIA, 15, "bold"), text_color="#1f538d").pack(anchor="w", padx=8, pady=(6, 0))
+        ctk.CTkLabel(marco, text="Solo se muestran asientos emparejados con una línea del banco "
+                                  "cuyo importe no es idéntico.",
+                     font=(FAMILIA, 10, "italic"), text_color="#7f8c8d").pack(anchor="w", padx=8)
+
+        cont = ctk.CTkFrame(marco, fg_color="transparent")
+        cont.pack(fill="both", expand=True, padx=6, pady=6)
+        columnas = ("fecha_sistema", "fecha_banco", "documento", "descripcion",
+                    "monto_sistema", "monto_banco", "diferencia", "tipo")
+        titulos = (("fecha_sistema", "Fecha sistema", 100),
+                   ("fecha_banco", "Fecha banco", 100),
+                   ("documento", "Documento", 150),
+                   ("descripcion", "Descripción", 330),
+                   ("monto_sistema", "Monto sistema", 105),
+                   ("monto_banco", "Monto banco", 105),
+                   ("diferencia", "Diferencia", 90),
+                   ("tipo", "Tipo", 90))
+        tabla = ttk.Treeview(cont, columns=columnas, show="headings", height=16)
+        for col, texto, ancho in titulos:
+            tabla.heading(col, text=texto)
+            tabla.column(col, width=ancho,
+                         anchor="w" if col in ("documento", "descripcion") else "center")
+        vsb = ttk.Scrollbar(cont, orient="vertical", command=tabla.yview)
+        tabla.configure(yscrollcommand=vsb.set)
+        tabla.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        tabla.tag_configure("redondeo", background="#fef9e7")
+        tabla.tag_configure("comision", background="#eaf2f8")
+        tabla.tag_configure("diferencia", background="#fadbd8")
+
+        def _tipo_txt(t):
+            t = str(t or "").lower()
+            if t == "comision":
+                return "Comisión"
+            if t == "redondeo":
+                return "Redondeo"
+            return "Diferencia"
+
+        ordenados = sorted(datos, key=lambda f: (
+            str(f.get("fecha_sistema") or ""),
+            -abs(float(f.get("diferencia") or 0))))
+        total = 0.0
+        for i, f in enumerate(ordenados):
+            dif = float(f.get("diferencia") or 0)
+            total += dif
+            tag = str(f.get("tipo") or "diferencia").lower()
+            if tag not in ("redondeo", "comision", "diferencia"):
+                tag = "diferencia"
+            tabla.insert("", "end", iid=str(i), tags=(tag,), values=(
+                fecha_para_mostrar(f.get("fecha_sistema") or ""),
+                fecha_para_mostrar(f.get("fecha_banco") or ""),
+                f.get("documento") or "",
+                (f.get("descripcion") or "")[:80],
+                formatear_monto(f.get("monto_sistema") or 0),
+                formatear_monto(f.get("monto_banco") or 0),
+                formatear_monto(dif),
+                _tipo_txt(tag)))
+
+        pie = ctk.CTkFrame(v, fg_color="transparent")
+        pie.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkLabel(pie, text="%d diferencia(s)   ·   Total: %s"
+                     % (len(ordenados), formatear_monto(total)),
+                     font=(FAMILIA, 12, "bold"), text_color="#1f538d").pack(side="left", padx=8)
+        ctk.CTkButton(pie, text="Cerrar", width=100, fg_color="#7f8c8d",
+                      hover_color="#5d6d6e", command=v.destroy).pack(side="right", padx=4)
+
+    def mostrar_resumen(self):
+        """📊 Ventana con las cantidades y totales de cada lado del período.
+
+        Muestra, para el banco y mes elegidos: cuántos asientos tiene el sistema y
+        cuántas líneas el estado de cuenta, con ingresos y egresos separados, y la
+        diferencia de netos.
+        """
+        banco = self.banco_seleccionado()
+        if not banco:
+            messagebox.showerror("Resumen", "Elija un banco primero.",
+                                 parent=self.parent_frame)
+            return
+        mes_key = mes_etiqueta_a_key(self.cmb_mes.get()) if hasattr(self, "cmb_mes") else ""
+        etiqueta_mes = self.cmb_mes.get() if hasattr(self, "cmb_mes") else "Todos los meses"
+        ignorados = self.cargar_ignorados(banco)
+        ign_sistema = ignorados.get("sistema", set())
+        ign_pdf = ignorados.get("estado_cuenta", set())
+
+        try:
+            sistema = [m for m in self.cargar_movimientos_sistema(banco, mes=mes_key)
+                       if not m.get("espejo_banco")]
+        except Exception as error:
+            print("[Resumen] movimientos del sistema:", error)
+            sistema = []
+        sistema = [m for m in sistema
+                   if self._clave_ignorado(m.get("origen", "sistema"), m.get("tabla", ""),
+                                           m.get("id", 0), m.get("fecha"), m.get("monto"),
+                                           m.get("descripcion")) not in ign_sistema]
+        # 🏦 El banco muestra la transferencia + su comisión en UNA sola línea.
+        #    Se suma la comisión a la transferencia; si no, quedaba como un
+        #    «sobrante» de 4.80 aunque el banco ya la había cobrado.
+        comisiones = {}
+        sistema_sin_comision = []
+        for m in sistema:
+            desc = _norm_texto(m.get("descripcion", ""))
+            es_comision = (m.get("tabla") == "tx_comision" or m.get("es_comision")
+                           or ("comision" in desc
+                               and abs(float(m.get("monto") or 0)) <= 20))
+            if es_comision:
+                comisiones[(m.get("id"), normalizar_fecha(m.get("fecha")))] = \
+                    float(m.get("monto") or 0)
+            else:
+                sistema_sin_comision.append(m)
+        for m in sistema_sin_comision:
+            if m.get("tabla") == "transferencias_bancarias":
+                com = comisiones.get((m.get("id"), normalizar_fecha(m.get("fecha"))))
+                if com:
+                    m["monto"] = float(m.get("monto") or 0) + com
+        sistema = sistema_sin_comision
+        try:
+            manuales = [m for m in self.cargar_manuales(banco)
+                        if not mes_key
+                        or normalizar_fecha(m.get("fecha")).startswith(mes_key)]
+        except Exception as error:
+            print("[Resumen] manuales:", error)
+            manuales = []
+        try:
+            lineas = self._cargar_movimientos_pdf(banco, mes_key) or []
+        except Exception as error:
+            print("[Resumen] estado de cuenta:", error)
+            lineas = []
+        # 🚫 Igual que la pestaña de Conciliación: las líneas marcadas como
+        #    eliminadas (ocultas) no se cuentan en el resumen.
+        lineas = [b for b in lineas
+                  if self._clave_ignorado("estado_cuenta", "", 0, b.get("fecha"),
+                                          b.get("monto"), b.get("descripcion")) not in ign_pdf]
+        try:
+            extras = self.cargar_asientos_extra(banco, mes_key) or []
+        except Exception as error:
+            print("[Resumen] asientos extra:", error)
+            extras = []
+        # ⏳ Asientos de fin del mes anterior que el banco posteó en este mes.
+        try:
+            comision = cargar_comision_interbancaria()
+        except Exception:
+            comision = 0.0
+        try:
+            prev_pend = self._traer_pendientes_mes_anterior(
+                banco, mes_key, sistema, lineas, comision)
+            for m in prev_pend:
+                m["_pendiente"] = True
+                sistema.append(m)
+        except Exception as error:
+            print("[Resumen] pendientes del mes anterior:", error)
+
+        def _lado(lista):
+            ingresos = [float(m.get("monto") or 0) for m in lista
+                        if float(m.get("monto") or 0) > 0]
+            egresos = [float(m.get("monto") or 0) for m in lista
+                       if float(m.get("monto") or 0) < 0]
+            return {"total": len(lista), "n_ing": len(ingresos), "ing": sum(ingresos),
+                    "n_egr": len(egresos), "egr": -sum(egresos),
+                    "neto": sum(ingresos) + sum(egresos)}
+
+        # 🧮 Comparación justa: cada línea del banco se usa UNA sola vez.
+        #    - 'unicos': asientos que representan un movimiento real.
+        #    - 'duplicados': asientos extra que copian una línea ya usada.
+        #    - 'sobrantes': asientos sin línea en el banco.
+        #    - 'faltantes': líneas del banco sin asiento.
+        asientos = []
+        for m in sistema:
+            d = dict(m)
+            origen_s = str(m.get("origen") or "")
+            if not origen_s.startswith("s:"):
+                origen_s = "s:%s" % (m.get("tabla") or "sistema")
+            d["origen"] = origen_s
+            d["_prioridad"] = 0 if origen_s == "s:pagos_comprobantes" else 1
+            asientos.append(d)
+        # 🧾 Asientos que no vienen de Compras/Ventas (e, App Grifo, comisiones):
+        #    también forman parte del lado del sistema.
+        for m in extras:
+            d = dict(m)
+            d["_prioridad"] = 2
+            asientos.append(d)
+        for m in manuales:
+            d = dict(m)
+            d["origen"] = "manual"
+            d["_prioridad"] = 3
+            asientos.append(d)
+        match, dup_idx, sobr_idx, falt_idx = emparejar_asientos_banco(
+            asientos, lineas, comision)
+        # 🏦 Si el banco cobró la comisión en la MISMA línea (principal + 4.80),
+        #    el asiento se compara por el total del banco. Antes el sistema
+        #    mostraba sólo el principal y aparecía una diferencia de 4.80 por
+        #    cada transferencia, aunque no faltara ningún movimiento.
+        for i, j in match.items():
+            a = asientos[i]
+            b = lineas[j]
+            try:
+                am = float(a.get("monto") or 0)
+                bm = float(b.get("monto") or 0)
+            except (TypeError, ValueError):
+                continue
+            if am * bm <= 0:
+                continue
+            if abs((abs(bm) - abs(am)) - float(comision or 0)) <= 0.02:
+                a["monto"] = bm
+        # 🔍 Diferencias de importe que quedan en el Resumen (redondeos/comisiones).
+        diferencias_resumen = []
+        _vistos_dif = set()
+        for i, j in match.items():
+            a = asientos[i]
+            b = lineas[j]
+            try:
+                am = float(a.get("monto") or 0)
+                bm = float(b.get("monto") or 0)
+            except (TypeError, ValueError):
+                continue
+            dif = round(bm - am, 2)
+            if abs(dif) < 0.005:
+                continue
+            clave = (a.get("tabla"), a.get("id"),
+                     normalizar_fecha(b.get("fecha")), round(bm, 2))
+            if clave in _vistos_dif:
+                continue
+            _vistos_dif.add(clave)
+            try:
+                com = abs(float(comision or 0))
+            except (TypeError, ValueError):
+                com = 0.0
+            if abs(abs(dif) - com) <= 0.02 and abs(dif) > 0.02:
+                tipo = "comision"
+            elif abs(dif) <= 0.05:
+                tipo = "redondeo"
+            else:
+                tipo = "diferencia"
+            diferencias_resumen.append({
+                "fecha_sistema": a.get("fecha") or "",
+                "fecha_banco": b.get("fecha") or "",
+                "documento": a.get("documento") or "",
+                "descripcion": a.get("descripcion") or "",
+                "monto_sistema": am,
+                "monto_banco": bm,
+                "diferencia": dif,
+                "tipo": tipo,
+                "origen": a.get("origen") or "",
+                "tabla": a.get("tabla") or "",
+                "id": a.get("id") or 0,
+            })
+        # 🔒 Sólo se descuentan los duplicados MANUALES claros (copia de la línea
+        #    o principal + comisión). Si el asiento extra no es una copia clara,
+        #    se muestra como SOBRANTE para no ocultar un movimiento real.
+        dup_final, sobr_final = [], list(sobr_idx)
+        for i, j in dup_idx:
+            pi = next((i2 for i2, j2 in match.items() if j2 == j), None)
+            principal = asientos[pi] if pi is not None else None
+            if _es_duplicado_manual_claro(asientos[i], lineas[j], principal, comision):
+                dup_final.append((i, j))
+            else:
+                sobr_final.append(i)
+        dup_idx, sobr_idx = dup_final, sobr_final
+        # ✅ Los asientos que el usuario ya concilió no son «sobrantes», aunque su
+        #    línea del banco esté marcada como eliminada. Así el resumen coincide
+        #    con el aviso de la pestaña de Conciliación.
+        conciliados = self.cargar_conciliados(banco)
+        resueltos = set()
+        for i in list(sobr_idx):
+            a = asientos[i]
+            origen = str(a.get("origen") or "")
+            if origen == "manual":
+                if str(a.get("estado") or "").lower() == "conciliado":
+                    resueltos.add(i)
+                continue
+            if origen.startswith("s:"):
+                base, tabla = "sistema", origen[2:]
+            elif origen in ("e", "estado_cuenta"):
+                base, tabla = "estado_cuenta", ""
+            else:
+                base, tabla = origen, str(a.get("tabla") or "")
+            clave = self._clave_conciliado(base, tabla, a.get("id", 0), a.get("fecha"),
+                                           a.get("monto"), a.get("descripcion"))
+            if clave in conciliados:
+                resueltos.add(i)
+        if resueltos:
+            sobr_idx = [i for i in sobr_idx if i not in resueltos]
+        # ⏳ Asientos de fin de mes que aparecen en el estado siguiente: no son
+        #    sobrantes de este mes; se conciliarán al abrir el mes siguiente.
+        pendientes_siguiente_resumen = []
+        try:
+            filas_pend = []
+            for i in sobr_idx:
+                a = asientos[i]
+                if a.get("tabla") not in ("pagos_comprobantes", "pagos_clientes",
+                                          "transferencias_bancarias", "tx_comision"):
+                    continue
+                filas_pend.append({"origen": "sistema", "estado": "diferencia",
+                                   "tabla": a.get("tabla"), "id": a.get("id"),
+                                   "fecha": a.get("fecha"), "monto": a.get("monto"),
+                                   "descripcion": a.get("descripcion"),
+                                   "documento": a.get("documento"),
+                                   "id_factura": a.get("id_factura")})
+            marcados = self._marcar_pendientes_siguiente(
+                filas_pend, banco, mes_key, comision)
+            pendientes_siguiente_resumen = list(marcados or [])
+            if marcados:
+                claves = {(m.get("tabla"), m.get("id"), normalizar_fecha(m.get("fecha")),
+                           round(float(m.get("monto") or 0), 2)) for m in marcados}
+                sobr_idx = [i for i in sobr_idx
+                            if (asientos[i].get("tabla"), asientos[i].get("id"),
+                                normalizar_fecha(asientos[i].get("fecha")),
+                                round(float(asientos[i].get("monto") or 0), 2)) not in claves]
+        except Exception as error:
+            print("[Resumen] pendientes próximo mes:", error)
+        # 🔄 Manda la decisión que ya tomó la pestaña de Conciliación: si allí
+        #    una fila quedó «Pendiente próximo estado», el Resumen debe mostrar
+        #    esa misma cantidad y no recalcularla con otro criterio.
+        try:
+            pend_reporte = [f for f in (getattr(self, "filas_conciliacion", None) or [])
+                            if f.get("_pendiente_siguiente")]
+        except Exception:
+            pend_reporte = []
+        if pend_reporte:
+            pendientes_siguiente_resumen = list(pend_reporte)
+            claves_reporte = {(f.get("tabla"), f.get("id"),
+                               normalizar_fecha(f.get("fecha")),
+                               round(float(f.get("monto") or 0), 2))
+                              for f in pend_reporte}
+            sobr_idx = [i for i in sobr_idx
+                        if (asientos[i].get("tabla"), asientos[i].get("id"),
+                            normalizar_fecha(asientos[i].get("fecha")),
+                            round(float(asientos[i].get("monto") or 0), 2))
+                        not in claves_reporte]
+        # 🔄 También manda el estado final de la tabla: si la Conciliación ya
+        #    muestra un asiento como «Conciliado», el Resumen no debe contarlo
+        #    como sobrante aunque su propio cruce no lo haya emparejado igual.
+        try:
+            conciliadas_reporte = [f for f in (getattr(self, "filas_conciliacion", None) or [])
+                                   if str(f.get("estado") or "").lower() == "conciliado"
+                                   and f.get("origen") != "estado_cuenta"]
+        except Exception:
+            conciliadas_reporte = []
+        if conciliadas_reporte:
+            claves_conc = {(f.get("tabla"), f.get("id"),
+                            normalizar_fecha(f.get("fecha")),
+                            round(float(f.get("monto") or 0), 2))
+                           for f in conciliadas_reporte}
+            sobr_idx = [i for i in sobr_idx
+                        if (asientos[i].get("tabla"), asientos[i].get("id"),
+                            normalizar_fecha(asientos[i].get("fecha")),
+                            round(float(asientos[i].get("monto") or 0), 2))
+                        not in claves_conc]
+        unicos = [asientos[i] for i in sorted(match)] + [asientos[i] for i in sobr_idx]
+        duplicados = [asientos[i] for i, _ in dup_idx]
+        lado_sis = _lado(unicos)
+        lado_pdf = _lado(lineas)
+        lado_dup = _lado(duplicados)
+        neto_sis, neto_pdf = lado_sis["neto"], lado_pdf["neto"]
+        neto_sob = sum(float(asientos[i].get("monto") or 0) for i in sobr_idx)
+        neto_falt = sum(float(lineas[j].get("monto") or 0) for j in falt_idx)
+
+        v = ctk.CTkToplevel(self.parent_frame)
+        v.title("📊 Resumen del período")
+        v.geometry("720x520")
+        try:
+            v.transient(self.parent_frame)
+        except Exception:
+            pass
+        traer_al_frente(v)
+
+        marco = ctk.CTkFrame(v)
+        marco.pack(fill="both", expand=True, padx=12, pady=12)
+        ctk.CTkLabel(marco, text="Banco: %s" % construir_etiqueta_banco(banco),
+                     font=(FAMILIA, 14, "bold")).pack(anchor="w", padx=8, pady=(8, 0))
+        ctk.CTkLabel(marco, text="Período: %s" % etiqueta_mes,
+                     font=(FAMILIA, 12), text_color="#566573").pack(anchor="w", padx=8, pady=(0, 8))
+
+        cont = ctk.CTkFrame(marco, fg_color="transparent")
+        cont.pack(fill="both", expand=True, padx=8)
+        columnas = ("concepto", "sistema", "estado")
+        tabla = ttk.Treeview(cont, columns=columnas, show="headings", height=10)
+        for col, titulo, ancho in (("concepto", "Concepto", 220),
+                                   ("sistema", "Asientos (sin duplicados)", 240),
+                                   ("estado", "Estado de cuenta", 240)):
+            tabla.heading(col, text=titulo)
+            tabla.column(col, width=ancho,
+                         anchor="w" if col == "concepto" else "center")
+        tabla.pack(fill="both", expand=True)
+        filas_tabla = [
+            ("Cantidad", "%d" % lado_sis["total"], "%d" % lado_pdf["total"]),
+            ("Ingresos", "%d  ·  %s" % (lado_sis["n_ing"], formatear_monto(lado_sis["ing"])),
+             "%d  ·  %s" % (lado_pdf["n_ing"], formatear_monto(lado_pdf["ing"]))),
+            ("Egresos", "%d  ·  %s" % (lado_sis["n_egr"], formatear_monto(lado_sis["egr"])),
+             "%d  ·  %s" % (lado_pdf["n_egr"], formatear_monto(lado_pdf["egr"]))),
+            ("Neto (ingresos − egresos)", formatear_monto(neto_sis),
+             formatear_monto(neto_pdf)),
+            ("Diferencia de netos", formatear_monto(neto_sis - neto_pdf), ""),
+            ("Diferencias de importe",
+             "%d  ·  %s" % (len(diferencias_resumen),
+                            formatear_monto(sum(float(f.get("diferencia") or 0)
+                                                for f in diferencias_resumen))), ""),
+            ("Duplicados (no sumados)",
+             "%d  ·  %s" % (lado_dup["total"], formatear_monto(lado_dup["neto"])), ""),
+            ("Sobrantes (sistema sin banco)",
+             "%d  ·  %s" % (len(sobr_idx), formatear_monto(neto_sob)), ""),
+            ("Faltantes (banco sin asiento)",
+             "%d  ·  %s" % (len(falt_idx), formatear_monto(neto_falt)), ""),
+            ("Pendientes próximo mes",
+             "%d  ·  %s" % (len(pendientes_siguiente_resumen),
+                            formatear_monto(sum(float(m.get("monto") or 0)
+                                                for m in pendientes_siguiente_resumen))), ""),
+        ]
+        for i, fila in enumerate(filas_tabla):
+            tabla.insert("", "end", iid=str(i), values=fila)
+
+        ctk.CTkLabel(
+            marco,
+            text=("El resumen usa las mismas líneas visibles que la conciliación: las "
+                  "marcadas como eliminadas/ocultas no se cuentan y los asientos ya "
+                  "conciliados dejan de ser sobrantes. Cuando el banco cobra la comisión "
+                  "en la misma línea, se compara el total del banco. La diferencia que "
+                  "quede es real (redondeo, sobrantes o faltantes)."),
+            font=(FAMILIA, 10, "italic"), text_color="#7f8c8d",
+            wraplength=650, justify="left").pack(anchor="w", padx=8, pady=(6, 0))
+
+        pie = ctk.CTkFrame(v, fg_color="transparent")
+        pie.pack(fill="x", padx=12, pady=(4, 12))
+        ctk.CTkButton(pie, text="🔍 Ver diferencias", width=160,
+                      font=(FAMILIA, 11, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
+                      command=lambda: self.mostrar_diferencias_importe(
+                          diferencias_resumen, etiqueta_mes)).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(pie, text="Cerrar", width=100, fg_color="#7f8c8d",
+                      hover_color="#5d6d6e", command=v.destroy).pack(side="right")
+
     def _periodos_cargados(self, banco):
         """{'AAAA-MM'} de los estados de cuenta cargados para ese banco y cuenta."""
         periodos = set()
@@ -4432,6 +5521,23 @@ class ModuloBancoApp:
         # 🔄 La otra dirección: asientos del SISTEMA que no aparecen en el estado de
         #    cuenta cargado (los que «sobran», los de otro mes o los duplicados).
         sobrantes = list(getattr(self, "_pendientes_sistema", None) or [])
+        # 📄 Sin estado de cuenta cargado no se puede afirmar que el cruce esté
+        #    completo: no hay contra qué comparar.
+        try:
+            _mes_vista = mes_etiqueta_a_key(self.cmb_mes.get()) if hasattr(self, "cmb_mes") else ""
+        except Exception:
+            _mes_vista = ""
+        _periodos_ok = getattr(self, "_periodos_ok", None)
+        _periodos_ok = _periodos_ok if isinstance(_periodos_ok, (set, frozenset)) else set()
+        if _mes_vista and _mes_vista not in _periodos_ok:
+            messagebox.showinfo(
+                "Faltantes",
+                "📄 Todavía no hay estado de cuenta cargado para %s.\n\n"
+                "Sin el estado de cuenta no hay contra qué comparar: subí el PDF de "
+                "ese mes para poder cruzar los asientos del sistema."
+                % (self.cmb_mes.get() if hasattr(self, "cmb_mes") else _mes_vista),
+                parent=self.parent_frame)
+            return
         if not faltantes and not sobrantes:
             messagebox.showinfo(
                 "Faltantes",
@@ -4460,14 +5566,42 @@ class ModuloBancoApp:
         # 🔎 Facturas del sistema por importe: sirve para decir, en cada línea del
         #    banco, si YA hay una factura con ese total (falta sólo el pago) o si
         #    no hay nada registrado.
+        # 🔍 Lo que de verdad importa: ¿hay un ASIENTO con ese importe en el banco?
+        #    (La columna anterior buscaba facturas por importe y confundía: una
+        #    factura no es lo mismo que un movimiento.)
+        asientos_por_importe = {}
+        conn_as = conectar_db(silencioso=True)
+        if conn_as:
+            try:
+                with conn_as.cursor() as cur_as:
+                    cur_as.execute("""SELECT fecha, monto, COALESCE(origen,''), COALESCE(estado,'')
+                                      FROM conciliacion_bancaria
+                                      WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                        AND COALESCE(cuenta,'') = %s""",
+                                   (banco.get("banco", ""), banco.get("cuenta", "") or ""))
+                    for _f, _mo, _or, _es in cur_as.fetchall():
+                        asientos_por_importe.setdefault(
+                            round(abs(float(_mo or 0)), 2), []).append(
+                                (clave_fecha(_f), str(_or), str(_es)))
+            except Exception as _e_as:
+                print("[Conciliación] asientos por importe:", _e_as)
+            finally:
+                liberar_conexion(conn_as)
+
         facturas_por_importe = {}
         try:
             _conn_f = conectar_db(silencioso=True)
             if _conn_f:
                 with _conn_f.cursor() as _cur_f:
+                    # 🔍 Solo facturas REALES con número: se excluyen los registros
+                    #    espejo «PAGO BANCO» (no tienen número) para no decir «Sí»
+                    #    cuando en realidad la factura no existe.
                     _cur_f.execute("""SELECT COALESCE(numero_documento,''), COALESCE(proveedor,''),
                                              COALESCE(total,0)
-                                      FROM facturas_recibidas WHERE COALESCE(total,0) > 0""")
+                                      FROM facturas_recibidas
+                                      WHERE COALESCE(total,0) > 0
+                                        AND COALESCE(numero_documento,'') <> ''
+                                        AND COALESCE(tipo_documento,'') <> 'PAGO BANCO'""")
                     for _num, _prov, _tot in _cur_f.fetchall():
                         facturas_por_importe.setdefault(
                             round(abs(float(_tot)), 2), []).append((_num, _prov))
@@ -4490,16 +5624,16 @@ class ModuloBancoApp:
                 return None
             cont = ctk.CTkFrame(padre, fg_color="transparent")
             cont.pack(fill="both", expand=True)
-            columnas = ("fecha", "descripcion", "monto") + (("factura",) if con_factura else ())
+            columnas = ("fecha", "descripcion", "monto") + (("asiento",) if con_factura else ())
             titulos = [("fecha", "Fecha", 100), ("descripcion", "Descripción", 520),
                        ("monto", "Monto", 110)]
             if con_factura:
-                titulos.append(("factura", "Factura en el sistema", 200))
+                titulos.append(("asiento", "Asiento con el mismo importe", 260))
             tabla_t = ttk.Treeview(cont, columns=columnas, show="headings", height=15)
             for col, titulo, ancho in titulos:
                 tabla_t.heading(col, text=titulo)
                 tabla_t.column(col, width=ancho,
-                               anchor="w" if col in ("descripcion", "factura") else "center")
+                               anchor="w" if col in ("descripcion", "asiento") else "center")
             despl = ttk.Scrollbar(cont, orient="vertical", command=tabla_t.yview)
             tabla_t.configure(yscrollcommand=despl.set)
             tabla_t.pack(side="left", fill="both", expand=True)
@@ -4507,11 +5641,28 @@ class ModuloBancoApp:
             for indice, m in enumerate(filas):
                 valores = [str(m.get("fecha") or "")[:10],
                            str(m.get("descripcion") or "")[:70],
-                           "%9.2f" % abs(float(m.get("monto") or 0))]
+                           formatear_monto(m.get("monto"))]
                 if con_factura:
                     _imp = round(abs(float(m.get("monto") or 0)), 2)
-                    _fs = facturas_por_importe.get(_imp)
-                    valores.append(("Sí · %s" % (_fs[0][0] or "s/n")) if _fs else "— no encontrada")
+                    _cands = asientos_por_importe.get(_imp) or []
+                    if not _cands:
+                        valores.append("— ninguno")
+                    else:
+                        _dia = clave_fecha(m.get("fecha")) or ""
+                        def _dias(a, _ref=_dia):
+                            try:
+                                return abs((datetime.strptime(a[0], "%Y-%m-%d")
+                                            - datetime.strptime(_ref, "%Y-%m-%d")).days)
+                            except Exception:
+                                return 9999
+                        _mejor = min(_cands, key=_dias)
+                        _fecha_txt = ("%s/%s/%s" % (_mejor[0][8:10], _mejor[0][5:7], _mejor[0][0:4])
+                                      if len(_mejor[0]) >= 10 else "sin fecha")
+                        _dif = _dias(_mejor)
+                        valores.append("%s · %s%s" % (
+                            _fecha_txt,
+                            "manual" if _mejor[1] == "manual" else "sistema",
+                            (" · %d día(s) antes/después" % _dif) if 0 < _dif < 9999 else " · mismo día"))
                 tabla_t.insert("", "end", iid=str(indice), values=tuple(valores))
             return tabla_t
 
@@ -4580,13 +5731,11 @@ class ModuloBancoApp:
                         #    manual (misma fecha, importe y descripción), se saltea.
                         c.execute("""SELECT 1 FROM conciliacion_bancaria
                                      WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
-                                       AND COALESCE(cuenta,'') = %s AND origen = 'manual'
+                                       AND COALESCE(cuenta,'') = %s
                                        AND COALESCE(fecha,'') = %s
-                                       AND ABS(COALESCE(monto,0) - %s) < 0.005
-                                       AND COALESCE(descripcion,'') = %s LIMIT 1""",
+                                       AND ABS(COALESCE(monto,0) - %s) < 0.005 LIMIT 1""",
                                   (banco.get("banco", ""), banco.get("cuenta", ""),
-                                   str(m.get("fecha") or ""), monto,
-                                   str(m.get("descripcion") or "")))
+                                   str(m.get("fecha") or ""), monto))
                         if c.fetchone():
                             ya_estaba += 1
                             continue
@@ -4729,13 +5878,11 @@ class ModuloBancoApp:
                         monto = float(m.get("monto") or 0)
                         c.execute("""SELECT 1 FROM conciliacion_bancaria
                                      WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
-                                       AND COALESCE(cuenta,'') = %s AND origen = 'manual'
+                                       AND COALESCE(cuenta,'') = %s
                                        AND COALESCE(fecha,'') = %s
-                                       AND ABS(COALESCE(monto,0) - %s) < 0.005
-                                       AND COALESCE(descripcion,'') = %s LIMIT 1""",
+                                       AND ABS(COALESCE(monto,0) - %s) < 0.005 LIMIT 1""",
                                   (banco.get("banco", ""), banco.get("cuenta", ""),
-                                   str(m.get("fecha") or ""), monto,
-                                   str(m.get("descripcion") or "")))
+                                   str(m.get("fecha") or ""), monto))
                         if c.fetchone():
                             ya_estaba += 1
                             continue
@@ -4983,7 +6130,7 @@ class ModuloBancoApp:
             iid = str(f[0])
             datos[iid] = f
             tabla.insert("", "end", iid=iid, values=(str(f[1])[:10], str(f[2])[:50],
-                                                     "%.2f" % float(f[3] or 0), f[6],
+                                                     formatear_monto(f[3]), f[6],
                                                      "%d%%" % float(f[7] or 0), str(f[8])[:16]))
 
         def _revertir():
@@ -5123,6 +6270,13 @@ class ModuloBancoApp:
         conn = conectar_db(silencioso=True)
         if not conn:
             return asientos
+        # 🚫 Movimientos que el usuario ELIMINÓ: no se vuelven a crear al
+        #    sincronizar (era lo que hacía que un asiento borrado reapareciera).
+        try:
+            _ign = self.cargar_ignorados(banco) or {}
+            ign_sistema = _ign.get("sistema", set())
+        except Exception:
+            ign_sistema = set()
         try:
             with conn.cursor() as c:
                 # 1) pagos a proveedores (el pago es el que sale del banco)
@@ -5148,6 +6302,9 @@ class ModuloBancoApp:
                             continue
                         cuenta = str(f[4] or "")
                         if cuenta and nombre_banco and nombre_banco.upper() not in cuenta.upper():
+                            continue
+                        if self._clave_ignorado("sistema", "pagos_comprobantes", f[0], f[1],
+                                                -abs(float(f[2] or 0)), f[3]) in ign_sistema:
                             continue
                         c.execute("""SELECT id FROM conciliacion_bancaria
                                      WHERE origen='s:pagos_comprobantes' AND id_movimiento=%s""",
@@ -5177,6 +6334,9 @@ class ModuloBancoApp:
                                 continue
                             cuenta = str(f[4] or "")
                             if cuenta and nombre_banco and nombre_banco.upper() not in cuenta.upper():
+                                continue
+                            if self._clave_ignorado("sistema", "pagos_clientes", f[0], f[1],
+                                                    abs(float(f[2] or 0)), f[3]) in ign_sistema:
                                 continue
                             c2.execute("""SELECT id FROM conciliacion_bancaria
                                           WHERE origen='s:pagos_clientes' AND id_movimiento=%s""",
@@ -5217,6 +6377,10 @@ class ModuloBancoApp:
                                             AND COALESCE(f.total,0) > 0""")
                             for f in c3.fetchall():
                                 if not self._en_periodo(f[1], _desde, _hasta):
+                                    continue
+                                if self._clave_ignorado("sistema", "facturas_recibidas", f[0],
+                                                        f[1], -abs(float(f[3] or 0)),
+                                                        f[2]) in ign_sistema:
                                     continue
                                 c3.execute("""SELECT id FROM conciliacion_bancaria
                                               WHERE origen='s:facturas_recibidas'
@@ -5655,9 +6819,10 @@ class ModuloBancoApp:
             with conn.cursor() as c:
                 nombre_banco = banco.get("banco", "")
                 cuenta = banco.get("cuenta", "") or ""
-                sql = ("""SELECT fecha, descripcion, monto, saldo
+                sql = ("""SELECT fecha, descripcion, monto, saldo, COALESCE(periodo,'')
                           FROM conciliacion_movimientos_pdf
-                          WHERE banco = %s AND COALESCE(cuenta,'') = %s""")
+                          WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                            AND COALESCE(cuenta,'') = %s""")
                 args = [nombre_banco, cuenta]
                 if periodo:
                     # Se aceptan las filas viejas sin período si su fecha es de ese mes.
@@ -5669,8 +6834,9 @@ class ModuloBancoApp:
                 filas = c.fetchall()
                 return [{"fecha": f or "", "descripcion": d or "",
                          "monto": float(m or 0),
-                         "saldo": (float(s) if s is not None else None)}
-                        for f, d, m, s in filas]
+                         "saldo": (float(s) if s is not None else None),
+                         "periodo": (str(per) or "") if per else ""}
+                        for f, d, m, s, per in filas]
         except Exception:
             return []
         finally:
@@ -5783,8 +6949,10 @@ class ModuloBancoApp:
         if idm:
             lado = ("|ingreso" if float(monto or 0) >= 0 else "|egreso") if tabla == "transferencias_bancarias" else ""
             return f"{tabla or ''}|{idm}{lado}"
-        return "pdf|%s|%.2f|%s" % (normalizar_fecha(fecha), float(monto or 0),
-                                   _norm_texto(descripcion))
+        # 📄 Las líneas del estado de cuenta se reconocen por FECHA + IMPORTE
+        #    (no por la descripción: un espacio de diferencia hacía que la línea
+        #    «eliminada» volviera a aparecer al recalcular).
+        return "pdf|%s|%.2f" % (normalizar_fecha(fecha), float(monto or 0))
 
     def cargar_ignorados(self, banco):
         """Movimientos que el usuario eliminó en la conciliación de este banco.
@@ -5831,6 +6999,112 @@ class ModuloBancoApp:
               str(f.get("fecha", "") or ""), str(f.get("descripcion", "") or ""),
               float(f.get("monto", 0) or 0), datetime.now().strftime("%Y-%m-%d %H:%M")))
 
+    def eliminar_ocultos_definitivo(self):
+        """🗑️ Borra del PDF y de la lista de ocultos las líneas del mes.
+
+        No toca los asientos del sistema: solo elimina definitivamente las
+        líneas del estado de cuenta que estaban marcadas como ocultas.
+        """
+        banco = self.banco_seleccionado()
+        if not banco:
+            return
+        try:
+            mes_key = mes_etiqueta_a_key(self.cmb_mes.get())
+        except Exception:
+            mes_key = ""
+        if not mes_key:
+            messagebox.showwarning("Eliminar ocultos", "Seleccione un mes.", parent=self.parent_frame)
+            return
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            messagebox.showerror("Error", "Sin conexión a la base de datos.", parent=self.parent_frame)
+            return
+        try:
+            with conn.cursor() as c:
+                c.execute("""SELECT id, fecha, monto, descripcion
+                             FROM conciliacion_ignorados
+                             WHERE banco=%s AND origen='estado_cuenta'
+                             ORDER BY fecha, id""", (banco.get("banco", ""),))
+                filas = []
+                for r in c.fetchall():
+                    f = normalizar_fecha(r[1])
+                    if f.startswith(mes_key):
+                        filas.append({"id": r[0], "fecha": f, "monto": float(r[2] or 0),
+                                      "descripcion": str(r[3] or "")})
+                if not filas:
+                    messagebox.showinfo("Eliminar ocultos",
+                                        "No hay líneas ocultas en este mes.",
+                                        parent=self.parent_frame)
+                    return
+                detalle = "\n".join(
+                    "• %s   %s   %s" % (f["fecha"], formatear_monto(f["monto"]),
+                                         f["descripcion"][:55])
+                    for f in filas[:8])
+                if len(filas) > 8:
+                    detalle += "\n… y %d más" % (len(filas) - 8)
+                if not messagebox.askyesno(
+                        "Eliminar ocultos definitivamente",
+                        "Se eliminarán DEFINITIVAMENTE %d línea(s) ocultas del estado de cuenta "
+                        "de %s · %s:\n\n%s\n\n"
+                        "Se borrarán del PDF cargado y de la lista de ocultos. Se guardará un "
+                        "respaldo JSON.\n\n"
+                        "No se tocan los asientos del sistema; si alguno queda sin línea, la "
+                        "diferencia puede continuar.\n\n¿Continuar?"
+                        % (len(filas), construir_etiqueta_banco(banco), self.cmb_mes.get(), detalle),
+                        parent=self.parent_frame):
+                    return
+                # Respaldo antes de borrar
+                try:
+                    respaldo = {"creado": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "banco": banco.get("banco", ""), "cuenta": banco.get("cuenta", ""),
+                                "mes": mes_key, "ignorados": filas}
+                    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "respaldo_eliminar_ocultos_%s.json"
+                                        % datetime.now().strftime("%Y-%m-%d_%H%M%S"))
+                    with open(ruta, "w", encoding="utf-8") as f:
+                        json.dump(respaldo, f, ensure_ascii=False, indent=1)
+                except Exception as error:
+                    print("[Ocultos] respaldo:", error)
+                borradas_pdf = 0
+                for f in filas:
+                    base_sql = """SELECT id FROM conciliacion_movimientos_pdf
+                                  WHERE banco=%s AND cuenta=%s
+                                    AND fecha=%s AND ABS(monto-%s)<=0.005
+                                    AND (periodo=%s OR periodo IS NULL OR periodo='')"""
+                    params = (banco.get("banco", ""), banco.get("cuenta", ""),
+                              f["fecha"], f["monto"], mes_key)
+                    # Primero por descripción exacta: evita borrar otra línea
+                    # visible del mismo importe y fecha.
+                    c.execute(base_sql + " AND descripcion=%s ORDER BY id LIMIT 1",
+                              params + (f["descripcion"],))
+                    r = c.fetchone()
+                    if not r:
+                        pref = f["descripcion"][:18]
+                        c.execute(base_sql + " AND descripcion LIKE %s ORDER BY id LIMIT 1",
+                                  params + (pref + "%",))
+                        r = c.fetchone()
+                    if r:
+                        c.execute("DELETE FROM conciliacion_movimientos_pdf WHERE id=%s", (r[0],))
+                        borradas_pdf += 1
+                    c.execute("DELETE FROM conciliacion_ignorados WHERE id=%s", (f["id"],))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            messagebox.showerror("Error", f"No se pudieron eliminar los ocultos:\n{e}",
+                                 parent=self.parent_frame)
+            return
+        finally:
+            liberar_conexion(conn)
+        registrar_auditoria(self.usuario_activo, "Banco",
+                            f"Eliminó definitivamente {len(filas)} línea(s) oculta(s) de "
+                            f"{construir_etiqueta_banco(banco)} · {self.cmb_mes.get()} "
+                            f"(PDF borradas: {borradas_pdf})")
+        # Forzar recarga del PDF y del reporte
+        self.movimientos_pdf = []
+        self._banco_pdf = None
+        self._mes_pdf = ""
+        self.generar_reporte()
+
     def restaurar_ignorados(self):
         """Vuelve a mostrar los movimientos que se habían eliminado de la lista."""
         banco = self.banco_seleccionado()
@@ -5862,11 +7136,165 @@ class ModuloBancoApp:
                             f"{construir_etiqueta_banco(banco)}")
         self.generar_reporte()
 
+    @staticmethod
+    def _mes_desplazado(mes_key, delta):
+        """'2026-09' + 1 -> '2026-10'; -1 -> '2026-08'."""
+        try:
+            anio, mes = [int(x) for x in str(mes_key).split("-")[:2]]
+            total = anio * 12 + (mes - 1) + int(delta)
+            return "%04d-%02d" % (total // 12, (total % 12) + 1)
+        except Exception:
+            return ""
+
+    def _dias_desfase_actual(self):
+        """Mismo ajuste «Días de desfase» de la Conciliación inteligente."""
+        try:
+            return max(1, int(getattr(self, "_dias_desfase", 5) or 5))
+        except Exception:
+            return 5
+
+    @staticmethod
+    def _asiento_coincide_linea(asiento, linea, comision=0.0, max_dias=7):
+        """¿El asiento puede ser la misma operación que la línea del banco?"""
+        if not _monto_coincide_banco(linea.get("monto"), asiento.get("monto"), comision):
+            return False
+        return _dias_entre_fechas(asiento.get("fecha"), linea.get("fecha")) <= max_dias
+
+    def _traer_pendientes_mes_anterior(self, banco, mes_key, sys_movs, bank_movs, comision=0.0):
+        """Asientos de fin del mes anterior que aparecen en este estado de cuenta.
+
+        Sirve para pagos como el del 30/09 que el banco posteó el 02/10: se
+        incluyen en el mes siguiente para que se crucen con su línea real.
+        """
+        mes_prev = self._mes_desplazado(mes_key, -1)
+        if not mes_prev or not bank_movs:
+            return []
+        dias_desfase = self._dias_desfase_actual()
+        # Sólo hace falta si hay líneas del banco en los primeros días del mes.
+        try:
+            primeros = [b for b in bank_movs
+                        if int(clave_fecha(b.get("fecha"))[8:10] or 99) <= dias_desfase]
+        except Exception:
+            primeros = []
+        if not primeros:
+            return []
+        try:
+            previos = self.cargar_movimientos_sistema(banco, mes=mes_prev) or []
+        except Exception as error:
+            print("[Conciliación] pendientes mes anterior:", error)
+            return []
+        try:
+            ignorados = self.cargar_ignorados(banco).get("sistema", set())
+            conciliados = self.cargar_conciliados(banco)
+        except Exception:
+            ignorados, conciliados = set(), set()
+        existentes = {(m.get("tabla"), m.get("id"),
+                       normalizar_fecha(m.get("fecha")),
+                       round(float(m.get("monto") or 0), 2)) for m in sys_movs}
+        try:
+            anio, mes = [int(x) for x in mes_prev.split("-")[:2]]
+            ultimo_dia = calendar.monthrange(anio, mes)[1]
+        except Exception:
+            return []
+        salida = []
+        for m in previos:
+            if m.get("espejo_banco"):
+                continue
+            f = normalizar_fecha(m.get("fecha"))
+            if not f.startswith(mes_prev):
+                continue
+            try:
+                dia = int(f[8:10])
+            except Exception:
+                continue
+            # Últimos N días del mes, con el mismo «Días de desfase» de la
+            # Conciliación inteligente.
+            if dia < ultimo_dia - (dias_desfase - 1):
+                continue
+            if self._clave_ignorado(m.get("origen", "sistema"), m.get("tabla", ""),
+                                    m.get("id", 0), m.get("fecha"), m.get("monto"),
+                                    m.get("descripcion")) in ignorados:
+                continue
+            clave_conc = self._clave_conciliado(
+                "sistema", m.get("tabla", ""), m.get("id", 0), m.get("fecha"),
+                m.get("monto"), m.get("descripcion"))
+            if clave_conc in conciliados:
+                continue
+            clave = (m.get("tabla"), m.get("id"), f, round(float(m.get("monto") or 0), 2))
+            if clave in existentes:
+                continue
+            if any(self._asiento_coincide_linea(m, b, comision, dias_desfase)
+                   for b in bank_movs):
+                copia = dict(m)
+                copia["_pendiente"] = True
+                salida.append(copia)
+        return salida
+
+    def _marcar_pendientes_siguiente(self, filas, banco, mes_key, comision=0.0):
+        """Marca los asientos de fin de mes que aparecen en el estado siguiente."""
+        mes_next = self._mes_desplazado(mes_key, 1)
+        if not mes_next:
+            return []
+        dias_desfase = self._dias_desfase_actual()
+        candidatos = []
+        try:
+            anio, mes = [int(x) for x in str(mes_key).split("-")[:2]]
+            ultimo_dia = calendar.monthrange(anio, mes)[1]
+        except Exception:
+            return []
+        for f in filas:
+            if str(f.get("origen", "")) != "sistema":
+                continue
+            if str(f.get("estado", "")).lower() == "conciliado":
+                continue
+            try:
+                dia = int(clave_fecha(f.get("fecha"))[8:10])
+            except Exception:
+                continue
+            # Últimos N días del mes, con el mismo «Días de desfase» de la
+            # Conciliación inteligente.
+            if dia >= ultimo_dia - (dias_desfase - 1):
+                candidatos.append(f)
+        if not candidatos:
+            return []
+        try:
+            lineas_next = self._cargar_movimientos_pdf(banco, mes_next) or []
+            ign_pdf = self.cargar_ignorados(banco).get("estado_cuenta", set())
+            lineas_next = [b for b in lineas_next
+                           if self._clave_ignorado("estado_cuenta", "", 0, b.get("fecha"),
+                                                   b.get("monto"), b.get("descripcion"))
+                           not in ign_pdf]
+        except Exception as error:
+            print("[Conciliación] estado del mes siguiente:", error)
+            lineas_next = []
+        marcados = []
+        if lineas_next:
+            # Estado siguiente cargado: solo se marca si la línea existe de verdad.
+            for f in candidatos:
+                if any(self._asiento_coincide_linea(f, b, comision, dias_desfase)
+                       for b in lineas_next):
+                    f["estado"] = "pendiente"
+                    f["_pendiente_siguiente"] = True
+                    marcados.append(f)
+            return marcados
+        # Estado siguiente todavía NO cargado: los asientos de fin de mes que
+        # tienen factura/soporte quedan como posibles pendientes. Cuando se
+        # cargue el estado, si no aparecen, vuelven a sobrantes.
+        for f in candidatos:
+            tiene_soporte = (bool(str(f.get("documento") or "").strip())
+                             or int(f.get("id_factura") or 0) > 0)
+            if tiene_soporte:
+                f["estado"] = "pendiente"
+                f["_pendiente_siguiente"] = True
+                marcados.append(f)
+        return marcados
+
     def generar_reporte(self):
         banco = self.banco_seleccionado()
         if not banco:
             self.lbl_resumen.configure(text="⚠️ No hay banco seleccionado.")
             return
+        self._diferencias_importe = []
         # ⏳ Aviso mientras se consultan los movimientos (como en Eventos)
         try:
             self.lbl_resumen.configure(text="⏳ Cargando los movimientos del sistema...")
@@ -5914,7 +7342,11 @@ class ModuloBancoApp:
         # (Sí se usan para los totales: son los que dan el saldo del sistema.)
         sys_movs = [m for m in movs_sistema if not m.get("espejo_banco")]
 
-        manuales = self.cargar_manuales(banco)
+        # 📅 Solo los manuales del MES elegido: los de otros meses aparecían como
+        #    «sobrantes» de este y ensuciaban el cruce.
+        manuales = [m for m in self.cargar_manuales(banco)
+                    if not mes_key
+                    or normalizar_fecha(m.get("fecha")).startswith(mes_key)]
 
         # 💳 El banco muestra «principal + comisión» en UNA sola línea (ej. 579.91
         #     + 4.80 = 584.71). En el sistema la comisión puede estar separada; se
@@ -5944,6 +7376,19 @@ class ModuloBancoApp:
             else:
                 _pdf_ocultas += 1
 
+        # ⏳ Asientos de fin del mes anterior que el banco posteó en este mes
+        #    (ej.: pago del 30/09 que aparece el 02/10). Se cruzan aquí para que
+        #    no queden como «faltante» del mes siguiente.
+        try:
+            prev_pend = self._traer_pendientes_mes_anterior(
+                banco, mes_key, sys_movs, bank_movs, comision_bancaria)
+            for m in prev_pend:
+                m["_pendiente"] = True
+                sys_movs.append(m)
+        except Exception as error:
+            print("[Conciliación] pendientes del mes anterior:", error)
+            prev_pend = []
+
         filas = []
         usados = set()
 
@@ -5953,7 +7398,7 @@ class ModuloBancoApp:
             except Exception:
                 return None
 
-        def _emparejar_todos(lista):
+        def _emparejar_todos(lista, usados=None):
             """Empareja una lista con bank_movs en 3 pasadas.
 
             Pasada 1: misma fecha + mismo monto (exacto).
@@ -5978,6 +7423,8 @@ class ModuloBancoApp:
                     return True
                 return False
 
+            if usados is None:
+                usados = set()
             res = {}
             for m in lista:
                 sf = normalizar_fecha(m["fecha"])
@@ -6015,7 +7462,20 @@ class ModuloBancoApp:
             return {**b, "id": 0, "tipo": "ingreso" if b["monto"] > 0 else "egreso",
                     "origen": "estado_cuenta", "tabla": "", "estado": "conciliado"}
 
-        matches_sys = _emparejar_todos(sys_movs)
+        def _monto_mostrar_con_comision(asiento, linea):
+            """Monto a mostrar: si el banco cobró la comisión en la misma línea,
+            se muestra el total del banco (principal + comisión)."""
+            try:
+                am = abs(float(asiento.get("monto") or 0))
+                bm = abs(float(linea.get("monto") or 0))
+                if abs(bm - am - float(comision_bancaria or 0)) <= 0.02:
+                    return linea.get("monto")
+            except (TypeError, ValueError):
+                pass
+            return None
+
+        usados = set()
+        matches_sys = _emparejar_todos(sys_movs, usados)
         for s in sys_movs:
             idx_match = matches_sys.get(id(s))
             if idx_match is not None:
@@ -6023,10 +7483,14 @@ class ModuloBancoApp:
                 #    y se le pega el saldo de la línea del banco. Antes se agregaban
                 #    las dos caras (Sistema + Estado de Cuenta) y se veía duplicado.
                 linea = bank_movs[idx_match]
-                filas.append({**s, "estado": "conciliado",
-                              "saldo": linea.get("saldo"),
-                              "fecha_banco": linea.get("fecha"),
-                              "descripcion_banco": linea.get("descripcion")})
+                fila = {**s, "estado": "conciliado",
+                        "saldo": linea.get("saldo"),
+                        "fecha_banco": linea.get("fecha"),
+                        "descripcion_banco": linea.get("descripcion")}
+                _mm = _monto_mostrar_con_comision(s, linea)
+                if _mm is not None:
+                    fila["monto_mostrar"] = _mm
+                filas.append(fila)
             elif str(s.get("estado") or "").lower() == "conciliado":
                 # ✅ ya está conciliado en la base: se respeta su estado
                 filas.append({**s})
@@ -6034,17 +7498,109 @@ class ModuloBancoApp:
                 filas.append({**s, "estado": "diferencia"})
 
         # Los movimientos MANUALES también se emparejan con el estado de cuenta.
-        matches_man = _emparejar_todos(manuales)
+        matches_man = _emparejar_todos(manuales, usados)
         for m in manuales:
             idx_match = matches_man.get(id(m))
             if idx_match is not None:
                 linea = bank_movs[idx_match]
-                filas.append({**m, "estado": "conciliado", "origen": "manual",
-                              "saldo": linea.get("saldo"),
-                              "fecha_banco": linea.get("fecha"),
-                              "descripcion_banco": linea.get("descripcion")})
+                fila = {**m, "estado": "conciliado", "origen": "manual",
+                        "saldo": linea.get("saldo"),
+                        "fecha_banco": linea.get("fecha"),
+                        "descripcion_banco": linea.get("descripcion")}
+                _mm = _monto_mostrar_con_comision(m, linea)
+                if _mm is not None:
+                    fila["monto_mostrar"] = _mm
+                filas.append(fila)
             else:
-                filas.append({**m, "estado": m.get("estado", "pendiente"), "origen": "manual"})
+                # Sin línea disponible: o no está en el estado de cuenta o su
+                # línea ya la usó el asiento del sistema (manual duplicado).
+                filas.append({**m, "estado": "diferencia", "origen": "manual",
+                              "_sin_pareja": True})
+
+        # 📄 Asientos que NO vienen de Compras (facturas App Grifo, comisiones y los
+        #    registrados desde el banco): antes el cruce los ignoraba, así que sus
+        #    líneas del estado de cuenta quedaban «faltantes» aunque estuvieran.
+        extras = []
+        try:
+            extras = self.cargar_asientos_extra(banco, mes_key)
+        except Exception as error_extra:
+            print("[Conciliación] asientos extra:", error_extra)
+        if extras:
+            matches_ext = _emparejar_todos(extras, usados)
+            for e in extras:
+                idx_match = matches_ext.get(id(e))
+                if idx_match is not None:
+                    linea = bank_movs[idx_match]
+                    filas.append({**e, "estado": "conciliado",
+                                  "saldo": linea.get("saldo"),
+                                  "fecha_banco": linea.get("fecha"),
+                                  "descripcion_banco": linea.get("descripcion")})
+                else:
+                    filas.append({**e, "estado": e.get("estado") or "diferencia"})
+
+        # 🔍 Diferencias de importe entre asientos emparejados y su línea del banco.
+        #    Se guardan para la ventana «Diferencias por asiento».
+        vistos_dif = set()
+
+        def _agregar_dif(asiento, linea):
+            try:
+                am = float(asiento.get("monto") or 0)
+                bm = float(linea.get("monto") or 0)
+            except (TypeError, ValueError):
+                return
+            dif = round(bm - am, 2)
+            if abs(dif) < 0.005:
+                return
+            # La comisión ya registrada en la transferencia no es una diferencia:
+            # el banco cobró principal + comisión y el sistema ya la tiene.
+            try:
+                com_reg = abs(float(asiento.get("comision") or 0))
+            except (TypeError, ValueError):
+                com_reg = 0.0
+            if com_reg > 0 and abs(abs(dif) - com_reg) <= 0.02:
+                return
+            clave = (asiento.get("tabla"), asiento.get("id"),
+                     normalizar_fecha(linea.get("fecha")), round(bm, 2))
+            if clave in vistos_dif:
+                return
+            vistos_dif.add(clave)
+            try:
+                com = abs(float(comision_bancaria or 0))
+            except (TypeError, ValueError):
+                com = 0.0
+            if abs(abs(dif) - com) <= 0.02 and abs(dif) > 0.02:
+                tipo = "comision"
+            elif abs(dif) <= 0.05:
+                tipo = "redondeo"
+            else:
+                tipo = "diferencia"
+            self._diferencias_importe.append({
+                "fecha_sistema": asiento.get("fecha") or "",
+                "fecha_banco": linea.get("fecha") or "",
+                "documento": asiento.get("documento") or "",
+                "descripcion": asiento.get("descripcion") or "",
+                "monto_sistema": am,
+                "monto_banco": bm,
+                "diferencia": dif,
+                "tipo": tipo,
+                "origen": asiento.get("origen") or "",
+                "tabla": asiento.get("tabla") or "",
+                "id": asiento.get("id") or 0,
+            })
+
+        for _s in sys_movs:
+            _j = matches_sys.get(id(_s))
+            if _j is not None:
+                _agregar_dif(_s, bank_movs[_j])
+        for _m in manuales:
+            _j = matches_man.get(id(_m))
+            if _j is not None:
+                _agregar_dif(_m, bank_movs[_j])
+        if extras:
+            for _e in extras:
+                _j = matches_ext.get(id(_e))
+                if _j is not None:
+                    _agregar_dif(_e, bank_movs[_j])
 
         for i, b in enumerate(bank_movs):
             if i not in usados:
@@ -6053,13 +7609,26 @@ class ModuloBancoApp:
 
         # 🧹 Si se eligió un mes, solo se muestran movimientos de ESE mes
         if mes_key:
-            filas = [f for f in filas if normalizar_fecha(f.get("fecha", "")).startswith(mes_key)]
+            filas = [f for f in filas
+                     if normalizar_fecha(f.get("fecha", "")).startswith(mes_key)
+                     or (f.get("_pendiente")
+                         and normalizar_fecha(f.get("fecha_banco", "")).startswith(mes_key))]
         filas.sort(key=lambda f: (normalizar_fecha(f["fecha"]), f["monto"]))
         # 🔁 Reaplicar los movimientos ya conciliados (persistidos en la base)
         conciliados = self.cargar_conciliados(banco)
         for f in filas:
+            if f.get("_sin_pareja"):
+                continue
             if self._clave_conciliado_fila(f) in conciliados:
                 f["estado"] = "conciliado"
+        # ⏳ Asientos de fin de mes que aparecen en el estado de cuenta siguiente:
+        #    no se cuentan como sobrantes; quedan pendientes para el mes siguiente.
+        pendientes_siguiente = []
+        try:
+            pendientes_siguiente = self._marcar_pendientes_siguiente(
+                filas, banco, mes_key, comision_bancaria)
+        except Exception as error:
+            print("[Conciliación] pendientes próximo mes:", error)
         self._filas_conc_full = list(filas)
         self.filas_conciliacion = filas
         self.refrescar_tree()
@@ -6078,6 +7647,7 @@ class ModuloBancoApp:
         pendientes_sis = [f for f in filas
                           if f.get("origen") != "estado_cuenta"
                           and f.get("estado") != "conciliado"
+                          and not f.get("_pendiente_siguiente")
                           and (not mes_key
                                or clave_fecha(f.get("fecha"))[:7] in periodos_cargados)]
         self._pendientes_sistema = pendientes_sis
@@ -6094,18 +7664,44 @@ class ModuloBancoApp:
             except Exception:
                 pass
         else:
-            self._actualizar_aviso_faltantes(faltantes, pendientes_sis, _pdf_ocultas, _pdf_periodo)
+            self._actualizar_aviso_faltantes(faltantes, pendientes_sis, _pdf_ocultas, _pdf_periodo,
+                                             pendientes_siguiente=len(pendientes_siguiente))
 
         saldo_inicial = normalizar_monto(banco.get("saldo_inicial", ""))
         # Descartar un asiento TX en conciliación no cambia su efecto contable.
         # Se conserva la conducta histórica de las demás fuentes.
         movs_saldo = [m for m in movs_sistema if m.get("tabla") not in ("transferencias_bancarias", "tx_comision")]
         movs_saldo.extend(m for m in movimientos_sistema if m.get("tabla") in ("transferencias_bancarias", "tx_comision"))
+        # ⏳ Los pendientes del mes anterior se cruzan en este mes; la barra
+        #    superior sigue mostrando el neto crudo del sistema. El detalle
+        #    conciliado (sin pendientes ni duplicados) está en «Resumen del período».
+        try:
+            movs_saldo.extend(prev_pend)
+        except NameError:
+            pass
         ingresos = sum(m["monto"] for m in movs_saldo if m["monto"] > 0)
         egresos = sum(-m["monto"] for m in movs_saldo if m["monto"] < 0)
         neto_sistema = ingresos - egresos
         neto_pdf = sum(b["monto"] for b in bank_movs)
         diferencia_mes = neto_sistema - neto_pdf
+
+        # 📊 Cantidades y totales de cada lado (asientos del sistema vs. líneas del
+        #    estado de cuenta), separando ingresos y egresos.
+        _asientos_lado = [f for f in filas
+                          if f.get("origen") != "estado_cuenta"
+                          and not f.get("_pendiente_siguiente")]
+        _lineas_lado = [f for f in filas if f.get("origen") == "estado_cuenta"]
+
+        def _resumen_lado(lista):
+            ingresos_l = [float(f.get("monto") or 0) for f in lista
+                          if float(f.get("monto") or 0) > 0]
+            egresos_l = [float(f.get("monto") or 0) for f in lista
+                         if float(f.get("monto") or 0) < 0]
+            return (len(lista), len(ingresos_l), sum(ingresos_l),
+                    len(egresos_l), -sum(egresos_l))
+
+        _n_asi, _ni_asi, _ti_asi, _ne_asi, _te_asi = _resumen_lado(_asientos_lado)
+        _n_lin, _ni_lin, _ti_lin, _ne_lin, _te_lin = _resumen_lado(_lineas_lado)
 
         if mes_key:
             etiqueta_mes = self.cmb_mes.get()
@@ -6127,6 +7723,56 @@ class ModuloBancoApp:
                        f"Movimientos PDF (neto): {formatear_monto(neto_pdf)}   |   "
                        f"(No se detectó saldo final en el PDF)")
         self.lbl_resumen.configure(text=txt)
+        # 📊 Los totales de cada lado se ven en la ventana «Resumen del período»
+        #    (botón), no amontonados en esta barra.
+        self._ultimo_resumen = (_resumen_lado(_asientos_lado), _resumen_lado(_lineas_lado))
+
+    def cargar_asientos_extra(self, banco, mes=None):
+        """Asientos de conciliacion_bancaria que no vienen de pagos/cobros/transferencias.
+
+        Son los registrados desde el estado de cuenta (origen 'e'), las facturas de
+        la App Grifo ('s:facturas_recibidas') y las comisiones ('s:tx_comision').
+        El cruce clásico no los miraba y por eso sus líneas del banco quedaban como
+        «faltantes» aunque el asiento existiera.
+        """
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return []
+        movs = []
+        try:
+            with conn.cursor() as c:
+                c.execute("""
+                    SELECT id, fecha, descripcion, monto, COALESCE(origen,''),
+                           COALESCE(estado,''), COALESCE(tabla,''), COALESCE(categoria,''),
+                           COALESCE(subcategoria,''), COALESCE(placa,''), COALESCE(chofer,''),
+                           COALESCE(comision,0), COALESCE(interbancario,FALSE),
+                           COALESCE(es_cruzada,FALSE), COALESCE(numero_operacion,'')
+                    FROM conciliacion_bancaria
+                    WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                      AND COALESCE(cuenta,'') = %s
+                      AND COALESCE(origen,'') NOT IN (
+                          'manual', 's:pagos_comprobantes', 's:pagos_clientes',
+                          's:transferencias_bancarias')
+                    ORDER BY id
+                """, (banco.get("banco", ""), banco.get("cuenta", "") or ""))
+                for r in c.fetchall():
+                    fecha = r[1]
+                    if mes and not normalizar_fecha(fecha).startswith(mes):
+                        continue
+                    monto = float(r[3] or 0)
+                    movs.append({
+                        "id": r[0], "fecha": fecha, "descripcion": r[2], "monto": monto,
+                        "tipo": "ingreso" if monto > 0 else "egreso",
+                        "estado": r[5], "origen": r[4] or "sistema", "tabla": r[6],
+                        "categoria": r[7], "subcategoria": r[8], "placa": r[9],
+                        "chofer": r[10], "comision": float(r[11] or 0),
+                        "interbancario": bool(r[12]), "es_cruzada": bool(r[13]),
+                        "numero_operacion": r[14]})
+        except Exception as error:
+            print("[Conciliación] cargar asientos extra:", error)
+        finally:
+            liberar_conexion(conn)
+        return movs
 
     def cargar_manuales(self, banco):
         conn = conectar_db(silencioso=True)
@@ -6143,9 +7789,11 @@ class ModuloBancoApp:
                                COALESCE(comision, 0), COALESCE(interbancario, FALSE),
                                COALESCE(es_cruzada, FALSE), COALESCE(numero_operacion, '')
                         FROM conciliacion_bancaria
-                        WHERE origen = 'manual' AND banco = %s
+                        WHERE origen = 'manual'
+                          AND UPPER(COALESCE(banco,'')) = UPPER(%s)
+                          AND COALESCE(cuenta,'') = %s
                         ORDER BY id
-                    """, (banco.get("banco", ""),))
+                    """, (banco.get("banco", ""), banco.get("cuenta", "") or ""))
                     filas = c.fetchall()
                 except Exception:
                     # Base de datos anterior sin las columnas de detalle
@@ -6153,9 +7801,11 @@ class ModuloBancoApp:
                     c.execute("""
                         SELECT id, fecha, descripcion, monto, tipo, estado
                         FROM conciliacion_bancaria
-                        WHERE origen = 'manual' AND banco = %s
+                        WHERE origen = 'manual'
+                          AND UPPER(COALESCE(banco,'')) = UPPER(%s)
+                          AND COALESCE(cuenta,'') = %s
                         ORDER BY id
-                    """, (banco.get("banco", ""),))
+                    """, (banco.get("banco", ""), banco.get("cuenta", "") or ""))
                     filas = [tuple(f) + ("", "", "", "", 0, False, False, "") for f in c.fetchall()]
 
                 for (idp, fecha, desc, monto, tipo, estado, categoria, subcategoria,
@@ -6180,7 +7830,16 @@ class ModuloBancoApp:
 
     def _valores_conc(self, f):
         estado = f.get("estado", "pendiente")
-        if estado == "conciliado":
+        # 📅 Si el MES de ese asiento no tiene estado de cuenta cargado, no se puede
+        #    afirmar que esté conciliado: se muestra que falta el estado de cuenta.
+        _mes_f = clave_fecha(f.get("fecha", ""))[:7]
+        _ok_f = getattr(self, "_periodos_ok", None)
+        _ok_f = _ok_f if isinstance(_ok_f, (set, frozenset)) else set()
+        if _mes_f and _mes_f not in _ok_f and f.get("origen") != "estado_cuenta":
+            estado_txt = "⏳ Falta el estado de cuenta"
+        elif f.get("_pendiente_siguiente"):
+            estado_txt = "⏳ Pendiente próximo estado"
+        elif estado == "conciliado":
             estado_txt = "✅ Conciliado"
         elif f.get("origen") == "estado_cuenta":
             estado_txt = "❌ Sin conciliar (Banco)"
@@ -6206,11 +7865,20 @@ class ModuloBancoApp:
         saldo_txt = ""
         if f.get("saldo") is not None:
             saldo_txt = formatear_monto(f["saldo"])
+        monto_txt = f.get("monto_mostrar", f["monto"])
         return (estado_txt, fecha_para_mostrar(f["fecha"]), f.get("documento", ""), f["descripcion"],
-                tipo_txt, formatear_monto(f["monto"]), origen_txt, saldo_txt)
+                tipo_txt, formatear_monto(monto_txt), origen_txt, saldo_txt)
 
     def _tag_conc(self, f):
         estado = f.get("estado", "pendiente")
+        # 📅 Sin estado de cuenta del mes, el asiento no puede pintarse de verde.
+        _mes_t = clave_fecha(f.get("fecha", ""))[:7]
+        _ok_t = getattr(self, "_periodos_ok", None)
+        _ok_t = _ok_t if isinstance(_ok_t, (set, frozenset)) else set()
+        if _mes_t and _mes_t not in _ok_t and f.get("origen") != "estado_cuenta":
+            return "sin_estado"
+        if f.get("_pendiente_siguiente"):
+            return "pendiente"
         if estado == "conciliado":
             return "conciliado"
         if f.get("origen") == "estado_cuenta":
@@ -6318,7 +7986,8 @@ class ModuloBancoApp:
         self.filtrar_conciliacion_inline()
 
     def _actualizar_aviso_faltantes(self, faltantes, pendientes_sistema=None,
-                                    ocultas_pdf=0, total_pdf=0):
+                                    ocultas_pdf=0, total_pdf=0,
+                                    pendientes_siguiente=0):
         """Avisa de lo que falta conciliar (estado de cuenta y pagos del sistema)."""
         try:
             n = len(faltantes or [])
@@ -6332,6 +8001,10 @@ class ModuloBancoApp:
                                 % (ocultas_pdf, total_pdf or ocultas_pdf))
             if n:
                 mensajes.append("⚠️ FALTANTES: %d línea(s) del estado de cuenta sin asiento en el sistema." % n)
+            if pendientes_siguiente:
+                mensajes.append("⏳ %d asiento(s) de fin de mes pueden estar en el estado de cuenta "
+                                "del próximo mes; quedan pendientes y no se cuentan como sobrantes."
+                                % pendientes_siguiente)
             if m:
                 mensajes.append("⚠️ SOBRANTES: %d asiento(s) del sistema que no aparecen en el estado "
                                 "de cuenta (puede que el banco los haya posteado en el mes siguiente)." % m)
@@ -6712,6 +8385,12 @@ class ModuloBancoApp:
                 f["estado"] = "conciliado"
                 guardados += 1
         self.refrescar_tree()
+        # 🔄 Volver a calcular el cruce y el aviso naranja: antes solo se pintaba
+        #    la fila de verde y los contadores/estado quedaban viejos.
+        try:
+            self.generar_reporte()
+        except Exception as error:
+            print("[Conciliación] refresco tras conciliar:", error)
         registrar_auditoria(self.usuario_activo, "Banco",
                             f"Concilió {guardados} movimiento(s) en "
                             f"{construir_etiqueta_banco(banco) if banco else 'banco'}")
@@ -8404,7 +10083,12 @@ class ModuloBancoApp:
             f["descripcion"] = desc
             registrar_auditoria(self.usuario_activo, "Banco", f"Corrigió movimiento: {desc[:60]}")
             v.destroy()
-            self.refrescar_tree()
+            self._cache_asientos = None
+            self._cache_saldos_extra = None
+            try:
+                self.generar_reporte()
+            except Exception as error:
+                print("[Conciliación] refresco tras corregir:", error)
 
         ctk.CTkButton(v, text="✅ Guardar", width=140, fg_color="#27ae60", command=guardar).pack(pady=10)
 
@@ -8475,6 +10159,54 @@ class ModuloBancoApp:
                                         soportes_a_revisar.append(ruta_soporte)
                                     if borrado:
                                         gastos_borrados += 1
+                                # 🧹 SIN RASTROS: se borran también sus filas en los
+                                #    diferenciales y en la auditoría del módulo, para que
+                                #    no quede ninguna copia ni vuelva a aparecer.
+                                _fecha_m = str(f.get("fecha") or "")
+                                _monto_m = float(f.get("monto") or 0)
+                                _cuenta_m = banco.get("cuenta", "") if banco else ""
+                                try:
+                                    c.execute("""DELETE FROM conciliacion_diferenciales
+                                                 WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                                   AND COALESCE(cuenta,'') = %s
+                                                   AND (fecha = %s OR fecha = %s)
+                                                   AND ABS(COALESCE(monto,0) - %s) < 0.005""",
+                                              (nombre_banco, _cuenta_m, _fecha_m,
+                                               fecha_para_mostrar(_fecha_m), _monto_m))
+                                    c.execute("""DELETE FROM conciliacion_auditoria
+                                                 WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                                   AND COALESCE(cuenta,'') = %s
+                                                   AND ABS(COALESCE(importe_banco,0) - %s) < 0.005
+                                                   AND (fecha_banco = %s OR fecha_banco = %s)""",
+                                              (nombre_banco, _cuenta_m, abs(_monto_m),
+                                               _fecha_m, fecha_para_mostrar(_fecha_m)))
+                                except Exception as error_rastros:
+                                    conn.rollback()
+                                    print("[Conciliación] limpiar rastros:", error_rastros)
+                                # 🚫 Si este asiento estaba cruzado con una línea del banco,
+                                #    se descarta TAMBIÉN esa línea. Si no, al recalcular
+                                #    volvía a salir como faltante y se volvía a guardar el
+                                #    diferencial: parecía que el borrado «no funcionaba».
+                                # 🚫 Se descarta la línea del banco equivalente (misma
+                                #    fecha e importe), esté cruzada o no. Si no, al
+                                #    recalcular volvía a salir como faltante y parecía
+                                #    que el borrado «se restauraba».
+                                try:
+                                    _cuenta_l = banco.get("cuenta", "") if banco else ""
+                                    c.execute("""SELECT fecha, monto, descripcion
+                                                 FROM conciliacion_movimientos_pdf
+                                                 WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                                   AND COALESCE(cuenta,'') = %s
+                                                   AND (fecha = %s OR fecha = %s)
+                                                   AND ABS(COALESCE(monto,0) - %s) < 0.01""",
+                                              (nombre_banco, _cuenta_l, _fecha_m,
+                                               fecha_para_mostrar(_fecha_m), _monto_m))
+                                    for _lf, _lm, _ld in c.fetchall():
+                                        self._registrar_ignorado(c, banco, {
+                                            "origen": "estado_cuenta", "fecha": _lf,
+                                            "monto": _lm, "descripcion": _ld or ""})
+                                except Exception as error_linea:
+                                    print("[Conciliación] descartar línea del banco:", error_linea)
                             elif origen == "sistema" and idp:
                                 if f.get("tabla") in ("transferencias_bancarias", "tx_comision"):
                                     c.execute("""DELETE FROM conciliacion_bancaria
@@ -8496,6 +10228,34 @@ class ModuloBancoApp:
                                 # 🚫 Queda descartado: no vuelve a aparecer al recargar la lista
                                 self._registrar_ignorado(c, banco, f)
                                 ignorados_nuevos += 1
+                            elif str(origen or "") == "e" or str(origen or "").startswith("s:"):
+                                # 📄 Asientos que NO vienen de Compras: los registrados
+                                #    desde el banco ('e'), las facturas App Grifo y las
+                                #    comisiones ('s:*'). Antes no tenían rama y el botón
+                                #    Eliminar NO hacía nada con ellos.
+                                if idp:
+                                    c.execute("DELETE FROM conciliacion_bancaria WHERE id = %s", (idp,))
+                                    borrados_db += max(c.rowcount, 0)
+                                    try:
+                                        _cuenta_x = banco.get("cuenta", "") if banco else ""
+                                        _fecha_x = str(f.get("fecha") or "")
+                                        c.execute("""SELECT fecha, monto, descripcion
+                                                     FROM conciliacion_movimientos_pdf
+                                                     WHERE UPPER(COALESCE(banco,'')) = UPPER(%s)
+                                                       AND COALESCE(cuenta,'') = %s
+                                                       AND (fecha = %s OR fecha = %s)
+                                                       AND ABS(COALESCE(monto,0) - %s) < 0.01""",
+                                                  (nombre_banco, _cuenta_x, _fecha_x,
+                                                   fecha_para_mostrar(_fecha_x),
+                                                   float(f.get("monto") or 0)))
+                                        for _lf, _lm, _ld in c.fetchall():
+                                            self._registrar_ignorado(c, banco, {
+                                                "origen": "estado_cuenta", "fecha": _lf,
+                                                "monto": _lm, "descripcion": _ld or ""})
+                                    except Exception as error_lin:
+                                        print("[Conciliación] descartar línea (extra):", error_lin)
+                                    self._registrar_ignorado(c, banco, f)
+                                    ignorados_nuevos += 1
                             elif origen == "estado_cuenta":
                                 # 🛡️ Se guarda como origen 'e' y la fecha en dd/mm/aaaa
                                 #    (la fila llega en ISO): antes se comparaba
@@ -8526,6 +10286,12 @@ class ModuloBancoApp:
         for ruta_soporte in soportes_a_revisar:
             borrar_soporte_si_huerfano(ruta_soporte)
 
+        # 📄 También se quita de los archivos de respaldo JSON (respaldo_*.json):
+        #    si se eliminó, no debe quedar ni en la base ni en el respaldo.
+        for f_borrada in filas:
+            self._quitar_de_respaldos(nombre_banco, f_borrada.get("fecha"),
+                                      f_borrada.get("monto"))
+
         # El módulo de Compras trabaja con caché: se limpia para que el cambio se vea al instante
         if gastos_borrados:
             try:
@@ -8538,6 +10304,15 @@ class ModuloBancoApp:
         self.filas_conciliacion = [f for i, f in enumerate(self.filas_conciliacion)
                                    if i not in excluir]
         self.refrescar_tree()
+        # 🔄 La base ya quedó actualizada (commit). Ahora se vuelve a calcular el
+        #    cruce para que el aviso, la diferencia y la tabla queden al día sin
+        #    tener que pulsar otro botón.
+        self._cache_asientos = None
+        self._cache_saldos_extra = None
+        try:
+            self.generar_reporte()
+        except Exception as error:
+            print("[Conciliación] refresco tras eliminar:", error)
 
         registrar_auditoria(self.usuario_activo, "Banco",
                             f"Eliminó {len(filas)} movimiento(s) de la conciliación "
@@ -8576,8 +10351,9 @@ class ModuloBancoApp:
                 for f in self.filas_conciliacion:
                     tipo = "Ingreso" if f["monto"] >= 0 else "Egreso"
                     estado = f.get("estado", "pendiente")
+                    monto_export = f.get("monto_mostrar", f["monto"])
                     out.write(sep.join([estado, f["fecha"], f["descripcion"],
-                                        tipo, f"{f['monto']:.2f}", f.get("origen", "")]) + "\n")
+                                        tipo, f"{float(monto_export):.2f}", f.get("origen", "")]) + "\n")
             messagebox.showinfo("Exportar", f"Reporte guardado en:\n{ruta}", parent=self.parent_frame)
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo exportar:\n{e}", parent=self.parent_frame)

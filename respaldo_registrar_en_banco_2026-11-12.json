@@ -99,60 +99,6 @@
   "estado": "conciliado"
  },
  {
-  "id": 1063,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-02",
-  "monto": -25.3,
-  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 727707 12:49 BMO844 4701",
-  "estado": "conciliado"
- },
- {
-  "id": 1064,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-02",
-  "monto": -15.0,
-  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 713083 12:47 BMOA70 4701",
-  "estado": "conciliado"
- },
- {
-  "id": 1065,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-02",
-  "monto": -15.0,
-  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 707922 12:48 BMOE63 4701",
-  "estado": "conciliado"
- },
- {
-  "id": 1066,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-02",
-  "monto": -15.0,
-  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 711531 12:48 BMO999 4701",
-  "estado": "conciliado"
- },
- {
-  "id": 1067,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-02",
-  "monto": -15.0,
-  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 706510 12:48 BMO128 4701",
-  "estado": "conciliado"
- },
- {
-  "id": 1068,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-02",
-  "monto": -15.0,
-  "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 726916 12:48 BMO914 4701",
-  "estado": "conciliado"
- },
- {
   "id": 1069,
   "banco": "BCP",
   "cuenta": "1937218112021",
@@ -204,15 +150,6 @@
   "fecha": "2026-09-11",
   "monto": -69.8,
   "descripcion": "TRAN.CEL.BM.INTERBANK BPI 111-023 253578 12:25 BMOB83 4703",
-  "estado": "conciliado"
- },
- {
-  "id": 1075,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-13",
-  "monto": -304.8,
-  "descripcion": "TRANSF.BCO.INTERBANK ¥ BPI 111-023 466816 07:38 BMOE27 4710",
   "estado": "conciliado"
  },
  {
@@ -519,15 +456,6 @@
   "fecha": "2026-09-30",
   "monto": -820.04,
   "descripcion": "TRANSF.BCO.BBVA BPI 111-023 329136 21:06 BMOE95 4703",
-  "estado": "conciliado"
- },
- {
-  "id": 1110,
-  "banco": "BCP",
-  "cuenta": "1937218112021",
-  "fecha": "2026-09-30",
-  "monto": -793.09,
-  "descripcion": "TRANSF.BCO.BBVA BPI 111-023 166860 16:31 BMOE19 4703",
   "estado": "conciliado"
  },
  {

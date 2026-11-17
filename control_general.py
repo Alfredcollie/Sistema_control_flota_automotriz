@@ -17,6 +17,7 @@ Optimizado para máximo rendimiento y compatibilidad nativa en Windows y macOS.
 # =========================================================
 import sys
 import os
+import re
 from formato_numeros import formatear_numero
 import traceback
 
@@ -1465,7 +1466,7 @@ def poner_ventana_en_barra_tareas(ventana):
         pass
 
 
-METODOS_RECARGA_MODULOS = ('cargar_datos', 'cargar_datos_tabla', 'cargar_tabla', 'refrescar_datos', 'actualizar_tabla', 'recargar_datos', 'refrescar', 'cargar_vehiculos', 'cargar_clientes_tabla', 'cargar_proveedores_tabla', 'refrescar_saldos', 'cargar_datos_pagar', 'cargar_datos_cobrar', 'refrescar_tree', 'cargar_historial', 'cargar_datos_nc', 'cargar_historial_ordenes', 'cargar_registros', 'cargar_solicitudes_tab', 'cargar_datos_diario', 'cargar_datos_mayor', 'cargar_datos_db', 'cargar_kpis', 'cargar_categorias', 'cargar_combos', 'refrescar_transferencias', 'refrescar_tabla_categorias', 'cargar_datos_iniciales', 'cargar_matriz_asistencia', 'cargar_panel', 'cargar_tareas_tabla', 'cargar_inspecciones', 'cargar_empleados', 'cargar_asignaciones', 'cargar_rangos_viaje', 'cargar_unidades_cliente', 'cargar_clientes', 'refrescar_combos_globales', 'cargar_personas_reloj', 'cargar_flota_activa', 'cargar_papeletas', 'cargar_parte', 'cargar_rendiciones', 'cargar_zonas', 'cargar_vehiculos_tabla', 'cargar_ordenes', 'cargar_facturas', 'cargar_pagos_clientes', 'cargar_cobros', 'cargar_comprobantes', 'cargar_saldos')
+METODOS_RECARGA_MODULOS = ('cargar_datos', 'cargar_datos_tabla', 'cargar_tabla', 'refrescar_datos', 'actualizar_tabla', 'recargar_datos', 'refrescar', 'cargar_vehiculos', 'cargar_clientes_tabla', 'cargar_proveedores_tabla', 'refrescar_saldos', 'cargar_datos_pagar', 'cargar_datos_cobrar', 'refrescar_tree', 'cargar_historial', 'cargar_datos_nc', 'cargar_historial_ordenes', 'cargar_registros', 'cargar_solicitudes_tab', 'cargar_datos_diario', 'cargar_datos_mayor', 'cargar_datos_db', 'cargar_kpis', 'cargar_categorias', 'cargar_combos', 'refrescar_transferencias', 'refrescar_tabla_categorias', 'cargar_datos_iniciales', 'cargar_matriz_asistencia', 'cargar_panel', 'cargar_tareas_tabla', 'cargar_inspecciones', 'cargar_empleados', 'cargar_asignaciones', 'cargar_rangos_viaje', 'cargar_unidades_cliente', 'cargar_clientes', 'refrescar_combos_globales', 'cargar_personas_reloj', 'cargar_flota_activa', 'cargar_papeletas', 'cargar_parte', 'cargar_rendiciones', 'cargar_zonas', 'cargar_vehiculos_tabla', 'cargar_ordenes', 'cargar_facturas', 'cargar_pagos_clientes', 'cargar_cobros', 'cargar_comprobantes', 'cargar_saldos', 'actualizar_conciliacion_banco')
 
 
 def _acepta_reset_pagina(metodo):
@@ -3616,25 +3617,53 @@ class ControlGeneralEventos:
         ctk.CTkLabel(f_header_bancos, text="Fecha", width=100, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
         ctk.CTkLabel(f_header_bancos, text="Saldo Inicial", width=110, anchor="w", font=("Arial", 9, "bold"), text_color="gray").pack(side="left", padx=5)
 
-        def _formatear_monto(valor_str):
-            """Formatea un monto con separador de miles y 2 decimales según el
-            formato_numero configurado (puntos para miles y coma decimal)."""
-            formato = config_actual.get("formato_numero", "1,000.00")
-            es_latino = (formato == "1.000,00")
-            miles, dec = (".", ",") if es_latino else (",", ".")
-            s = (valor_str or "").strip()
+        def _parsear_monto(valor):
+            """Convierte lo escrito por el usuario a un número (o None).
+
+            Acepta los dos formatos habituales y los símbolos de moneda:
+            «1.500,00» y «1,500.00» valen 1500; «11,25» y «11.25» valen 11,25.
+            Así el saldo inicial no se deforma al mostrarlo ni al guardarlo.
+            """
+            if isinstance(valor, (int, float)):
+                return float(valor)
+            s = str(valor or "").strip()
             if not s:
-                return ""
-            limpio = s.replace(miles, "").replace(" ", "").replace(dec, ".")
+                return None
+            # Quita símbolos de moneda y cualquier letra o espacio.
+            s = s.replace("S/.", "").replace("S/", "").replace("$", "")
+            s = re.sub(r"[^\d.,+-]", "", s)
+            if not re.search(r"\d", s):
+                return None
+            negativo = s.startswith("-")
+            s = s.lstrip("+-")
+            if "," in s and "." in s:
+                # El separador que está MÁS A LA DERECHA es el decimal.
+                if s.rfind(",") > s.rfind("."):
+                    s = s.replace(".", "").replace(",", ".")
+                else:
+                    s = s.replace(",", "")
+            elif "," in s or "." in s:
+                separador = "," if "," in s else "."
+                partes = s.split(separador)
+                if len(partes) > 2:
+                    s = "".join(partes)              # 1.234.567 / 1,234,567
+                elif len(partes[1]) == 3 and 1 <= len(partes[0]) <= 3:
+                    s = "".join(partes)              # 1.500 / 1,500 = mil quinientos
+                else:
+                    s = partes[0] + "." + partes[1]  # separador decimal
             try:
-                num = float(limpio)
+                numero = float(s)
             except ValueError:
-                digitos = "".join(ch for ch in s if ch.isdigit())
-                if not digitos:
-                    return s
-                num = float(digitos)
-            texto = f"{formatear_numero(num)}"
-            if es_latino:
+                return None
+            return -numero if negativo else numero
+
+        def _formatear_monto(valor_str):
+            """Muestra el monto con el formato_numero configurado (2 decimales)."""
+            numero = _parsear_monto(valor_str)
+            if numero is None:
+                return str(valor_str or "").strip()
+            texto = f"{numero:,.2f}"
+            if config_actual.get("formato_numero", "1,000.00") == "1.000,00":
                 texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
             return texto
 
@@ -4814,9 +4843,20 @@ class ControlGeneralEventos:
             lista_bancos = []
             for f_widget, cmb_b, ent_c, ent_f, ent_s in filas_bancos:
                 b_val = cmb_b.get().strip(); c_val = ent_c.get().strip()
-                f_val = ent_f.get().strip(); s_val = _formatear_monto(ent_s.get())
-                if b_val or c_val or f_val or s_val:
-                    lista_bancos.append({"banco": b_val, "cuenta": c_val, "fecha": f_val, "saldo_inicial": s_val})
+                f_val = ent_f.get().strip()
+                s_txt = ent_s.get().strip()
+                s_num = _parsear_monto(s_txt)
+                if s_txt and s_num is None:
+                    return messagebox.showwarning(
+                        "Saldo inicial inválido",
+                        "El saldo inicial «%s» no es un número válido.\n\n"
+                        "Escríbalo como 1500, 1.500,00 o 1,500.00." % s_txt,
+                        parent=v_conf)
+                if b_val or c_val or f_val or s_txt:
+                    # Se guarda en formato numérico simple (punto decimal) para
+                    # que Bancos, Estadísticas y el Libro Diario lo lean igual.
+                    lista_bancos.append({"banco": b_val, "cuenta": c_val, "fecha": f_val,
+                                         "saldo_inicial": (f"{s_num:.2f}" if s_num is not None else "")})
 
             cuenta_grifo_sel = cmb_cuenta_grifo.get().strip()
             if cuenta_grifo_sel in ("", "Ninguna"):

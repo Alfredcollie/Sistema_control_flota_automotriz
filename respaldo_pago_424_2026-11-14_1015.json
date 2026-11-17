@@ -1,0 +1,41 @@
+{
+ "creado": "2026-11-14 10:15",
+ "motivo": "pago duplicado sin factura ni soporte (AFP INTEGRA 472,77 del 01/09)",
+ "pagos_comprobantes": {
+  "id": "424",
+  "codigo_cotizacion": "",
+  "categoria_suministro": "Gastos Fijos - Planilla / Sueldos",
+  "monto_pagado": "472.77",
+  "archivo_ruta": "",
+  "proveedor_nombre": "AFP INTEGRA AGOSTO",
+  "fecha_pago": "1/09/2026",
+  "id_factura": "428",
+  "cuenta_origen": "BCP - 1937218112021",
+  "numero_operacion": "",
+  "comision": "0"
+ },
+ "conciliacion_bancaria": {
+  "id": "1008",
+  "banco": "BCP",
+  "cuenta": "BCP - 1937218112021",
+  "fecha": "1/09/2026",
+  "descripcion": "AFP INTEGRA AGOSTO",
+  "monto": "-472.77",
+  "tipo": "egreso",
+  "origen": "s:pagos_comprobantes",
+  "id_movimiento": "424",
+  "estado": "conciliado",
+  "fecha_conciliacion": "12/11/2026",
+  "categoria": "",
+  "subcategoria": "",
+  "placa": "",
+  "chofer": "",
+  "comision": "0",
+  "interbancario": "False",
+  "es_cruzada": "False",
+  "id_gasto_compras": "0",
+  "numero_operacion": "",
+  "tabla": "",
+  "soporte": ""
+ }
+}

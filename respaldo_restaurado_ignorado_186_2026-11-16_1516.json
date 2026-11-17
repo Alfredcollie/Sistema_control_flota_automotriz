@@ -1,0 +1,15 @@
+{
+ "creado": "2026-11-16 15:16",
+ "tabla": "conciliacion_ignorados",
+ "fila": {
+  "id": 186,
+  "banco": "BCP",
+  "origen": "estado_cuenta",
+  "tabla_mov": "",
+  "id_movimiento": 0,
+  "fecha": "2026-09-13",
+  "descripcion": "TRANSF.BCO.INTERBANK ¥ BPI 111-023 466816 07:38 BMOE27 4710",
+  "monto": -304.8,
+  "creado_original": "2026-11-15 07:46"
+ }
+}

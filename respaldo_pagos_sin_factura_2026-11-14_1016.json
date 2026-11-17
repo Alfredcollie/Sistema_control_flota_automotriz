@@ -1,0 +1,114 @@
+[
+ {
+  "id": 332,
+  "fecha": "30/07/2026",
+  "monto": 100.0,
+  "proveedor": "REPSOL COMERCIAL S.A.C.",
+  "id_factura_viejo": 343
+ },
+ {
+  "id": 333,
+  "fecha": "09/09/2026",
+  "monto": 0.0,
+  "proveedor": "GRIFO (Desde App)",
+  "id_factura_viejo": 345
+ },
+ {
+  "id": 344,
+  "fecha": "09/09/2026",
+  "monto": 0.0,
+  "proveedor": "GRIFO (Desde App)",
+  "id_factura_viejo": 356
+ },
+ {
+  "id": 403,
+  "fecha": "10/09/2026",
+  "monto": 3.51,
+  "proveedor": "BLACK RIDERS E.I.R.L.",
+  "id_factura_viejo": 406
+ },
+ {
+  "id": 421,
+  "fecha": "1/09/2026",
+  "monto": 176.54,
+  "proveedor": "AFP HABITAD - AGOSTO",
+  "id_factura_viejo": 425
+ },
+ {
+  "id": 422,
+  "fecha": "1/09/2026",
+  "monto": 472.77,
+  "proveedor": "AFP INTEGRA - AGOSTO",
+  "id_factura_viejo": 426
+ },
+ {
+  "id": 423,
+  "fecha": "1/09/2026",
+  "monto": 1730.0,
+  "proveedor": "TRIBUTARIOS - IGV MAYO (RESTANTE)",
+  "id_factura_viejo": 427
+ },
+ {
+  "id": 425,
+  "fecha": "1/09/2026",
+  "monto": 25.3,
+  "proveedor": "TRIBUTARIOS - INSCRIPCION CONTRATO ISAAC",
+  "id_factura_viejo": 429
+ },
+ {
+  "id": 426,
+  "fecha": "1/09/2026",
+  "monto": 15.0,
+  "proveedor": "Chofer ANGEL JUAN CARLOS MARQUILLO QUIROZ - SIS AGOSTO",
+  "id_factura_viejo": 430
+ },
+ {
+  "id": 357,
+  "fecha": "09/09/2026",
+  "monto": 0.0,
+  "proveedor": "COESTI S.A E/S ORRANTIA",
+  "id_factura_viejo": 369
+ },
+ {
+  "id": 376,
+  "fecha": "09/09/2026",
+  "monto": 0.0,
+  "proveedor": "GRIFO (Desde App)",
+  "id_factura_viejo": 388
+ },
+ {
+  "id": 389,
+  "fecha": "11/09/2026",
+  "monto": 0.0,
+  "proveedor": "GRIFO (Desde App)",
+  "id_factura_viejo": 394
+ },
+ {
+  "id": 390,
+  "fecha": "10/09/2026",
+  "monto": 8.76,
+  "proveedor": "COESTI S.A E/S ORRANTIA",
+  "id_factura_viejo": 395
+ },
+ {
+  "id": 393,
+  "fecha": "11/09/2026",
+  "monto": 0.0,
+  "proveedor": "GRIFO (Desde App)",
+  "id_factura_viejo": 398
+ },
+ {
+  "id": 394,
+  "fecha": "11/09/2026",
+  "monto": 0.0,
+  "proveedor": "GRIFO (Desde App)",
+  "id_factura_viejo": 399
+ },
+ {
+  "id": 396,
+  "fecha": "11/09/2026",
+  "monto": 0.0,
+  "proveedor": "GRIFO (Desde App)",
+  "id_factura_viejo": 401
+ }
+]

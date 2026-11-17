@@ -1,0 +1,47 @@
+{
+  "creado": "2026-11-15 08:41",
+  "banco": "BCP",
+  "nota": "Copias manuales eliminadas al dejar la conciliación en 0 faltantes / 0 sobrantes.",
+  "asientos": [
+    {
+      "id": 1127,
+      "fecha": "2026-09-02",
+      "monto": -15,
+      "origen": "manual",
+      "estado": "conciliado",
+      "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 713083 12:47 BMOA70 4701"
+    },
+    {
+      "id": 1128,
+      "fecha": "2026-09-02",
+      "monto": -15,
+      "origen": "manual",
+      "estado": "conciliado",
+      "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 707922 12:48 BMOE63 4701"
+    },
+    {
+      "id": 1129,
+      "fecha": "2026-09-02",
+      "monto": -15,
+      "origen": "manual",
+      "estado": "conciliado",
+      "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 711531 12:48 BMO999 4701"
+    },
+    {
+      "id": 1130,
+      "fecha": "2026-09-02",
+      "monto": -15,
+      "origen": "manual",
+      "estado": "conciliado",
+      "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 706510 12:48 BMO128 4701"
+    },
+    {
+      "id": 1134,
+      "fecha": "2026-09-07",
+      "monto": -304.8,
+      "origen": "manual",
+      "estado": "conciliado",
+      "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 850071 13:12 BMOB90 4703"
+    }
+  ]
+}

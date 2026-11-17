@@ -1,0 +1,115 @@
+{
+ "creado": "2026-11-15 08:08",
+ "asientos": [
+  {
+   "banco": "BCP",
+   "cuenta": "1937218112021",
+   "id": 1269,
+   "fecha": "2026-10-30",
+   "monto": -11.64,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 969237 14:52 BMCJ56 4701"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 103,
+   "fecha": "2026-09-17",
+   "monto": -52.68,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS Estacion Or"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 105,
+   "fecha": "2026-09-18",
+   "monto": -6.22,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS Grifos Espi"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 106,
+   "fecha": "2026-09-21",
+   "monto": -13.14,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS E S ORRANTIA"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 110,
+   "fecha": "2026-09-28",
+   "monto": -37.05,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS Estacion Or"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 112,
+   "fecha": "2026-09-30",
+   "monto": -8.32,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS Grifos Espi"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 311,
+   "fecha": "01/10/2026",
+   "monto": -54.26,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS Estacion Or"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 313,
+   "fecha": "01/10/2026",
+   "monto": -10.99,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS E S ORRANTIA"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 314,
+   "fecha": "02/10/2026",
+   "monto": -9.46,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS E S ORRANTIA"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 315,
+   "fecha": "02/10/2026",
+   "monto": -8.56,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS E S ORRANTIA"
+  },
+  {
+   "banco": "Interbank",
+   "cuenta": "297-3007235833",
+   "id": 316,
+   "fecha": "02/10/2026",
+   "monto": -7.53,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "CONSUMO POS E S ORRANTIA"
+  }
+ ]
+}

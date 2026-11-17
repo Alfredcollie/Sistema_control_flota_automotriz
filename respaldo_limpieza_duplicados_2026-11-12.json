@@ -81,16 +81,6 @@
    "descripcion": "Pago cuota prestamos de 90.000 soles"
   },
   {
-   "id": 1042,
-   "banco": "BCP",
-   "cuenta": "BCP - 1937218112021",
-   "fecha": "04/10/2026",
-   "monto": -4.8,
-   "origen": "s:pagos_comprobantes",
-   "id_movimiento": 924,
-   "descripcion": "Comisión transferencia Eduardo"
-  },
-  {
    "id": 1014,
    "banco": "BCP",
    "cuenta": "BCP - 1937218112021",
@@ -349,16 +339,6 @@
    "origen": "s:pagos_comprobantes",
    "id_movimiento": 785,
    "descripcion": "Tarxi para daniel"
-  },
-  {
-   "id": 1224,
-   "banco": "BCP",
-   "cuenta": "BCP - 1937218112021",
-   "fecha": "26/10/2026",
-   "monto": -4.8,
-   "origen": "s:pagos_comprobantes",
-   "id_movimiento": 811,
-   "descripcion": "Comision interbancaria F001-00000491"
   }
  ],
  "manuales": [

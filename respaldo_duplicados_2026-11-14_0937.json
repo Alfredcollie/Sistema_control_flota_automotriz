@@ -1,0 +1,12 @@
+[
+ {
+  "id": 22,
+  "fecha": "30/09/2026",
+  "monto": -50.0,
+  "origen": "manual",
+  "estado": "conciliado",
+  "descripcion": "Gastos Fijos - Planilla / Sueldos - Chofer EDUARDO JESUS ÁVILA HERRERA - Bono",
+  "grupo_monto": 50.0,
+  "lineas": 2
+ }
+]

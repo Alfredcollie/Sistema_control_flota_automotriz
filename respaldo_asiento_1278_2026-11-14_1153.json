@@ -1,0 +1,11 @@
+{
+ "id": "1278",
+ "banco": "BCP",
+ "cuenta": "1937218112021",
+ "fecha": "03/10/2026",
+ "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 116050 21:09 BMO047 4703",
+ "monto": "-54.8",
+ "tipo": "egreso",
+ "origen": "e",
+ "estado": "conciliado"
+}

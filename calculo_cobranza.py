@@ -299,12 +299,18 @@ def _envolver_texto(c, texto, ancho_max, max_lineas=2, fuente="Helvetica", tam=1
 # =========================================================
 # 🚀 NOMBRE DE LA UNIDAD: PLACA — MARCA — CHOFER
 # =========================================================
-def choferes_por_placa():
-    """Devuelve {PLACA: NOMBRE DEL CHOFER} según la asignación del módulo de Choferes.
+def choferes_por_placa_detalle():
+    """{PLACA: {"nombres", "estado", "id"}} según la asignación del módulo de Choferes.
 
     En Choferes el móvil se guarda como "PLACA | MARCA MODELO"; aquí solo se
     necesita la placa para saber quién maneja cada unidad.
+
+    Si una misma placa figura en varios choferes (el anterior quedó con el móvil
+    y al nuevo se le asignó la misma unidad), gana el chofer ACTIVO más reciente:
+    así el cálculo de cobranza muestra al conductor vigente y no al que fue dado
+    de baja.
     """
+    prioridad = {"activo": 0, "suspendido": 1, "inactivo": 2}
     mapa = {}
     conn = conectar_db(silencioso=True)
     if not conn:
@@ -312,23 +318,38 @@ def choferes_por_placa():
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT COALESCE(movil_asignado, ''), COALESCE(nombres, '')
+            SELECT COALESCE(id, 0), COALESCE(movil_asignado, ''),
+                   COALESCE(nombres, ''), COALESCE(estado, 'Activo')
             FROM choferes
             WHERE COALESCE(movil_asignado, '') <> ''
         """)
-        for asignado, nombres in cursor.fetchall():
+        for id_chofer, asignado, nombres, estado in cursor.fetchall():
             asignado = str(asignado or "").strip()
             if not asignado or asignado.lower().startswith("ninguno"):
                 continue          # "Ninguno / Sin Asignar"
             placa = asignado.split("|")[0].strip().upper()
-            if placa and nombres and placa not in mapa:
-                mapa[placa] = str(nombres).strip()
+            nombres = str(nombres or "").strip()
+            if not placa or not nombres:
+                continue
+            estado = str(estado or "").strip() or "Activo"
+            peso = prioridad.get(estado.lower(), 1)
+            previo = mapa.get(placa)
+            if (previo is None or peso < previo["peso"]
+                    or (peso == previo["peso"] and int(id_chofer or 0) >= previo["id"])):
+                mapa[placa] = {"nombres": nombres, "estado": estado,
+                               "id": int(id_chofer or 0), "peso": peso}
         cursor.close()
     except Exception as e:
         print("[Choferes por placa]", e)
     finally:
         liberar_conexion(conn)
     return mapa
+
+
+def choferes_por_placa():
+    """{PLACA: NOMBRE DEL CHOFER} vigente (prefiere al chofer ACTIVO de la placa)."""
+    return {placa: datos["nombres"]
+            for placa, datos in choferes_por_placa_detalle().items()}
 
 
 def etiqueta_unidad(placa, marca, chofer=""):
@@ -368,13 +389,56 @@ def refrescar_etiquetas_unidades(unidades):
         liberar_conexion(conn)
     if not datos:
         return
-    choferes = choferes_por_placa()
+    choferes = choferes_por_placa_detalle()
     for u in unidades:
         info = datos.get(u.get("id_vehiculo"))
         if not info:
             continue
         placa, marca = info
-        u["unidad"] = etiqueta_unidad(placa, marca, choferes.get(placa.strip().upper(), ""))
+        datos_chofer = choferes.get(placa.strip().upper()) or {}
+        u["_placa"] = placa
+        u["_chofer"] = str(datos_chofer.get("nombres") or "")
+        u["_chofer_estado"] = str(datos_chofer.get("estado") or "")
+        u["unidad"] = etiqueta_unidad(placa, marca, u["_chofer"])
+
+
+def unidades_sin_chofer_activo(unidades):
+    """Unidades cuyo conductor NO está activo (sin chofer, de baja o suspendido).
+
+    Devuelve [{"unidad", "placa", "chofer", "estado"}] usando los datos que dejó
+    refrescar_etiquetas_unidades(). Las unidades sin vehículo de la flota se
+    omiten porque no se puede saber a qué placa pertenecen.
+    """
+    avisos = []
+    for u in (unidades or []):
+        if not u.get("id_vehiculo") or not u.get("_placa"):
+            continue
+        estado = str(u.get("_chofer_estado") or "").strip()
+        chofer = str(u.get("_chofer") or "").strip()
+        if chofer and estado.lower() == "activo":
+            continue
+        avisos.append({"unidad": str(u.get("unidad") or "").strip(),
+                       "placa": str(u.get("_placa") or "").strip(),
+                       "chofer": chofer,
+                       "estado": estado or "sin chofer"})
+    return avisos
+
+
+def texto_aviso_choferes(unidades):
+    """Mensaje corto con las unidades que no tienen chofer activo (o '')."""
+    avisos = unidades_sin_chofer_activo(unidades)
+    if not avisos:
+        return ""
+    partes = []
+    for a in avisos:
+        placa = a["placa"] or a["unidad"].split(" — ")[0]
+        if a["chofer"]:
+            partes.append("%s (%s — %s)" % (placa, a["chofer"], a["estado"]))
+        else:
+            partes.append("%s (sin chofer)" % placa)
+    return ("⚠ %d unidad(es) sin chofer activo: %s. Asígnales un chofer activo en el "
+            "módulo de Choferes; el nombre se actualizará solo aquí."
+            % (len(avisos), "; ".join(partes)))
 
 
 def _ruta_cache_feriados():
@@ -1738,6 +1802,7 @@ class CalculoCobranzaApp:
         del cliente para que el próximo cálculo las recuerde."""
         if not self.cliente_id or self.registro_editando is not None:
             return  # no sobrescribir la configuración al editar un registro histórico
+        refrescar_etiquetas_unidades(self.unidades)   # nombre del chofer vigente
         conn = conectar_db()
         if not conn:
             return
@@ -2691,6 +2756,7 @@ class CalculoCobranzaApp:
             messagebox.showwarning("Sin Quincena", "Primero presione 'Buscar días de la quincena'.")
             return False
         try:
+            refrescar_etiquetas_unidades(self.unidades)   # chofer vigente de cada placa
             r = self.recopilar_calculo()
         except ValueError as e:
             messagebox.showerror("Datos Inválidos", str(e))
@@ -4742,8 +4808,12 @@ class VentanaUnidadesCliente(ctk.CTkToplevel):
         ctk.CTkLabel(f_top, text=f"🚗 UNIDADES ASIGNADAS — {nombre_cliente}",
                      font=(familia_fuente, 15, "bold"), text_color="#1f538d").pack(side="left")
 
-        f_tbl = ctk.CTkFrame(self, corner_radius=10)
-        f_tbl.pack(fill="both", expand=True, padx=15, pady=6)
+        self.lbl_aviso = ctk.CTkLabel(self, text="", font=(familia_fuente, 11, "bold"),
+                                      text_color="#922b21", fg_color="#fdecea",
+                                      corner_radius=8, justify="left", wraplength=700)
+
+        self.f_tbl = ctk.CTkFrame(self, corner_radius=10)
+        self.f_tbl.pack(fill="both", expand=True, padx=15, pady=6)
 
         columnas = ("unidad", "horas", "pnormal", "pdom", "pfer")
         style = ttk.Style()
@@ -4756,7 +4826,7 @@ class VentanaUnidadesCliente(ctk.CTkToplevel):
         style.configure("Treeview.Heading", background="#f0f0f0", foreground="#000000",
                         font=(familia_fuente, 10, "bold"), bordercolor="#e0e0e0", borderwidth=1, relief="flat")
 
-        self.tabla = ttk.Treeview(f_tbl, columns=columnas, show="headings", selectmode="browse",
+        self.tabla = ttk.Treeview(self.f_tbl, columns=columnas, show="headings", selectmode="browse",
                                   style="Treeview")
         self.tabla.heading("unidad", text="Unidad", anchor="center")
         self.tabla.heading("horas", text="Horas/Día", anchor="center")
@@ -4769,7 +4839,7 @@ class VentanaUnidadesCliente(ctk.CTkToplevel):
         self.tabla.column("pdom", width=90, anchor="center")
         self.tabla.column("pfer", width=90, anchor="center")
         self.tabla.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
-        scr = ttk.Scrollbar(f_tbl, orient="vertical", command=self.tabla.yview)
+        scr = ttk.Scrollbar(self.f_tbl, orient="vertical", command=self.tabla.yview)
         self.tabla.configure(yscrollcommand=scr.set)
         scr.pack(side="right", fill="y", pady=10, padx=(0, 10))
         self.tabla.bind("<Double-1>", lambda e: self.editar())
@@ -4830,6 +4900,20 @@ class VentanaUnidadesCliente(ctk.CTkToplevel):
                 f"{float(f['precio_domingo'] or 0):g}",
                 f"{float(f['precio_feriado'] or 0):g}",
             ))
+        self._avisar_chofer_inactivo()
+
+    def _avisar_chofer_inactivo(self):
+        """⚠️ Aviso: unidades de la lista cuyo chofer está de baja o sin asignar."""
+        try:
+            texto = texto_aviso_choferes(self.filas)
+            if not texto:
+                self.lbl_aviso.pack_forget()
+                self.lbl_aviso.configure(text="")
+                return
+            self.lbl_aviso.configure(text=texto)
+            self.lbl_aviso.pack(fill="x", padx=15, pady=(0, 2), before=self.f_tbl)
+        except Exception:
+            pass
 
     def agregar(self):
         excluir = [f.get("id_vehiculo") for f in self.filas if f.get("id_vehiculo")]
@@ -5951,7 +6035,11 @@ class AsistenteCobranza(ctk.CTkToplevel):
             side="left", padx=(0, 10))
         self.lbl_cfg = ctk.CTkLabel(f, text="", font=(self.familia, 11), justify="left",
                                     text_color="#333333", wraplength=880)
-        self.lbl_cfg.pack(anchor="w", padx=15, pady=(6, 12))
+        self.lbl_cfg.pack(anchor="w", padx=15, pady=(6, 2))
+        self.lbl_aviso_cfg = ctk.CTkLabel(f, text="", font=(self.familia, 11, "bold"),
+                                          text_color="#922b21", justify="left",
+                                          wraplength=880)
+        self.lbl_aviso_cfg.pack(anchor="w", padx=15, pady=(0, 10))
         self._refrescar_config()
 
     def _abrir_unidades(self):
@@ -6038,6 +6126,11 @@ class AsistenteCobranza(ctk.CTkToplevel):
                         + ", feriado " + formatear_moneda(rg["precio_feriado"]))
         try:
             self.lbl_cfg.configure(text="\n".join(lineas))
+        except Exception:
+            pass
+        try:
+            self.lbl_aviso_cfg.configure(
+                text=texto_aviso_choferes(getattr(self.app, "unidades", None)))
         except Exception:
             pass
 

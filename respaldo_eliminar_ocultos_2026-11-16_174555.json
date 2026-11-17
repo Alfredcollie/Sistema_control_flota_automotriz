@@ -1,0 +1,56 @@
+{
+ "creado": "2026-11-16 17:45",
+ "banco": "BCP",
+ "cuenta": "1937218112021",
+ "mes": "2026-10",
+ "ignorados": [
+  {
+   "id": 170,
+   "fecha": "2026-10-01",
+   "monto": -55.1,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 935773 08:01 BMO413 4701"
+  },
+  {
+   "id": 171,
+   "fecha": "2026-10-01",
+   "monto": -55.1,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 935773 08:01 BMO413 4701"
+  },
+  {
+   "id": 177,
+   "fecha": "2026-10-01",
+   "monto": -250.0,
+   "descripcion": "TRAN.CEL.BM. BPI 111-023 909048 07:54 BMO835 4701"
+  },
+  {
+   "id": 178,
+   "fecha": "2026-10-01",
+   "monto": -300.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 869154 07:53 BMO042 4701"
+  },
+  {
+   "id": 179,
+   "fecha": "2026-10-02",
+   "monto": -345.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 443308 09:22 BMO967 4701"
+  },
+  {
+   "id": 173,
+   "fecha": "2026-10-06",
+   "monto": -95.5,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 433761 20:36 BMO222 4701"
+  },
+  {
+   "id": 174,
+   "fecha": "2026-10-12",
+   "monto": -139.99,
+   "descripcion": "SAFT000000565309 BPI 111-023 756252 13:04 BMOE39 4701"
+  },
+  {
+   "id": 193,
+   "fecha": "2026-10-31",
+   "monto": 10000.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 087114 15:51 BMCG85 2701"
+  }
+ ]
+}

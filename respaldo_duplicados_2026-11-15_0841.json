@@ -1,0 +1,13 @@
+{
+ "creado": "2026-11-15 08:41",
+ "asientos": [
+  {
+   "id": 1134,
+   "fecha": "2026-09-07",
+   "monto": -304.8,
+   "origen": "manual",
+   "estado": "conciliado",
+   "descripcion": "TRANSF.BCO.INTERBANK BPI 111-023 850071 13:12 BMOB90 4703"
+  }
+ ]
+}

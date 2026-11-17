@@ -1,0 +1,12 @@
+{
+ "creado": "2026-11-16 15:33",
+ "tabla": "transferencias_bancarias",
+ "id": 12,
+ "antes": {
+  "fecha": "13/09/2026",
+  "monto": 300.0,
+  "comision": 4.8,
+  "descripcion": "Gasolina",
+  "referencia": "00000002"
+ }
+}

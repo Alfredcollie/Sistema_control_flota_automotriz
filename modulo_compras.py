@@ -4427,6 +4427,47 @@ class FacturasRecibidasTab:
                 except: conn.rollback()
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ruc VARCHAR(50);"); conn.commit()
                 except: conn.rollback()
+                # 🚫 FACTURAS DUPLICADAS: la base rechaza una factura repetida del
+                #    mismo proveedor con el mismo número de documento. Se hace aquí
+                #    (índice único) para que NINGÚN camino del programa pueda meter
+                #    una duplicada, ni Compras, ni Banco, ni el escáner.
+                try:
+                    cursor.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS facturas_recibidas_sin_duplicados
+                        ON facturas_recibidas (UPPER(TRIM(COALESCE(proveedor, ''))),
+                                               UPPER(TRIM(COALESCE(numero_documento, ''))))
+                        WHERE COALESCE(numero_documento, '') <> ''
+                    """)
+                    conn.commit()
+                except Exception as error_indice:
+                    conn.rollback()
+                    print("[Compras] no se pudo crear el índice de facturas únicas:", error_indice)
+                # 🚫 NUNCA un pago huérfano: al borrar una factura, sus pagos quedan
+                #    como «sin factura» (id_factura = 0) en vez de apuntar a un id
+                #    inexistente. Antes quedaban apuntando a la nada y la conciliación
+                #    bancaria los ocultaba, así que sus líneas del banco nunca
+                #    encontraban pareja.
+                try:
+                    cursor.execute("""
+                        CREATE OR REPLACE FUNCTION f_detach_pagos_factura() RETURNS trigger AS $$
+                        BEGIN
+                            UPDATE pagos_comprobantes SET id_factura = 0 WHERE id_factura = OLD.id;
+                            RETURN OLD;
+                        END;
+                        $$ LANGUAGE plpgsql;
+                    """)
+                    conn.commit()
+                    cursor.execute("DROP TRIGGER IF EXISTS trg_detach_pagos_factura ON facturas_recibidas;")
+                    conn.commit()
+                    cursor.execute("""
+                        CREATE TRIGGER trg_detach_pagos_factura
+                        BEFORE DELETE ON facturas_recibidas
+                        FOR EACH ROW EXECUTE FUNCTION f_detach_pagos_factura();
+                    """)
+                    conn.commit()
+                except Exception as error_trigger:
+                    conn.rollback()
+                    print("[Compras] no se pudo crear el disparador de pagos:", error_trigger)
                 # Columnas usadas para distinguir las facturas de la App y las compras cruzadas
                 try: cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS imagen_base64 TEXT;"); conn.commit()
                 except: conn.rollback()
@@ -7398,6 +7439,55 @@ class FacturasRecibidasTab:
         if not conn: return
         try:
             cursor = conn.cursor()
+            # 🚫 FACTURA DUPLICADA: se rechaza antes de insertar (mismo proveedor y
+            #    mismo número de documento). La base además tiene un índice único,
+            #    así que ningún otro camino puede meterla.
+            if str(nro_doc or "").strip():
+                cursor.execute("""
+                    SELECT id FROM facturas_recibidas
+                    WHERE UPPER(TRIM(COALESCE(proveedor, ''))) = UPPER(TRIM(%s))
+                      AND UPPER(TRIM(COALESCE(numero_documento, ''))) = UPPER(TRIM(%s))
+                    LIMIT 1
+                """, (prov, nro_doc))
+                existente = cursor.fetchone()
+                if existente:
+                    liberar_conexion(conn)
+                    messagebox.showerror(
+                        "Factura duplicada",
+                        "Esa factura YA está registrada y no se puede cargar dos veces.\n\n"
+                        "   Proveedor: %s\n   N° documento: %s\n   Registro existente: id %s"
+                        % (prov, nro_doc, existente[0]))
+                    return
+            else:
+                # Sin número de documento: se controla por proveedor + importe +
+                # fecha + descripción (mismo gasto cargado dos veces). Se excluyen
+                # los registros espejo «PAGO BANCO», que se generan solos al
+                # registrar un movimiento del banco.
+                try:
+                    cursor.execute("""
+                        SELECT id FROM facturas_recibidas
+                        WHERE COALESCE(numero_documento, '') = ''
+                          AND COALESCE(tipo_documento, '') <> 'PAGO BANCO'
+                          AND UPPER(TRIM(COALESCE(proveedor, ''))) = UPPER(TRIM(%s))
+                          AND ABS(COALESCE(total, 0) - %s) < 0.01
+                          AND COALESCE(fecha, '') = %s
+                          AND UPPER(TRIM(COALESCE(descripcion, ''))) = UPPER(TRIM(%s))
+                        LIMIT 1
+                    """, (prov, tot_bruto, fecha, desc))
+                    repetida = cursor.fetchone()
+                except Exception as error_repetida:
+                    conn.rollback()
+                    repetida = None
+                    print("[Compras] validación de repetida sin número:", error_repetida)
+                if repetida:
+                    liberar_conexion(conn)
+                    messagebox.showerror(
+                        "Factura duplicada",
+                        "Ya hay una factura SIN número con el mismo proveedor, importe, "
+                        "fecha y descripción:\n\n"
+                        "   Proveedor: %s\n   Importe: %s\n   Fecha: %s\n   id %s\n\n"
+                        "No se puede registrar dos veces." % (prov, tot_bruto, fecha, repetida[0]))
+                    return
             cursor.execute("""
                 INSERT INTO facturas_recibidas (tipo_documento, numero_documento, fecha, proveedor, descripcion, evento_asociado, subtotal, impuesto, total, archivo_ruta, dias_credito, det_porcentaje, det_monto, categoria, ruc, id_orden_servicio, orden_servicio,
                                                 pagado_por_tercero, soporte_pago_tercero, es_compra_cruzada, comision_interbancaria, es_interbancario)

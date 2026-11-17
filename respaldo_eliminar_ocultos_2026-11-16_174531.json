@@ -1,0 +1,80 @@
+{
+ "creado": "2026-11-16 17:45",
+ "banco": "BCP",
+ "cuenta": "1937218112021",
+ "mes": "2026-09",
+ "ignorados": [
+  {
+   "id": 180,
+   "fecha": "2026-09-02",
+   "monto": -25.3,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 727707 12:49 BMO844 4701"
+  },
+  {
+   "id": 181,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 713083 12:47 BMOA70 4701"
+  },
+  {
+   "id": 182,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 707922 12:48 BMOE63 4701"
+  },
+  {
+   "id": 183,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 711531 12:48 BMO999 4701"
+  },
+  {
+   "id": 184,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 706510 12:48 BMO128 4701"
+  },
+  {
+   "id": 185,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 726916 12:48 BMO914 4701"
+  },
+  {
+   "id": 188,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 713083 12:47 BMOA70 4701"
+  },
+  {
+   "id": 189,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 707922 12:48 BMOE63 4701"
+  },
+  {
+   "id": 190,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 711531 12:48 BMO999 4701"
+  },
+  {
+   "id": 191,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 706510 12:48 BMO128 4701"
+  },
+  {
+   "id": 192,
+   "fecha": "2026-09-02",
+   "monto": -15.0,
+   "descripcion": "TRAN.CTAS.TERC.BM BPI 111-023 726916 12:48 BMO914 4701"
+  },
+  {
+   "id": 187,
+   "fecha": "2026-09-30",
+   "monto": -793.09,
+   "descripcion": "TRANSF.BCO.BBVA BPI 111-023 166860 16:31 BMOE19 4703"
+  }
+ ]
+}
