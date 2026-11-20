@@ -1139,6 +1139,11 @@ class CalculoCobranzaApp:
                 # 🔹 Cantidad del traslado (permite medios viajes: 0.5)
                 cursor.execute("ALTER TABLE cobranza_viajes_detalle "
                                "ADD COLUMN IF NOT EXISTS cantidad NUMERIC(12,2) DEFAULT 1")
+                # ⏱️ Sobrecargo por tiempo de espera superado (porcentaje variable)
+                cursor.execute("ALTER TABLE cobranza_viajes_detalle "
+                               "ADD COLUMN IF NOT EXISTS espera_pct NUMERIC(6,2) DEFAULT 0")
+                cursor.execute("ALTER TABLE cobranza_viajes_detalle "
+                               "ADD COLUMN IF NOT EXISTS espera_monto NUMERIC(12,2) DEFAULT 0")
                 # 🔹 Medios viajes: las cantidades deben aceptar decimales (0.5, 1.5…)
                 for _col in ("viajes_normal", "viajes_domingo", "viajes_feriado",
                              "ded_normal", "ded_domingo", "ded_feriado"):
@@ -1156,11 +1161,15 @@ class CalculoCobranzaApp:
                     id_cobranza INTEGER NOT NULL,
                     fecha VARCHAR(10),
                     vehiculo VARCHAR(120),
+                    zona VARCHAR(80),
                     categoria VARCHAR(20),
+                    cantidad NUMERIC(12,2) DEFAULT 1,
                     distancia_desde NUMERIC(10,2) DEFAULT 0,
                     distancia_hasta NUMERIC(10,2) DEFAULT 0,
                     precio NUMERIC(12,2) DEFAULT 0,
-                    monto NUMERIC(12,2) DEFAULT 0
+                    monto NUMERIC(12,2) DEFAULT 0,
+                    espera_pct NUMERIC(6,2) DEFAULT 0,
+                    espera_monto NUMERIC(12,2) DEFAULT 0
                 )
             ''')
             # Asientos con fecha: deducciones (tipo DEDUCCION) y horas extras
@@ -1237,7 +1246,7 @@ class CalculoCobranzaApp:
                                       font=(familia_fuente, 12, "bold"), command=self.abrir_asistente)
         btn_asistente.pack(side="right", padx=(0, 8))
         self.f_header = f_header
-        self.f_secciones_manuales = []   # se llena al final (modo solo asistente)
+        self.f_secciones_manuales = []   # [(widget, pack_info)] al pasar a modo asistente
 
         # ---- 1. Cliente ----
         f_cli = ctk.CTkFrame(self.scroll, corner_radius=10, border_width=1, border_color="#e0e0e0")
@@ -1424,20 +1433,37 @@ class CalculoCobranzaApp:
                                               text_color="#1f538d")
         self.lbl_dia_detectado.grid(row=2, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 4))
 
+        # ⏱️ Sobrecargo por tiempo de espera superado (porcentaje variable por viaje)
+        f_esp = ctk.CTkFrame(f_reg, fg_color="transparent")
+        f_esp.grid(row=3, column=0, columnspan=6, sticky="w", padx=10, pady=(0, 4))
+        self.chk_espera_viaje = ctk.CTkCheckBox(
+            f_esp, text="⏱ Tiempo de espera superado", font=(familia_fuente, 11, "bold"),
+            checkbox_width=18, checkbox_height=18)
+        self.chk_espera_viaje.pack(side="left")
+        ctk.CTkLabel(f_esp, text="Sobrecargo:", font=(familia_fuente, 11, "bold")).pack(
+            side="left", padx=(15, 4))
+        self.ent_espera_pct_viaje = ctk.CTkEntry(f_esp, width=60, justify="center")
+        self.ent_espera_pct_viaje.insert(0, "20")
+        self.ent_espera_pct_viaje.pack(side="left")
+        ctk.CTkLabel(f_esp, text="% del monto del viaje", font=(familia_fuente, 10),
+                     text_color="#555").pack(side="left", padx=(4, 0))
+
         f_tab_reg = ctk.CTkFrame(f_reg, fg_color="transparent")
-        f_tab_reg.grid(row=3, column=0, columnspan=6, sticky="ew", padx=10, pady=(4, 4))
+        f_tab_reg.grid(row=4, column=0, columnspan=6, sticky="ew", padx=10, pady=(4, 4))
         f_tab_reg.columnconfigure(0, weight=1)
 
-        self.tabla_viajes_reg = ttk.Treeview(f_tab_reg, columns=("fecha", "dia", "tipo", "vehiculo"), show="headings",
+        self.tabla_viajes_reg = ttk.Treeview(f_tab_reg, columns=("fecha", "dia", "tipo", "vehiculo", "espera"), show="headings",
                                              selectmode="browse", style="Treeview", height=3)
         self.tabla_viajes_reg.heading("fecha", text="Fecha", anchor="center")
         self.tabla_viajes_reg.heading("dia", text="Día", anchor="center")
         self.tabla_viajes_reg.heading("tipo", text="Tipo (distancia)", anchor="center")
         self.tabla_viajes_reg.heading("vehiculo", text="Vehículo", anchor="center")
+        self.tabla_viajes_reg.heading("espera", text="Tiempo de espera", anchor="center")
         self.tabla_viajes_reg.column("fecha", width=95, anchor="center")
         self.tabla_viajes_reg.column("dia", width=130, anchor="center")
         self.tabla_viajes_reg.column("tipo", width=160, anchor="center")
         self.tabla_viajes_reg.column("vehiculo", width=220, anchor="w")
+        self.tabla_viajes_reg.column("espera", width=150, anchor="center")
         self.tabla_viajes_reg.grid(row=0, column=0, sticky="nsew")
         scr_reg = ttk.Scrollbar(f_tab_reg, orient="vertical", command=self.tabla_viajes_reg.yview)
         self.tabla_viajes_reg.configure(yscrollcommand=scr_reg.set)
@@ -1450,7 +1476,7 @@ class CalculoCobranzaApp:
         btn_quitar_viaje = ctk.CTkButton(f_reg, text="➖ Quitar seleccionado", width=190,
                                          font=(familia_fuente, 11, "bold"), fg_color="#e74c3c",
                                          hover_color="#c0392b", command=self.quitar_viaje_registrado)
-        btn_quitar_viaje.grid(row=4, column=0, columnspan=6, sticky="w", padx=10, pady=(0, 8))
+        btn_quitar_viaje.grid(row=5, column=0, columnspan=6, sticky="w", padx=10, pady=(0, 8))
 
         # ---- Registro de DEDUCCIONES con fecha (viajes / puntos no realizados) ----
         f_ded_reg = ctk.CTkFrame(self.f_via, corner_radius=8, border_width=1, border_color="#e0e0e0")
@@ -1612,7 +1638,11 @@ class CalculoCobranzaApp:
             for hijo in list(self.scroll.winfo_children()):
                 if hijo is self.f_header or hijo is self.frame_flash:
                     continue
-                self.f_secciones_manuales.append(hijo)
+                try:
+                    info = hijo.pack_info()
+                except Exception:
+                    info = None     # sección oculta por el plan (f_uni / f_via)
+                self.f_secciones_manuales.append((hijo, info))
                 try:
                     hijo.pack_forget()
                 except Exception:
@@ -2104,11 +2134,16 @@ class CalculoCobranzaApp:
         for t in self.viajes_registrados:
             etiqueta = dict(CATEGORIAS)[t["categoria"]]
             rango = self.rangos_viaje[t["rango_idx"]]
+            espera_pct = float(t.get("espera_pct") or 0)
+            espera_monto = float(t.get("espera_monto") or 0)
+            espera_txt = (f"{espera_pct:g}% · {formatear_moneda(espera_monto)}"
+                          if espera_monto > 0.005 else "—")
             self.tabla_viajes_reg.insert("", tk.END, values=(
                 t["fecha"].strftime("%d/%m/%Y"),
                 etiqueta,
                 _etiqueta_rango(rango),
                 t.get("vehiculo", ""),
+                espera_txt,
             ))
 
     def _scroll_solo_tabla_viajes(self, event):
@@ -2124,6 +2159,26 @@ class CalculoCobranzaApp:
         except Exception:
             pass
         return "break"
+
+    def _leer_sobrecargo_espera(self, chk, entrada, monto_base):
+        """(porcentaje, monto) del sobrecargo por tiempo de espera; None si el % no es válido."""
+        try:
+            marcado = bool(chk.get())
+        except Exception:
+            marcado = False
+        if not marcado:
+            return 0.0, 0.0
+        try:
+            pct = float(str(entrada.get()).replace(",", ".").strip() or 0)
+        except ValueError:
+            pct = 0.0
+        if not (0.0 < pct <= 100.0):
+            messagebox.showwarning(
+                "Tiempo de espera",
+                "Escriba el porcentaje del sobrecargo (mayor a 0 y hasta 100).",
+                parent=self)
+            return None
+        return pct, round(float(monto_base) * pct / 100.0, 2)
 
     def agregar_viaje_registrado(self):
         if not self.dias:
@@ -2157,12 +2212,17 @@ class CalculoCobranzaApp:
             return
         cat = self._categoria_para_fecha(fecha)
         rg = self.rangos_viaje[idx]
-        precio = rg.get(f"precio_{cat}", 0)
+        precio = float(rg.get(f"precio_{cat}", 0) or 0)
+        espera = self._leer_sobrecargo_espera(
+            self.chk_espera_viaje, self.ent_espera_pct_viaje, precio)
+        if espera is None:
+            return
+        espera_pct, espera_monto = espera
         self.rangos_viaje[idx]["viajes"][cat] += 1
         self.viajes_registrados.append({
             "fecha": fecha, "categoria": cat, "rango_idx": idx,
-            "vehiculo": vehiculo, "precio": float(precio or 0),
-            "monto": float(precio or 0),
+            "vehiculo": vehiculo, "precio": precio,
+            "monto": precio, "espera_pct": espera_pct, "espera_monto": espera_monto,
             "desde": rg["distancia_desde"], "hasta": rg["distancia_hasta"],
             "zona": rg.get("nombre", ""),
         })
@@ -2655,11 +2715,22 @@ class CalculoCobranzaApp:
                 "monto": precio_cat[cat] * cant,
             })
 
+        # ⏱️ Sobrecargo por tiempo de espera superado (porcentaje variable por traslado)
+        sobrecargo = 0.0
+        for t in self.viajes_registrados:
+            try:
+                sobrecargo += float(t.get("espera_monto") or 0)
+            except (TypeError, ValueError):
+                pass
+        sobrecargo = round(sobrecargo, 2)
+        total = max(0.0, total + sobrecargo)
+
         return {
             "conteos": c,
             "viajes": detalle,
             "monto_base": monto_base,
             "monto_deducciones": monto_ded,
+            "monto_sobrecargos": sobrecargo,
             "horas_extras": 0.0,
             "monto_extras": 0.0,
             "monto_normal": monto_cat["normal"],
@@ -2743,6 +2814,8 @@ class CalculoCobranzaApp:
             lineas.append(f"DEDUCCIONES: - {formatear_moneda(r['monto_deducciones'])}")
             if r["monto_deducciones"] >= r["monto_base"]:
                 lineas.append("⚠️ Las deducciones superan el subtotal: el total se muestra en 0.")
+        if r.get("monto_sobrecargos"):
+            lineas.append(f"⏱ TIEMPO DE ESPERA SUP.: + {formatear_moneda(r['monto_sobrecargos'])}")
         self.lbl_resumen.configure(text="\n".join(lineas))
         self.lbl_total.configure(text=f"TOTAL A COBRAR: {formatear_moneda(r['total'])}")
 
@@ -2878,13 +2951,15 @@ class CalculoCobranzaApp:
                     cursor.execute('''
                         INSERT INTO cobranza_viajes_detalle
                         (id_cobranza, zona, fecha, vehiculo, categoria, cantidad,
-                         distancia_desde, distancia_hasta, precio, monto)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                         distancia_desde, distancia_hasta, precio, monto,
+                         espera_pct, espera_monto)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ''', (id_cob, t.get("zona", ""), t["fecha"].strftime("%d/%m/%Y"),
                           t.get("vehiculo", ""), t["categoria"],
                           float(t.get("cantidad") or 1),
                           t.get("desde", 0), t.get("hasta", 0),
-                          t.get("precio", 0), t.get("monto", 0)))
+                          t.get("precio", 0), t.get("monto", 0),
+                          float(t.get("espera_pct") or 0), float(t.get("espera_monto") or 0)))
 
             # Asientos de deducción con fecha (unidad o rango de distancia) — reemplazo
             cursor.execute("DELETE FROM cobranza_deducciones_detalle WHERE id_cobranza=%s", (id_cob,))
@@ -3025,7 +3100,8 @@ class CalculoCobranzaApp:
                 cursor.execute("""
                     SELECT fecha, COALESCE(zona, ''), COALESCE(vehiculo, ''),
                            COALESCE(categoria, ''), COALESCE(precio, 0), COALESCE(monto, 0),
-                           COALESCE(cantidad, 0)
+                           COALESCE(cantidad, 0),
+                           COALESCE(espera_pct, 0), COALESCE(espera_monto, 0)
                     FROM cobranza_viajes_detalle WHERE id_cobranza=%s ORDER BY fecha, id
                 """, (id_cob,))
                 traslados_pdf = cursor.fetchall()
@@ -3321,6 +3397,8 @@ class CalculoCobranzaApp:
                     # (fecha, zona, vehiculo, categoria, precio, monto, cantidad)
                     (fecha_t, zona_t, vehiculo_t, cat_t, precio_t, monto_t) = fila_t[:6]
                     cant_t = float(fila_t[6]) if len(fila_t) > 6 and fila_t[6] else 0.0
+                    espera_pct_t = float(fila_t[7]) if len(fila_t) > 7 and fila_t[7] else 0.0
+                    espera_t = float(fila_t[8]) if len(fila_t) > 8 and fila_t[8] else 0.0
                     monto_fila = float(monto_t or 0) or float(precio_t or 0)
                     # 🔹 Cantidad real del traslado (0.5 = medio viaje).
                     #    El precio guardado es la TARIFA de la zona: si el monto no coincide
@@ -3346,7 +3424,8 @@ class CalculoCobranzaApp:
                             etiqueta_dia = "Normal"
                     filas_pdf.append((str(fecha_t or ""), str(zona_t or ""),
                                       etiqueta_dia,
-                                      cant_t, round(precio_unit, 2), monto_fila))
+                                      cant_t, round(precio_unit, 2), monto_fila,
+                                      espera_pct_t, espera_t))
             else:
                 for v in viajes_pdf:
                     (zona, desde, hasta, pn, pd, pf, vn, vd, vf,
@@ -3359,17 +3438,21 @@ class CalculoCobranzaApp:
                         cant = float(cant or 0)
                         if cant:
                             filas_pdf.append(("", nombre, etiqueta_dia, cant,
-                                              float(precio or 0), cant * float(precio or 0)))
+                                              float(precio or 0), cant * float(precio or 0),
+                                              0.0, 0.0))
 
             # 🚫 Columnas sin datos no se imprimen
             hay_fecha = any(f[0] for f in filas_pdf)
             hay_precio = any(abs(f[4]) > 0.005 for f in filas_pdf)
+            hay_espera = any(len(f) > 7 and abs(f[7]) > 0.005 for f in filas_pdf)
             columnas = []
             if hay_fecha:
                 columnas.append(("F. SERVICIO", 74))    # fecha del servicio (abreviada)
             columnas += [("ZONA", 118), ("DÍA", 62), ("CANT.", 40)]
             if hay_precio:
                 columnas.append(("PRECIO", 55))
+            if hay_espera:
+                columnas.append(("ESPERA", 66))
             columnas.append(("MONTO", 75))
 
             xs = [40]
@@ -3394,12 +3477,15 @@ class CalculoCobranzaApp:
                 y = 750.0
             _cabecera_filas()
             total_tabla = 0.0
-            for (fecha_f, zona_f, dia_f, cant_f, precio_f, monto_f) in filas_pdf:
+            for fila_f in filas_pdf:
+                (fecha_f, zona_f, dia_f, cant_f, precio_f, monto_f) = fila_f[:6]
+                espera_pct_f = float(fila_f[6]) if len(fila_f) > 6 and fila_f[6] else 0.0
+                espera_f = float(fila_f[7]) if len(fila_f) > 7 and fila_f[7] else 0.0
                 if y < 70:
                     c.showPage()
                     y = 750.0
                     _cabecera_filas()
-                total_tabla += float(monto_f or 0)
+                total_tabla += float(monto_f or 0) + espera_f
                 c.setFillColorRGB(0, 0, 0)
                 col = 0
                 if hay_fecha:
@@ -3420,9 +3506,16 @@ class CalculoCobranzaApp:
                     c.drawCentredString(xs[col] + columnas[col][1] / 2, y - BASE_TXT,
                                         _num_o_vacio(precio_f))
                     col += 1
+                if hay_espera:
+                    c.drawCentredString(xs[col] + columnas[col][1] / 2, y - BASE_TXT, _recortar_texto(
+                        c, ("%g%% %s" % (espera_pct_f, _num_o_vacio(espera_f)))
+                        if espera_f > 0.005 else "—",
+                        columnas[col][1] - 4, "Helvetica", FUENTE_TABLA))
+                    col += 1
+                # 🧾 El MONTO de la fila incluye el sobrecargo por espera (la columna ESPERA lo detalla)
                 c.drawCentredString(xs[col] + columnas[col][1] / 2, y - BASE_TXT, _recortar_texto(
-                    c, ("%s %s" % (simbolo, _num_o_vacio(monto_f))), columnas[col][1] - 4,
-                    "Helvetica", FUENTE_TABLA))
+                    c, ("%s %s" % (simbolo, _num_o_vacio(float(monto_f or 0) + espera_f))),
+                    columnas[col][1] - 4, "Helvetica", FUENTE_TABLA))
                 c.setStrokeColorRGB(0.85, 0.85, 0.85)
                 c.line(40, y - LINEA_FILA, 40 + ancho_tabla, y - LINEA_FILA)
                 y -= ALTO_FILA
@@ -3897,10 +3990,14 @@ class CalculoCobranzaApp:
             side="left", expand=True, fill="x", padx=(6, 0))
         return v
 
-    def abrir_asistente(self):
-        """Abre el asistente paso a paso para hacer un cálculo de cobranza."""
+    def abrir_asistente(self, editar=False):
+        """Abre el asistente paso a paso (con `editar=True` usa el registro cargado)."""
+        if not editar:
+            # Un asistente nuevo empieza un cálculo nuevo: así un registro que se
+            # cargó antes no se actualiza por error al guardar.
+            self.registro_editando = None
         try:
-            ventana = AsistenteCobranza(self.parent, self)
+            ventana = AsistenteCobranza(self.parent, self, editar=editar)
             self._asistente_abierto = True
 
             def _al_cerrar(_evento=None):
@@ -3924,7 +4021,7 @@ class CalculoCobranzaApp:
         conn = conectar_db(silencioso=True)
         if not conn:
             messagebox.showerror("Sin Conexión", "No se pudo conectar a la base de datos.")
-            return
+            return False
         try:
             cursor = conn.cursor()
             cursor.execute('''
@@ -3939,7 +4036,7 @@ class CalculoCobranzaApp:
             row = cursor.fetchone()
             if not row:
                 messagebox.showerror("No Encontrado", "El registro no existe.")
-                return
+                return False
             cursor.execute("SELECT fecha, categoria, feriado_nombre FROM cobranza_detalle_dias WHERE id_cobranza=%s ORDER BY fecha", (id_cob,))
             detalle = cursor.fetchall()
             cursor.execute('''
@@ -3956,7 +4053,8 @@ class CalculoCobranzaApp:
             ''', (id_cob,))
             viajes_rows = cursor.fetchall()
             cursor.execute('''
-                SELECT fecha, vehiculo, categoria, distancia_desde, distancia_hasta, precio, monto
+                SELECT fecha, vehiculo, categoria, distancia_desde, distancia_hasta, precio, monto,
+                       COALESCE(espera_pct, 0), COALESCE(espera_monto, 0)
                 FROM cobranza_viajes_detalle WHERE id_cobranza=%s ORDER BY id
             ''', (id_cob,))
             viajes_detalle_rows = cursor.fetchall()
@@ -3973,7 +4071,7 @@ class CalculoCobranzaApp:
                 deducciones_rows = []
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el registro:\n{e}")
-            return
+            return False
         finally:
             liberar_conexion(conn)
 
@@ -4075,7 +4173,8 @@ class CalculoCobranzaApp:
                 })
 
             # Recupera los viajes individuales registrados (fecha, vehículo, tipo)
-            for (fecha_s, vehiculo, categoria, desde, hasta, precio, monto) in viajes_detalle_rows:
+            for (fecha_s, vehiculo, categoria, desde, hasta, precio, monto,
+                 espera_pct, espera_monto) in viajes_detalle_rows:
                 rango_idx = next((i for i, rg in enumerate(self.rangos_viaje)
                                   if abs(rg["distancia_desde"] - float(desde or 0)) < 0.001
                                   and abs(rg["distancia_hasta"] - float(hasta or 0)) < 0.001), None)
@@ -4090,6 +4189,7 @@ class CalculoCobranzaApp:
                     "rango_idx": rango_idx, "vehiculo": str(vehiculo or ""),
                     "precio": float(precio or 0), "monto": float(monto or 0),
                     "desde": float(desde or 0), "hasta": float(hasta or 0),
+                    "espera_pct": float(espera_pct or 0), "espera_monto": float(espera_monto or 0),
                 })
             self.pintar_viajes()
             self._pintar_viajes_registrados()
@@ -4159,7 +4259,7 @@ class CalculoCobranzaApp:
 
         self.registro_editando = id_rec
         self.recalcular()
-        self._subir_pantalla()
+        return True
 
     # ---------- LIMPIAR ----------
     def limpiar_formulario(self):
@@ -5623,7 +5723,8 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
         if id_rec is None:
             return
         self.destroy()
-        self.app.cargar_registro(id_rec)
+        if self.app.cargar_registro(id_rec):
+            self.app.abrir_asistente(editar=True)
 
     @con_letrero("Eliminando el registro…")
     def eliminar_registro(self):
@@ -5741,9 +5842,10 @@ class AsistenteCobranza(ctk.CTkToplevel):
         except Exception:
             pass
 
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, editar=False):
         super().__init__(parent)
         self.app = app
+        self.editando = bool(editar)
         self.familia = "Helvetica" if sys.platform == "darwin" else "Arial"
         self.paso = 0
 
@@ -5772,6 +5874,13 @@ class AsistenteCobranza(ctk.CTkToplevel):
         ctk.CTkLabel(f_top, text="Sigue los 6 pasos y el sistema calculará y generará el PDF por ti.",
                      font=(self.familia, 11),
                      text_color="#d6e4f5").pack(anchor="w", padx=18, pady=(0, 10))
+        if self.editando:
+            ctk.CTkLabel(
+                f_top,
+                text="✏️ Editando el registro N° %s — al guardar se actualiza ese cálculo."
+                     % (getattr(app, "registro_editando", "") or ""),
+                font=(self.familia, 12, "bold"),
+                text_color="#ffe08a").pack(anchor="w", padx=18, pady=(0, 10))
 
         # ---- Indicador de pasos ----
         self.f_pasos = ctk.CTkFrame(self, fg_color="#ececec", corner_radius=0)
@@ -5794,9 +5903,12 @@ class AsistenteCobranza(ctk.CTkToplevel):
                                        font=(self.familia, 12, "bold"), fg_color="#7f8c8d",
                                        hover_color="#606b6b", command=self._atras)
         self.btn_atras.pack(side="left")
-        ctk.CTkButton(f_pie, text="↺ Reiniciar", width=120,
-                      font=(self.familia, 12, "bold"), fg_color="#e67e22",
-                      hover_color="#d35400", command=self._reiniciar).pack(side="left", padx=8)
+        self.btn_reiniciar = ctk.CTkButton(f_pie, text="↺ Reiniciar", width=120,
+                                           font=(self.familia, 12, "bold"), fg_color="#e67e22",
+                                           hover_color="#d35400", command=self._reiniciar)
+        self.btn_reiniciar.pack(side="left", padx=8)
+        if self.editando:
+            self.btn_reiniciar.pack_forget()   # editar un registro no se "reinicia"
         ctk.CTkButton(f_pie, text="✖ Cerrar", width=110,
                       font=(self.familia, 12, "bold"), fg_color="#34495e",
                       hover_color="#2c3e50", command=self.destroy).pack(side="right")
@@ -5955,8 +6067,12 @@ class AsistenteCobranza(ctk.CTkToplevel):
 
     # ---------------- PASO 1: Cliente ----------------
     def _paso_cliente(self):
-        self._titulo("Paso 1 de 6 — Elige el cliente",
-                     "Selecciona el cliente al que le vas a calcular la cobranza.")
+        if self.editando:
+            self._titulo("Paso 1 de 6 — Cliente del registro",
+                         "Estás editando un cálculo guardado: el cliente no se puede cambiar.")
+        else:
+            self._titulo("Paso 1 de 6 — Elige el cliente",
+                         "Selecciona el cliente al que le vas a calcular la cobranza.")
         f = self._tarjeta()
         ctk.CTkLabel(f, text="👤 Cliente:", font=(self.familia, 12, "bold")).pack(
             anchor="w", padx=15, pady=(10, 4))
@@ -5967,6 +6083,11 @@ class AsistenteCobranza(ctk.CTkToplevel):
         self.combo_cli = ctk.CTkComboBox(f, values=valores, width=680, font=(self.familia, 12),
                                          state="readonly", command=self._elegir_cliente)
         self.combo_cli.pack(anchor="w", padx=15, pady=(0, 6))
+        if self.editando:
+            try:
+                self.combo_cli.configure(state="disabled")
+            except Exception:
+                pass
         try:
             self.combo_cli.set(self.app.combo_cliente.get())
         except Exception:
@@ -6016,9 +6137,25 @@ class AsistenteCobranza(ctk.CTkToplevel):
         fx = ctk.CTkFrame(f, fg_color="transparent")
         fx.pack(fill="x", padx=15, pady=(12, 4))
         if self.app.plan_cobro == "Por Hora":
-            ctk.CTkButton(fx, text="🚗 Configurar unidades y precios", width=420, height=38,
-                          font=(self.familia, 12, "bold"), fg_color="#e67e22", hover_color="#d35400",
-                          command=self._abrir_unidades).pack(side="left")
+            if self.editando:
+                # ✏️ Un registro guardado se edita con SUS unidades: no se recarga
+                #    la configuración actual del cliente (podría haber cambiado).
+                ctk.CTkLabel(fx, text="✏️ Unidad del cálculo:",
+                             font=(self.familia, 11, "bold")).pack(side="left")
+                nombres = [str(u.get("unidad") or "") for u in (self.app.unidades or [])]
+                self.cmb_unidad_edit = ctk.CTkOptionMenu(
+                    fx, values=(nombres or ["(sin unidades)"]), width=330,
+                    font=(self.familia, 11))
+                self.cmb_unidad_edit.set((nombres or ["(sin unidades)"])[0])
+                self.cmb_unidad_edit.pack(side="left", padx=(6, 8))
+                ctk.CTkButton(fx, text="✏️ Editar unidad", width=150, height=32,
+                              font=(self.familia, 11, "bold"), fg_color="#e67e22",
+                              hover_color="#d35400",
+                              command=self._editar_unidad_editando).pack(side="left")
+            else:
+                ctk.CTkButton(fx, text="🚗 Configurar unidades y precios", width=420, height=38,
+                              font=(self.familia, 12, "bold"), fg_color="#e67e22", hover_color="#d35400",
+                              command=self._abrir_unidades).pack(side="left")
         else:
             ctk.CTkButton(fx, text="🏷️ Configurar zonas y precios", width=340, height=38,
                           font=(self.familia, 12, "bold"), fg_color="#16a085", hover_color="#11806a",
@@ -6041,6 +6178,28 @@ class AsistenteCobranza(ctk.CTkToplevel):
                                           wraplength=880)
         self.lbl_aviso_cfg.pack(anchor="w", padx=15, pady=(0, 10))
         self._refrescar_config()
+
+    def _editar_unidad_editando(self):
+        """✏️ Edita precios/horas/deducciones de una unidad del registro cargado."""
+        try:
+            nombre = str(self.cmb_unidad_edit.get() or "")
+        except Exception:
+            nombre = ""
+        for i, u in enumerate(getattr(self.app, "unidades", []) or []):
+            if str(u.get("unidad") or "") != nombre:
+                continue
+            try:
+                dlg = DialogoUnidad(self, u, self.app.plan_cobro, con_deducciones=True,
+                                    app=self.app)
+                if dlg.result is not None:
+                    self.app.unidades[i] = dlg.result
+                    self.app.pintar_unidades()
+                    self.app.recalcular()
+                    self._refrescar_config()
+            except Exception as e:
+                messagebox.showerror("Unidad", "No se pudo editar la unidad:\n%s" % e,
+                                     parent=self)
+            return
 
     def _abrir_unidades(self):
         if not self.app.cliente_id:
@@ -6088,12 +6247,13 @@ class AsistenteCobranza(ctk.CTkToplevel):
     def _refrescar_config(self):
         if not getattr(self, "_vivo", False):
             return
-        try:
-            self.app.cargar_unidades_cliente()
-            if self.app.plan_cobro == "Por Punto o Viaje":
-                self.app.cargar_rangos_viaje()
-        except Exception:
-            pass
+        if not self.editando:
+            try:
+                self.app.cargar_unidades_cliente()
+                if self.app.plan_cobro == "Por Punto o Viaje":
+                    self.app.cargar_rangos_viaje()
+            except Exception:
+                pass
         lineas = []
         if self.app.plan_cobro == "Por Hora":
             if not self.app.unidades:
@@ -7049,11 +7209,12 @@ class AsistenteCobranza(ctk.CTkToplevel):
         # ---------------- TRASLADOS REGISTRADOS ----------------
         f_reg = self._tarjeta("🛣️ Traslados registrados")
         self.tabla_traslados = ttk.Treeview(
-            f_reg, columns=("fecha", "zona", "cat", "cant", "vehiculo", "monto"),
+            f_reg, columns=("fecha", "zona", "cat", "cant", "vehiculo", "monto", "espera"),
             show="headings", height=6, selectmode="browse")
-        for col, titulo, ancho in (("fecha", "Fecha", 90), ("zona", "Zona", 200),
-                                   ("cat", "Día", 90), ("cant", "Cant.", 55),
-                                   ("vehiculo", "Vehículo", 170), ("monto", "Monto", 100)):
+        for col, titulo, ancho in (("fecha", "Fecha", 90), ("zona", "Zona", 190),
+                                   ("cat", "Día", 80), ("cant", "Cant.", 50),
+                                   ("vehiculo", "Vehículo", 150), ("monto", "Monto", 90),
+                                   ("espera", "Tiempo de espera", 150)):
             self.tabla_traslados.heading(col, text=titulo, anchor="center")
             self.tabla_traslados.column(col, width=ancho,
                                         anchor="w" if col in ("zona", "vehiculo") else "center")
@@ -7086,6 +7247,22 @@ class AsistenteCobranza(ctk.CTkToplevel):
         ctk.CTkButton(fila, text="➕ Agregar traslado", width=170, height=32,
                       font=(self.familia, 11, "bold"), fg_color="#27ae60", hover_color="#1e8449",
                       command=self._agregar_traslado_asistente).pack(side="left")
+
+        # ⏱️ Sobrecargo por tiempo de espera superado (porcentaje variable por traslado)
+        fila_esp = ctk.CTkFrame(f_alta, fg_color="transparent")
+        fila_esp.pack(fill="x", padx=15, pady=(0, 6))
+        self.chk_espera_asis = ctk.CTkCheckBox(
+            fila_esp, text="⏱ Tiempo de espera superado", font=(self.familia, 11, "bold"),
+            checkbox_width=18, checkbox_height=18)
+        self.chk_espera_asis.pack(side="left")
+        ctk.CTkLabel(fila_esp, text="Sobrecargo:", font=(self.familia, 11, "bold")).pack(
+            side="left", padx=(15, 4))
+        self.ent_espera_pct_asis = ctk.CTkEntry(fila_esp, width=60, justify="center")
+        self.ent_espera_pct_asis.insert(0, "20")
+        self.ent_espera_pct_asis.pack(side="left")
+        ctk.CTkLabel(fila_esp, text="% del monto del traslado", font=(self.familia, 10),
+                     text_color="#555").pack(side="left", padx=(4, 0))
+
         self.lbl_cat_asis = ctk.CTkLabel(f_alta, text="",
                                          font=(self.familia, 10, "bold"), text_color="#1f538d")
         self.lbl_cat_asis.pack(anchor="w", padx=15, pady=(0, 8))
@@ -7204,10 +7381,17 @@ class AsistenteCobranza(ctk.CTkToplevel):
         vehiculo = self.combo_veh_asis.get()
         if str(vehiculo).startswith("—"):
             vehiculo = ""
+        monto_base = precio * cant
+        espera = self.app._leer_sobrecargo_espera(
+            self.chk_espera_asis, self.ent_espera_pct_asis, monto_base)
+        if espera is None:
+            return
+        espera_pct, espera_monto = espera
         rg["viajes"][cat] = float(rg["viajes"].get(cat, 0) or 0) + cant
         self.app.viajes_registrados.append({
             "fecha": fecha, "categoria": cat, "rango_idx": idx, "cantidad": cant,
-            "vehiculo": vehiculo, "precio": precio, "monto": precio * cant,
+            "vehiculo": vehiculo, "precio": precio, "monto": monto_base,
+            "espera_pct": espera_pct, "espera_monto": espera_monto,
             "desde": rg.get("distancia_desde", 0), "hasta": rg.get("distancia_hasta", 0),
             "zona": rg.get("nombre", ""),
         })
@@ -7307,10 +7491,15 @@ class AsistenteCobranza(ctk.CTkToplevel):
                 cat = str(registro.get("categoria") or "")
                 etiqueta_cat = dict(CATEGORIAS).get(cat, cat)
                 if origen == "viajes":
+                    espera_pct = float(registro.get("espera_pct") or 0)
+                    espera_monto = float(registro.get("espera_monto") or 0)
+                    espera_txt = (f"{espera_pct:g}% · {formatear_moneda(espera_monto)}"
+                                  if espera_monto > 0.005 else "—")
                     valores = (fecha_txt, zona, etiqueta_cat,
                                ("%g" % float(registro.get("cantidad", 1) or 0)),
                                registro.get("vehiculo", ""),
-                               formatear_moneda(registro.get("monto", 0)))
+                               formatear_moneda(registro.get("monto", 0)),
+                               espera_txt)
                 else:
                     valores = (fecha_txt, zona, etiqueta_cat,
                                ("%g" % float(registro.get("cantidad", 1) or 0)),

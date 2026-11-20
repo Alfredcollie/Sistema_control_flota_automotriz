@@ -31,6 +31,7 @@ import threading
 import transferencias_soporte as tx_soporte
 from datetime import datetime
 
+from colores_montos import preparar as preparar_colores_montos, filtrar_todas as filtrar_montos_negativos
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
 from dialogos_seguros import (seleccionar_archivo_dialogo, seleccionar_archivos_dialogo,
                               guardar_archivo_dialogo)
@@ -412,6 +413,7 @@ def abrir_gestion_categorias_gastos(parent=None, al_guardar=None):
     f_tabla.pack(fill="both", expand=True, padx=15, pady=10)
     columnas = ("principal", "categoria")
     tree = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="browse")
+    preparar_colores_montos(tree)
     tree.heading("principal", text="Principal")
     tree.heading("categoria", text="Categoría")
     tree.column("principal", width=220, anchor="w")
@@ -2444,6 +2446,25 @@ class ModuloBancoApp:
         # congelarla (cada consulta a Supabase tarda ~0,3 s).
         self._mostrar_cargando()
 
+    def _aplicar_filtro_montos(self, modo):
+        """Filtra todas las tablas: todos, solo negativos o solo positivos."""
+        if modo == "negativos":
+            if self.var_solo_negativos.get():
+                self.var_solo_positivos.set(False)
+            activo = "negativos" if self.var_solo_negativos.get() else "todos"
+        elif modo == "positivos":
+            if self.var_solo_positivos.get():
+                self.var_solo_negativos.set(False)
+            activo = "positivos" if self.var_solo_positivos.get() else "todos"
+        else:
+            self.var_solo_negativos.set(False)
+            self.var_solo_positivos.set(False)
+            activo = "todos"
+        try:
+            filtrar_montos_negativos(activo)
+        except Exception:
+            pass
+
     def _cambiar_mes_saldos(self, etiqueta=None):
         """Cambia el periodo visible (un mes o todos) y redibuja las tarjetas.
 
@@ -2531,6 +2552,16 @@ class ModuloBancoApp:
         ctk.CTkLabel(fila_det, text=f"({resumen['n_movimientos']} movimientos{sufijo})",
                      font=(FAMILIA, 10, "italic"), text_color="#7f8c8d").pack(side="left")
 
+        # 🏦 Si el saldo corrido del estado de cuenta no coincide con la suma de
+        #    los movimientos leídos, se explica el ajuste (el banco es la verdad).
+        _ajuste = float(resumen.get("ajuste_estado") or 0)
+        if abs(_ajuste) >= 0.005:
+            ctk.CTkLabel(card,
+                         text=(f"🏦 Saldo según estado de cuenta del banco: ajuste de "
+                               f"{formatear_monto(_ajuste)} sobre la suma de movimientos."),
+                         font=(FAMILIA, 10, "italic"), text_color="#b9770e",
+                         justify="left", wraplength=900).pack(anchor="w", padx=12, pady=(0, 4))
+
         # 📄 Qué estados de cuenta están CARGADOS para esta cuenta (a la vista).
         try:
             _periodos = sorted(self._periodos_cargados(banco))
@@ -2585,6 +2616,22 @@ class ModuloBancoApp:
         """
         movs_sistema = list(movs_sistema or [])
 
+        # 🚫 Los asientos que el usuario eliminó de la conciliación NO deben
+        #    seguir sumando al saldo (antes se ocultaban de la tabla pero el
+        #    saldo los seguía contando: al borrar uno, el saldo no cambiaba).
+        try:
+            _ignorados = self.cargar_ignorados(banco)
+        except Exception:
+            _ignorados = {"sistema": set(), "estado_cuenta": set()}
+        _ign_sistema = _ignorados.get("sistema", set())
+        _ign_pdf = _ignorados.get("estado_cuenta", set())
+        movs_sistema = [
+            m for m in movs_sistema
+            if self._clave_ignorado(m.get("origen", "sistema"), m.get("tabla", ""),
+                                    m.get("id", 0), m.get("fecha"), m.get("monto"),
+                                    m.get("descripcion", "")) not in _ign_sistema
+        ]
+
         # 0) Lo cargado en segundo plano (si está) evita consultar Supabase aquí.
         clave_cache = (str(banco.get("banco", "")), str(banco.get("cuenta", "") or ""))
         extras = (getattr(self, "_cache_saldos_extra", None) or {}).get(clave_cache) or {}
@@ -2603,6 +2650,10 @@ class ModuloBancoApp:
                 monto = float(linea.get("monto") or 0)
                 if abs(monto) < 0.0001:
                     continue
+                # 🚫 Línea descartada en la conciliación: no suma al saldo
+                if self._clave_ignorado("estado_cuenta", "", 0, linea.get("fecha"),
+                                        monto, linea.get("descripcion", "")) in _ign_pdf:
+                    continue
                 mes = str(linea.get("periodo") or "") or clave_fecha(linea.get("fecha"))[:7]
                 if not mes:
                     continue
@@ -2611,6 +2662,7 @@ class ModuloBancoApp:
                     "fecha": linea.get("fecha", ""),
                     "descripcion": linea.get("descripcion", ""),
                     "monto": monto,
+                    "saldo": linea.get("saldo"),
                     "tipo": "Banco",
                     "origen": "estado_cuenta",
                     "tabla": "conciliacion_movimientos_pdf",
@@ -2699,7 +2751,27 @@ class ModuloBancoApp:
 
         ingresos = sum(m["monto"] for m in movs if m["monto"] > 0)
         egresos = sum(-m["monto"] for m in movs if m["monto"] < 0)
-        saldo = saldo_inicial + sum(m["monto"] for m in acumulados)
+        # 🏦 Si hay estado de cuenta, manda el SALDO CORRIDO del banco: la suma
+        #    de los movimientos leídos puede quedar corta si el PDF trae alguna
+        #    línea que no se pudo interpretar (el saldo sí es exacto).
+        ancla_fecha, ancla_saldo = None, None
+        for m in acumulados:
+            if str(m.get("origen") or "") != "estado_cuenta":
+                continue
+            saldo_m = m.get("saldo")
+            if saldo_m is None:
+                continue
+            f_m = clave_fecha(m.get("fecha"))
+            if not f_m:
+                continue
+            if ancla_fecha is None or f_m >= ancla_fecha:
+                ancla_fecha, ancla_saldo = f_m, float(saldo_m)
+        if ancla_saldo is not None:
+            saldo = ancla_saldo + sum(m["monto"] for m in acumulados
+                                      if clave_fecha(m.get("fecha")) > ancla_fecha)
+        else:
+            saldo = saldo_inicial + sum(m["monto"] for m in acumulados)
+        ajuste_estado = round(saldo - (saldo_inicial + sum(m["monto"] for m in acumulados)), 2)
         etiqueta_mes = getattr(self, "mes_saldos_etiqueta", "") if mes else ""
         return {
             "saldo_inicial": saldo_inicial,
@@ -2707,6 +2779,8 @@ class ModuloBancoApp:
             "egresos": egresos,
             "saldo_actual": saldo,
             "saldo_actual_txt": formatear_monto(saldo),
+            "ajuste_estado": ajuste_estado,
+            "ancla_fecha": ancla_fecha,
             "n_movimientos": len(movs),
             "movimientos": movs,
             "mes": mes or "",
@@ -2836,23 +2910,19 @@ class ModuloBancoApp:
                 desc_eg = f"Transferencia a {bd or 'otra cuenta'}"
                 if desc:
                     desc_eg += f" ({desc})"
+                # 🏦 El banco debita el TOTAL (monto + comisión) en UNA sola línea.
+                #    Antes se creaban dos asientos (-300 y -4,80) y el de la comisión
+                #    quedaba como sobrante al conciliar.
+                total_debitado = monto_v + com_v
+                if com_v > 0:
+                    desc_eg += " + comisión %s" % formatear_monto(com_v)
                 movs.append({
                     "id": idt, "fecha": fecha or "", "descripcion": desc_eg,
-                    "monto": -monto_v, "tipo": "transferencia",
+                    "monto": -total_debitado, "tipo": "transferencia",
                     "origen": "sistema", "tabla": "transferencias_bancarias",
                     "documento": str(referencia_tx or ""), "archivo_ruta": archivo_tx or "",
                     "comision": com_v,
                 })
-                # 🏦 Asiento de la comisión interbancaria en la cuenta EMISORA
-                if com_v > 0:
-                    movs.append({
-                        "id": idt, "fecha": fecha or "",
-                        "descripcion": "Comisión interbancaria (%s)" % (referencia_tx or "transferencia"),
-                        "monto": -com_v, "tipo": "comision",
-                        "origen": "sistema", "tabla": "tx_comision",
-                        "documento": str(referencia_tx or ""), "es_comision": True,
-                        "archivo_ruta": archivo_tx or "",
-                    })
             if cuenta_transferencia_matchea(banco, bd, cd):
                 desc_in = f"Transferencia de {bo or 'otra cuenta'}"
                 if desc:
@@ -2982,6 +3052,7 @@ class ModuloBancoApp:
         f_tabla.pack(fill="both", expand=True, padx=15, pady=10)
         columnas = ("fecha", "documento", "descripcion", "tipo", "monto")
         tabla = ttk.Treeview(f_tabla, columns=columnas, show="headings", height=14)
+        preparar_colores_montos(tabla)
         tabla.heading("fecha", text="Fecha")
         tabla.heading("documento", text="N° Documento")
         tabla.heading("descripcion", text="Descripción")
@@ -3189,6 +3260,11 @@ class ModuloBancoApp:
         self.btn_tx_escanear = ctk.CTkButton(r_comp, text="🖨 Escanear + OCR", width=160,
                                             command=lambda: self._procesar_comprobante_tx(escanear=True))
         self.btn_tx_escanear.pack(side="left", padx=4)
+        # 📱 Escanear con el teléfono y leer el comprobante con OCR
+        self.btn_tx_tel = ctk.CTkButton(r_comp, text="📱 Escanear con el teléfono", width=200,
+                                        fg_color="#8e44ad", hover_color="#6c3483",
+                                        command=self.escanear_transferencia_telefono)
+        self.btn_tx_tel.pack(side="left", padx=4)
         ctk.CTkButton(r_comp, text="Quitar adjunto", width=120,
                       command=self._quitar_comprobante_tx).pack(side="left", padx=4)
         self.lbl_tx_archivo = ctk.CTkLabel(r_comp, text="Sin comprobante", anchor="w")
@@ -3222,6 +3298,7 @@ class ModuloBancoApp:
         f_tabla.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         columnas = ("fecha", "origen", "destino", "descripcion", "monto", "comision", "total", "referencia")
         self.tabla_tx = ttk.Treeview(f_tabla, columns=columnas, show="headings", selectmode="extended")
+        preparar_colores_montos(self.tabla_tx)
         for col, txt, w, anc in (("fecha", "Fecha", 100, "center"),
                                  ("origen", "Banco Origen", 200, "center"),
                                  ("destino", "Banco Destino", 200, "center"),
@@ -3444,6 +3521,37 @@ class ModuloBancoApp:
         ctk.CTkButton(barra, text="Cerrar", width=120, height=34, fg_color="#7f8c8d",
                       hover_color="#606b6b", command=ventana.destroy).pack(side="left")
 
+    def escanear_transferencia_telefono(self):
+        """📱 Recibe la foto del comprobante desde el teléfono y la lee con OCR.
+
+        La imagen cae en la carpeta de escaneos (la que sincroniza rclone) y se
+        procesa igual que un archivo cargado: completa fecha, monto y referencia
+        en el formulario de transferencias.
+        """
+        try:
+            import escaner_movil
+        except Exception as error:
+            return messagebox.showerror(
+                "Escáner", "No se pudo cargar el escáner: " + str(error),
+                parent=self.parent_frame)
+        try:
+            config = dict(cargar_config())
+            config.update(leer_config_disco())
+        except Exception:
+            config = {}
+
+        def al_recibir(rutas, tipo_doc):
+            if rutas:
+                self._procesar_comprobante_tx(ruta=rutas[0], escanear=False)
+
+        try:
+            escaner_movil.escanear_desde_telefono(
+                self.parent_frame, config, al_recibir=al_recibir,
+                titulo_extra="Banco · comprobante de transferencia")
+        except Exception as error:
+            messagebox.showerror("Escáner", "No se pudo abrir el escáner: " + str(error),
+                                 parent=self.parent_frame)
+
     def _procesar_comprobante_tx(self, ruta="", escanear=False):
         if getattr(self, "_tx_ocr_ocupado", False):
             return
@@ -3457,6 +3565,10 @@ class ModuloBancoApp:
         self.btn_tx_cargar.configure(state="disabled")
         self.btn_tx_escanear.configure(state="disabled")
         self.btn_tx_guardar.configure(state="disabled")
+        try:
+            self.btn_tx_tel.configure(state="disabled")
+        except Exception:
+            pass
         self.lbl_tx_archivo.configure(text="Escaneando / leyendo OCR...")
         progreso = None
         if escanear:
@@ -3521,6 +3633,10 @@ class ModuloBancoApp:
             self.btn_tx_cargar.configure(state="normal")
             self.btn_tx_escanear.configure(state="normal")
             self.btn_tx_guardar.configure(state="normal")
+            try:
+                self.btn_tx_tel.configure(state="normal")
+            except Exception:
+                pass
             if token != self._tx_ocr_token:
                 self._mostrar_archivo_tx()
                 return
@@ -3897,6 +4013,16 @@ class ModuloBancoApp:
             print("Aviso - carga de conciliación:", e)
 
     def construir_tab_conciliacion(self):
+        f_filtro = ctk.CTkFrame(self.tab_conciliacion, fg_color="transparent")
+        f_filtro.pack(fill="x", padx=15, pady=(5, 0))
+        self.var_solo_negativos = tk.BooleanVar(value=False)
+        self.var_solo_positivos = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(f_filtro, text="Solo negativos", variable=self.var_solo_negativos,
+                        font=(FAMILIA, 11),
+                        command=lambda: self._aplicar_filtro_montos("negativos")).pack(side="left")
+        ctk.CTkCheckBox(f_filtro, text="Solo positivos", variable=self.var_solo_positivos,
+                        font=(FAMILIA, 11),
+                        command=lambda: self._aplicar_filtro_montos("positivos")).pack(side="left", padx=(15, 0))
         f_sel = ctk.CTkFrame(self.tab_conciliacion, fg_color="#f8f9fa",
                              border_width=1, border_color="#e0e0e0", corner_radius=8)
         f_sel.pack(fill="x", padx=5, pady=(5, 10))
@@ -4028,6 +4154,7 @@ class ModuloBancoApp:
         columnas = ("estado", "fecha", "documento", "descripcion", "tipo", "monto", "origen", "saldo")
         self.tabla_conc = ttk.Treeview(f_tabla, columns=columnas, show="headings",
                                        selectmode="extended")
+        preparar_colores_montos(self.tabla_conc)
         for col, txt, w, anc in (("estado", "Estado", 140, "center"),
                                  ("fecha", "Fecha", 95, "center"),
                                  ("documento", "N° Documento", 140, "center"),
@@ -4180,6 +4307,7 @@ class ModuloBancoApp:
         columnas = ("fecha_banco", "desc_banco", "monto_banco", "fecha_cont", "desc_cont",
                     "monto_sistema", "dias", "estado", "confianza")
         tabla = ttk.Treeview(marco, columns=columnas, show="headings", height=18)
+        preparar_colores_montos(tabla)
         titulos = {"fecha_banco": ("Fecha banco", 100), "desc_banco": ("Descripción banco", 250),
                    "monto_banco": ("Monto banco", 100), "fecha_cont": ("Fecha contable", 100),
                    "desc_cont": ("Descripción contable", 250), "monto_sistema": ("Monto sistema", 100),
@@ -4442,6 +4570,7 @@ class ModuloBancoApp:
                 anchor="w", padx=12, pady=(0, 8))
             columnas_c = ("fecha", "descripcion", "dias", "origen")
             tabla_c = ttk.Treeview(dlg, columns=columnas_c, show="headings", height=7)
+            preparar_colores_montos(tabla_c)
             for col, titulo, ancho in (("fecha", "Fecha contable", 110),
                                        ("descripcion", "Descripción contable", 520),
                                        ("dias", "Días", 50),
@@ -4925,6 +5054,42 @@ class ModuloBancoApp:
         Sirve para ubicar diferencias de centavos (redondeo) o comisiones que
         antes solo se veían como un total en el Resumen del período.
         """
+        if diferencias is None:
+            # 🔎 Solo se muestran las diferencias del banco y mes seleccionados.
+            #    Si la última lista calculada es de otro período, se recalcula.
+            banco_actual = self.banco_seleccionado()
+            if not banco_actual:
+                messagebox.showerror("Diferencias de importe",
+                                     "Elija un banco primero.",
+                                     parent=self.parent_frame)
+                return
+            mes_actual = (mes_etiqueta_a_key(self.cmb_mes.get())
+                          if hasattr(self, "cmb_mes") else "")
+            clave_actual = (banco_actual.get("banco", ""),
+                            banco_actual.get("cuenta", ""),
+                            mes_actual or "")
+            if getattr(self, "_diferencias_clave", None) != clave_actual:
+                try:
+                    self.parent_frame.configure(cursor="watch")
+                    self.parent_frame.update_idletasks()
+                except Exception:
+                    pass
+                try:
+                    self.generar_reporte()
+                except Exception as error:
+                    messagebox.showerror(
+                        "Diferencias de importe",
+                        "No se pudieron calcular las diferencias del período:\n%s" % error,
+                        parent=self.parent_frame)
+                    return
+                finally:
+                    try:
+                        self.parent_frame.configure(cursor="")
+                    except Exception:
+                        pass
+            if periodo is None and hasattr(self, "cmb_mes"):
+                periodo = self.cmb_mes.get()
+
         datos = list(diferencias if diferencias is not None else
                      (getattr(self, "_diferencias_importe", None) or []))
         if not datos:
@@ -4954,19 +5119,36 @@ class ModuloBancoApp:
                                   "cuyo importe no es idéntico.",
                      font=(FAMILIA, 10, "italic"), text_color="#7f8c8d").pack(anchor="w", padx=8)
 
+        _repintar = lambda: None   # se define abajo; evita error si el control llama al crear
+        f_ctrl = ctk.CTkFrame(marco, fg_color="transparent")
+        f_ctrl.pack(fill="x", padx=8, pady=(4, 0))
+        var_sin_comisiones = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(f_ctrl, text="Ocultar comisiones",
+                        variable=var_sin_comisiones, font=(FAMILIA, 11),
+                        command=lambda: _repintar()).pack(side="left")
+        var_movimiento = tk.StringVar(value="Todos")
+        ctk.CTkSegmentedButton(f_ctrl, values=["Todos", "Ingresos", "Egresos"],
+                               variable=var_movimiento, width=250,
+                               command=lambda _valor: _repintar()).pack(side="left", padx=(15, 0))
+        label_cuentas = ctk.CTkLabel(f_ctrl, text="", font=(FAMILIA, 11),
+                                     text_color="#7f8c8d")
+        label_cuentas.pack(side="left", padx=(15, 0))
+
         cont = ctk.CTkFrame(marco, fg_color="transparent")
         cont.pack(fill="both", expand=True, padx=6, pady=6)
         columnas = ("fecha_sistema", "fecha_banco", "documento", "descripcion",
-                    "monto_sistema", "monto_banco", "diferencia", "tipo")
+                    "monto_sistema", "monto_banco", "diferencia", "movimiento", "tipo")
         titulos = (("fecha_sistema", "Fecha sistema", 100),
                    ("fecha_banco", "Fecha banco", 100),
                    ("documento", "Documento", 150),
-                   ("descripcion", "Descripción", 330),
+                   ("descripcion", "Descripción", 280),
                    ("monto_sistema", "Monto sistema", 105),
                    ("monto_banco", "Monto banco", 105),
                    ("diferencia", "Diferencia", 90),
+                   ("movimiento", "Movimiento", 85),
                    ("tipo", "Tipo", 90))
         tabla = ttk.Treeview(cont, columns=columnas, show="headings", height=16)
+        preparar_colores_montos(tabla)
         for col, texto, ancho in titulos:
             tabla.heading(col, text=texto)
             tabla.column(col, width=ancho,
@@ -4990,30 +5172,69 @@ class ModuloBancoApp:
         ordenados = sorted(datos, key=lambda f: (
             str(f.get("fecha_sistema") or ""),
             -abs(float(f.get("diferencia") or 0))))
-        total = 0.0
-        for i, f in enumerate(ordenados):
-            dif = float(f.get("diferencia") or 0)
-            total += dif
-            tag = str(f.get("tipo") or "diferencia").lower()
-            if tag not in ("redondeo", "comision", "diferencia"):
-                tag = "diferencia"
-            tabla.insert("", "end", iid=str(i), tags=(tag,), values=(
-                fecha_para_mostrar(f.get("fecha_sistema") or ""),
-                fecha_para_mostrar(f.get("fecha_banco") or ""),
-                f.get("documento") or "",
-                (f.get("descripcion") or "")[:80],
-                formatear_monto(f.get("monto_sistema") or 0),
-                formatear_monto(f.get("monto_banco") or 0),
-                formatear_monto(dif),
-                _tipo_txt(tag)))
 
         pie = ctk.CTkFrame(v, fg_color="transparent")
         pie.pack(fill="x", padx=12, pady=(0, 10))
-        ctk.CTkLabel(pie, text="%d diferencia(s)   ·   Total: %s"
-                     % (len(ordenados), formatear_monto(total)),
-                     font=(FAMILIA, 12, "bold"), text_color="#1f538d").pack(side="left", padx=8)
+        label_pie = ctk.CTkLabel(pie, text="", font=(FAMILIA, 12, "bold"),
+                                 text_color="#1f538d")
+        label_pie.pack(side="left", padx=8)
         ctk.CTkButton(pie, text="Cerrar", width=100, fg_color="#7f8c8d",
                       hover_color="#5d6d6e", command=v.destroy).pack(side="right", padx=4)
+
+        def _repintar():
+            for item in tabla.get_children():
+                tabla.delete(item)
+            modo_mov = var_movimiento.get()
+            visibles = []
+            n_ing = n_egr = 0
+            for f in ordenados:
+                if (var_sin_comisiones.get()
+                        and str(f.get("tipo") or "").lower() == "comision"):
+                    continue
+                es_ingreso = float(f.get("monto_sistema") or 0) > 0
+                if modo_mov == "Ingresos" and not es_ingreso:
+                    continue
+                if modo_mov == "Egresos" and es_ingreso:
+                    continue
+                visibles.append(f)
+                if es_ingreso:
+                    n_ing += 1
+                else:
+                    n_egr += 1
+            label_cuentas.configure(
+                text="Ingresos con diferencia: %d   ·   Egresos con diferencia: %d"
+                     % (n_ing, n_egr))
+            total_vis = 0.0
+            for i, f in enumerate(visibles):
+                dif = float(f.get("diferencia") or 0)
+                total_vis += dif
+                tag = str(f.get("tipo") or "diferencia").lower()
+                if tag not in ("redondeo", "comision", "diferencia"):
+                    tag = "diferencia"
+                tabla.insert("", "end", iid=str(i), tags=(tag,), values=(
+                    fecha_para_mostrar(f.get("fecha_sistema") or ""),
+                    fecha_para_mostrar(f.get("fecha_banco") or ""),
+                    f.get("documento") or "",
+                    (f.get("descripcion") or "")[:80],
+                    formatear_monto(f.get("monto_sistema") or 0),
+                    formatear_monto(f.get("monto_banco") or 0),
+                    formatear_monto(dif),
+                    ("Ingreso" if float(f.get("monto_sistema") or 0) > 0 else "Egreso"),
+                    _tipo_txt(tag)))
+            texto_pie = ("%d diferencia(s) por asiento   ·   Suma: %s"
+                         % (len(visibles), formatear_monto(total_vis)))
+            if var_sin_comisiones.get():
+                texto_pie += "   ·   sin comisiones"
+            try:
+                (n1, ni1, ti1, ne1, te1), (n2, ni2, ti2, ne2, te2) = self._ultimo_resumen
+                dif_neta = (ti1 - te1) - (ti2 - te2)
+                texto_pie += ("   ·   Diferencia neta del período: %s"
+                              % formatear_monto(dif_neta))
+            except Exception:
+                pass
+            label_pie.configure(text=texto_pie)
+
+        _repintar()
 
     def mostrar_resumen(self):
         """📊 Ventana con las cantidades y totales de cada lado del período.
@@ -5032,6 +5253,14 @@ class ModuloBancoApp:
         ignorados = self.cargar_ignorados(banco)
         ign_sistema = ignorados.get("sistema", set())
         ign_pdf = ignorados.get("estado_cuenta", set())
+
+        # 🔎 Asegurar que las diferencias calculadas sean de ESTE banco/mes.
+        clave_resumen = (banco.get("banco", ""), banco.get("cuenta", ""), mes_key or "")
+        if getattr(self, "_diferencias_clave", None) != clave_resumen:
+            try:
+                self.generar_reporte()
+            except Exception as error:
+                print("[Resumen] no se pudieron recalcular las diferencias:", error)
 
         try:
             sistema = [m for m in self.cargar_movimientos_sistema(banco, mes=mes_key)
@@ -5136,6 +5365,28 @@ class ModuloBancoApp:
             asientos.append(d)
         match, dup_idx, sobr_idx, falt_idx = emparejar_asientos_banco(
             asientos, lineas, comision)
+
+        # 🔁 Corregir pares cruzados: si dos asientos quedaron con las líneas
+        #    intercambiadas (7,56 con 7,55 y 7,55 con 7,56), se cambian para
+        #    que cada uno tome la línea de su importe exacto.
+        _items_match = list(match.items())
+        for _a in range(len(_items_match)):
+            for _b in range(_a + 1, len(_items_match)):
+                _i1, _j1 = _items_match[_a]
+                _i2, _j2 = _items_match[_b]
+                try:
+                    _am1 = float(asientos[_i1].get("monto") or 0)
+                    _am2 = float(asientos[_i2].get("monto") or 0)
+                    _bm1 = float(lineas[_j1].get("monto") or 0)
+                    _bm2 = float(lineas[_j2].get("monto") or 0)
+                except Exception:
+                    continue
+                if _am1 * _bm2 <= 0 or _am2 * _bm1 <= 0:
+                    continue
+                _actual = abs(_bm1 - _am1) + abs(_bm2 - _am2)
+                _cruzado = abs(_bm2 - _am1) + abs(_bm1 - _am2)
+                if _cruzado + 0.001 < _actual:
+                    match[_i1], match[_i2] = _j2, _j1
         # 🏦 Si el banco cobró la comisión en la MISMA línea (principal + 4.80),
         #    el asiento se compara por el total del banco. Antes el sistema
         #    mostraba sólo el principal y aparecía una diferencia de 4.80 por
@@ -5324,7 +5575,8 @@ class ModuloBancoApp:
         cont = ctk.CTkFrame(marco, fg_color="transparent")
         cont.pack(fill="both", expand=True, padx=8)
         columnas = ("concepto", "sistema", "estado")
-        tabla = ttk.Treeview(cont, columns=columnas, show="headings", height=10)
+        tabla = ttk.Treeview(cont, columns=columnas, show="headings", height=11)
+        preparar_colores_montos(tabla)
         for col, titulo, ancho in (("concepto", "Concepto", 220),
                                    ("sistema", "Asientos (sin duplicados)", 240),
                                    ("estado", "Estado de cuenta", 240)):
@@ -5356,6 +5608,8 @@ class ModuloBancoApp:
                             formatear_monto(sum(float(m.get("monto") or 0)
                                                 for m in pendientes_siguiente_resumen))), ""),
         ]
+        # 🔎 Duplicados / sobrantes / faltantes con el MISMO cruce corregido del
+        #    reporte (filas_conciliacion), para que el cuadro quede consistente.
         for i, fila in enumerate(filas_tabla):
             tabla.insert("", "end", iid=str(i), values=fila)
 
@@ -5454,6 +5708,7 @@ class ModuloBancoApp:
             columnas = ("banco", "cuenta", "periodo", "lineas", "desde", "hasta",
                         "neto", "guardado", "respaldo")
             tabla = ttk.Treeview(cont, columns=columnas, show="headings", height=14)
+            preparar_colores_montos(tabla)
             for col, titulo, ancho in (("banco", "Banco", 105), ("cuenta", "Cuenta", 145),
                                        ("periodo", "Período", 90), ("lineas", "Líneas", 65),
                                        ("desde", "Desde", 92), ("hasta", "Hasta", 92),
@@ -5630,6 +5885,7 @@ class ModuloBancoApp:
             if con_factura:
                 titulos.append(("asiento", "Asiento con el mismo importe", 260))
             tabla_t = ttk.Treeview(cont, columns=columnas, show="headings", height=15)
+            preparar_colores_montos(tabla_t)
             for col, titulo, ancho in titulos:
                 tabla_t.heading(col, text=titulo)
                 tabla_t.column(col, width=ancho,
@@ -6119,6 +6375,7 @@ class ModuloBancoApp:
         marco.pack(fill="both", expand=True, padx=10, pady=10)
         columnas = ("fecha", "desc_banco", "importe", "estado", "confianza", "creado")
         tabla = ttk.Treeview(marco, columns=columnas, show="headings", height=16)
+        preparar_colores_montos(tabla)
         for col, titulo, ancho in (("fecha", "Fecha banco", 100), ("desc_banco", "Descripción banco", 300),
                                    ("importe", "Importe", 90), ("estado", "Estado", 110),
                                    ("confianza", "Conf.", 60), ("creado", "Registrado", 130)):
@@ -7307,6 +7564,10 @@ class ModuloBancoApp:
         _banco_actual = banco.get("banco", "")
         mes_key = mes_etiqueta_a_key(self.cmb_mes.get())
         _mes_actual = mes_key or ""
+        # 🔎 Clave del período que se está calculando (para no mezclar meses).
+        self._diferencias_clave = (banco.get("banco", ""),
+                                   banco.get("cuenta", ""),
+                                   mes_key or "")
         if (not getattr(self, "movimientos_pdf", None)
                 or getattr(self, "_banco_pdf", None) != _banco_actual
                 or getattr(self, "_mes_pdf", "") != _mes_actual):
@@ -7417,7 +7678,7 @@ class ModuloBancoApp:
                 except Exception:
                     return False
                 if abs(bm - mm) <= 0.02:
-                    return True                    # mismo importe
+                    return True                    # mismo importe (tolera 2 céntimos)
                 # El banco cobra la comisión junto con el principal
                 if bm * mm > 0 and abs(abs(bm) - abs(mm) - comision_bancaria) <= 0.02:
                     return True
@@ -7426,13 +7687,52 @@ class ModuloBancoApp:
             if usados is None:
                 usados = set()
             res = {}
+
+            def _coincide_exacto(b, m):
+                try:
+                    return abs(float(b["monto"]) - float(m["monto"])) <= 0.005
+                except Exception:
+                    return False
+
+            # Pasada 0: misma fecha + importe EXACTO. Va primero para que un
+            # asiento de 7,56 no se lleve una línea de 7,55 habiendo una de 7,56.
             for m in lista:
+                sf = normalizar_fecha(m["fecha"])
+                for i, b in enumerate(bank_movs):
+                    if i in usados:
+                        continue
+                    if sf and normalizar_fecha(b["fecha"]) == sf and _coincide_exacto(b, m):
+                        usados.add(i); res[id(m)] = i; break
+
+            # Pasada 0b: misma fecha + importe con tolerancia (comisión/redondeo).
+            for m in lista:
+                if id(m) in res:
+                    continue
                 sf = normalizar_fecha(m["fecha"])
                 for i, b in enumerate(bank_movs):
                     if i in usados:
                         continue
                     if sf and normalizar_fecha(b["fecha"]) == sf and _coincide(b, m):
                         usados.add(i); res[id(m)] = i; break
+            # Pasada 2a: fecha cercana + importe EXACTO.
+            for m in lista:
+                if id(m) in res:
+                    continue
+                sd = _a_date(normalizar_fecha(m["fecha"]))
+                cands = []
+                for i, b in enumerate(bank_movs):
+                    if i in usados:
+                        continue
+                    if _coincide_exacto(b, m):
+                        bd = _a_date(normalizar_fecha(b["fecha"]))
+                        if sd and bd:
+                            cands.append((abs((bd - sd).days), i))
+                if cands:
+                    cands.sort()
+                    if cands[0][0] <= 31:
+                        usados.add(cands[0][1]); res[id(m)] = cands[0][1]
+
+            # Pasada 2b: fecha cercana + importe con tolerancia.
             for m in lista:
                 if id(m) in res:
                     continue
@@ -7456,6 +7756,30 @@ class ModuloBancoApp:
                          if i not in usados and _coincide(b, m)]
                 if len(cands) == 1:
                     usados.add(cands[0]); res[id(m)] = cands[0]
+
+            # 🔁 Corrección de cruces: si dos asientos quedaron con las líneas
+            #    intercambiadas (9,10 con 9,08 y 9,08 con 9,10), se cambian para
+            #    que cada uno tome la línea de su importe exacto.
+            por_id = {id(m): m for m in lista}
+            claves = list(res.keys())
+            for a in range(len(claves)):
+                for b in range(a + 1, len(claves)):
+                    id1, id2 = claves[a], claves[b]
+                    i1, i2 = res[id1], res[id2]
+                    m1, m2 = por_id.get(id1), por_id.get(id2)
+                    if not m1 or not m2:
+                        continue
+                    try:
+                        am1 = float(m1["monto"]); am2 = float(m2["monto"])
+                        bm1 = float(bank_movs[i1]["monto"]); bm2 = float(bank_movs[i2]["monto"])
+                    except Exception:
+                        continue
+                    if am1 * bm2 <= 0 or am2 * bm1 <= 0:
+                        continue
+                    actual = abs(bm1 - am1) + abs(bm2 - am2)
+                    cruzado = abs(bm2 - am1) + abs(bm1 - am2)
+                    if cruzado + 0.001 < actual:
+                        res[id1], res[id2] = i2, i1
             return res
 
         def linea_estado_cuenta(b):
@@ -7602,6 +7926,13 @@ class ModuloBancoApp:
                 if _j is not None:
                     _agregar_dif(_e, bank_movs[_j])
 
+        # 🔎 Si hay un mes seleccionado, la ventana muestra solo ese mes.
+        if mes_key:
+            self._diferencias_importe = [
+                d for d in self._diferencias_importe
+                if normalizar_fecha(d.get("fecha_sistema", "")).startswith(mes_key)
+                or normalizar_fecha(d.get("fecha_banco", "")).startswith(mes_key)]
+
         for i, b in enumerate(bank_movs):
             if i not in usados:
                 filas.append({**b, "id": 0, "tipo": "ingreso" if b["monto"] > 0 else "egreso",
@@ -7726,6 +8057,10 @@ class ModuloBancoApp:
         # 📊 Los totales de cada lado se ven en la ventana «Resumen del período»
         #    (botón), no amontonados en esta barra.
         self._ultimo_resumen = (_resumen_lado(_asientos_lado), _resumen_lado(_lineas_lado))
+        # 🔎 Recordar a qué banco/mes corresponden las diferencias calculadas.
+        self._diferencias_clave = (banco.get("banco", ""),
+                                   banco.get("cuenta", ""),
+                                   mes_key or "")
 
     def cargar_asientos_extra(self, banco, mes=None):
         """Asientos de conciliacion_bancaria que no vienen de pagos/cobros/transferencias.
@@ -8273,6 +8608,12 @@ class ModuloBancoApp:
         if fila.get("id_factura"):
             consultas.append(("SELECT archivo_ruta FROM facturas_emitidas WHERE id = %s",
                               fila.get("id_factura")))
+        # 📎 Asientos MANUALES (y los registrados desde el banco): el archivo está
+        #    en la columna 'soporte' de conciliacion_bancaria. Antes no se miraba,
+        #    así que el clic derecho no encontraba el comprobante.
+        if str(origen) in ("manual", "e") and fila.get("id"):
+            consultas.append(("SELECT soporte FROM conciliacion_bancaria WHERE id = %s",
+                              fila.get("id")))
         if not consultas:
             return ""
         conn = conectar_db(silencioso=True)
@@ -9121,6 +9462,15 @@ class ModuloBancoApp:
         def _fijar_soporte(ruta_sop):
             estado_soporte["ruta"] = str(ruta_sop or "")
             _pintar_soporte()
+            # 🔁 Un mismo comprobante sirve para los dos campos: si el de PAGO está
+            #    vacío, se copia ahí también. Antes, al escanear con el teléfono en
+            #    esta sección, Compras quedaba SIN comprobante de pago.
+            try:
+                if ruta_sop and not (ruta_comprobante.get("ruta") or ""):
+                    ruta_comprobante["ruta"] = str(ruta_sop)
+                    actualizar_lbl_comprobante()
+            except Exception as error_sync:
+                print("[Banco] sincronizar comprobante:", error_sync)
 
         def _ver_soporte():
             ruta_sop = estado_soporte["ruta"]
@@ -9148,9 +9498,76 @@ class ModuloBancoApp:
             except Exception:
                 config_esc = {}
 
+            def _completar_con_texto(texto):
+                """🧠 Con el texto del OCR completa N° de operación, fecha y monto."""
+                if not texto:
+                    return
+                avisos = []
+                try:
+                    from modulo_compras import (extraer_numero_operacion,
+                                                extraer_fecha_comprobante)
+                    numero_leido = extraer_numero_operacion(texto)
+                    fecha_leida = extraer_fecha_comprobante(texto)
+                except Exception as error_op:
+                    print("[Banco] OCR número/fecha:", error_op)
+                    numero_leido, fecha_leida = "", ""
+                try:
+                    monto_leido = monto_del_comprobante(texto)
+                except Exception:
+                    monto_leido = 0.0
+                try:
+                    if numero_leido and not ent_operacion.get().strip():
+                        ent_operacion.insert(0, numero_leido)
+                        avisos.append("N° operación: " + numero_leido)
+                except Exception:
+                    pass
+                try:
+                    if fecha_leida:
+                        ent_fecha.delete(0, "end")
+                        ent_fecha.insert(0, fecha_leida)
+                        avisos.append("Fecha: " + fecha_leida)
+                except Exception:
+                    pass
+                try:
+                    if monto_leido and not ent_monto.get().strip():
+                        from modulo_compras import formatear_numero_entrada
+                        ent_monto.insert(0, formatear_numero_entrada("%.2f" % float(monto_leido)))
+                        avisos.append("Monto: %.2f" % float(monto_leido))
+                except Exception:
+                    pass
+                if avisos:
+                    try:
+                        messagebox.showinfo(
+                            "Comprobante",
+                            "Se leyó el comprobante con OCR y se completó:\n"
+                            + " · ".join(avisos), parent=v)
+                    except Exception:
+                        pass
+
             def al_recibir(rutas, tipo_doc):
-                if rutas:
-                    _fijar_soporte(rutas[0])
+                if not rutas:
+                    return
+                _fijar_soporte(rutas[0])
+                # 🧠 OCR en segundo plano: no congela la ventana mientras lee
+                paginas = list(rutas or [])
+
+                def trabajo_ocr():
+                    texto = ""
+                    try:
+                        import escaner as _esc
+                        texto = _esc.texto_de_resultados(_esc.ocr_paginas(paginas)) or ""
+                    except Exception as error_ocr:
+                        print("[Banco] OCR del comprobante:", error_ocr)
+                    try:
+                        v.after(0, lambda: _completar_con_texto(texto))
+                    except Exception:
+                        pass
+
+                try:
+                    threading.Thread(target=trabajo_ocr, daemon=True).start()
+                except Exception as error_hilo:
+                    print("[Banco] hilo de OCR:", error_hilo)
+                    _completar_con_texto("")
 
             try:
                 escaner_movil.escanear_desde_telefono(
@@ -9256,6 +9673,16 @@ class ModuloBancoApp:
             else:
                 lbl_comprobante.configure(text="Sin comprobante cargado", text_color="#999999")
 
+        def _fijar_comprobante(ruta_comp):
+            """Fija el comprobante de pago y, si no hay soporte del banco, lo copia."""
+            ruta_comprobante["ruta"] = str(ruta_comp or "")
+            actualizar_lbl_comprobante()
+            try:
+                if ruta_comp and not (estado_soporte.get("ruta") or ""):
+                    _fijar_soporte(ruta_comp)
+            except Exception as error_sync:
+                print("[Banco] sincronizar soporte:", error_sync)
+
         def cargar_comprobante():
             try:
                 from tkinter import filedialog
@@ -9266,8 +9693,7 @@ class ModuloBancoApp:
                 return messagebox.showerror("Comprobante", "No se pudo abrir el selector: " + str(e), parent=v)
             if not ruta:
                 return
-            ruta_comprobante["ruta"] = ruta
-            actualizar_lbl_comprobante()
+            _fijar_comprobante(ruta)
 
         def ver_comprobante():
             ruta = ruta_comprobante.get("ruta") or ""
@@ -9292,8 +9718,7 @@ class ModuloBancoApp:
             def al_terminar(ruta, numero="", fecha_leida="", monto_leido=0.0):
                 if not ruta:
                     return
-                ruta_comprobante["ruta"] = ruta
-                actualizar_lbl_comprobante()
+                _fijar_comprobante(ruta)
                 avisos = []
                 try:
                     if numero and not ent_operacion.get().strip():
@@ -10318,6 +10743,13 @@ class ModuloBancoApp:
                             f"Eliminó {len(filas)} movimiento(s) de la conciliación "
                             f"en {construir_etiqueta_banco(banco) if banco else 'banco'}"
                             + (f" (y {gastos_borrados} gasto(s) de Compras)" if gastos_borrados else ""))
+
+        # 💰 El saldo debe reflejar lo eliminado ya mismo (sin pulsar «Actualizar»)
+        try:
+            self._datos_saldos = None
+            self.actualizar_saldos_boton()
+        except Exception as error_saldos:
+            print("[Conciliación] refresco de saldos:", error_saldos)
 
         msg = f"{len(filas)} movimiento(s) eliminado(s) de la conciliación."
         if borrados_db:

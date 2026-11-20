@@ -21,13 +21,6 @@
   "id_factura_viejo": 356
  },
  {
-  "id": 403,
-  "fecha": "10/09/2026",
-  "monto": 3.51,
-  "proveedor": "BLACK RIDERS E.I.R.L.",
-  "id_factura_viejo": 406
- },
- {
   "id": 421,
   "fecha": "1/09/2026",
   "monto": 176.54,
@@ -82,13 +75,6 @@
   "monto": 0.0,
   "proveedor": "GRIFO (Desde App)",
   "id_factura_viejo": 394
- },
- {
-  "id": 390,
-  "fecha": "10/09/2026",
-  "monto": 8.76,
-  "proveedor": "COESTI S.A E/S ORRANTIA",
-  "id_factura_viejo": 395
  },
  {
   "id": 393,

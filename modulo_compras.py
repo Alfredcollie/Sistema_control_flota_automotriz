@@ -33,6 +33,110 @@ import threading
 
 # 🚀 IMPORTAMOS NUESTRAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
+
+# =========================================================
+# ⚠️ AVISO: cambio de fecha entre meses con/sin estado de cuenta
+# ---------------------------------------------------------
+# En los meses con estado de cuenta cargado el saldo lo manda el BANCO y el
+# movimiento del sistema NO se suma; en los meses sin estado sí se suma.
+# Si al editar un cobro/pago la fecha pasa de un tipo de mes al otro, el saldo
+# cambia en el importe del movimiento. Se avisa antes de guardar.
+# =========================================================
+def _aviso_cambio_mes_estado_cuenta(cuenta_texto, fecha_anterior, fecha_nueva,
+                                    monto_firmado, parent=None):
+    """True = continuar; False = cancelar el cambio de fecha."""
+    def _mes(texto):
+        s = str(texto or "").strip()
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+        if m:
+            return "%s-%s" % (m.group(1), m.group(2))
+        m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})", s)
+        if m:
+            return "%s-%02d" % (m.group(3), int(m.group(2)))
+        return ""
+
+    mes_viejo, mes_nuevo = _mes(fecha_anterior), _mes(fecha_nueva)
+    if not mes_viejo or not mes_nuevo or mes_viejo == mes_nuevo:
+        return True
+
+    texto_cuenta = str(cuenta_texto or "").strip()
+    if not texto_cuenta or texto_cuenta.startswith("("):
+        return True
+    if any(k in texto_cuenta.lower() for k in ("efectivo", "caja chica", "tarjeta", "cheque", "otro")):
+        return True
+
+    if " - " in texto_cuenta:
+        banco, cuenta = [p.strip() for p in texto_cuenta.split(" - ", 1)]
+    else:
+        banco, cuenta = "", texto_cuenta
+        m = re.search(r"([0-9][0-9\-]{5,})", texto_cuenta)
+        if m:
+            cuenta = m.group(1).strip("-")
+            banco = texto_cuenta.replace(m.group(1), "").strip(" -")
+    if not cuenta:
+        return True
+
+    conn = None
+    try:
+        try:
+            conn = conectar_db(silencioso=True)
+        except TypeError:
+            conn = conectar_db()
+        if not conn:
+            return True
+        with conn.cursor() as c:
+            if banco:
+                c.execute("""SELECT DISTINCT COALESCE(periodo, ''), COALESCE(fecha, '')
+                             FROM conciliacion_movimientos_pdf
+                             WHERE UPPER(COALESCE(banco, '')) = UPPER(%s)
+                               AND COALESCE(cuenta, '') = %s""", (banco, cuenta))
+            else:
+                c.execute("""SELECT DISTINCT COALESCE(periodo, ''), COALESCE(fecha, '')
+                             FROM conciliacion_movimientos_pdf
+                             WHERE COALESCE(cuenta, '') = %s""", (cuenta,))
+            filas = c.fetchall()
+    except Exception:
+        return True
+    finally:
+        if conn:
+            liberar_conexion(conn)
+
+    meses = set()
+    for periodo, fecha in filas:
+        mes = str(periodo or "").strip()[:7] or _mes(fecha)
+        if mes:
+            meses.add(mes)
+
+    con_viejo = mes_viejo in meses
+    con_nuevo = mes_nuevo in meses
+    if con_viejo == con_nuevo:
+        return True
+
+    monto = float(monto_firmado or 0)
+    impacto = -monto if (con_nuevo and not con_viejo) else monto
+    if abs(impacto) < 0.005:
+        return True
+
+    _MESES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+              "agosto", "setiembre", "octubre", "noviembre", "diciembre")
+    def _legible(m):
+        try:
+            anio, mes = str(m).split("-")
+            return "%s %s" % (_MESES[int(mes) - 1], anio)
+        except Exception:
+            return str(m)
+    detalle = (f"{_legible(mes_viejo)} tiene estado de cuenta cargado y {_legible(mes_nuevo)} no."
+               if con_viejo else
+               f"{_legible(mes_nuevo)} tiene estado de cuenta cargado y {_legible(mes_viejo)} no.")
+    return messagebox.askyesno(
+        "Cambio de fecha con estado de cuenta",
+        "⚠️ CAMBIO DE FECHA ENTRE MESES CON ESTADO DE CUENTA" + chr(10) + chr(10)
+        + f"Vas a cambiar la fecha del {fecha_anterior} al {fecha_nueva}." + chr(10)
+        + detalle + chr(10) + chr(10)
+        + f"Al guardar, el saldo de {banco or 'el banco'} cambiará en {formatear_moneda(impacto)}." + chr(10) + chr(10)
+        + "¿Deseas continuar?",
+        parent=parent)
+
 from buffer_memoria import cache_sistema
 from app_paths import CONFIG_FILE, eliminar_archivo, ruta_para_guardar, resolver_ruta_archivo
 from config_nube import cargar_bancos
@@ -806,6 +910,16 @@ def formatear_moneda(valor):
     else:
         str_val = f"{valor:,.2f}"
     return f"{simbolo} {str_val}"
+
+
+def formatear_numero_entrada(valor):
+    """Número para campos de edición con el separador decimal configurado,
+    sin símbolo de moneda."""
+    try:
+        texto = formatear_moneda(valor)
+        return texto.replace(CONFIG_REGIONAL.get("simbolo_moneda", "S/."), "").strip()
+    except Exception:
+        return "%.2f" % float(valor or 0)
 
 def desformatear_numero(valor_str):
     if not valor_str: return 0.0
@@ -1610,7 +1724,9 @@ def extraer_fecha_comprobante(texto, formato="DD/MM/AAAA"):
     numeros = re.compile(r"\b(\d{1,2})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{2,4})\b")
     # 📅 "12 de Octubre del 2026", "12 Octubre 2026" (vouchers del banco)
     #    y "Lunes, 12 OCT 2026": el "de" es opcional y se aceptan abreviaturas.
-    escrito = re.compile(r"\b(\d{1,2})\s+(?:DE\s+)?([A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]{3,})\s+(?:DE\s+|DEL\s+)?(\d{2,4})\b")
+    # El día debe ser 1-31: con \d{1,2} el "00" de un importe ("120.00")
+    # se tomaba como día y arruinaba la lectura de "Domingo 08 Noviembre 2026".
+    escrito = re.compile(r"\b(0?[1-9]|[12]\d|3[01])\s+(?:DE\s+)?([A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]{3,})\s+(?:DE\s+|DEL\s+)?(\d{2,4})\b")
 
     import datetime as _dt
     _hoy = _dt.date.today()
@@ -5220,7 +5336,7 @@ class FacturasRecibidasTab:
                 print("Aviso - monto del comprobante:", e_monto)
             if monto_total > 0:
                 self.ent_subtotal.delete(0, tk.END)
-                self.ent_subtotal.insert(0, f"{monto_total:.2f}")
+                self.ent_subtotal.insert(0, formatear_numero_entrada(monto_total))
                 self._poner_modo_monto("CON_IGV")
 
             resultado = getattr(self, "_escaneo_actual", {}) or {}
@@ -5392,15 +5508,15 @@ class FacturasRecibidasTab:
             # ---- Montos: base, IGV, recargo al consumo y total ----
             if hasattr(self, "ent_recargo"):
                 self.ent_recargo.delete(0, tk.END)
-                self.ent_recargo.insert(0, "%.2f" % montos["recargo"])
+                self.ent_recargo.insert(0, formatear_numero_entrada(montos["recargo"]))
             if montos["base"] > 0:
                 self._poner_modo_monto("BASE")
                 self.ent_subtotal.delete(0, tk.END)
-                self.ent_subtotal.insert(0, "%.2f" % montos["base"])
+                self.ent_subtotal.insert(0, formatear_numero_entrada(montos["base"]))
             elif montos["total"] > 0:
                 self._poner_modo_monto("CON_IGV")
                 self.ent_subtotal.delete(0, tk.END)
-                self.ent_subtotal.insert(0, "%.2f" % montos["total"])
+                self.ent_subtotal.insert(0, formatear_numero_entrada(montos["total"]))
 
             self.ruta_archivo_temp = ruta
             self.btn_archivo.configure(text="✅ PDF Autocargado Exitosamente", fg_color="#28a745")
@@ -5493,7 +5609,7 @@ class FacturasRecibidasTab:
                         val_tot = float(tot_node.text.strip())
                         val_sub = val_tot / 1.18 if _documento_con_igv(self.combo_tipo.get()) else val_tot
                         self.ent_subtotal.delete(0, tk.END)
-                        self.ent_subtotal.insert(0, f"{val_sub:.2f}")
+                        self.ent_subtotal.insert(0, formatear_numero_entrada(val_sub))
 
             self.ruta_archivo_temp = ruta
             self.btn_archivo.configure(text="✅ XML Autocargado Exitosamente", fg_color="#d35400")
@@ -5835,7 +5951,7 @@ class FacturasRecibidasTab:
         ctk.CTkLabel(f_com_cruz, text="Comisión (S/.):", font=("Arial", 10, "bold")).pack(side="left", padx=(10, 4))
         self.ent_comision = ctk.CTkEntry(f_com_cruz, width=80)
         self.ent_comision.pack(side="left")
-        self.ent_comision.insert(0, f"{cargar_comision_interbancaria_config():.2f}")
+        self.ent_comision.insert(0, formatear_numero_entrada(cargar_comision_interbancaria_config()))
         # El resumen se recalcula MIENTRAS se escribe (y al pegar) la comisión
         for _evento in ("<KeyRelease>", "<FocusOut>", "<<Paste>>"):
             self.ent_comision.bind(_evento, lambda _e: self._actualizar_total_cruzada(), add="+")
@@ -6792,7 +6908,7 @@ class FacturasRecibidasTab:
                     if leido_monto > 0:
                         try:
                             self.ent_monto_cruzada.delete(0, tk.END)
-                            self.ent_monto_cruzada.insert(0, "%.2f" % leido_monto)
+                            self.ent_monto_cruzada.insert(0, formatear_numero_entrada(leido_monto))
                         except Exception:
                             pass
                     try:
@@ -6926,7 +7042,7 @@ class FacturasRecibidasTab:
                 self.var_interbancario.set(False)
                 for entrada in (self.ent_tercero, self.ent_oper_cruzada, self.ent_comision):
                     entrada.delete(0, tk.END)
-                self.ent_comision.insert(0, f"{cargar_comision_interbancaria_config():.2f}")
+                self.ent_comision.insert(0, formatear_numero_entrada(cargar_comision_interbancaria_config()))
                 self.ruta_soporte_tercero = ""
                 self.btn_soporte_tercero.configure(text="📎 Adjuntar soporte del pago al tercero",
                                                    fg_color="#7f8c8d", hover_color="#606b6b")
@@ -7067,7 +7183,7 @@ class FacturasRecibidasTab:
             # Si todavía no se digitó el monto, se propone el costo acordado de la orden
             if orden[6] > 0 and not self.ent_subtotal.get().strip():
                 self._poner_modo_monto("CON_IGV")
-                self.ent_subtotal.insert(0, f"{orden[6]:.2f}")
+                self.ent_subtotal.insert(0, formatear_numero_entrada(orden[6]))
         self._actualizar_cruce_orden()
         self.actualizar_totales()
 
@@ -7213,7 +7329,7 @@ class FacturasRecibidasTab:
             nuevo_valor = total if nuevo == "CON_IGV" else subtotal
             self.ent_subtotal.delete(0, tk.END)
             if nuevo_valor > 0:
-                self.ent_subtotal.insert(0, f"{nuevo_valor:.2f}")
+                self.ent_subtotal.insert(0, formatear_numero_entrada(nuevo_valor))
         self._refrescar_etiqueta_modo()
         self.actualizar_totales()
 
@@ -8122,12 +8238,12 @@ class FacturasRecibidasTab:
 
         # ---------------- 4. MONTOS ----------------
         seccion("💰 Montos")
-        e_sub = campo("Subtotal (base):", "%.2f" % float(datos.get("subtotal") or 0))
-        e_imp = campo("IGV / Impuesto:", "%.2f" % float(datos.get("impuesto") or 0))
-        e_tot = campo("Total (con IGV):", "%.2f" % float(datos.get("total") or 0))
+        e_sub = campo("Subtotal (base):", formatear_numero_entrada(datos.get("subtotal") or 0))
+        e_imp = campo("IGV / Impuesto:", formatear_numero_entrada(datos.get("impuesto") or 0))
+        e_tot = campo("Total (con IGV):", formatear_numero_entrada(datos.get("total") or 0))
         e_detp = campo("Detracción / Retención (%):",
                        "%.2f" % float(datos.get("det_porcentaje") or 0))
-        e_detm = campo("Monto de detracción:", "%.2f" % float(datos.get("det_monto") or 0))
+        e_detm = campo("Monto de detracción:", formatear_numero_entrada(datos.get("det_monto") or 0))
 
         f_del = ctk.CTkFrame(f, fg_color="transparent")
         f_del.pack(fill="x", pady=(8, 0))
@@ -8242,9 +8358,9 @@ class FacturasRecibidasTab:
                     igv = total - base
                 else:
                     base, igv = total, 0.0
-                _poner_campo(e_sub, "%.2f" % base)
-                _poner_campo(e_imp, "%.2f" % igv)
-                _poner_campo(e_tot, "%.2f" % total)
+                _poner_campo(e_sub, formatear_numero_entrada(base))
+                _poner_campo(e_imp, formatear_numero_entrada(igv))
+                _poner_campo(e_tot, formatear_numero_entrada(total))
             _al_elegir_proveedor()
             _calc()
 
@@ -8939,7 +9055,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
         ctk.CTkLabel(f_edit_com, text="Comisión (S/.):", font=("Arial", 11, "bold")).pack(side="left", padx=(10, 4))
         ent_edit_comision = ctk.CTkEntry(f_edit_com, width=80)
         ent_edit_comision.pack(side="left")
-        ent_edit_comision.insert(0, f"{e_comision:.2f}")
+        ent_edit_comision.insert(0, formatear_numero_entrada(e_comision))
 
         # 💳 El total que pagó el tercero se calcula AL INSTANTE (factura + comisión)
         lbl_edit_cruz_total = ctk.CTkLabel(f_form, text="", font=("Arial", 10, "bold"),
@@ -9039,7 +9155,7 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
             _recargo_inicial = float(e_tot or 0) - float(e_sub or 0) - float(e_imp or 0)
         except (TypeError, ValueError):
             _recargo_inicial = 0.0
-        ent_rec.insert(0, f"{max(_recargo_inicial, 0.0):.2f}")
+        ent_rec.insert(0, formatear_numero_entrada(max(_recargo_inicial, 0.0)))
 
         # 💳 El resumen del pago al tercero sigue los montos y la comisión en vivo
         for _campo_monto in (ent_sub, ent_imp, ent_tot, ent_rec):
@@ -9158,9 +9274,9 @@ COALESCE((SELECT SUM(p.monto_pagado) FROM pagos_comprobantes p WHERE p.id_factur
 
         def guardar_cambios():
             try:
-                val_sub = float(ent_sub.get().strip() or 0)
-                val_imp = float(ent_imp.get().strip() or 0)
-                val_tot = float(ent_tot.get().strip() or 0)
+                val_sub = _a_numero(ent_sub.get() or 0)
+                val_imp = _a_numero(ent_imp.get() or 0)
+                val_tot = _a_numero(ent_tot.get() or 0)
             except ValueError:
                 return messagebox.showerror("Error", "Los montos deben ser numéricos.", parent=v_edit)
                 
@@ -10065,7 +10181,7 @@ class CuentasPorPagarTab:
                                    text_color="#1e8449")
 
         ent_monto.bind("<KeyRelease>", actualizar_calc)
-        ent_monto.insert(0, "%.2f" % total_pendiente)
+        ent_monto.insert(0, formatear_numero_entrada(total_pendiente))
         lbl_calc.pack(anchor="w", pady=(2, 0))
         actualizar_calc()
 
@@ -10117,7 +10233,7 @@ class CuentasPorPagarTab:
             if monto and float(monto) > 0:
                 try:
                     ent_monto.delete(0, tk.END)
-                    ent_monto.insert(0, "%.2f" % float(monto))
+                    ent_monto.insert(0, formatear_numero_entrada(monto))
                 except Exception:
                     pass
                 actualizar_calc()
@@ -10822,7 +10938,7 @@ class CuentasPorPagarTab:
         ent_monto = ctk.CTkEntry(f_form)
         ent_monto.pack(fill="x", pady=(0, 10))
         # En una factura cruzada con comisión se propone el total: factura + comisión.
-        ent_monto.insert(0, f"{pendiente_total:.2f}")
+        ent_monto.insert(0, formatear_numero_entrada(pendiente_total))
 
         ctk.CTkLabel(f_form, text="Fecha del Pago:", font=("Arial", 11, "bold")).pack(anchor="w")
         f_fecha_pago = ctk.CTkFrame(f_form, fg_color="transparent")
@@ -10840,7 +10956,7 @@ class CuentasPorPagarTab:
 
         def procesar_pago(event=None):
             try:
-                monto_val = float(ent_monto.get().strip())
+                monto_val = _a_numero(ent_monto.get())
             except ValueError:
                 return messagebox.showerror("Error", "Ingrese un monto numérico válido.", parent=v_pago)
 
@@ -11341,7 +11457,7 @@ class CuentasPorPagarTab:
             def guardar_mod(event=None):
                 nonlocal saldo_actual_global
                 try:
-                    nuevo_monto = float(ent_mod_monto.get().strip())
+                    nuevo_monto = _a_numero(ent_mod_monto.get())
                 except ValueError:
                     return messagebox.showerror("Error", "Monto inválido", parent=v_mod_pago)
 
@@ -11373,6 +11489,9 @@ class CuentasPorPagarTab:
                                                     "Ingrese el N° de Operación Bancaria del pago.\n\n"
                                                     "Si el pago fue en efectivo o con caja chica, seleccione esa cuenta.",
                                                     parent=v_mod_pago)
+                    if not _aviso_cambio_mes_estado_cuenta(nueva_cuenta or cuenta_actual, fecha_actual,
+                                                           nueva_fecha, -nuevo_monto, parent=v_mod_pago):
+                        return
                     conn = conectar_db(); cursor = conn.cursor()
                     cursor.execute("UPDATE pagos_comprobantes SET monto_pagado = %s, fecha_pago = %s, cuenta_origen = %s, numero_operacion = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, nueva_oper, id_pago))
                     conn.commit(); liberar_conexion(conn)

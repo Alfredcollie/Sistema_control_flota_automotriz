@@ -24,6 +24,111 @@ import threading
 
 # 🚀 IMPORTAMOS NUESTRAS NUEVAS HERRAMIENTAS CORPORATIVAS
 from conexion import conectar_db, registrar_auditoria, liberar_conexion
+import tabla_universal as _tabla_universal
+
+# =========================================================
+# ⚠️ AVISO: cambio de fecha entre meses con/sin estado de cuenta
+# ---------------------------------------------------------
+# En los meses con estado de cuenta cargado el saldo lo manda el BANCO y el
+# movimiento del sistema NO se suma; en los meses sin estado sí se suma.
+# Si al editar un cobro/pago la fecha pasa de un tipo de mes al otro, el saldo
+# cambia en el importe del movimiento. Se avisa antes de guardar.
+# =========================================================
+def _aviso_cambio_mes_estado_cuenta(cuenta_texto, fecha_anterior, fecha_nueva,
+                                    monto_firmado, parent=None):
+    """True = continuar; False = cancelar el cambio de fecha."""
+    def _mes(texto):
+        s = str(texto or "").strip()
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+        if m:
+            return "%s-%s" % (m.group(1), m.group(2))
+        m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})", s)
+        if m:
+            return "%s-%02d" % (m.group(3), int(m.group(2)))
+        return ""
+
+    mes_viejo, mes_nuevo = _mes(fecha_anterior), _mes(fecha_nueva)
+    if not mes_viejo or not mes_nuevo or mes_viejo == mes_nuevo:
+        return True
+
+    texto_cuenta = str(cuenta_texto or "").strip()
+    if not texto_cuenta or texto_cuenta.startswith("("):
+        return True
+    if any(k in texto_cuenta.lower() for k in ("efectivo", "caja chica", "tarjeta", "cheque", "otro")):
+        return True
+
+    if " - " in texto_cuenta:
+        banco, cuenta = [p.strip() for p in texto_cuenta.split(" - ", 1)]
+    else:
+        banco, cuenta = "", texto_cuenta
+        m = re.search(r"([0-9][0-9\-]{5,})", texto_cuenta)
+        if m:
+            cuenta = m.group(1).strip("-")
+            banco = texto_cuenta.replace(m.group(1), "").strip(" -")
+    if not cuenta:
+        return True
+
+    conn = None
+    try:
+        try:
+            conn = conectar_db(silencioso=True)
+        except TypeError:
+            conn = conectar_db()
+        if not conn:
+            return True
+        with conn.cursor() as c:
+            if banco:
+                c.execute("""SELECT DISTINCT COALESCE(periodo, ''), COALESCE(fecha, '')
+                             FROM conciliacion_movimientos_pdf
+                             WHERE UPPER(COALESCE(banco, '')) = UPPER(%s)
+                               AND COALESCE(cuenta, '') = %s""", (banco, cuenta))
+            else:
+                c.execute("""SELECT DISTINCT COALESCE(periodo, ''), COALESCE(fecha, '')
+                             FROM conciliacion_movimientos_pdf
+                             WHERE COALESCE(cuenta, '') = %s""", (cuenta,))
+            filas = c.fetchall()
+    except Exception:
+        return True
+    finally:
+        if conn:
+            liberar_conexion(conn)
+
+    meses = set()
+    for periodo, fecha in filas:
+        mes = str(periodo or "").strip()[:7] or _mes(fecha)
+        if mes:
+            meses.add(mes)
+
+    con_viejo = mes_viejo in meses
+    con_nuevo = mes_nuevo in meses
+    if con_viejo == con_nuevo:
+        return True
+
+    monto = float(monto_firmado or 0)
+    impacto = -monto if (con_nuevo and not con_viejo) else monto
+    if abs(impacto) < 0.005:
+        return True
+
+    _MESES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+              "agosto", "setiembre", "octubre", "noviembre", "diciembre")
+    def _legible(m):
+        try:
+            anio, mes = str(m).split("-")
+            return "%s %s" % (_MESES[int(mes) - 1], anio)
+        except Exception:
+            return str(m)
+    detalle = (f"{_legible(mes_viejo)} tiene estado de cuenta cargado y {_legible(mes_nuevo)} no."
+               if con_viejo else
+               f"{_legible(mes_nuevo)} tiene estado de cuenta cargado y {_legible(mes_viejo)} no.")
+    return messagebox.askyesno(
+        "Cambio de fecha con estado de cuenta",
+        "⚠️ CAMBIO DE FECHA ENTRE MESES CON ESTADO DE CUENTA" + chr(10) + chr(10)
+        + f"Vas a cambiar la fecha del {fecha_anterior} al {fecha_nueva}." + chr(10)
+        + detalle + chr(10) + chr(10)
+        + f"Al guardar, el saldo de {banco or 'el banco'} cambiará en {formatear_moneda(impacto)}." + chr(10) + chr(10)
+        + "¿Deseas continuar?",
+        parent=parent)
+
 from buffer_memoria import cache_sistema
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from app_paths import CONFIG_FILE, eliminar_archivo, ruta_para_guardar, resolver_ruta_archivo
@@ -411,6 +516,16 @@ def formatear_moneda(valor):
         str_val = f"{valor:,.2f}"
     return f"{simbolo} {str_val}"
 
+
+def formatear_numero_entrada(valor):
+    """Número para mostrar en un campo de edición, con el separador decimal
+    configurado (1.234,56 o 1,234.56) y sin símbolo de moneda."""
+    try:
+        texto = formatear_moneda(valor)
+        return texto.replace(CONFIG_REGIONAL.get("simbolo_moneda", "S/."), "").strip()
+    except Exception:
+        return "%.2f" % float(valor or 0)
+
 def desformatear_numero(valor_str):
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
     formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
@@ -421,6 +536,30 @@ def desformatear_numero(valor_str):
         val = val.replace(",", "")
     try: return float(val)
     except ValueError: return 0.0
+
+
+def _texto_a_numero(texto):
+    """Número escrito a mano, aceptando coma o punto decimal ("102,50" y "102.50").
+    Lanza ValueError si el texto no es un número."""
+    if isinstance(texto, (int, float)):
+        return float(texto)
+    limpio = str(texto if texto is not None else "").strip()
+    for simbolo in ("S/.", "S/", "s/.", "s/", "\u00a0", " "):
+        limpio = limpio.replace(simbolo, "")
+    if not limpio:
+        return 0.0
+    if "," in limpio and "." in limpio:
+        if limpio.rfind(",") > limpio.rfind("."):
+            limpio = limpio.replace(".", "").replace(",", ".")   # 1.234,56
+        else:
+            limpio = limpio.replace(",", "")                     # 1,234.56
+    elif "," in limpio:
+        partes = limpio.split(",")
+        if len(partes) == 2 and 1 <= len(partes[1]) <= 2:
+            limpio = limpio.replace(",", ".")     # 102,50 -> 102.50
+        else:
+            limpio = limpio.replace(",", "")      # 1,500 -> 1500
+    return float(limpio)
 
 # =========================================================
 # 🧮 REDONDEO DE LA DETRACCIÓN (norma del Banco de la Nación)
@@ -1544,7 +1683,7 @@ class FacturasEmitidasTab:
         
         # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
-        self.registros_por_pagina = 50
+        self.registros_por_pagina = 100000   # 🔎 carga todo para buscar/ordenar por cualquier columna
         
         # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
         self.mes_filtro = mes_en_curso()
@@ -2091,8 +2230,15 @@ class FacturasEmitidasTab:
             except ValueError:
                 monto_base = 0.0
         if monto_base > 0:
-            self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{monto_base:.2f}")
+            self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, formatear_numero_entrada(monto_base))
             relleno = True
+        # 🧾 Se copia el Importe Total impreso en el comprobante
+        if tot_m:
+            try:
+                self._total_factura_manual = True
+                self._escribir_total_form(float(tot_m.group(1).replace(",", "")))
+            except Exception:
+                self._total_factura_manual = False
 
         if "Recibo" not in self.combo_tipo.get():
             det_match = re.search(r"(?:Detracci[oó]n|Porcentaje|Tasa).*?(\d{1,2}(?:\.\d{1,2})?)\s*%", texto, re.IGNORECASE)
@@ -2282,8 +2428,17 @@ class FacturasEmitidasTab:
             if monto_base <= 0 and total > 0:
                 monto_base = total / 1.18 if "Factura" in self.combo_tipo.get() else total
             if monto_base > 0:
-                self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{monto_base:.2f}")
+                self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, formatear_numero_entrada(monto_base))
                 relleno = True
+
+            # 🧾 El total impreso manda (aunque la base redondeada dé 1 céntimo más)
+            if total > 0:
+                try:
+                    self._total_factura_manual = True
+                    self.ent_total_factura.delete(0, tk.END)
+                    self.ent_total_factura.insert(0, formatear_numero_entrada(total))
+                except Exception:
+                    self._total_factura_manual = False
 
             det = _num(datos.get("detraccion"))
             if det > 0:
@@ -2372,7 +2527,17 @@ class FacturasEmitidasTab:
         ctk.CTkLabel(self.f_form, text="Monto Base (Sin IGV / Subtotal):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.ent_subtotal = ctk.CTkEntry(self.f_form)
         self.ent_subtotal.pack(fill="x", padx=10, pady=(0, 8))
-        self.ent_subtotal.bind("<KeyRelease>", self.actualizar_totales)
+        self.ent_subtotal.bind("<KeyRelease>", self._base_escrita_form)
+
+        # 🧾 Importe total impreso en la factura (puede diferir 1 céntimo por el redondeo del emisor)
+        ctk.CTkLabel(self.f_form, text="Total (según la factura):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+        self.ent_total_factura = ctk.CTkEntry(self.f_form, placeholder_text="Se calcula solo; corríjalo si la factura difiere")
+        self.ent_total_factura.pack(fill="x", padx=10, pady=(0, 2))
+        self.ent_total_factura.bind("<KeyRelease>", self._total_escrito_form)
+        self.ent_total_factura.bind("<FocusOut>", self._total_escrito_form)
+        self.lbl_ajuste_form = ctk.CTkLabel(self.f_form, text="", font=("Arial", 9), text_color="#b9770e",
+                                           justify="left", wraplength=290)
+        self.lbl_ajuste_form.pack(anchor="w", padx=10, pady=(0, 6))
 
         self.lbl_titulo_det = ctk.CTkLabel(self.f_form, text="Detracción (%):", font=("Arial", 11, "bold"))
         self.lbl_titulo_det.pack(anchor="w", padx=10)
@@ -2457,6 +2622,8 @@ class FacturasEmitidasTab:
         self.tabla.column("estado_sunat", width=95, anchor="center")
         
         self.tabla.config(displaycolumns=("num", "fecha", "nro_doc", "cliente", "concepto", "neto", "estado_sunat"))
+        # 🔎 Ordenar por CUALQUIER columna (todas las filas cargadas)
+        _tabla_universal.conectar_orden(self.tabla)
 
         self.tabla.bind("<Double-1>", self.abrir_archivo_desde_tabla)
         # 🖱️ Clic derecho: ver factura / comprobante de pago (botón 3 y 2 en macOS)
@@ -2513,7 +2680,9 @@ class FacturasEmitidasTab:
         if hasattr(self, "_busqueda_job"):
             try: self.main_root.after_cancel(self._busqueda_job)
             except: pass
-        self._busqueda_job = self.main_root.after(350, lambda: self.cargar_datos_tabla(reset_pagina=True))
+        self._busqueda_job = self.main_root.after(
+            250, lambda: _tabla_universal.filtrar(
+                self.tabla, texto=self.ent_buscar_facturas.get()))
 
     # 🚀 FIX: CARGA DE OCS CON CACHÉ
     def cargar_ordenes_compra(self):
@@ -2549,6 +2718,15 @@ class FacturasEmitidasTab:
             self.combo_oc.set("--- Sin Orden de Compra ---")
 
     def on_tipo_change(self, choice):
+        # 🧾 El total escrito solo se descarta si CAMBIA el tipo de documento
+        if getattr(self, "_tipo_doc_actual", None) not in (None, choice):
+            self._total_factura_manual = False
+        self._tipo_doc_actual = choice
+        if hasattr(self, 'ent_total_factura'):
+            try:
+                self.ent_total_factura.configure(state="disabled" if "Recibo" in choice else "normal")
+            except Exception:
+                pass
         if hasattr(self, 'chk_redondeo_det'):
             # El redondeo solo aplica a la detracción (no a la retención de recibos)
             try:
@@ -2776,7 +2954,7 @@ class FacturasEmitidasTab:
         base = round(total / 1.18, 2) if con_igv else round(total, 2)
         if total > 0:
             self.ent_subtotal.delete(0, tk.END)
-            self.ent_subtotal.insert(0, f"{base:.2f}")
+            self.ent_subtotal.insert(0, formatear_numero_entrada(base))
         if hasattr(self, "lbl_cobranza_info"):
             if total <= 0:
                 self.lbl_cobranza_info.configure(text="")
@@ -2800,17 +2978,73 @@ class FacturasEmitidasTab:
     def _etiqueta_redondeo(redondeo):
         return " (redondeada)" if redondeo else ""
 
+    def _total_factura_form(self):
+        """Importe total escrito en el formulario (0 si está vacío)."""
+        try:
+            return redondear_centavos(_texto_a_numero(self.ent_total_factura.get()))
+        except Exception:
+            return 0.0
+
+    def _escribir_total_form(self, valor):
+        try:
+            texto = "" if valor <= 0 else formatear_numero_entrada(valor)
+            if self.ent_total_factura.get().strip() != texto:
+                try:
+                    estado = str(self.ent_total_factura.cget("state") or "normal")
+                except Exception:
+                    estado = "normal"
+                if estado == "disabled":
+                    self.ent_total_factura.configure(state="normal")
+                self.ent_total_factura.delete(0, tk.END)
+                self.ent_total_factura.insert(0, texto)
+                if estado == "disabled":
+                    self.ent_total_factura.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _aviso_ajuste_form(self, calculado, guardado):
+        try:
+            ajuste = redondear_centavos(guardado - calculado)
+            if abs(ajuste) >= 0.005:
+                self.lbl_ajuste_form.configure(
+                    text=f"Ajuste por redondeo del emisor: {formatear_moneda(ajuste)}; se guarda este total.")
+            else:
+                self.lbl_ajuste_form.configure(text="")
+        except Exception:
+            pass
+
+    def _base_escrita_form(self, event=None):
+        self._total_factura_manual = False      # al corregir la base, el total se recalcula
+        self.actualizar_totales()
+
+    def _total_escrito_form(self, event=None):
+        self._total_factura_manual = True       # manda el total escrito (redondeo del emisor)
+        self.actualizar_totales()
+
     def actualizar_totales(self, *args):
         if not hasattr(self, 'combo_tipo') or not hasattr(self, 'ent_subtotal') or not hasattr(self, 'ent_detraccion'):
             return
             
         tipo = self.combo_tipo.get()
         try:
-            sub = float(self.ent_subtotal.get() or 0)
-            ui_pct = float(self.ent_detraccion.get() or 0)
+            sub = _texto_a_numero(self.ent_subtotal.get())
+            ui_pct = _texto_a_numero(self.ent_detraccion.get())
             redondeo = self.detraccion_con_redondeo()
+            manual = getattr(self, "_total_factura_manual", False)
             if "Factura" in tipo:
-                igv = redondear_centavos(sub * 0.18); tot = redondear_centavos(sub + igv)
+                igv = redondear_centavos(sub * 0.18); tot_calc = redondear_centavos(sub + igv)
+                # 🧾 Si el total se escribió (o vino del PDF) manda ese importe
+                tot = tot_calc
+                if manual:
+                    escrito = self._total_factura_form()
+                    if escrito > 0:
+                        tot = escrito
+                    else:
+                        self._escribir_total_form(tot_calc)
+                        self._total_factura_manual = False
+                else:
+                    self._escribir_total_form(tot_calc)
+                self._aviso_ajuste_form(tot_calc, tot)
 
                 # 💧 Regla: si la factura SUPERA los S/ 400 se detrae el 4%; si no, es cero.
                 porcentaje_regla = porcentaje_detraccion_ventas(tot)
@@ -2829,15 +3063,27 @@ class FacturasEmitidasTab:
                 self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}{self._etiqueta_redondeo(redondeo)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
             elif "Recibo" in tipo:      # los recibos usan su retención (no esta regla)
+                self._escribir_total_form(sub); self._aviso_ajuste_form(sub, sub)
                 ret = sub * (ui_pct / 100.0); neto = sub - ret
                 self.lbl_impuesto.configure(text=f"Retención ({ui_pct:g}%): -{formatear_moneda(ret)}")
                 self.lbl_detraccion.configure(text=f"Detracción (0%): -{formatear_moneda(0)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
             else:
                 # Boleta / otros: sin IGV, pero sí puede estar sujeta a detracción
-                det = sub * (ui_pct / 100.0)
+                tot = sub
+                if manual:
+                    escrito = self._total_factura_form()
+                    if escrito > 0:
+                        tot = escrito
+                    else:
+                        self._escribir_total_form(sub)
+                        self._total_factura_manual = False
+                else:
+                    self._escribir_total_form(sub)
+                self._aviso_ajuste_form(sub, tot)
+                det = tot * (ui_pct / 100.0)
                 det = redondear_detraccion(det) if redondeo else redondear_centavos(det)
-                neto = redondear_centavos(sub - det)
+                neto = redondear_centavos(tot - det)
                 self.lbl_impuesto.configure(text=f"IGV (0%): {formatear_moneda(0)}")
                 self.lbl_detraccion.configure(text=f"Detracción ({ui_pct:g}%): -{formatear_moneda(det)}{self._etiqueta_redondeo(redondeo)}")
                 self.lbl_total.configure(text=f"Neto a Cobrar: {formatear_moneda(neto)}")
@@ -2868,16 +3114,27 @@ class FacturasEmitidasTab:
                 return
         
         try: 
-            subtotal = float(self.ent_subtotal.get() or 0)
-            dias = int(self.ent_dias.get().strip() or 0)
-            ui_pct = float(self.ent_detraccion.get() or 0)
+            subtotal = _texto_a_numero(self.ent_subtotal.get())
+            dias = int(_texto_a_numero(self.ent_dias.get().strip() or 0))
+            ui_pct = _texto_a_numero(self.ent_detraccion.get())
         except ValueError: return messagebox.showerror("Error", "Los montos deben ser numéricos.")
 
         # 🧮 Redondeo opcional de la detracción al entero (check del formulario)
         redondeo_det = self.detraccion_con_redondeo()
 
+        # 🧾 Total impreso en la factura (si no se escribió, se calcula desde la base)
+        total_factura = self._total_factura_form() if hasattr(self, "ent_total_factura") else 0.0
+
         if "Factura" in tipo: 
             imp = redondear_centavos(subtotal * 0.18); tot_bruto = redondear_centavos(subtotal + imp)
+            if total_factura > 0 and abs(total_factura - tot_bruto) >= 0.005:
+                if abs(total_factura - tot_bruto) > 1.00:
+                    return messagebox.showerror(
+                        "Total no coincide",
+                        ("El total de la factura (" + formatear_moneda(total_factura) +
+                         ") se aleja más de S/ 1.00 de Base + IGV (" + formatear_moneda(tot_bruto) +
+                         ")." + chr(10) + chr(10) + "Revise el Monto Base o el Total."))
+                tot_bruto = total_factura
             det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
             det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
             neto_nuevo = redondear_centavos(tot_bruto - det_monto)
@@ -2887,6 +3144,14 @@ class FacturasEmitidasTab:
             neto_nuevo = redondear_centavos(subtotal - imp)  
         else: 
             imp = 0.0; tot_bruto = redondear_centavos(subtotal); det_pct = ui_pct
+            if total_factura > 0 and abs(total_factura - tot_bruto) >= 0.005:
+                if abs(total_factura - tot_bruto) > 1.00:
+                    return messagebox.showerror(
+                        "Total no coincide",
+                        ("El total de la factura (" + formatear_moneda(total_factura) +
+                         ") se aleja más de S/ 1.00 del Monto Base (" + formatear_moneda(tot_bruto) +
+                         ")." + chr(10) + chr(10) + "Revise el Monto Base o el Total."))
+                tot_bruto = total_factura
             det_monto = tot_bruto * (det_pct / 100.0)
             det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
             neto_nuevo = redondear_centavos(tot_bruto - det_monto)
@@ -3019,6 +3284,9 @@ class FacturasEmitidasTab:
             
             self.ent_desc.delete(0, tk.END)
             self.ent_subtotal.delete(0, tk.END)
+            try: self.ent_total_factura.delete(0, tk.END)
+            except Exception: pass
+            self._total_factura_manual = False
             self.ruta_archivo_temp = ""
             if hasattr(self, "lbl_archivo"):
                 self.lbl_archivo.configure(text="Sin PDF adjunto", text_color="#999999")
@@ -3131,9 +3399,8 @@ class FacturasEmitidasTab:
         for item in self.tabla.get_children(): 
             self.tabla.delete(item)
         
+        # 🔎 El filtro se aplica en memoria sobre TODAS las filas (tabla_universal)
         filtro = ""
-        if hasattr(self, 'ent_buscar_facturas'):
-            filtro = self.ent_buscar_facturas.get().strip().lower()
             
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
         clave_cache = f"facturas_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
@@ -3180,6 +3447,7 @@ class FacturasEmitidasTab:
             ejecutar_en_hilo(self.main_root, tarea_descarga, al_terminar=_pintar_facturas_hilo)
 
     def _pintar_facturas(self, datos):
+        _tabla_universal.limpiar(self.tabla)
         for item in self.tabla.get_children():
             self.tabla.delete(item)
 
@@ -3225,6 +3493,7 @@ class FacturasEmitidasTab:
         else:
             self.btn_sig.configure(state="disabled")
         avisar_tabla_vacia(self, datos, "facturas_emitidas", "facturas")
+        _tabla_universal.refrescar(self.tabla)
 
     # =========================================================
     # 🖱️ MENÚ DE CLIC DERECHO SOBRE UNA FACTURA (ver factura / comprobante)
@@ -3718,6 +3987,11 @@ class FacturasEmitidasTab:
                         ent_det.delete(0, tk.END); ent_det.insert(0, "0")
                 else:
                     lbl_tit_det.configure(text="Detracción (%):")
+                try:
+                    ent_tot.configure(state="disabled" if "Recibo" in tipo_val else "normal")
+                except Exception:
+                    pass
+                _recalcular_edit()
 
             ctk.CTkLabel(f_cont, text="Tipo de Documento:", font=("Arial", 11, "bold")).pack(anchor="w")
             cmb_tipo = ctk.CTkComboBox(f_cont, values=["Factura (18% IGV)", "Boleta (Sin IGV)", "Recibo por Honorarios (8% Retención)", "Recibo por Honorarios (Sin Retención)"], state="readonly", command=toggle_detraccion_edit)
@@ -3770,6 +4044,17 @@ class FacturasEmitidasTab:
             ent_s.pack(fill="x", pady=(0, 10))
             ent_s.insert(0, str(reg[6]))
 
+            # 🧾 Importe total impreso en la factura (puede diferir 1 céntimo por el redondeo del emisor)
+            ctk.CTkLabel(f_cont, text="Total (según la factura):", font=("Arial", 11, "bold")).pack(anchor="w")
+            ent_tot = ctk.CTkEntry(f_cont)
+            ent_tot.pack(fill="x", pady=(0, 4))
+            try: ent_tot.insert(0, formatear_numero_entrada(reg[10] or 0))
+            except Exception: ent_tot.insert(0, "0.00")
+            if "Recibo" in str(reg[0]): ent_tot.configure(state="disabled")
+            lbl_ajuste = ctk.CTkLabel(f_cont, text="", font=("Arial", 9), text_color="#b9770e",
+                                      justify="left", wraplength=400)
+            lbl_ajuste.pack(anchor="w", pady=(0, 8))
+
             lbl_tit_det.pack(anchor="w")
             ent_det = ctk.CTkEntry(f_cont)
             ent_det.pack(fill="x", pady=(0, 10))
@@ -3777,7 +4062,8 @@ class FacturasEmitidasTab:
             # 🧮 Redondeo de la detracción al entero (fracción < 0.50 baja, ≥ 0.50 sube)
             chk_redondeo = ctk.CTkCheckBox(f_cont, text="🧮 Redondear detracción al entero",
                                            font=("Arial", 11, "bold"),
-                                           checkbox_width=18, checkbox_height=18)
+                                           checkbox_width=18, checkbox_height=18,
+                                           command=lambda: _recalcular_edit())
             chk_redondeo.pack(anchor="w", pady=(0, 10))
             if redondeo_inicial:
                 chk_redondeo.select()
@@ -3795,6 +4081,172 @@ class FacturasEmitidasTab:
                 lbl_tit_det.configure(text="Detracción (%):")
                 ent_det.insert(0, ("%g" % float(reg[8] or 0)))   # se muestra lo guardado (0 incluido)
 
+            def _num_edit(texto):
+                """Número escrito a mano ("102,50", "S/. 1,234.56", vacío...)."""
+                try:
+                    return _texto_a_numero(texto)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            # ☑️ Si el total guardado no coincide con Base + IGV (redondeo del emisor),
+            #    se respeta el Importe Total de la factura y se muestra el ajuste.
+            try:
+                _sub0 = redondear_centavos(_num_edit(ent_s.get()))
+                _igv0 = redondear_centavos(_sub0 * 0.18) if "Factura" in cmb_tipo.get() else 0.0
+                _tot0 = redondear_centavos(_num_edit(ent_tot.get()))
+                _total_manual = abs(_tot0 - redondear_centavos(_sub0 + _igv0)) >= 0.005
+            except Exception:
+                _total_manual = False
+
+            def _escribir_total(valor):
+                try:
+                    texto = f"{valor:.2f}"
+                    if ent_tot.get().strip() != texto:
+                        estado = str(ent_tot.cget("state") or "normal")
+                        if estado == "disabled":
+                            ent_tot.configure(state="normal")
+                        ent_tot.delete(0, tk.END); ent_tot.insert(0, texto)
+                        if estado == "disabled":
+                            ent_tot.configure(state="disabled")
+                except Exception:
+                    pass
+
+            def _base_escrita(event=None):
+                nonlocal _total_manual
+                _total_manual = False      # al corregir la base, el total se recalcula
+                _recalcular_edit()
+
+            def _total_escrito(event=None):
+                nonlocal _total_manual
+                _total_manual = True       # manda el total escrito (redondeo del emisor)
+                _recalcular_edit()
+
+            def _recalcular_edit(event=None):
+                """IGV, detracción, total y neto en vivo (igual que al registrar)."""
+                try:
+                    tipo_val = cmb_tipo.get()
+                    sub_val = redondear_centavos(_num_edit(ent_s.get()))
+                    pct_val = max(0.0, min(100.0, _num_edit(ent_det.get())))
+                    if "Factura" in tipo_val:
+                        igv_val = redondear_centavos(sub_val * 0.18)
+                        if _total_manual:
+                            tot_val = redondear_centavos(_num_edit(ent_tot.get()))
+                        else:
+                            tot_val = redondear_centavos(sub_val + igv_val); _escribir_total(tot_val)
+                        if tot_val <= 0:
+                            tot_val = redondear_centavos(sub_val + igv_val)   # solo para la vista
+                        _ajuste = redondear_centavos(tot_val - (sub_val + igv_val))
+                        lbl_ajuste.configure(text=(f"Ajuste por redondeo del emisor: {formatear_moneda(_ajuste)}; se guarda el total de la factura."
+                                                   if abs(_ajuste) >= 0.005 else ""))
+                        det_val = tot_val * (pct_val / 100.0)
+                        det_val = (redondear_detraccion(det_val) if chk_redondeo.get()
+                                   else redondear_centavos(det_val))
+                        neto_val = redondear_centavos(tot_val - det_val)
+                        lbl_imp_edit.configure(text=f"IGV (18%): {formatear_moneda(igv_val)}")
+                        lbl_det_edit.configure(text=f"Detracción ({pct_val:g}%): -{formatear_moneda(det_val)}")
+                    elif "Recibo" in tipo_val:
+                        tot_val = redondear_centavos(sub_val); _escribir_total(tot_val)
+                        lbl_ajuste.configure(text="")
+                        det_val = redondear_centavos(sub_val * (pct_val / 100.0))
+                        neto_val = redondear_centavos(tot_val - det_val)
+                        lbl_imp_edit.configure(text=f"Retención ({pct_val:g}%): -{formatear_moneda(det_val)}")
+                        lbl_det_edit.configure(text=f"Detracción (0%): {formatear_moneda(0)}")
+                    else:
+                        if _total_manual:
+                            tot_val = redondear_centavos(_num_edit(ent_tot.get()))
+                        else:
+                            tot_val = redondear_centavos(sub_val); _escribir_total(tot_val)
+                        if tot_val <= 0:
+                            tot_val = redondear_centavos(sub_val)   # solo para la vista
+                        _ajuste = redondear_centavos(tot_val - sub_val)
+                        lbl_ajuste.configure(text=(f"Ajuste por redondeo del emisor: {formatear_moneda(_ajuste)}; se guarda el total de la factura."
+                                                   if abs(_ajuste) >= 0.005 else ""))
+                        det_val = redondear_centavos(tot_val * (pct_val / 100.0))
+                        neto_val = redondear_centavos(tot_val - det_val)
+                        lbl_imp_edit.configure(text=f"IGV (0%): {formatear_moneda(0)}")
+                        lbl_det_edit.configure(text=f"Detracción ({pct_val:g}%): -{formatear_moneda(det_val)}")
+                    lbl_tot_edit.configure(text=f"Total: {formatear_moneda(tot_val)}")
+                    lbl_neto_edit.configure(text=f"Neto a Cobrar: {formatear_moneda(neto_val)}")
+                except Exception:
+                    pass
+
+            f_tot_edit = ctk.CTkFrame(f_cont, fg_color="#ffffff", border_width=1, border_color="#ccc")
+            f_tot_edit.pack(fill="x", pady=(5, 10))
+            lbl_imp_edit = ctk.CTkLabel(f_tot_edit, text="IGV (18%): 0.00", font=("Arial", 11), text_color="#555")
+            lbl_imp_edit.pack(anchor="w", padx=10, pady=(5, 0))
+            lbl_det_edit = ctk.CTkLabel(f_tot_edit, text="Detracción (0%): 0.00", font=("Arial", 11), text_color="#e74c3c")
+            lbl_det_edit.pack(anchor="w", padx=10)
+            lbl_tot_edit = ctk.CTkLabel(f_tot_edit, text="Total: 0.00", font=("Arial", 11), text_color="#555")
+            lbl_tot_edit.pack(anchor="w", padx=10)
+            lbl_neto_edit = ctk.CTkLabel(f_tot_edit, text="Neto a Cobrar: 0.00", font=("Arial", 13, "bold"), text_color="#1f538d")
+            lbl_neto_edit.pack(anchor="w", padx=10, pady=(2, 5))
+
+            ent_s.bind("<KeyRelease>", _base_escrita)
+            ent_tot.bind("<KeyRelease>", _total_escrito)
+            ent_tot.bind("<FocusOut>", _total_escrito)
+            ent_det.bind("<KeyRelease>", _recalcular_edit)
+            ent_det.bind("<FocusOut>", _recalcular_edit)
+            _recalcular_edit()
+
+            # 📄 Si la factura tiene su PDF adjunto, se toma de ahí el Importe Total impreso
+            def _leer_total_del_pdf():
+                try:
+                    ruta_pdf = ""
+                    conn_pdf = conectar_db(silencioso=True)
+                    if conn_pdf:
+                        try:
+                            with conn_pdf.cursor() as c_pdf:
+                                c_pdf.execute("SELECT archivo_ruta FROM facturas_emitidas WHERE id = %s", (id_doc,))
+                                fila_pdf = c_pdf.fetchone()
+                                ruta_pdf = str(fila_pdf[0] or "") if fila_pdf else ""
+                        finally:
+                            liberar_conexion(conn_pdf)
+                    if not ruta_pdf:
+                        return
+                    try:
+                        ruta_pdf = resolver_archivo_local(ruta_pdf) or ruta_pdf
+                    except Exception:
+                        pass
+                    if not os.path.exists(ruta_pdf):
+                        return
+                    import pdfplumber
+                    with pdfplumber.open(ruta_pdf) as pdf:
+                        texto_pdf = "\n".join((p.extract_text() or "") for p in pdf.pages)
+                    m_pdf = re.search(r"(?:IMPORTE\s*TOTAL|TOTAL\s*A\s*PAGAR)[\s:S/|]+([\d.,]+)", texto_pdf, re.IGNORECASE)
+                    if not m_pdf:
+                        return
+                    total_pdf = float(m_pdf.group(1).replace(",", ""))
+                    if total_pdf <= 0:
+                        return
+
+                    _estado_pdf["total"] = total_pdf
+                    _estado_pdf["listo"] = True
+                except Exception as e_pdf:
+                    print("Aviso - total del PDF:", e_pdf)
+
+            # 🧵 El hilo solo deja el dato; la ventana lo aplica desde el hilo principal
+            def _revisar_total_pdf():
+                nonlocal _total_manual
+                try:
+                    if not v_mod.winfo_exists():
+                        return
+                    if _estado_pdf["listo"]:
+                        total_pdf = _estado_pdf["total"]
+                        if total_pdf > 0 and not _total_manual:
+                            actual = redondear_centavos(_texto_a_numero(ent_tot.get()))
+                            if abs(total_pdf - actual) >= 0.005:
+                                _total_manual = True
+                                ent_tot.delete(0, tk.END); ent_tot.insert(0, formatear_numero_entrada(total_pdf))
+                                _recalcular_edit()
+                        return
+                    v_mod.after(250, _revisar_total_pdf)
+                except Exception:
+                    pass
+
+            _estado_pdf = {"listo": False, "total": 0.0}
+            v_mod.after(200, _revisar_total_pdf)
+            threading.Thread(target=_leer_total_del_pdf, daemon=True).start()
+
             def guardar_cambios():
                 tipo = cmb_tipo.get()
                 nro_doc = ent_nro.get().strip()
@@ -3806,10 +4258,10 @@ class FacturasEmitidasTab:
                 if oc_sel == "--- Sin Orden de Compra ---": oc_sel = ""
                 
                 try:
-                    sub = float(ent_s.get())
-                    dias = int(ent_d.get())
-                    ui_pct = float(ent_det.get() if ent_det.get() else 0)
-                except ValueError:
+                    sub = _num_edit(ent_s.get())
+                    dias = int(_texto_a_numero(ent_d.get() or 0))
+                    ui_pct = _num_edit(ent_det.get())
+                except (ValueError, OverflowError):
                     messagebox.showerror("Error", "Monto, días y porcentaje deben ser numéricos.", parent=v_mod)
                     return
 
@@ -3819,9 +4271,26 @@ class FacturasEmitidasTab:
                 except Exception:
                     redondeo_det = False
 
+                # 🧾 Importe total impreso en la factura (puede traer céntimos de diferencia por redondeo)
+                try:
+                    total_factura = redondear_centavos(_num_edit(ent_tot.get()))
+                except ValueError:
+                    messagebox.showerror("Error", "El total de la factura debe ser numérico.", parent=v_mod)
+                    return
                 if "Factura" in tipo: 
                     imp = redondear_centavos(sub * 0.18); tot_bruto = redondear_centavos(sub + imp)
-                    det_pct = porcentaje_detraccion_ventas(tot_bruto); det_monto = tot_bruto * (det_pct / 100.0)
+                    if total_factura > 0 and abs(total_factura - tot_bruto) >= 0.005:
+                        if abs(total_factura - tot_bruto) > 1.00:
+                            messagebox.showerror(
+                                "Total no coincide",
+                                ("El total de la factura (" + formatear_moneda(total_factura) +
+                                 ") se aleja más de S/ 1.00 de Base + IGV (" + formatear_moneda(tot_bruto) +
+                                 ")." + chr(10) + chr(10) + "Revise el Monto Base o el Total."),
+                                parent=v_mod)
+                            return
+                        tot_bruto = total_factura
+                    # ✍️ Manda el % que se ve en la ventana (0 % = operación no sujeta)
+                    det_pct = ui_pct; det_monto = tot_bruto * (det_pct / 100.0)
                     det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
                     neto_nuevo = redondear_centavos(tot_bruto - det_monto)
                 elif "Recibo" in tipo: 
@@ -3829,7 +4298,17 @@ class FacturasEmitidasTab:
                     det_pct = 0.0; det_monto = 0.0
                     neto_nuevo = redondear_centavos(sub - imp)
                 else: 
-                    imp = 0.0; tot_bruto = redondear_centavos(sub); det_pct = porcentaje_detraccion_ventas(tot_bruto)
+                    imp = 0.0; tot_bruto = redondear_centavos(sub); det_pct = ui_pct
+                    if total_factura > 0 and abs(total_factura - tot_bruto) >= 0.005:
+                        if abs(total_factura - tot_bruto) > 1.00:
+                            messagebox.showerror(
+                                "Total no coincide",
+                                ("El total de la factura (" + formatear_moneda(total_factura) +
+                                 ") se aleja más de S/ 1.00 del Monto Base (" + formatear_moneda(tot_bruto) +
+                                 ")." + chr(10) + chr(10) + "Revise el Monto Base o el Total."),
+                                parent=v_mod)
+                            return
+                        tot_bruto = total_factura
                     det_monto = tot_bruto * (det_pct / 100.0)
                     det_monto = redondear_detraccion(det_monto) if redondeo_det else redondear_centavos(det_monto)
                     neto_nuevo = redondear_centavos(tot_bruto - det_monto)
@@ -3914,7 +4393,10 @@ class FacturasEmitidasTab:
                 except Exception as e: messagebox.showerror("Error SQL", str(e), parent=v_mod)
                 finally: liberar_conexion(conn2)
 
-            ctk.CTkButton(f_cont, text="💾 Guardar Cambios", font=("Arial", 12, "bold"), fg_color="#1f538d", hover_color="#163b65", command=guardar_cambios).pack(fill="x", pady=20)
+            # 💾 El botón queda SIEMPRE visible, fuera del área que se desplaza
+            barra_guardar = ctk.CTkFrame(v_mod, fg_color="transparent")
+            barra_guardar.pack(fill="x", padx=20, pady=(5, 10))
+            ctk.CTkButton(barra_guardar, text="💾 Guardar Cambios", font=("Arial", 12, "bold"), height=36, fg_color="#1f538d", hover_color="#163b65", command=guardar_cambios).pack(fill="x")
 
         def eliminar_registro():
             # 🔗 Los cobros (pagos_clientes) de esta factura se consultan ANTES de borrar:
@@ -4108,7 +4590,7 @@ class CuentasPorCobrarTab:
         
         # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
-        self.registros_por_pagina = 50
+        self.registros_por_pagina = 100000   # 🔎 carga todo para buscar/ordenar por cualquier columna
         
         # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
         self.mes_filtro = mes_en_curso()
@@ -4232,6 +4714,8 @@ class CuentasPorCobrarTab:
                 self.tabla.heading(_col, text=str(self.tabla.heading(_col, "text")) + "  ↕")
             except Exception:
                 pass
+        # 🔎 Ordenar por CUALQUIER columna sobre todas las filas cargadas
+        _tabla_universal.conectar_orden(self.tabla)
         self.tabla.column("num", width=40, anchor="center")
         self.tabla.column("id_factura", width=0, stretch=tk.NO) 
         self.tabla.column("fecha", width=80, anchor="center")
@@ -4316,7 +4800,9 @@ class CuentasPorCobrarTab:
         if hasattr(self, "_busqueda_job"):
             try: self.main_root.after_cancel(self._busqueda_job)
             except: pass
-        self._busqueda_job = self.main_root.after(350, lambda: self._refrescar_listas_cobro())
+        self._busqueda_job = self.main_root.after(
+            250, lambda: _tabla_universal.filtrar(
+                self.tabla, texto=self.ent_buscar_cobros.get()))
 
     def exportar_excel(self):
         try: import pandas as pd
@@ -4505,7 +4991,7 @@ class CuentasPorCobrarTab:
 
         def actualizar_calc(event=None):
             try:
-                _monto = float(ent_monto.get().strip() or 0)
+                _monto = _texto_a_numero(ent_monto.get() or 0)
             except ValueError:
                 _monto = 0.0
             _diff = round(_monto - _total_pendiente, 2)
@@ -4581,7 +5067,7 @@ class CuentasPorCobrarTab:
             if _monto and float(_monto) > 0:
                 try:
                     ent_monto.delete(0, tk.END)
-                    ent_monto.insert(0, "%.2f" % float(_monto))
+                    ent_monto.insert(0, formatear_numero_entrada(_monto))
                 except Exception:
                     pass
                 try:
@@ -4771,9 +5257,8 @@ class CuentasPorCobrarTab:
         for fila in self.tabla.get_children(): 
             self.tabla.delete(fila)
         
+        # 🔎 El filtro se aplica en memoria sobre TODAS las filas (tabla_universal)
         filtro = ""
-        if hasattr(self, 'ent_buscar_cobros'):
-            filtro = self.ent_buscar_cobros.get().strip().lower()
 
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
         clave_cache = f"cobros_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
@@ -4882,6 +5367,7 @@ class CuentasPorCobrarTab:
             ejecutar_en_hilo(self.main_root, tarea_descarga, al_terminar=_pintar_cobros_hilo)
 
     def _pintar_cobros(self, filas, total_pendiente, facturas_con_cuenta):
+        _tabla_universal.limpiar(self.tabla)
         for fila in self.tabla.get_children(): self.tabla.delete(fila)
         
         contador = 1
@@ -4920,6 +5406,7 @@ class CuentasPorCobrarTab:
         else:
             self.btn_sig.configure(state="disabled")
         avisar_tabla_vacia(self, filas, "facturas_emitidas", "facturas por cobrar")
+        _tabla_universal.refrescar(self.tabla)
 
     def _cuentas_para_combo(self):
         """Cuentas registradas en el sistema (Bancos) + los métodos habituales.
@@ -5322,7 +5809,7 @@ class CuentasPorCobrarTab:
         ctk.CTkLabel(f, text="💰 Monto recibido:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
         ent_monto = ctk.CTkEntry(f)
         ent_monto.pack(fill="x")
-        ent_monto.insert(0, "%.2f" % saldo_actual)
+        ent_monto.insert(0, formatear_numero_entrada(saldo_actual))
 
         # 🧾 Otros impuestos deducibles (retenciones) del cobro
         ctk.CTkLabel(f, text="🧾 Otros impuestos deducibles (S/):",
@@ -5365,11 +5852,11 @@ class CuentasPorCobrarTab:
 
         def actualizar_calc(event=None):
             try:
-                _monto = float(ent_monto.get().strip() or 0)
+                _monto = _texto_a_numero(ent_monto.get() or 0)
             except ValueError:
                 _monto = 0.0
             try:
-                _impuestos = float(ent_impuestos.get().strip() or 0)
+                _impuestos = _texto_a_numero(ent_impuestos.get() or 0)
             except ValueError:
                 _impuestos = 0.0
             _monto = _monto + max(0.0, _impuestos)   # impuestos deducibles suman al cobro
@@ -5447,7 +5934,7 @@ class CuentasPorCobrarTab:
             if _monto and float(_monto) > 0:
                 try:
                     ent_monto.delete(0, tk.END)
-                    ent_monto.insert(0, "%.2f" % float(_monto))
+                    ent_monto.insert(0, formatear_numero_entrada(_monto))
                 except Exception:
                     pass
                 try:
@@ -5537,11 +6024,11 @@ class CuentasPorCobrarTab:
 
         def confirmar():
             try:
-                monto_val = float(ent_monto.get().strip() or 0)
+                monto_val = _texto_a_numero(ent_monto.get() or 0)
             except ValueError:
                 return messagebox.showerror("Error", "Ingrese un monto numérico válido.", parent=v)
             try:
-                impuestos_val = float(ent_impuestos.get().strip() or 0)
+                impuestos_val = _texto_a_numero(ent_impuestos.get() or 0)
             except ValueError:
                 return messagebox.showerror("Error", "Los impuestos deducibles deben ser numéricos.",
                                             parent=v)
@@ -5746,7 +6233,7 @@ class CuentasPorCobrarTab:
             def guardar_mod(event=None):
                 nonlocal saldo_actual_global
                 try:
-                    nuevo_monto = float(ent_mod_monto.get().strip())
+                    nuevo_monto = _texto_a_numero(ent_mod_monto.get())
                 except ValueError:
                     return messagebox.showerror("Error", "Monto inválido", parent=v_mod_cobro)
 
@@ -5768,8 +6255,11 @@ class CuentasPorCobrarTab:
                 else:
                     nueva_fecha = ent_mod_fecha.get().strip() or fecha_actual
                     nueva_cuenta = ent_mod_cuenta.get().strip()
+                    if not _aviso_cambio_mes_estado_cuenta(nueva_cuenta or cuenta_actual, fecha_actual,
+                                                           nueva_fecha, nuevo_monto, parent=v_mod_cobro):
+                        return
                     conn = conectar_db(); cursor = conn.cursor()
-                    cursor.execute("UPDATE pagos_clientes SET monto_pagado = %s, fecha_pago = %s, cuenta_destino = %s, numero_operacion = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, id_pago, ent_mod_oper.get().strip()))
+                    cursor.execute("UPDATE pagos_clientes SET monto_pagado = %s, fecha_pago = %s, cuenta_destino = %s, numero_operacion = %s WHERE id = %s", (nuevo_monto, nueva_fecha, nueva_cuenta, ent_mod_oper.get().strip(), id_pago))
                     conn.commit(); liberar_conexion(conn)
                     cache_sistema.invalidar()
                     registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar", f"Modificó el cobro ID {id_pago} a {formatear_moneda(nuevo_monto)}")
@@ -6030,7 +6520,7 @@ class NotasCreditoTab:
         
         # 🚀 VARIABLES DE PAGINACIÓN
         self.pagina_actual = 1
-        self.registros_por_pagina = 50
+        self.registros_por_pagina = 100000   # 🔎 carga todo para buscar/ordenar por cualquier columna
         
         # 🗓️ FILTRO DE MES (por defecto, el mes en curso)
         self.mes_filtro = mes_en_curso()
@@ -6197,6 +6687,8 @@ class NotasCreditoTab:
         self.tabla.column("pdf_nc", width=120, anchor="center")
 
         self.tabla.config(displaycolumns=("num", "fecha_orig", "doc_orig", "doc_nc", "cliente", "monto_anulado", "estado", "pdf_nc"))
+        # 🔎 Ordenar por CUALQUIER columna sobre todas las filas cargadas
+        _tabla_universal.conectar_orden(self.tabla)
         self.tabla.bind("<Double-1>", self.abrir_pdf_nc)
 
         scroll_y = ctk.CTkScrollbar(f_tabla, orientation="vertical", command=self.tabla.yview)
@@ -6245,7 +6737,9 @@ class NotasCreditoTab:
         if hasattr(self, "_busqueda_job"):
             try: self.main_root.after_cancel(self._busqueda_job)
             except: pass
-        self._busqueda_job = self.main_root.after(350, lambda: self.cargar_datos_nc(reset_pagina=True))
+        self._busqueda_job = self.main_root.after(
+            250, lambda: _tabla_universal.filtrar(
+                self.tabla, texto=self.ent_buscar_nc.get()))
 
     # 🚀 FIX: CARGA LAZY LOADING + CACHÉ
     def cargar_datos_nc(self, reset_pagina=False):
@@ -6257,9 +6751,8 @@ class NotasCreditoTab:
         for fila in self.tabla.get_children(): 
             self.tabla.delete(fila)
         
+        # 🔎 El filtro se aplica en memoria sobre TODAS las filas (tabla_universal)
         filtro = ""
-        if hasattr(self, 'ent_buscar_nc'):
-            filtro = self.ent_buscar_nc.get().strip().lower()
 
         offset = (self.pagina_actual - 1) * self.registros_por_pagina
         clave_cache = f"notas_credito_{filtro}_mes_{self.mes_filtro}_pag_{self.pagina_actual}"
@@ -6304,6 +6797,7 @@ class NotasCreditoTab:
             ejecutar_en_hilo(self.main_root, tarea_descarga, al_terminar=_pintar_notas_hilo)
 
     def _pintar_notas_credito(self, registros):
+        _tabla_universal.limpiar(self.tabla)
         for fila in self.tabla.get_children(): self.tabla.delete(fila)
 
         contador = 1
@@ -6335,6 +6829,7 @@ class NotasCreditoTab:
             self.btn_sig.configure(state="normal")
         else:
             self.btn_sig.configure(state="disabled")
+        _tabla_universal.refrescar(self.tabla)
 
     def abrir_pdf_nc(self, event):
         seleccion = self.tabla.selection()

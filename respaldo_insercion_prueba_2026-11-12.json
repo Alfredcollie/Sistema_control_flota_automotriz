@@ -12,30 +12,6 @@
   "estado": ""
  },
  {
-  "id": 704,
-  "banco": "Interbank",
-  "cuenta": "Interbank - 297-3007235833",
-  "fecha": "10/09/2026",
-  "descripcion": "COESTI S.A E/S ORRANTIA",
-  "monto": -8.76,
-  "tipo": "egreso",
-  "origen": "s:pagos_comprobantes",
-  "id_movimiento": 390,
-  "estado": ""
- },
- {
-  "id": 705,
-  "banco": "Interbank",
-  "cuenta": "Interbank - 297-3007235833",
-  "fecha": "10/09/2026",
-  "descripcion": "BLACK RIDERS E.I.R.L.",
-  "monto": -3.51,
-  "tipo": "egreso",
-  "origen": "s:pagos_comprobantes",
-  "id_movimiento": 403,
-  "estado": ""
- },
- {
   "id": 706,
   "banco": "Interbank",
   "cuenta": "",
@@ -2721,30 +2697,6 @@
   "tipo": "egreso",
   "origen": "s:facturas_recibidas",
   "id_movimiento": 404,
-  "estado": ""
- },
- {
-  "id": 931,
-  "banco": "Interbank",
-  "cuenta": "",
-  "fecha": "10/09/2026",
-  "descripcion": "COESTI S.A E/S ORRANTÍA",
-  "monto": -8.76,
-  "tipo": "egreso",
-  "origen": "s:facturas_recibidas",
-  "id_movimiento": 405,
-  "estado": ""
- },
- {
-  "id": 932,
-  "banco": "Interbank",
-  "cuenta": "",
-  "fecha": "10/09/2026",
-  "descripcion": "EDS BRASIL",
-  "monto": -3.51,
-  "tipo": "egreso",
-  "origen": "s:facturas_recibidas",
-  "id_movimiento": 407,
   "estado": ""
  },
  {

@@ -27,6 +27,23 @@ except ImportError:
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
+def _parsear_monto(texto):
+    """Lee '1.234,56', '1,234.56', '1234.56' o '86,87'."""
+    s = re.sub(r"[^\d.,-]", "", str(texto or ""))
+    if not s:
+        return 0.0
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
 def abrir_documento(ruta, titulo="Documento"):
     """🖼️ Muestra el documento en el VISOR INTERNO del programa.
 
@@ -329,9 +346,9 @@ class OrdenesCompraClienteApp:
                 tot_val = sub_val + igv_val
                 
             if sub_val > 0:
-                self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, f"{sub_val:.2f}")
-                self.ent_igv.delete(0, tk.END); self.ent_igv.insert(0, f"{igv_val:.2f}")
-                self.ent_monto_cli.delete(0, tk.END); self.ent_monto_cli.insert(0, f"{tot_val:.2f}")
+                self.ent_subtotal.delete(0, tk.END); self.ent_subtotal.insert(0, formatear_numero(sub_val))
+                self.ent_igv.delete(0, tk.END); self.ent_igv.insert(0, formatear_numero(igv_val))
+                self.ent_monto_cli.delete(0, tk.END); self.ent_monto_cli.insert(0, formatear_numero(tot_val))
                 
             messagebox.showinfo("Escaneo Exitoso", "Extracción finalizada.\n\nEl sistema recuperó los datos legibles. Por favor, asigne manualmente la 'Cotización Aprobada' correspondiente para validar los datos financieros.")
             
@@ -340,15 +357,15 @@ class OrdenesCompraClienteApp:
 
     def calcular_totales_math(self, event=None):
         try:
-            sub = float(self.ent_subtotal.get().replace(',', '').strip() or 0)
+            sub = _parsear_monto(self.ent_subtotal.get())
             igv = sub * 0.18
             tot = sub + igv
             
             self.ent_igv.delete(0, tk.END)
-            self.ent_igv.insert(0, f"{igv:.2f}")
+            self.ent_igv.insert(0, formatear_numero(igv))
             
             self.ent_monto_cli.delete(0, tk.END)
-            self.ent_monto_cli.insert(0, f"{tot:.2f}")
+            self.ent_monto_cli.insert(0, formatear_numero(tot))
         except: pass
 
     def cargar_cotizaciones_aprobadas(self):
@@ -435,9 +452,9 @@ class OrdenesCompraClienteApp:
                 igv = tot - sub
                 
                 if not self.ent_monto_cli.get().strip():
-                    self.ent_monto_cli.insert(0, f"{tot:.2f}")
-                    self.ent_subtotal.insert(0, f"{sub:.2f}")
-                    self.ent_igv.insert(0, f"{igv:.2f}")
+                    self.ent_monto_cli.insert(0, formatear_numero(tot))
+                    self.ent_subtotal.insert(0, formatear_numero(sub))
+                    self.ent_igv.insert(0, formatear_numero(igv))
             except: pass
 
     def guardar_oc(self):
@@ -459,9 +476,9 @@ class OrdenesCompraClienteApp:
         cot_codigo = cot_str.split(" | ")[0].strip()
         
         try: 
-            subtotal = float(self.ent_subtotal.get().replace(',', '').strip() or 0)
-            igv = float(self.ent_igv.get().replace(',', '').strip() or 0)
-            monto = float(self.ent_monto_cli.get().replace(',', '').strip() or 0)
+            subtotal = _parsear_monto(self.ent_subtotal.get())
+            igv = _parsear_monto(self.ent_igv.get())
+            monto = _parsear_monto(self.ent_monto_cli.get())
         except: return messagebox.showerror("Error", "Los valores financieros deben ser números válidos.")
 
         ruta_final = ""

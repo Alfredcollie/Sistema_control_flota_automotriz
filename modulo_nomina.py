@@ -34,6 +34,8 @@ import customtkinter as ctk
 from conexion import registrar_auditoria
 from dialogos_seguros import seleccionar_archivo_dialogo, guardar_archivo_dialogo
 from tareas_seguras import ejecutar_en_hilo
+from formato_numeros import formatear_moneda as _formatear_moneda_config
+from formato_numeros import formatear_numero as _formatear_numero_config
 
 import nomina_core as nc
 import nomina_planilla as npl
@@ -135,19 +137,12 @@ def aplicar_estilo_treeview():
 
 
 def formatear_monto(valor):
-    """S/ 1,234.56 (respeta la configuración regional del sistema)."""
-    try:
-        numero = float(valor or 0)
-    except (TypeError, ValueError):
-        numero = 0.0
-    return "S/ %s" % format(numero, ",.2f")
+    """Monto con el formato configurado (1.234,56 o 1,234.56)."""
+    return _formatear_moneda_config(valor)
 
 
 def formatear_numero(valor, decimales=2):
-    try:
-        return format(float(valor or 0), ",.%df" % decimales)
-    except (TypeError, ValueError):
-        return "0"
+    return _formatear_numero_config(valor, decimales)
 
 
 def parse_num(texto, por_defecto=0.0):

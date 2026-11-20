@@ -1,0 +1,14 @@
+{
+ "creado": "2026-11-19 15:05",
+ "banco": "Interbank",
+ "cuenta": "297-3007235833",
+ "mes": "2026-10",
+ "ignorados": [
+  {
+   "id": 197,
+   "fecha": "2026-10-05",
+   "monto": -8.31,
+   "descripcion": "CONSUMO POS E S ORRANTIA"
+  }
+ ]
+}
