@@ -900,26 +900,35 @@ def a_float(valor, defecto=0.0):
 
 
 def formatear_moneda(valor):
-    simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
-    formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
-    try: valor = float(valor)
-    except: valor = 0.0
-    
-    if formato == "1.000,00":
-        str_val = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    else:
-        str_val = f"{valor:,.2f}"
-    return f"{simbolo} {str_val}"
+    # 📐 Usa el módulo central: lee la Configuración General y se refresca si
+    #    el formato cambia, sin necesidad de reiniciar el programa.
+    try:
+        from formato_numeros import formatear_moneda as _formatear_moneda_config
+        return _formatear_moneda_config(valor)
+    except Exception:
+        simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
+        formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
+        try: valor = float(valor)
+        except: valor = 0.0
+        if formato == "1.000,00":
+            str_val = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        else:
+            str_val = f"{valor:,.2f}"
+        return f"{simbolo} {str_val}"
 
 
 def formatear_numero_entrada(valor):
     """Número para campos de edición con el separador decimal configurado,
     sin símbolo de moneda."""
     try:
-        texto = formatear_moneda(valor)
-        return texto.replace(CONFIG_REGIONAL.get("simbolo_moneda", "S/."), "").strip()
+        from formato_numeros import formatear_numero as _formatear_numero_config
+        return _formatear_numero_config(valor)
     except Exception:
-        return "%.2f" % float(valor or 0)
+        try:
+            texto = formatear_moneda(valor)
+            return texto.replace(CONFIG_REGIONAL.get("simbolo_moneda", "S/."), "").strip()
+        except Exception:
+            return "%.2f" % float(valor or 0)
 
 def desformatear_numero(valor_str):
     """Convierte un texto de número a float, sin importar cómo esté escrito.
