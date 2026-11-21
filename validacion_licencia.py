@@ -154,7 +154,10 @@ def obtener_hwid():
     if not hwid:
         # Último recurso multiplataforma: identificador derivado del hardware base de Python
         hwid = str(uuid.UUID(int=uuid.getnode())).upper()
-    return hwid
+    # 🔤 macOS devuelve el UUID con distinta capitalización o con espacios: se
+    #    normaliza para que coincida con el HWID registrado en la base.
+    hwid = str(hwid or "").strip().strip('"').strip()
+    return hwid.upper()
 
 def consultar_licencia_supabase(hwid):
     """Se conecta a Supabase y verifica el estado de TODAS las licencias asociadas a este HWID y Software"""
@@ -192,7 +195,8 @@ def consultar_licencia_supabase(hwid):
             SELECT e.estado, e.fecha_vencimiento, l.estado, l.fecha_vencimiento
             FROM lic_equipos e
             JOIN lic_asignaciones l ON e.licencia_id = l.id
-            WHERE e.hwid = %s AND l.software = %s
+            WHERE UPPER(TRIM(e.hwid)) = UPPER(TRIM(%s))
+              AND UPPER(TRIM(l.software)) = UPPER(TRIM(%s))
         """
         cursor.execute(query, (hwid, SOFTWARE_ASIGNADO))
         resultados = cursor.fetchall()
