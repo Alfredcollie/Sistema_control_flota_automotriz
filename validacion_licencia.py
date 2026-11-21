@@ -51,11 +51,27 @@ def _leer_config_licencia():
         ruta = os.path.join(base, "config_licencia.json")
         if os.path.exists(ruta):
             import json
-            with open(ruta, "r", encoding="utf-8") as f:
+            with open(ruta, "r", encoding="utf-8-sig") as f:
                 return str(json.load(f).get("password", "") or "")
     except Exception:
         pass
     return ""
+
+
+def _credenciales_respaldo():
+    """Par de respaldo EMBEBIDO (solo lectura de licencias).
+
+    Se usa si el .app/.exe no trae config_local.json o el llavero tiene una
+    clave vieja: así la app nunca se queda sin poder consultar la licencia.
+    Va en base64, no en texto plano, para que no se lea a simple vista.
+    """
+    try:
+        import base64 as _b64
+        usuario = _b64.b64decode(b"cG9zdGdyZXMubnFqZnB0bXVwbnJrbWd2bmJ5bHk=").decode()
+        clave = _b64.b64decode(b"STJOOXhWNjZQeVk3azVuMQ==").decode()
+        return usuario, clave
+    except Exception:
+        return "", ""
 
 
 def _password_licencia():
@@ -77,6 +93,14 @@ def _password_licencia():
     pw = ""
     if getattr(sys, "frozen", False):
         pw = _leer_config_licencia()
+
+    if not pw:
+        # Respaldo embebido: la app nunca queda sin credenciales
+        try:
+            _u_r, _p_r = _credenciales_respaldo()
+            pw = _p_r or ""
+        except Exception:
+            pw = ""
 
     if not pw:
         try:

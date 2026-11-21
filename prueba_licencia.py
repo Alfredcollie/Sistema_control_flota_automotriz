@@ -52,6 +52,97 @@ def _probar_hwid_mac():
     return bien
 
 
+def _probar_respaldo_embebido(vl):
+    """Comprueba que el respaldo de credenciales embebido funcione.
+
+    Es lo que permite que el Mac consulte la licencia aunque el .app no traiga
+    config_local.json o el llavero tenga una clave vieja.
+    """
+    if not hasattr(vl, "_credenciales_respaldo"):
+        print("   Aviso: este programa no tiene respaldo embebido (se omite).")
+        return True
+    try:
+        usuario, clave = vl._credenciales_respaldo()
+    except Exception as error:
+        _fallo("respaldo embebido de licencia", str(error)[:80])
+        return False
+    if not (usuario and clave):
+        _fallo("respaldo embebido de licencia", "vacío")
+        return False
+    _ok("respaldo embebido de licencia", "usuario: " + usuario)
+    try:
+        import psycopg2
+        conexion = psycopg2.connect(
+            dbname=vl.SUPABASE_DB_NAME, user=usuario, password=clave,
+            host=vl.SUPABASE_HOST, port=vl.SUPABASE_PORT,
+            sslmode="require", connect_timeout=8)
+        conexion.close()
+        _ok("conexión usando el respaldo embebido", "Mac sin config_local.json")
+        return True
+    except Exception as error:
+        _fallo("conexión usando el respaldo embebido", str(error)[:80])
+        return False
+
+
+def _probar_config_con_bom():
+    """Comprueba el cargador REAL de configuración con un archivo que tenga BOM.
+
+    En el Mac, el config_local.json del .app puede venir con BOM; con 'utf-8'
+    el json fallaba y la app se quedaba sin credenciales de licencia.
+    """
+    import json
+    import tempfile
+    try:
+        import app_paths
+    except Exception as error:
+        _fallo("cargar app_paths", str(error)[:80])
+        return False
+
+    # Algunos programas usan otro cargador (config_licencia.json): en ese caso
+    # se verifica en el código que tolere el BOM.
+    if not hasattr(app_paths, "cargar_config_local"):
+        try:
+            import validacion_licencia as _vl
+            fuente = open(_vl.__file__, "r", encoding="utf-8").read()
+            if "utf-8-sig" in fuente:
+                _ok("el cargador de licencia tolera BOM (verificado en el código)")
+                return True
+        except Exception:
+            pass
+        print("   Aviso: este programa usa otro cargador de configuración (se omite).")
+        return True
+
+    ruta = os.path.join(tempfile.gettempdir(), "prueba_config_bom.json")
+    original = getattr(app_paths, "CONFIG_FILE", None)
+    bien = False
+    try:
+        with open(ruta, "w", encoding="utf-8-sig") as archivo:
+            json.dump({"supabase_lic_user": "prueba-bom",
+                       "supabase_lic_password": "prueba-bom"}, archivo)
+        if original is not None:
+            app_paths.CONFIG_FILE = ruta
+        datos = app_paths.cargar_config_local() or {}
+        bien = str(datos.get("supabase_lic_user") or "") == "prueba-bom"
+    except Exception as error:
+        _fallo("cargador de configuración con BOM", str(error)[:80])
+        return False
+    finally:
+        try:
+            if original is not None:
+                app_paths.CONFIG_FILE = original
+        except Exception:
+            pass
+        try:
+            os.remove(ruta)
+        except Exception:
+            pass
+    if bien:
+        _ok("el cargador real lee config_local.json aunque tenga BOM")
+    else:
+        _fallo("el cargador real NO lee config con BOM")
+    return bien
+
+
 def main():
     print("=" * 66)
     print(" PRUEBA DE LICENCIA (Windows / macOS)")
@@ -137,6 +228,10 @@ def main():
         bien = False
 
     if not _probar_hwid_mac():
+        bien = False
+    if not _probar_config_con_bom():
+        bien = False
+    if not _probar_respaldo_embebido(vl):
         bien = False
 
     print("")

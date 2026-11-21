@@ -922,82 +922,51 @@ def formatear_numero_entrada(valor):
         return "%.2f" % float(valor or 0)
 
 def desformatear_numero(valor_str):
-    if not valor_str: return 0.0
+    """Convierte un texto de número a float, sin importar cómo esté escrito.
+
+    Acepta "1234.56", "1.234,56", "1234,56", "1,234.56" y con símbolo de moneda.
+    Regla: si aparecen los dos separadores, el ÚLTIMO es el decimal; si hay uno
+    solo, es decimal cuando le siguen 1 o 2 dígitos ("1234.56") y de miles
+    cuando le siguen 3 ("1.234").
+    """
+    if valor_str is None:
+        return 0.0
+    if isinstance(valor_str, (int, float)):
+        return float(valor_str)
     simbolo = CONFIG_REGIONAL.get("simbolo_moneda", "S/.")
-    formato = CONFIG_REGIONAL.get("formato_numero", "1,000.00")
-    val = str(valor_str).replace(simbolo, "").strip()
-    if formato == "1.000,00":
-        val = val.replace(".", "").replace(",", ".")
-    else:
-        val = val.replace(",", "")
-    try: return float(val)
-    except ValueError: return 0.0
+    texto = str(valor_str).replace(simbolo, "")
+    texto = re.sub(r"[^\d,.\-]", "", texto).strip()
+    if not texto:
+        return 0.0
+    negativo = texto.startswith("-")
+    texto = texto.lstrip("-")
+    if not texto:
+        return 0.0
 
-# =========================================================================
-# 🔎 LECTURA DE COMPROBANTES ESCANEADOS (FOTO / PDF SIN CAPA DE TEXTO)
-# =========================================================================
-# Muchos comprobantes llegan escaneados (CamScanner) o como foto del celular:
-# no tienen texto seleccionable, por lo que se aplica OCR con el motor que ya
-# trae Windows (sin instalar nada y sin internet) y se reconstruyen las filas
-# usando la posición de cada palabra, para poder asociar "OP. GRAVADAS" con su
-# importe aunque el OCR devuelva los números en otra línea.
-
-_ETIQUETAS_MONTOS = {
-    "recargo": ["RECARGOALCONSUMO", "RECARGOALCONSUMOSERVICIO", "RECARGOPORSERVICIO",
-                "RECARGOSERVICIO", "PROPINASUGERIDA", "SERVICIOALCONSUMO"],
-    "total": ["IMPORTETOTAL", "TOTALAPAGAR", "TOTALNETO", "TOTALCOMPROBANTE",
-              "IMPORTETOTALVENTA", "TOTALPAGAR", "TOTALAGENERAL",
-              "TOTALPORHONORARIOS", "TOTALNETORECIBIDO", "TOTALHONORARIOS",
-              "IMPORTETOTALHONORARIOS", "NETORECIBIDO"],
-    "base": ["OPGRAVADAS", "OPGRABADAS", "OPGRAVADA", "SUBTOTAL", "BASEIMPONIBLE",
-             "VALORVENTA", "TOTALGRAVADO", "BASEGRAVADA"],
-    "igv": ["IGV", "IGV18", "IGV105", "IMPUESTOGENERALALASVENTAS", "IGVTOTAL"],
-}
-
-# Script de PowerShell que usa el motor OCR que ya incluye Windows.
-# Devuelve una línea por palabra:  X <TAB> Y <TAB> ancho <TAB> alto <TAB> texto
-_SCRIPT_OCR_WINDOWS = r'''
-param([string]$Ruta, [string]$Idiomas = "es-PE,es-MX,es-ES,en-US")
-$ErrorActionPreference = "Stop"
-Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
-$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
-    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
-function Await($op, $tipo) {
-    $m = $asTaskGeneric.MakeGenericMethod($tipo)
-    $t = $m.Invoke($null, @($op))
-    $t.Wait(-1) | Out-Null
-    $t.Result
-}
-[Windows.Storage.StorageFile,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
-[Windows.Graphics.Imaging.BitmapDecoder,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
-[Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
-[Windows.Globalization.Language,Windows.Foundation,ContentType=WindowsRuntime] | Out-Null
-
-$engine = $null
-foreach ($tag in $Idiomas.Split(",")) {
-    $tag = $tag.Trim()
-    if (-not $tag) { continue }
-    try {
-        $idioma = [Windows.Globalization.Language]::new($tag)
-        $posible = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($idioma)
-        if ($null -ne $posible) { $engine = $posible; break }
-    } catch { }
-}
-if ($null -eq $engine) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
-if ($null -eq $engine) { return }
-
-$archivo = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Ruta)) ([Windows.Storage.StorageFile])
-$stream  = Await ($archivo.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
-$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
-$bitmap  = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
-$resultado = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-foreach ($linea in $resultado.Lines) {
-  foreach ($p in $linea.Words) {
-    $r = $p.BoundingRect
-    Write-Output ([string][int]$r.X + [char]9 + [string][int]$r.Y + [char]9 + [string][int]$r.Width + [char]9 + [string][int]$r.Height + [char]9 + $p.Text)
-  }
-}
-'''
+    tiene_punto = "." in texto
+    tiene_coma = "," in texto
+    if tiene_punto and tiene_coma:
+        if texto.rfind(".") > texto.rfind(","):
+            texto = texto.replace(",", "")                      # 1,234.56
+        else:
+            texto = texto.replace(".", "").replace(",", ".")    # 1.234,56
+    elif tiene_coma:
+        partes = texto.split(",")
+        if len(partes) > 1 and all(len(p) == 3 for p in partes[1:]):
+            texto = "".join(partes)                            # 1,234,567
+        else:
+            texto = "".join(partes[:-1]) + "." + partes[-1]    # 1234,56
+    elif tiene_punto:
+        partes = texto.split(".")
+        if len(partes) > 1 and all(len(p) == 3 for p in partes[1:]):
+            texto = "".join(partes)                            # 1.234.567
+        else:
+            texto = "".join(partes[:-1]) + "." + partes[-1]    # 1234.56
+    try:
+        valor = float(texto)
+    except ValueError:
+        return 0.0
+    return -valor if negativo else valor
 
 
 def _normalizar_etiqueta(texto):
@@ -1639,13 +1608,16 @@ def _serie_ocr_normalizada(serie):
     return serie[:1] + serie[1:].translate(tabla) if len(serie) > 1 else serie
 
 
-def normalizar_numero_comprobante(numero, rellenar_hasta=8):
+def normalizar_numero_comprobante(numero, rellenar_hasta=0):
     """Devuelve el N° de comprobante completo, conservando los ceros.
 
-    El OCR (o el parseo) puede dejar el correlativo sin sus ceros a la
-    izquierda: F001-6485 -> F001-00006485. El formato SUNAT de las facturas
-    y boletas electrónicas usa 8 dígitos, así que se completa hasta 8.
-    Si el texto no tiene forma de serie-correlativo, se devuelve igual.
+    Se devuelve el número TAL COMO VIENE: si la factura dice E001-166 se deja
+    E001-166 (las facturas físicas usan pocos dígitos). Antes se completaba
+    siempre a 8 dígitos (E001-00000166) y el número no coincidía con el papel.
+
+    Solo se normaliza la SERIE (corrige letras que el OCR confunde con
+    números: EOOI -> E001). Si el texto no tiene forma de serie-correlativo,
+    se devuelve igual.
     """
     texto = str(numero or "").strip().upper()
     if not texto:
@@ -8242,7 +8214,7 @@ class FacturasRecibidasTab:
         e_imp = campo("IGV / Impuesto:", formatear_numero_entrada(datos.get("impuesto") or 0))
         e_tot = campo("Total (con IGV):", formatear_numero_entrada(datos.get("total") or 0))
         e_detp = campo("Detracción / Retención (%):",
-                       "%.2f" % float(datos.get("det_porcentaje") or 0))
+                       formatear_numero_entrada(float(datos.get("det_porcentaje") or 0)))
         e_detm = campo("Monto de detracción:", formatear_numero_entrada(datos.get("det_monto") or 0))
 
         f_del = ctk.CTkFrame(f, fg_color="transparent")
@@ -8252,7 +8224,7 @@ class FacturasRecibidasTab:
                         variable=var_del, font=("Arial", 11, "bold"),
                         checkbox_width=18, checkbox_height=18).pack(anchor="w")
         e_del = campo("Monto de delivery (suma al débito):",
-                      "%.2f" % float(datos.get("delivery") or 0))
+                      formatear_numero_entrada(float(datos.get("delivery") or 0)))
 
         lbl_neto = ctk.CTkLabel(f, text="", font=("Arial", 12, "bold"), text_color="#1f538d")
         lbl_neto.pack(anchor="w", pady=(8, 4))
@@ -11021,7 +10993,7 @@ class CuentasPorPagarTab:
             avisos = []
             if datos["monto"]:
                 ent_monto.delete(0, tk.END)
-                ent_monto.insert(0, datos["monto"])
+                ent_monto.insert(0, formatear_numero_entrada(desformatear_numero(datos["monto"])))
                 avisos.append("monto " + formatear_moneda(float(datos["monto"])))
             if datos["fecha"]:
                 ent_fecha.delete(0, tk.END)
