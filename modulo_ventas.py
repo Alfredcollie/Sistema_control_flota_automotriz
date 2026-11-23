@@ -1558,12 +1558,15 @@ def menu_columnas(tabla, clave):
         menu.grab_release()
 
 
-# 🧾 Columnas para los impuestos deducibles del cobro (se crean una vez)
+# 🧾 Columnas para las deducciones del cobro: impuestos, retención y factoring (se crean una vez)
 _PAGOS_IMPUESTOS_OK = False
 
 
 def _asegurar_columnas_impuestos(conn):
-    """Agrega (una sola vez por sesión) las columnas de impuestos deducibles."""
+    """Agrega (una sola vez por sesión) las columnas de deducciones del cobro.
+
+    Incluye impuestos deducibles, retención del cliente y factoring del banco.
+    """
     global _PAGOS_IMPUESTOS_OK
     if _PAGOS_IMPUESTOS_OK or conn is None:
         return
@@ -1573,6 +1576,15 @@ def _asegurar_columnas_impuestos(conn):
                       "impuestos_deducibles NUMERIC DEFAULT 0")
             c.execute("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS "
                       "archivo_impuesto TEXT DEFAULT ''")
+            # 🔖 Retención del cliente y factoring del banco (monto y % aplicado)
+            c.execute("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS "
+                      "retencion_pct NUMERIC DEFAULT 0")
+            c.execute("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS "
+                      "retencion_monto NUMERIC DEFAULT 0")
+            c.execute("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS "
+                      "factoring_pct NUMERIC DEFAULT 0")
+            c.execute("ALTER TABLE pagos_clientes ADD COLUMN IF NOT EXISTS "
+                      "factoring_monto NUMERIC DEFAULT 0")
         conn.commit()
         _PAGOS_IMPUESTOS_OK = True
     except Exception:
@@ -3350,7 +3362,8 @@ class FacturasEmitidasTab:
             respuesta = messagebox.askyesno(
                 "Cancelar la factura",
                 "¿Desea CANCELAR ahora la factura %s?" % (nro_doc or "s/n") + chr(10) + chr(10) +
-                "Si ya fue pagada, se abrirá «Registrar Cobro» para registrar el ingreso.")
+                "Si ya fue pagada, se abrirá «Registrar Cobro» para registrar el ingreso." + chr(10) +
+                "Allí podrá aplicar el % de retención del cliente y el % de factoring del banco.")
         except Exception as e:
             print("Aviso - pregunta de cobro:", e)
             return False
@@ -4987,14 +5000,17 @@ class CuentasPorCobrarTab:
 
         v = ctk.CTkToplevel(getattr(self, "main_root", None))
         v.title("🧾 Cobrar Varias Facturas (1 comprobante)")
-        v.geometry("620x580")
+        # 🪟 Igual que el cobro individual: alto según pantalla y con scroll.
+        _alto_cobro = min(880, max(480, v.winfo_screenheight() - 90))
+        _x_cobro = max(0, (v.winfo_screenwidth() - 620) // 2)
+        v.geometry("620x%d+%d+0" % (_alto_cobro, _x_cobro))
         v.transient(getattr(self, "main_root", None))
         try:
             v.grab_set()
             _al_cerrar_modal(v)
         except Exception:
             pass
-        f = ctk.CTkFrame(v, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(v, fg_color="transparent")
         f.pack(fill="both", expand=True, padx=16, pady=12)
 
         ctk.CTkLabel(f, text="📋 %d facturas seleccionadas (se cobrarán con UN solo comprobante)"
@@ -5019,28 +5035,207 @@ class CuentasPorCobrarTab:
         ent_oper = ctk.CTkEntry(f)
         ent_oper.pack(fill="x")
 
-        ctk.CTkLabel(f, text="💰 Monto recibido:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        ctk.CTkLabel(f, text="💰 Monto recibido (neto, sin deducciones):",
+                     font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
         ent_monto = ctk.CTkEntry(f)
         ent_monto.pack(fill="x")
         _total_pendiente = sum(max(0.0, p["saldo"]) for p in pendientes)
+        ent_monto.insert(0, formatear_numero_entrada(_total_pendiente))
         lbl_calc = ctk.CTkLabel(f, text="", font=("Arial", 11, "bold"), text_color="#555555")
+
+        # 🧮 Base de los % de retención/factoring: total CON IGV de las facturas
+        total_base_facturas = 0.0
+        try:
+            _ids_sel = [int(p["id"]) for p in pendientes if p.get("id")]
+            if _ids_sel:
+                _conn_base = conectar_db()
+                if _conn_base:
+                    try:
+                        with _conn_base.cursor() as _cb:
+                            _ph = ",".join(["%s"] * len(_ids_sel))
+                            _cb.execute("SELECT COALESCE(SUM(total),0) FROM facturas_emitidas "
+                                        "WHERE id IN (%s)" % _ph, tuple(_ids_sel))
+                            _fila_b = _cb.fetchone()
+                            total_base_facturas = float((_fila_b or [0])[0] or 0)
+                    finally:
+                        liberar_conexion(_conn_base)
+        except Exception as _e_base:
+            print("[Cobrar varias] base con IGV:", _e_base)
+        if total_base_facturas <= 0:
+            total_base_facturas = _total_pendiente
+
+        # 🧾 Otros impuestos deducibles + comprobante
+        ctk.CTkLabel(f, text="🧾 Otros impuestos deducibles (S/):",
+                     font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        ent_impuestos = ctk.CTkEntry(f)
+        ent_impuestos.pack(fill="x")
+        ent_impuestos.insert(0, "0.00")
+        estado_imp = {"ruta": ""}
+        lbl_imp = ctk.CTkLabel(f, text="", font=("Arial", 10), text_color="#999999", anchor="w")
+
+        def _pintar_impuesto():
+            nombre = os.path.basename(estado_imp["ruta"]) if estado_imp["ruta"] else ""
+            lbl_imp.configure(text=("📎 " + nombre) if nombre
+                              else "Sin comprobante del impuesto (opcional)",
+                              text_color="#1e8449" if nombre else "#999999")
+
+        def _cargar_impuesto():
+            try:
+                ruta = seleccionar_archivo_dialogo(titulo="Comprobante del impuesto")
+            except Exception:
+                ruta = ""
+            if ruta:
+                estado_imp["ruta"] = ruta
+                _pintar_impuesto()
+
+        def _quitar_impuesto():
+            estado_imp["ruta"] = ""
+            _pintar_impuesto()
+
+        f_imp = ctk.CTkFrame(f, fg_color="transparent")
+        f_imp.pack(fill="x")
+        ctk.CTkButton(f_imp, text="📎 Cargar comprobante del impuesto", height=30,
+                      font=("Arial", 11, "bold"),
+                      command=_cargar_impuesto).pack(side="left")
+        ctk.CTkButton(f_imp, text="✖ Quitar", width=80, height=30, font=("Arial", 11, "bold"),
+                      command=_quitar_impuesto).pack(side="left", padx=6)
+        lbl_imp.pack(anchor="w", pady=(2, 0))
+        _pintar_impuesto()
+
+        # 🔖 Retención del cliente / factoring del banco (% sobre el total con IGV)
+        estado_rf = {"activo": False, "ret_monto": 0.0, "fact_monto": 0.0}
+        var_rf = tk.BooleanVar(master=v, value=False)
+        chk_rf = ctk.CTkCheckBox(
+            f, text="🔖 Aplicar % de retención del cliente y % de factoring del banco",
+            variable=var_rf, font=("Arial", 11, "bold"), command=lambda: _toggle_rf())
+        chk_rf.pack(anchor="w", pady=(10, 0))
+        f_rf = ctk.CTkFrame(f, fg_color="transparent")
+        f_rf_ret = ctk.CTkFrame(f_rf, fg_color="transparent")
+        f_rf_ret.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ctk.CTkLabel(f_rf_ret, text="% Retención cliente:",
+                     font=("Arial", 10, "bold")).pack(anchor="w")
+        ent_ret_pct = ctk.CTkEntry(f_rf_ret, placeholder_text="0.00")
+        ent_ret_pct.pack(fill="x")
+        f_rf_fact = ctk.CTkFrame(f_rf, fg_color="transparent")
+        f_rf_fact.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ctk.CTkLabel(f_rf_fact, text="% Factoring banco:",
+                     font=("Arial", 10, "bold")).pack(anchor="w")
+        ent_fact_pct = ctk.CTkEntry(f_rf_fact, placeholder_text="0.00")
+        ent_fact_pct.pack(fill="x")
+        lbl_rf = ctk.CTkLabel(f, text="", font=("Arial", 10, "bold"),
+                              text_color="#1f538d", anchor="w", justify="left",
+                              wraplength=560)
+
+        def _calcular_rf():
+            if not estado_rf["activo"]:
+                estado_rf["ret_monto"] = estado_rf["fact_monto"] = 0.0
+                return 0.0, 0.0
+            try:
+                ret_pct = max(0.0, min(100.0, _texto_a_numero(ent_ret_pct.get() or 0)))
+            except ValueError:
+                ret_pct = 0.0
+            try:
+                fact_pct = max(0.0, min(100.0, _texto_a_numero(ent_fact_pct.get() or 0)))
+            except ValueError:
+                fact_pct = 0.0
+            ret_monto = round(total_base_facturas * ret_pct / 100.0, 2)
+            fact_monto = round(total_base_facturas * fact_pct / 100.0, 2)
+            estado_rf["ret_monto"], estado_rf["fact_monto"] = ret_monto, fact_monto
+            try:
+                otros = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+            except ValueError:
+                otros = 0.0
+            neto = max(0.0, round(_total_pendiente - otros - ret_monto - fact_monto, 2))
+            lbl_rf.configure(
+                text=(("Base (total con IGV): %s" + chr(10) +
+                       "Retención cliente: %s   ·   Factoring banco: %s" + chr(10) +
+                       "Neto a recibir: %s")
+                      % (formatear_moneda(total_base_facturas), formatear_moneda(ret_monto),
+                         formatear_moneda(fact_monto), formatear_moneda(neto))))
+            return ret_monto, fact_monto
+
+        def _poner_neto_rf():
+            try:
+                otros = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+            except ValueError:
+                otros = 0.0
+            neto = max(0.0, round(_total_pendiente - otros - estado_rf["ret_monto"]
+                                  - estado_rf["fact_monto"], 2))
+            ent_monto.delete(0, tk.END)
+            ent_monto.insert(0, formatear_numero_entrada(neto))
+
+        def _refrescar_rf(event=None):
+            if not estado_rf["activo"]:
+                return
+            _calcular_rf()
+            _poner_neto_rf()
+            actualizar_calc()
+
+        def _al_cambiar_otros(event=None):
+            if estado_rf["activo"]:
+                _refrescar_rf()
+            else:
+                actualizar_calc()
+
+        def _toggle_rf():
+            estado_rf["activo"] = bool(var_rf.get())
+            if estado_rf["activo"]:
+                f_rf.pack(fill="x", pady=(4, 0), after=chk_rf)
+                lbl_rf.pack(anchor="w", pady=(2, 0), after=f_rf)
+                _refrescar_rf()
+                try:
+                    ent_ret_pct.focus_set()
+                except Exception:
+                    pass
+            else:
+                f_rf.pack_forget()
+                lbl_rf.pack_forget()
+                estado_rf["ret_monto"] = estado_rf["fact_monto"] = 0.0
+                lbl_rf.configure(text="")
+                try:
+                    otros = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+                except ValueError:
+                    otros = 0.0
+                ent_monto.delete(0, tk.END)
+                ent_monto.insert(0, formatear_numero_entrada(
+                    max(0.0, round(_total_pendiente - otros, 2))))
+                actualizar_calc()
+
+        ent_ret_pct.bind("<KeyRelease>", _refrescar_rf)
+        ent_fact_pct.bind("<KeyRelease>", _refrescar_rf)
+        ent_impuestos.bind("<KeyRelease>", _al_cambiar_otros)
+        ent_impuestos.bind("<FocusOut>", _al_cambiar_otros)
 
         def actualizar_calc(event=None):
             try:
                 _monto = _texto_a_numero(ent_monto.get() or 0)
             except ValueError:
                 _monto = 0.0
-            _diff = round(_monto - _total_pendiente, 2)
+            try:
+                _otros = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+            except ValueError:
+                _otros = 0.0
+            _deducciones = _otros
+            if estado_rf["activo"]:
+                _deducciones += estado_rf["ret_monto"] + estado_rf["fact_monto"]
+            _aplicado = round(_monto + _deducciones, 2)
+            _diff = round(_aplicado - _total_pendiente, 2)
             if _diff < -0.005:
-                lbl_calc.configure(text="Total a cobrar: %s   ·   Falta: %s"
-                                   % (formatear_moneda(_total_pendiente), formatear_moneda(abs(_diff))),
+                lbl_calc.configure(text="Aplicado a las facturas: %s   ·   Saldo: %s   ·   Falta: %s"
+                                   % (formatear_moneda(_aplicado),
+                                      formatear_moneda(_total_pendiente),
+                                      formatear_moneda(abs(_diff))),
                                    text_color="#c0392b")
             elif _diff > 0.005:
-                lbl_calc.configure(text="Total a cobrar: %s   ·   Sobra: %s"
-                                   % (formatear_moneda(_total_pendiente), formatear_moneda(_diff)),
+                lbl_calc.configure(text="Aplicado a las facturas: %s   ·   Saldo: %s   ·   Sobra: %s"
+                                   % (formatear_moneda(_aplicado),
+                                      formatear_moneda(_total_pendiente),
+                                      formatear_moneda(_diff)),
                                    text_color="#b9770e")
             else:
-                lbl_calc.configure(text="Total a cobrar: %s   ·   Exacto" % formatear_moneda(_total_pendiente),
+                lbl_calc.configure(text="Aplicado a las facturas: %s   ·   Saldo: %s   ·   Exacto"
+                                   % (formatear_moneda(_aplicado),
+                                      formatear_moneda(_total_pendiente)),
                                    text_color="#1e8449")
 
         ent_monto.bind("<KeyRelease>", actualizar_calc)
@@ -5215,36 +5410,107 @@ class CuentasPorCobrarTab:
             cuenta = cmb_cuenta.get().strip()
             oper = ent_oper.get().strip()
             if not cuenta:
-                return messagebox.showwarning("Cobrar varias facturas", "Elija la cuenta destino / método.", parent=v)
+                return messagebox.showwarning("Cobrar varias facturas",
+                                              "Elija la cuenta destino / método.", parent=v)
+            try:
+                monto_val = _texto_a_numero(ent_monto.get() or 0)
+                impuestos_val = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+            except ValueError:
+                return messagebox.showerror("Cobrar varias facturas",
+                                            "El monto y los impuestos deben ser numéricos.",
+                                            parent=v)
+            ret_pct = fact_pct = ret_monto = fact_monto = 0.0
+            if estado_rf["activo"]:
+                try:
+                    ret_pct = _texto_a_numero(ent_ret_pct.get() or 0)
+                    fact_pct = _texto_a_numero(ent_fact_pct.get() or 0)
+                except ValueError:
+                    return messagebox.showerror("Cobrar varias facturas",
+                                                "Los % deben ser numéricos.", parent=v)
+                if not (0.0 <= ret_pct <= 100.0) or not (0.0 <= fact_pct <= 100.0):
+                    return messagebox.showerror("Cobrar varias facturas",
+                                                "Los % deben estar entre 0 y 100.", parent=v)
+                ret_monto = round(total_base_facturas * ret_pct / 100.0, 2)
+                fact_monto = round(total_base_facturas * fact_pct / 100.0, 2)
+            deducciones_val = round(impuestos_val + ret_monto + fact_monto, 2)
+            aplicado_total = round(monto_val + deducciones_val, 2)
+            if aplicado_total <= 0:
+                return messagebox.showerror("Cobrar varias facturas",
+                                            "El total del cobro debe ser mayor a 0.", parent=v)
+            if aplicado_total > (_total_pendiente + 0.01):
+                return messagebox.showerror(
+                    "Cobrar varias facturas",
+                    "El total (monto + deducciones) supera el saldo pendiente de %s."
+                    % formatear_moneda(_total_pendiente), parent=v)
             ruta_bd = ""
             if estado_comp["ruta"]:
                 try:
                     ruta_bd = ruta_para_guardar(estado_comp["ruta"]) or estado_comp["ruta"]
                 except Exception:
                     ruta_bd = estado_comp["ruta"]
+            ruta_imp_bd = ""
+            if estado_imp["ruta"]:
+                try:
+                    ruta_imp_bd = ruta_para_guardar(estado_imp["ruta"]) or estado_imp["ruta"]
+                except Exception:
+                    ruta_imp_bd = estado_imp["ruta"]
+
+            saldos = [max(0.0, float(p["saldo"])) for p in pendientes]
+            suma_saldos = sum(saldos) or 1.0
             cobrados, errores = 0, []
-            for p in pendientes:
+            acum_aplicado, acum_ded = 0.0, 0.0
+            for idx, p in enumerate(pendientes):
                 if p["saldo"] <= 0:
                     continue
+                if idx == len(pendientes) - 1:
+                    aplicado_i = round(aplicado_total - acum_aplicado, 2)
+                    ded_i = round(deducciones_val - acum_ded, 2)
+                else:
+                    aplicado_i = round(aplicado_total * saldos[idx] / suma_saldos, 2)
+                    ded_i = round(deducciones_val * saldos[idx] / suma_saldos, 2)
+                    acum_aplicado += aplicado_i
+                    acum_ded += ded_i
+                if ded_i > aplicado_i:
+                    ded_i = aplicado_i
+                monto_i = round(aplicado_i - ded_i, 2)
+                ret_i = round(ret_monto * saldos[idx] / suma_saldos, 2) if ret_monto else 0.0
+                fact_i = round(fact_monto * saldos[idx] / suma_saldos, 2) if fact_monto else 0.0
                 try:
                     conn = conectar_db()
                     if not conn:
                         continue
                     with conn.cursor() as cur:
                         try:
+                            _asegurar_columnas_impuestos(conn)
                             cur.execute("""
                                 INSERT INTO pagos_clientes
-                                (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago, cuenta_destino,
-                                 numero_operacion)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                                (p["id"], p["saldo"], ruta_bd, p["cliente"], fecha_val, cuenta, oper))
+                                (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago,
+                                 cuenta_destino, numero_operacion, impuestos_deducibles,
+                                 archivo_impuesto, retencion_pct, retencion_monto,
+                                 factoring_pct, factoring_monto)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                (p["id"], monto_i, ruta_bd, p["cliente"], fecha_val, cuenta, oper,
+                                 ded_i, ruta_imp_bd, ret_pct, ret_i, fact_pct, fact_i))
                         except Exception:
                             conn.rollback()
-                            cur.execute("""
-                                INSERT INTO pagos_clientes
-                                (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago, cuenta_destino)
-                                VALUES (%s, %s, %s, %s, %s, %s)""",
-                                (p["id"], p["saldo"], ruta_bd, p["cliente"], fecha_val, cuenta))
+                            try:
+                                cur.execute("""
+                                    INSERT INTO pagos_clientes
+                                    (id_factura, monto_pagado, archivo_ruta, cliente_nombre,
+                                     fecha_pago, cuenta_destino, numero_operacion,
+                                     impuestos_deducibles, archivo_impuesto)
+                                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                    (p["id"], monto_i, ruta_bd, p["cliente"], fecha_val,
+                                     cuenta, oper, ded_i, ruta_imp_bd))
+                            except Exception:
+                                conn.rollback()
+                                cur.execute("""
+                                    INSERT INTO pagos_clientes
+                                    (id_factura, monto_pagado, archivo_ruta, cliente_nombre,
+                                     fecha_pago, cuenta_destino)
+                                    VALUES (%s,%s,%s,%s,%s,%s)""",
+                                    (p["id"], monto_i, ruta_bd, p["cliente"], fecha_val,
+                                     cuenta))
                     conn.commit()
                     liberar_conexion(conn)
                     cobrados += 1
@@ -5255,9 +5521,12 @@ class CuentasPorCobrarTab:
             except Exception:
                 pass
             try:
+                _det_aud = "Cobró %d facturas con un solo comprobante" % cobrados
+                if ret_monto or fact_monto:
+                    _det_aud += " (Ret. %s / Fact. %s)" % (
+                        formatear_moneda(ret_monto), formatear_moneda(fact_monto))
                 registrar_auditoria(getattr(getattr(self, "app_padre", None), "usuario_activo", ""),
-                                    "Cuentas por Cobrar",
-                                    "Cobró %d facturas con un solo comprobante" % cobrados)
+                                    "Cuentas por Cobrar", _det_aud)
             except Exception:
                 pass
             try:
@@ -5270,6 +5539,9 @@ class CuentasPorCobrarTab:
             except Exception:
                 pass
             msg = "Se cobraron %d factura(s) con el comprobante." % cobrados
+            if ret_monto or fact_monto:
+                msg += (chr(10) + "Retención cliente: %s   ·   Factoring banco: %s"
+                        % (formatear_moneda(ret_monto), formatear_moneda(fact_monto)))
             if errores:
                 msg += "\n\nAlgunas no se cobraron:\n" + "\n".join(errores[:5])
             messagebox.showinfo("Éxito", msg,
@@ -5736,7 +6008,8 @@ class CuentasPorCobrarTab:
             respuesta = messagebox.askyesno(
                 "Cancelar la factura",
                 "¿Desea CANCELAR ahora la factura %s?" % (nro_doc or "s/n") + chr(10) + chr(10) +
-                "Si ya fue pagada, se abrirá «Registrar Cobro» para registrar el ingreso.",
+                "Si ya fue pagada, se abrirá «Registrar Cobro» para registrar el ingreso." + chr(10) +
+                "Allí podrá aplicar el % de retención del cliente y el % de factoring del banco.",
                 parent=ventana_para_mensaje(getattr(self, "main_root", None)))
         except Exception as e:
             print("Aviso - oferta de cobro:", e)
@@ -5847,6 +6120,29 @@ class CuentasPorCobrarTab:
         ent_monto.pack(fill="x")
         ent_monto.insert(0, formatear_numero_entrada(saldo_actual))
 
+        # 🧮 Base de los porcentajes: TOTAL de la factura CON IGV
+        total_factura = 0.0
+        try:
+            _conn_tot = conectar_db()
+            if _conn_tot:
+                try:
+                    with _conn_tot.cursor() as _cur_tot:
+                        _cur_tot.execute(
+                            "SELECT COALESCE(total, 0) FROM facturas_emitidas WHERE id = %s",
+                            (int(float(id_factura)),))
+                        _fila_tot = _cur_tot.fetchone()
+                        if _fila_tot:
+                            total_factura = float(_fila_tot[0] or 0.0)
+                finally:
+                    liberar_conexion(_conn_tot)
+        except Exception:
+            total_factura = 0.0
+        if total_factura <= 0:
+            # Si no se pudo leer el total, se usa el saldo como base razonable.
+            total_factura = saldo_actual
+        # 🔖 Estado de retención del cliente / factoring del banco
+        estado_rf = {"activo": False, "ret_monto": 0.0, "fact_monto": 0.0}
+
         # 🧾 Otros impuestos deducibles (retenciones) del cobro
         ctk.CTkLabel(f, text="🧾 Otros impuestos deducibles (S/):",
                      font=("Arial", 11, "bold")).pack(anchor="w", pady=(8, 0))
@@ -5884,6 +6180,111 @@ class CuentasPorCobrarTab:
                       command=_quitar_impuesto).pack(side="left", padx=6)
         lbl_imp.pack(anchor="w", pady=(2, 0))
         _pintar_impuesto()
+
+        # 🔖 Retención del cliente / factoring del banco (% sobre el total CON IGV)
+        var_rf = tk.BooleanVar(master=v, value=False)
+        chk_rf = ctk.CTkCheckBox(
+            f, text="🔖 Aplicar % de retención del cliente y % de factoring del banco",
+            variable=var_rf, font=("Arial", 11, "bold"), command=lambda: _toggle_rf())
+        chk_rf.pack(anchor="w", pady=(10, 0))
+        f_rf = ctk.CTkFrame(f, fg_color="transparent")
+        f_rf_ret = ctk.CTkFrame(f_rf, fg_color="transparent")
+        f_rf_ret.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ctk.CTkLabel(f_rf_ret, text="% Retención cliente:",
+                     font=("Arial", 10, "bold")).pack(anchor="w")
+        ent_ret_pct = ctk.CTkEntry(f_rf_ret, placeholder_text="0.00")
+        ent_ret_pct.pack(fill="x")
+        f_rf_fact = ctk.CTkFrame(f_rf, fg_color="transparent")
+        f_rf_fact.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ctk.CTkLabel(f_rf_fact, text="% Factoring banco:",
+                     font=("Arial", 10, "bold")).pack(anchor="w")
+        ent_fact_pct = ctk.CTkEntry(f_rf_fact, placeholder_text="0.00")
+        ent_fact_pct.pack(fill="x")
+        lbl_rf = ctk.CTkLabel(f, text="", font=("Arial", 10, "bold"),
+                              text_color="#1f538d", anchor="w", justify="left",
+                              wraplength=560)
+
+        def _calcular_rf():
+            """Calcula retención y factoring sobre el TOTAL de la factura (con IGV)."""
+            if not estado_rf["activo"]:
+                estado_rf["ret_monto"] = estado_rf["fact_monto"] = 0.0
+                return 0.0, 0.0, 0.0, 0.0
+            try:
+                ret_pct = max(0.0, min(100.0, _texto_a_numero(ent_ret_pct.get() or 0)))
+            except ValueError:
+                ret_pct = 0.0
+            try:
+                fact_pct = max(0.0, min(100.0, _texto_a_numero(ent_fact_pct.get() or 0)))
+            except ValueError:
+                fact_pct = 0.0
+            ret_monto = round(total_factura * ret_pct / 100.0, 2)
+            fact_monto = round(total_factura * fact_pct / 100.0, 2)
+            estado_rf["ret_monto"], estado_rf["fact_monto"] = ret_monto, fact_monto
+            try:
+                otros = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+            except ValueError:
+                otros = 0.0
+            neto = max(0.0, round(saldo_actual - otros - ret_monto - fact_monto, 2))
+            lbl_rf.configure(
+                text=(("Base (total con IGV): %s" + chr(10) +
+                       "Retención cliente: %s   ·   Factoring banco: %s" + chr(10) +
+                       "Neto a recibir: %s")
+                      % (formatear_moneda(total_factura), formatear_moneda(ret_monto),
+                         formatear_moneda(fact_monto), formatear_moneda(neto))))
+            return ret_pct, fact_pct, ret_monto, fact_monto
+
+        def _poner_neto_rf():
+            try:
+                otros = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+            except ValueError:
+                otros = 0.0
+            neto = max(0.0, round(saldo_actual - otros - estado_rf["ret_monto"]
+                                  - estado_rf["fact_monto"], 2))
+            ent_monto.delete(0, tk.END)
+            ent_monto.insert(0, formatear_numero_entrada(neto))
+
+        def _refrescar_rf(event=None):
+            if not estado_rf["activo"]:
+                return
+            _calcular_rf()
+            _poner_neto_rf()
+            actualizar_calc()
+
+        def _al_cambiar_otros(event=None):
+            if estado_rf["activo"]:
+                _refrescar_rf()
+            else:
+                actualizar_calc()
+
+        def _toggle_rf():
+            estado_rf["activo"] = bool(var_rf.get())
+            if estado_rf["activo"]:
+                f_rf.pack(fill="x", pady=(4, 0), after=chk_rf)
+                lbl_rf.pack(anchor="w", pady=(2, 0), after=f_rf)
+                _refrescar_rf()
+                try:
+                    ent_ret_pct.focus_set()
+                except Exception:
+                    pass
+            else:
+                f_rf.pack_forget()
+                lbl_rf.pack_forget()
+                estado_rf["ret_monto"] = estado_rf["fact_monto"] = 0.0
+                lbl_rf.configure(text="")
+                try:
+                    otros = max(0.0, _texto_a_numero(ent_impuestos.get() or 0))
+                except ValueError:
+                    otros = 0.0
+                ent_monto.delete(0, tk.END)
+                ent_monto.insert(0, formatear_numero_entrada(
+                    max(0.0, round(saldo_actual - otros, 2))))
+                actualizar_calc()
+
+        ent_ret_pct.bind("<KeyRelease>", _refrescar_rf)
+        ent_fact_pct.bind("<KeyRelease>", _refrescar_rf)
+        ent_impuestos.bind("<KeyRelease>", _al_cambiar_otros)
+        ent_impuestos.bind("<FocusOut>", _al_cambiar_otros)
+
         lbl_calc = ctk.CTkLabel(f, text="", font=("Arial", 11, "bold"), text_color="#555555")
 
         def actualizar_calc(event=None):
@@ -5895,7 +6296,11 @@ class CuentasPorCobrarTab:
                 _impuestos = _texto_a_numero(ent_impuestos.get() or 0)
             except ValueError:
                 _impuestos = 0.0
-            _monto = _monto + max(0.0, _impuestos)   # impuestos deducibles suman al cobro
+            _deducciones = max(0.0, _impuestos)   # impuestos deducibles suman al cobro
+            if estado_rf["activo"]:
+                # 🔖 la retención del cliente y el factoring del banco también cancelan factura
+                _deducciones += estado_rf["ret_monto"] + estado_rf["fact_monto"]
+            _monto = _monto + _deducciones
             _diff = round(_monto - saldo_actual, 2)
             _aplicado = formatear_moneda(_monto)
             if _diff < -0.005:
@@ -6071,12 +6476,26 @@ class CuentasPorCobrarTab:
             if impuestos_val < 0:
                 return messagebox.showerror("Error", "Los impuestos deducibles no pueden ser negativos.",
                                             parent=v)
-            total_val = round(monto_val + impuestos_val, 2)
+            ret_pct = fact_pct = ret_monto = fact_monto = 0.0
+            if estado_rf["activo"]:
+                try:
+                    ret_pct = _texto_a_numero(ent_ret_pct.get() or 0)
+                    fact_pct = _texto_a_numero(ent_fact_pct.get() or 0)
+                except ValueError:
+                    return messagebox.showerror(
+                        "Error", "Los % de retención y factoring deben ser numéricos.", parent=v)
+                if not (0.0 <= ret_pct <= 100.0) or not (0.0 <= fact_pct <= 100.0):
+                    return messagebox.showerror(
+                        "Error", "Los % de retención y factoring deben estar entre 0 y 100.", parent=v)
+                ret_monto = round(total_factura * ret_pct / 100.0, 2)
+                fact_monto = round(total_factura * fact_pct / 100.0, 2)
+            deducciones_val = round(impuestos_val + ret_monto + fact_monto, 2)
+            total_val = round(monto_val + deducciones_val, 2)
             if total_val <= 0:
                 return messagebox.showerror("Error", "El total del cobro debe ser mayor a 0.", parent=v)
             if total_val > (saldo_actual + 0.01):
                 return messagebox.showerror(
-                    "Error", "El total (monto + impuestos deducibles) supera el saldo pendiente.", parent=v)
+                    "Error", "El total (monto + deducciones) supera el saldo pendiente.", parent=v)
             fecha_val = ent_fecha.get().strip() or datetime.now().strftime("%d/%m/%Y")
             cuenta_val = cmb_cuenta.get().strip()
             oper_val = ent_oper.get().strip()
@@ -6102,17 +6521,28 @@ class CuentasPorCobrarTab:
                     cursor.execute("""
                         INSERT INTO pagos_clientes
                         (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago,
-                         cuenta_destino, numero_operacion, impuestos_deducibles, archivo_impuesto)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                         cuenta_destino, numero_operacion, impuestos_deducibles, archivo_impuesto,
+                         retencion_pct, retencion_monto, factoring_pct, factoring_monto)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (id_factura, monto_val, ruta_bd, cliente, fecha_val, cuenta_val, oper_val,
-                         impuestos_val, ruta_imp_bd))
+                         deducciones_val, ruta_imp_bd, ret_pct, ret_monto, fact_pct, fact_monto))
                 except Exception:
                     conn.rollback()
-                    cursor.execute("""
-                        INSERT INTO pagos_clientes
-                        (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago, cuenta_destino)
-                        VALUES (%s, %s, %s, %s, %s, %s)""",
-                        (id_factura, monto_val, ruta_bd, cliente, fecha_val, cuenta_val))
+                    try:
+                        cursor.execute("""
+                            INSERT INTO pagos_clientes
+                            (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago,
+                             cuenta_destino, numero_operacion, impuestos_deducibles, archivo_impuesto)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (id_factura, monto_val, ruta_bd, cliente, fecha_val, cuenta_val, oper_val,
+                             deducciones_val, ruta_imp_bd))
+                    except Exception:
+                        conn.rollback()
+                        cursor.execute("""
+                            INSERT INTO pagos_clientes
+                            (id_factura, monto_pagado, archivo_ruta, cliente_nombre, fecha_pago, cuenta_destino)
+                            VALUES (%s, %s, %s, %s, %s, %s)""",
+                            (id_factura, monto_val, ruta_bd, cliente, fecha_val, cuenta_val))
                 conn.commit()
                 liberar_conexion(conn)
             except Exception as e:
@@ -6122,15 +6552,24 @@ class CuentasPorCobrarTab:
             except Exception:
                 pass
             try:
+                _auditoria_detalle = "Cobró %s a Fac. %s" % (formatear_moneda(monto_val), nro_doc)
+                if ret_monto or fact_monto:
+                    _auditoria_detalle += " (Ret. %s / Fact. %s)" % (
+                        formatear_moneda(ret_monto), formatear_moneda(fact_monto))
                 registrar_auditoria(self.app_padre.usuario_activo, "Cuentas por Cobrar",
-                                    "Cobró %s a Fac. %s" % (formatear_moneda(monto_val), nro_doc))
+                                    _auditoria_detalle)
             except Exception:
                 pass
             try:
                 v.destroy()
             except Exception:
                 pass
-            messagebox.showinfo("Éxito", "Cobro de %s registrado." % formatear_moneda(monto_val),
+            _msg_cobro = "Cobro de %s registrado." % formatear_moneda(monto_val)
+            if ret_monto or fact_monto:
+                _msg_cobro += (chr(10) + "Retención cliente: %s (%s%%)   ·   Factoring banco: %s (%s%%)"
+                               % (formatear_moneda(ret_monto), ("%g" % ret_pct),
+                                  formatear_moneda(fact_monto), ("%g" % fact_pct)))
+            messagebox.showinfo("Éxito", _msg_cobro,
                                 parent=ventana_para_mensaje(getattr(self, "main_root", None)))
             self._refrescar_listas_cobro()
 

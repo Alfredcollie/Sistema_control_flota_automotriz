@@ -2953,7 +2953,12 @@ class ModuloBancoApp:
             if m.get("tabla") not in ("pagos_comprobantes", "pagos_clientes"):
                 salida.append(m)
                 continue
-            clave_unica = str(m.get("operacion") or "").strip() or str(m.get("archivo_ruta") or "").strip()
+            # 📎 Se agrupa por COMPROBANTE (mismo archivo) y solo si no hay archivo
+            #    se usa el N° de operación. Antes se priorizaba la operación y, cuando
+            #    varios pagos compartían el mismo número (copiado), se fusionaban en
+            #    uno solo y sus líneas del banco quedaban sin pareja.
+            clave_unica = (str(m.get("archivo_ruta") or "").strip()
+                           or str(m.get("operacion") or "").strip())
             if not clave_unica:
                 salida.append(m)
                 continue
@@ -5763,7 +5768,7 @@ class ModuloBancoApp:
         como «faltante» — por eso listaba las 138 líneas. Ahora se usa la MISMA
         lista que el aviso naranja de la pestaña.
         """
-        filas_tabla = list(getattr(self, "filas_conciliacion", None) or [])
+        filas_tabla = list(getattr(self, "_filas_conc_full", None) or getattr(self, "filas_conciliacion", None) or [])
         if not filas_tabla:
             messagebox.showinfo(
                 "Faltantes",
@@ -5997,8 +6002,8 @@ class ModuloBancoApp:
                             continue
                         c.execute("""INSERT INTO conciliacion_bancaria
                             (banco, cuenta, fecha, descripcion, monto, tipo, origen,
-                             estado, fecha_conciliacion)
-                            VALUES (%s,%s,%s,%s,%s,%s,'manual','conciliado',%s)""",
+                             tabla, estado, fecha_conciliacion)
+                            VALUES (%s,%s,%s,%s,%s,%s,'manual','estado_cuenta','conciliado',%s)""",
                                   (banco.get("banco", ""), banco.get("cuenta", ""),
                                    str(m.get("fecha") or ""), str(m.get("descripcion") or ""),
                                    monto, "ingreso" if monto > 0 else "egreso",
@@ -6145,7 +6150,7 @@ class ModuloBancoApp:
                         c.execute("""INSERT INTO conciliacion_bancaria
                             (banco, cuenta, fecha, descripcion, monto, tipo, origen,
                              tabla, estado, fecha_conciliacion)
-                            VALUES (%s,%s,%s,%s,%s,%s,'manual','sin_factura','conciliado',%s)""",
+                            VALUES (%s,%s,%s,%s,%s,%s,'manual','estado_cuenta','conciliado',%s)""",
                                   (banco.get("banco", ""), banco.get("cuenta", ""),
                                    str(m.get("fecha") or ""), str(m.get("descripcion") or ""),
                                    monto, "ingreso" if monto > 0 else "egreso",
@@ -7961,10 +7966,14 @@ class ModuloBancoApp:
         except Exception as error:
             print("[Conciliación] pendientes próximo mes:", error)
         self._filas_conc_full = list(filas)
-        self.filas_conciliacion = filas
+        # 📄 La tabla muestra SOLO asientos del sistema: las líneas del estado de
+        #    cuenta que no tienen asiento se ven en «Faltantes / Sobrantes».
+        self.filas_conciliacion = [f for f in filas
+                                   if f.get("origen") != "estado_cuenta"]
         self.refrescar_tree()
         # ⚠️ Aviso: movimientos del estado de cuenta que NO están en el sistema
-        faltantes = [f for f in filas if f.get("origen") == "estado_cuenta"
+        faltantes = [f for f in self._filas_conc_full
+                     if f.get("origen") == "estado_cuenta"
                      and f.get("estado") != "conciliado"]
         self._faltantes_estado_cuenta = faltantes
         # 📅 Solo se puede hablar de SOBRANTES en meses con estado de cuenta cargado:
@@ -8122,7 +8131,8 @@ class ModuloBancoApp:
                                COALESCE(categoria, ''), COALESCE(subcategoria, ''),
                                COALESCE(placa, ''), COALESCE(chofer, ''),
                                COALESCE(comision, 0), COALESCE(interbancario, FALSE),
-                               COALESCE(es_cruzada, FALSE), COALESCE(numero_operacion, '')
+                               COALESCE(es_cruzada, FALSE), COALESCE(numero_operacion, ''),
+                               COALESCE(tabla, '')
                         FROM conciliacion_bancaria
                         WHERE origen = 'manual'
                           AND UPPER(COALESCE(banco,'')) = UPPER(%s)
@@ -8141,14 +8151,16 @@ class ModuloBancoApp:
                           AND COALESCE(cuenta,'') = %s
                         ORDER BY id
                     """, (banco.get("banco", ""), banco.get("cuenta", "") or ""))
-                    filas = [tuple(f) + ("", "", "", "", 0, False, False, "") for f in c.fetchall()]
+                    filas = [tuple(f) + ("", "", "", "", 0, False, False, "", "") for f in c.fetchall()]
 
                 for (idp, fecha, desc, monto, tipo, estado, categoria, subcategoria,
-                     placa, chofer, comision, interbancario, es_cruzada, num_oper) in filas:
+                     placa, chofer, comision, interbancario, es_cruzada, num_oper,
+                     tabla_real) in filas:
                     movs.append({
                         "id": idp, "fecha": fecha or "", "descripcion": desc or "",
                         "monto": float(monto or 0), "tipo": tipo or "ingreso",
-                        "tabla": "conciliacion", "estado": estado or "pendiente",
+                        "tabla": (tabla_real or "conciliacion"),
+                        "estado": estado or "pendiente",
                         "categoria": categoria or "", "subcategoria": subcategoria or "",
                         "placa": placa or "", "chofer": chofer or "",
                         "comision": float(comision or 0), "interbancario": bool(interbancario),
@@ -8186,17 +8198,21 @@ class ModuloBancoApp:
             if _mes and _mes not in _ok:
                 estado_txt = "⏳ Falta el estado de cuenta"
             else:
-                estado_txt = "⚠️ Sin conciliar (Sistema)"
+                estado_txt = "⚠️ No conciliado"
         else:
-            estado_txt = "📝 Manual / Pendiente"
+            estado_txt = "📝 No conciliado (manual)"
         if f.get("tipo") == "comision":
             tipo_txt = "Comisión interbancaria"
         elif f.get("tipo") == "transferencia":
             tipo_txt = "Transferencia (Ingreso)" if f["monto"] >= 0 else "Transferencia (Egreso)"
         else:
             tipo_txt = "Ingreso" if f["monto"] >= 0 else "Egreso"
-        origen_txt = {"sistema": "Sistema", "estado_cuenta": "Estado de Cuenta",
-                      "manual": "Manual"}.get(f.get("origen"), f.get("origen", ""))
+        # 📄 Los que se agregaron desde el estado de cuenta se identifican así.
+        if str(f.get("tabla") or "") == "estado_cuenta":
+            origen_txt = "Agregado del estado de cuenta"
+        else:
+            origen_txt = {"sistema": "Sistema", "estado_cuenta": "Estado de Cuenta",
+                          "manual": "Manual"}.get(f.get("origen"), f.get("origen", ""))
         saldo_txt = ""
         if f.get("saldo") is not None:
             saldo_txt = formatear_monto(f["saldo"])
@@ -10460,7 +10476,7 @@ class ModuloBancoApp:
 
         def guardar():
             try:
-                monto = float(ent_monto.get().strip())
+                monto = normalizar_monto(ent_monto.get())
             except ValueError:
                 messagebox.showerror("Error", "Monto inválido.", parent=v)
                 return
