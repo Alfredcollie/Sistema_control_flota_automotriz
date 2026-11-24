@@ -452,12 +452,12 @@ def _nombre_proceso(pid):
     try:
         if sys.platform == "win32":
             salida = subprocess.run(["tasklist", "/FI", "PID eq %s" % pid, "/FO", "CSV", "/NH"],
-                                    capture_output=True, text=True, errors="replace",
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace",
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout or ""
             primera = salida.strip().splitlines()[0] if salida.strip() else ""
             return primera.split('","')[0].strip('"').strip().lower() if primera.startswith('"') else ""
         salida = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True,
-                                text=True, errors="replace").stdout or ""
+                                text=True, encoding="utf-8", errors="replace").stdout or ""
         return os.path.basename(salida.strip()).lower()
     except Exception:
         return ""
@@ -533,7 +533,7 @@ def liberar_puerto_rclone(puerto=PUERTO_AUTH_RCLONE, agresivo=False):
                     pids.add(partes[-1])
         else:
             salida = subprocess.run(["lsof", "-ti", "tcp:%d" % puerto], capture_output=True,
-                                    text=True, errors="replace").stdout or ""
+                                    text=True, encoding="utf-8", errors="replace").stdout or ""
             pids.update(salida.split())
     except Exception as e:
         print("Aviso - buscando el proceso del puerto de rclone:", e)
@@ -950,7 +950,8 @@ def ejecutar_sincronizacion_silenciosa():
     try:
         listado = subprocess.run(
             [cmd, *args_cfg, "lsf", ruta_remota, "--max-depth", "1", "--dirs-only"],
-            capture_output=True, text=True, timeout=120, **kwargs)
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120, **kwargs)
         presentes = {linea.strip().strip("/").lower()
                      for linea in (listado.stdout or "").splitlines() if linea.strip()}
         if presentes & CARPETAS_ANTIGUAS:

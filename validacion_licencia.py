@@ -129,7 +129,8 @@ def _ejecutar_comando(comando):
     """Ejecuta un comando sin shell y devuelve su salida como texto (o vacío si falla)."""
     try:
         return subprocess.check_output(
-            comando, stderr=subprocess.DEVNULL, text=True, timeout=10
+            comando, stderr=subprocess.DEVNULL, text=True,
+            encoding="utf-8", errors="replace", timeout=10
         ).strip()
     except Exception:
         return ""
