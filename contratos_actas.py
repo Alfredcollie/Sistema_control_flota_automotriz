@@ -955,8 +955,17 @@ class ContratosActasApp:
 
     def _abrir_pdf(self, ruta):
         try:
+            from app_paths import resolver_ruta_archivo
+            real = resolver_ruta_archivo(ruta) if ruta else ""
+            if not real:
+                messagebox.showwarning(
+                    "Contratos y Actas",
+                    "El archivo no está en este equipo:\n\n" + str(ruta) +
+                    "\n\nVerifique que rclone/Google Drive ya lo haya sincronizado.",
+                    parent=self.parent_frame)
+                return
             from modulo_compras import abrir_documento
-            abrir_documento(ruta)
+            abrir_documento(real)
         except Exception as error:
             print("Aviso - abrir PDF:", error)
 
@@ -1685,10 +1694,12 @@ class ContratosActasApp:
         # 📁 copia de seguridad del archivo
         aviso_pdf = ""
         try:
-            if archivo and os.path.isfile(str(archivo)):
-                carpeta_eliminados = os.path.join(os.path.dirname(str(archivo)), "Eliminados")
+            from app_paths import resolver_ruta_archivo
+            archivo_real = resolver_ruta_archivo(archivo) if archivo else ""
+            if archivo_real and os.path.isfile(str(archivo_real)):
+                carpeta_eliminados = os.path.join(os.path.dirname(str(archivo_real)), "Eliminados")
                 os.makedirs(carpeta_eliminados, exist_ok=True)
-                destino = os.path.join(carpeta_eliminados, os.path.basename(str(archivo)))
+                destino = os.path.join(carpeta_eliminados, os.path.basename(str(archivo_real)))
                 if os.path.exists(destino):
                     base, extension = os.path.splitext(destino)
                     destino = base + "_" + datetime.now().strftime("%Y%m%d_%H%M%S") + extension
@@ -1698,7 +1709,7 @@ class ContratosActasApp:
                 movido = False
                 for intento in range(5):
                     try:
-                        shutil.move(str(archivo), destino)
+                        shutil.move(str(archivo_real), destino)
                         movido = True
                         break
                     except PermissionError:
@@ -1747,11 +1758,19 @@ class ContratosActasApp:
         if not seleccion:
             return
         ruta = (getattr(self, "_historicos", {}) or {}).get(seleccion[0])
-        if ruta and os.path.exists(ruta):
-            self._abrir_pdf(ruta)
+        try:
+            from app_paths import resolver_ruta_archivo
+            real = resolver_ruta_archivo(ruta) if ruta else ""
+        except Exception:
+            real = ruta if ruta and os.path.exists(ruta) else ""
+        if real and os.path.exists(real):
+            self._abrir_pdf(real)
         else:
-            messagebox.showwarning("Históricos", "El archivo no se encuentra en disco.",
-                                   parent=self.parent_frame)
+            messagebox.showwarning(
+                "Históricos",
+                "El archivo no se encuentra en este equipo:\n\n" + str(ruta) +
+                "\n\nVerifique que rclone/Google Drive ya lo haya sincronizado.",
+                parent=self.parent_frame)
 
     def _abrir_carpeta_base(self):
         carpeta = ruta_base()

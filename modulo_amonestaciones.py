@@ -584,7 +584,11 @@ class AmonestacionesApp(ctk.CTkFrame):
         if conn:
             try:
                 with conn.cursor() as c:
-                    c.execute("SELECT nombres FROM choferes ORDER BY nombres")
+                    # 🚫 Solo choferes vigentes: los dados de baja (Inactivo) no
+                    #    deben aparecer para registrar amonestaciones/suspensiones.
+                    c.execute("SELECT nombres FROM choferes "
+                              "WHERE COALESCE(estado, 'Activo') <> 'Inactivo' "
+                              "ORDER BY nombres")
                     valores = [str(r[0]).strip() for r in c.fetchall() if r[0]]
             except Exception as e:
                 print("[amonestaciones] choferes:", e)
@@ -601,7 +605,11 @@ class AmonestacionesApp(ctk.CTkFrame):
         if conn:
             try:
                 with conn.cursor() as c:
-                    c.execute("SELECT COALESCE(dni,'') FROM choferes WHERE nombres = %s LIMIT 1",
+                    # Se busca el DNI del chofer vigente (si hubiera homónimos, se
+                    # prefiere al que no está dado de baja).
+                    c.execute("SELECT COALESCE(dni,'') FROM choferes "
+                              "WHERE nombres = %s AND COALESCE(estado, 'Activo') <> 'Inactivo' "
+                              "ORDER BY id LIMIT 1",
                               (nombre,))
                     fila = c.fetchone()
                     dni = str(fila[0]) if fila and fila[0] else ""

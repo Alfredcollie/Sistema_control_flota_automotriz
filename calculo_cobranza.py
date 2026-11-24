@@ -39,15 +39,22 @@ Funcionalidades:
    detalle por unidad y el detalle de los asientos de deducción.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import customtkinter as ctk
 import calendar
 import os
+import re
+import subprocess
+import webbrowser
+import urllib.parse
+import urllib.request
+import smtplib
+from email.message import EmailMessage
+from email.utils import formataddr
 from formato_numeros import formatear_numero
 import sys
 import json
 import ssl
-import urllib.request
 import threading
 import functools
 from datetime import datetime, date, timedelta
@@ -69,6 +76,9 @@ ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
 PLANES = ["Por Hora", "Por Punto o Viaje"]
+# 🚚 Cantidades sugeridas para el desplegable de traslados/deducciones.
+#    El campo sigue siendo editable para escribir, por ejemplo, 1.5 (viaje y medio).
+CANTIDADES_TRASLADO = ["0.5", "1", "1.5", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 CATEGORIAS = [
     ("normal", "Días Normales (Lun–Sáb)"),
     ("domingo", "Domingos"),
@@ -147,6 +157,82 @@ def _cargar_config_local():
     except Exception:
         pass
     return {}
+
+
+# =========================================================
+# 📤 ENVÍO DEL CÁLCULO AL CLIENTE (correo / WhatsApp)
+# =========================================================
+def _copiar_archivo_portapapeles(ruta):
+    """Copia un archivo (el PDF) al portapapeles en Windows y macOS.
+
+    Permite adjuntarlo en el correo o en el chat de WhatsApp con Ctrl+V
+    (Cmd+V en Mac). Devuelve True si se intentó copiar.
+    """
+    try:
+        ruta_abs = os.path.abspath(str(ruta or ""))
+        if not ruta_abs or not os.path.exists(ruta_abs):
+            return False
+        if sys.platform == "darwin":
+            ruta_esc = ruta_abs.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.run(["osascript", "-e",
+                            'set the clipboard to POSIX file "%s"' % ruta_esc],
+                           check=False, timeout=15)
+            return True
+        if sys.platform == "win32":
+            ruta_ps = ruta_abs.replace("'", "''")
+            subprocess.run(["powershell", "-NoProfile", "-Command",
+                            "Set-Clipboard -Path '%s'" % ruta_ps],
+                           check=False, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return True
+        return False
+    except Exception as e:
+        print("[cobranza] copiar al portapapeles:", e)
+        return False
+
+
+def _normalizar_telefono_whatsapp(telefono):
+    """Deja el teléfono listo para wa.me (agrega el código de Perú si falta)."""
+    digitos = re.sub(r"\D", "", str(telefono or ""))
+    if not digitos:
+        return ""
+    if len(digitos) == 9 and digitos.startswith("9"):
+        return "51" + digitos
+    return digitos
+
+
+def _contacto_cliente(id_cliente, ruc=""):
+    """Correo, teléfono y contacto del cliente (para enviarle el cálculo)."""
+    datos = {"correo": "", "telefono": "", "contacto": ""}
+    conn = conectar_db(silencioso=True)
+    if not conn:
+        return datos
+    try:
+        with conn.cursor() as cursor:
+            fila = None
+            if id_cliente:
+                cursor.execute("""
+                    SELECT COALESCE(correo, ''), COALESCE(telefono, ''),
+                           COALESCE(persona_contacto, '')
+                    FROM clientes WHERE id=%s
+                """, (id_cliente,))
+                fila = cursor.fetchone()
+            if not fila and ruc:
+                cursor.execute("""
+                    SELECT COALESCE(correo, ''), COALESCE(telefono, ''),
+                           COALESCE(persona_contacto, '')
+                    FROM clientes WHERE TRIM(ruc)=TRIM(%s)
+                """, (str(ruc),))
+                fila = cursor.fetchone()
+            if fila:
+                datos = {"correo": str(fila[0] or "").strip(),
+                         "telefono": str(fila[1] or "").strip(),
+                         "contacto": str(fila[2] or "").strip()}
+    except Exception as e:
+        print("[cobranza] contacto del cliente:", e)
+    finally:
+        liberar_conexion(conn)
+    return datos
 
 
 def obtener_ruta_logo():
@@ -638,6 +724,14 @@ def _num_o_vacio(valor, decimales=True):
     return "%g" % numero
 
 
+def _es_nombre_de_zona(texto):
+    """True si el texto es el nombre de una ZONA (no una etiqueta «0 - 5 km»)."""
+    t = str(texto or "").strip()
+    if not t or t == "—":
+        return False
+    return not re.match(r"^\d+(?:[.,]\d+)?\s*-\s*\d+(?:[.,]\d+)?\s*km$", t, re.I)
+
+
 def _etiqueta_rango(rg):
     """Nombre visible de una ZONA o de un rango de distancia.
 
@@ -684,7 +778,8 @@ def conteos_quincena(dias):
 # 🚀 ASIENTOS DE DEDUCCIÓN (una línea con fecha y motivo)
 # =========================================================
 def nuevo_asiento_deduccion(fecha=None, categoria="normal", horas=0.0, minutos=0.0,
-                            cantidad=0.0, motivo="", desde=None, hasta=None, precio=0.0):
+                            cantidad=0.0, motivo="", desde=None, hasta=None, precio=0.0,
+                            zona=""):
     """Crea un asiento de deducción: una línea con fecha, concepto y valor.
 
     - Plan Por Hora: 'horas' + 'minutos' de servicio no prestado.
@@ -701,6 +796,7 @@ def nuevo_asiento_deduccion(fecha=None, categoria="normal", horas=0.0, minutos=0
         "desde": desde,
         "hasta": hasta,
         "precio": float(precio or 0.0),
+        "zona": str(zona or ""),
     }
 
 
@@ -1443,7 +1539,7 @@ class CalculoCobranzaApp:
         ctk.CTkLabel(f_esp, text="Sobrecargo:", font=(familia_fuente, 11, "bold")).pack(
             side="left", padx=(15, 4))
         self.ent_espera_pct_viaje = ctk.CTkEntry(f_esp, width=60, justify="center")
-        self.ent_espera_pct_viaje.insert(0, "20")
+        self.ent_espera_pct_viaje.insert(0, "10")
         self.ent_espera_pct_viaje.pack(side="left")
         ctk.CTkLabel(f_esp, text="% del monto del viaje", font=(familia_fuente, 10),
                      text_color="#555").pack(side="left", padx=(4, 0))
@@ -2280,7 +2376,8 @@ class CalculoCobranzaApp:
             self.tabla_ded_reg.insert("", tk.END, values=(
                 etiqueta_fecha_hora(t.get("fecha")),
                 dict(CATEGORIAS).get(t.get("categoria"), ""),
-                _etiqueta_rango({"desde": t.get('desde'), "hasta": t.get("hasta")}),
+                _etiqueta_rango({"nombre": t.get("zona"),
+                                 "desde": t.get('desde'), "hasta": t.get("hasta")}),
                 f"{float(t.get('cantidad') or 0):g}",
                 str(t.get("motivo") or ""),
             ))
@@ -2348,6 +2445,7 @@ class CalculoCobranzaApp:
             "cantidad": cant, "motivo": self.ent_motivo_ded.get().strip(),
             "precio": precio, "monto": precio * cant,
             "desde": rg["distancia_desde"], "hasta": rg["distancia_hasta"],
+            "zona": rg.get("nombre", ""),
         })
         self._pintar_deducciones_registradas()
         self.recalcular()   # recalcula en caliente los montos y el total
@@ -2707,7 +2805,10 @@ class CalculoCobranzaApp:
             deducciones_detalle.append({
                 "tipo": "DEDUCCION",
                 "plan": "Por Punto o Viaje",
-                "unidad": _etiqueta_rango({"desde": t.get('desde'), "hasta": t.get("hasta")}),
+                # 🏷️ Se guarda el NOMBRE de la zona (así se reconoce al editar)
+                "unidad": _etiqueta_rango({"nombre": t.get("zona"),
+                                           "desde": t.get("desde"),
+                                           "hasta": t.get("hasta")}),
                 "fecha": t.get("fecha"), "categoria": cat,
                 "horas": 0.0, "minutos": 0.0, "cantidad": cant,
                 "desde": t.get("desde"), "hasta": t.get("hasta"),
@@ -2768,17 +2869,17 @@ class CalculoCobranzaApp:
             # Plan Por Punto o Viaje: resumen por rango de distancia
             # 🛣️ Solo se listan los traslados/zonas que realmente se calcularon
             for i, vj in enumerate(r["viajes"]):
-                tiene_viajes = any(int(vj.get(k) or 0) for k in
+                tiene_viajes = any(float(vj.get(k) or 0) for k in
                                    ("viajes_normal", "viajes_domingo", "viajes_feriado"))
-                tiene_ded = any(int(vj.get(k) or 0) for k in
+                tiene_ded = any(float(vj.get(k) or 0) for k in
                                 ("ded_normal", "ded_domingo", "ded_feriado"))
                 if tiene_viajes or tiene_ded or float(vj.get("monto_base") or 0):
                     detalle_cant = []
                     for clave, etiqueta in (("normal", "normal"), ("domingo", "domingo"),
                                             ("feriado", "feriado")):
-                        cuantos = int(vj.get("viajes_%s" % clave) or 0)
+                        cuantos = float(vj.get("viajes_%s" % clave) or 0)
                         if cuantos:
-                            detalle_cant.append("%d %s" % (cuantos, etiqueta))
+                            detalle_cant.append("%g %s" % (cuantos, etiqueta))
                     texto_cant = ("  (" + ", ".join(detalle_cant) + ")") if detalle_cant else ""
                     lineas.append(
                         f"🛣️ {vj['distancia']}{texto_cant}: base {formatear_moneda(vj['monto_base'])}"
@@ -4015,6 +4116,37 @@ class CalculoCobranzaApp:
     def abrir_registros(self):
         VentanaRegistrosCobranza(self.parent, self)
 
+    def _indice_rango_guardado(self, zona="", desde=0, hasta=0, precio=0):
+        """Ubica el rango/zona de un traslado o deducción ya guardado.
+
+        Primero por el NOMBRE de la zona (lo habitual). Si el registro es
+        antiguo y no lo tiene, por las distancias y, cuando varias zonas
+        comparten la misma distancia, por el precio (tarifa) del movimiento.
+        """
+        nombre = str(zona or "").strip().lower()
+        if nombre:
+            for i, rg in enumerate(self.rangos_viaje):
+                if str(rg.get("nombre") or "").strip().lower() == nombre:
+                    return i
+        try:
+            desde_f, hasta_f = float(desde or 0), float(hasta or 0)
+        except Exception:
+            desde_f, hasta_f = 0.0, 0.0
+        candidatos = [i for i, rg in enumerate(self.rangos_viaje)
+                      if abs(float(rg.get("distancia_desde", 0) or 0) - desde_f) < 0.001
+                      and abs(float(rg.get("distancia_hasta", 0) or 0) - hasta_f) < 0.001]
+        if not candidatos:
+            return None
+        if len(candidatos) == 1:
+            return candidatos[0]
+        precio_f = float(precio or 0)
+        for i in candidatos:
+            rg = self.rangos_viaje[i]
+            if any(abs(float(rg.get(k) or 0) - precio_f) < 0.005
+                   for k in ("precio_normal", "precio_domingo", "precio_feriado")):
+                return i
+        return candidatos[0]
+
     @con_letrero("Leyendo el registro de cobranza…")
     def cargar_registro(self, id_cob):
         """Carga un registro guardado de vuelta en el formulario (editar)."""
@@ -4046,7 +4178,8 @@ class CalculoCobranzaApp:
             ''', (id_cob,))
             unidades_rows = cursor.fetchall()
             cursor.execute('''
-                SELECT distancia_desde, distancia_hasta, precio_normal, precio_domingo, precio_feriado,
+                SELECT COALESCE(zona, ''), distancia_desde, distancia_hasta,
+                       precio_normal, precio_domingo, precio_feriado,
                        viajes_normal, viajes_domingo, viajes_feriado,
                        ded_normal, ded_domingo, ded_feriado
                 FROM cobranza_quincena_viajes WHERE id_cobranza=%s ORDER BY id
@@ -4054,7 +4187,8 @@ class CalculoCobranzaApp:
             viajes_rows = cursor.fetchall()
             cursor.execute('''
                 SELECT fecha, vehiculo, categoria, distancia_desde, distancia_hasta, precio, monto,
-                       COALESCE(espera_pct, 0), COALESCE(espera_monto, 0)
+                       COALESCE(espera_pct, 0), COALESCE(espera_monto, 0), COALESCE(zona, ''),
+                       COALESCE(cantidad, 0)
                 FROM cobranza_viajes_detalle WHERE id_cobranza=%s ORDER BY id
             ''', (id_cob,))
             viajes_detalle_rows = cursor.fetchall()
@@ -4135,22 +4269,29 @@ class CalculoCobranzaApp:
         self.viajes_registrados = []
         self.deducciones_registradas = []
         if self.plan_cobro == "Por Punto o Viaje":
-            for (desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df) in viajes_rows:
+            for (zona_v, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df) in viajes_rows:
+                nombre_v = str(zona_v or "").strip()
                 self.rangos_viaje.append({
-                    "id": None, "distancia_desde": float(desde or 0), "distancia_hasta": float(hasta or 0),
+                    "id": None,
+                    # 🏷️ Se recupera el NOMBRE de la zona tal como se guardó:
+                    #    sin esto, al editar el registro las zonas salían «—».
+                    "nombre": nombre_v,
+                    "es_zona": _es_nombre_de_zona(nombre_v),
+                    "distancia_desde": float(desde or 0), "distancia_hasta": float(hasta or 0),
                     "precio_normal": float(pn or 0), "precio_domingo": float(pd or 0),
                     "precio_feriado": float(pf or 0),
-                    "viajes": {"normal": int(vn or 0), "domingo": int(vd or 0), "feriado": int(vf or 0)},
-                    "ded": {"normal": int(dn or 0), "domingo": int(dd or 0), "feriado": int(df or 0)},
+                    # 🚚 Se conservan los medios viajes (1.5) que ya estaban guardados.
+                    "viajes": {"normal": float(vn or 0), "domingo": float(vd or 0),
+                               "feriado": float(vf or 0)},
+                    "ded": {"normal": float(dn or 0), "domingo": float(dd or 0),
+                            "feriado": float(df or 0)},
                 })
             # Recupera los asientos de deducción con fecha (cantidad no realizada por rango)
             for (plan_d, unidad_d, fecha_s, cat_d, horas_d, min_d, cant_d,
                  desde_d, hasta_d, precio_d, motivo_d, monto_d, tipo_d) in deducciones_rows:
                 if str(tipo_d or "DEDUCCION").upper() in ("EXTRA", "FERIADO"):
                     continue  # el plan por viajes no usa horas extras
-                idx = next((i for i, rg in enumerate(self.rangos_viaje)
-                            if abs(rg["distancia_desde"] - float(desde_d or 0)) < 0.001
-                            and abs(rg["distancia_hasta"] - float(hasta_d or 0)) < 0.001), None)
+                idx = self._indice_rango_guardado(unidad_d, desde_d, hasta_d, precio_d)
                 if idx is None:
                     continue
                 try:
@@ -4158,37 +4299,47 @@ class CalculoCobranzaApp:
                 except Exception:
                     fecha_dt = None
                 cat = cat_d if cat_d in dict(CATEGORIAS) else "normal"
-                cant = int(float(cant_d or 0))
-                asiento = nuevo_asiento_deduccion(fecha_dt, cat, 0.0, 0.0, cant, motivo_d,
-                                                  desde_d, hasta_d, precio_d)
+                cant = float(cant_d or 0)
+                zona_d = str(self.rangos_viaje[idx].get("nombre") or "")
                 # Las columnas del registro guardan cuadro + asientos: se descuentan aquí
                 # porque los asientos se vuelven a sumar al recalcular.
                 self.rangos_viaje[idx]["ded"][cat] = max(
-                    0, int(self.rangos_viaje[idx]["ded"].get(cat, 0) or 0) - cant)
+                    0.0, float(self.rangos_viaje[idx]["ded"].get(cat, 0) or 0) - cant)
                 self.deducciones_registradas.append({
                     "fecha": fecha_dt, "categoria": cat, "rango_idx": idx,
                     "cantidad": cant, "motivo": str(motivo_d or ""),
                     "precio": float(precio_d or 0), "monto": float(monto_d or 0),
                     "desde": float(desde_d or 0), "hasta": float(hasta_d or 0),
+                    "zona": zona_d,
                 })
 
             # Recupera los viajes individuales registrados (fecha, vehículo, tipo)
             for (fecha_s, vehiculo, categoria, desde, hasta, precio, monto,
-                 espera_pct, espera_monto) in viajes_detalle_rows:
-                rango_idx = next((i for i, rg in enumerate(self.rangos_viaje)
-                                  if abs(rg["distancia_desde"] - float(desde or 0)) < 0.001
-                                  and abs(rg["distancia_hasta"] - float(hasta or 0)) < 0.001), None)
+                 espera_pct, espera_monto, zona_v, cant_v) in viajes_detalle_rows:
+                zona_t = str(zona_v or "").strip()
+                rango_idx = self._indice_rango_guardado(zona_t, desde, hasta, precio)
                 if rango_idx is None:
                     continue
                 try:
                     dt = datetime.strptime(fecha_s, "%d/%m/%Y").date()
                 except Exception:
                     continue
+                cant_v = float(cant_v or 0)
+                precio_v = float(precio or 0)
+                monto_v = float(monto or 0)
+                if cant_v <= 0:
+                    # Registros antiguos sin el dato de cantidad: se deduce del monto/tarifa.
+                    if precio_v > 0 and monto_v > 0:
+                        cant_v = round(monto_v / precio_v, 4)
+                    else:
+                        cant_v = 1.0
                 self.viajes_registrados.append({
                     "fecha": dt, "categoria": categoria if categoria in dict(CATEGORIAS) else "normal",
                     "rango_idx": rango_idx, "vehiculo": str(vehiculo or ""),
-                    "precio": float(precio or 0), "monto": float(monto or 0),
+                    "cantidad": cant_v,
+                    "precio": precio_v, "monto": monto_v,
                     "desde": float(desde or 0), "hasta": float(hasta or 0),
+                    "zona": zona_t or str(self.rangos_viaje[rango_idx].get("nombre") or ""),
                     "espera_pct": float(espera_pct or 0), "espera_monto": float(espera_monto or 0),
                 })
             self.pintar_viajes()
@@ -5573,6 +5724,21 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
         self.tabla.bind("<Motion>", self._mostrar_tip_fechas)
         self.tabla.bind("<Leave>", lambda _e: self._ocultar_tip_fechas())
 
+        # 📤 Enviar el cálculo al cliente por correo o WhatsApp
+        f_envio = ctk.CTkFrame(self, corner_radius=8, fg_color="#eef4f8")
+        f_envio.pack(fill="x", padx=15, pady=(0, 2))
+        ctk.CTkLabel(f_envio, text="📤 Enviar el registro seleccionado al cliente:",
+                     font=(familia_fuente, 11, "bold"),
+                     text_color="#1f538d").pack(side="left", padx=(10, 6))
+        ctk.CTkButton(f_envio, text="📧 Correo electrónico", width=200, height=32,
+                      font=(familia_fuente, 11, "bold"), fg_color="#2980b9",
+                      hover_color="#1f618d",
+                      command=self.enviar_correo).pack(side="left", padx=5, pady=6)
+        ctk.CTkButton(f_envio, text="💬 WhatsApp", width=160, height=32,
+                      font=(familia_fuente, 11, "bold"), fg_color="#27ae60",
+                      hover_color="#1e8449",
+                      command=self.enviar_whatsapp).pack(side="left", padx=5, pady=6)
+
         f_btns = ctk.CTkFrame(self, fg_color="transparent")
         f_btns.pack(fill="x", padx=15, pady=10)
         btn_edit = ctk.CTkButton(f_btns, text="✏️ Editar", width=140, font=(familia_fuente, 12, "bold"),
@@ -5783,6 +5949,571 @@ class VentanaRegistrosCobranza(ctk.CTkToplevel):
             return
         if ruta:
             abrir_documento(ruta)
+
+    # =========================================================
+    # 📤 ENVIAR EL CÁLCULO POR CORREO O WHATSAPP
+    # =========================================================
+    def enviar_correo(self):
+        """Envía el cálculo seleccionado al correo del cliente."""
+        id_rec = self._id_seleccionado()
+        if id_rec is None:
+            return
+        EnviadorCobranza(self, self.app).enviar_correo(id_rec)
+
+    def enviar_whatsapp(self):
+        """Envía el cálculo seleccionado por WhatsApp."""
+        id_rec = self._id_seleccionado()
+        if id_rec is None:
+            return
+        EnviadorCobranza(self, self.app).enviar_whatsapp(id_rec)
+
+
+class EnviadorCobranza:
+    """Envía un cálculo de cobranza guardado por correo o WhatsApp.
+
+    Lo usan la ventana «Registros de Cobranza Guardados» y el paso 6 del
+    asistente (después de guardar y generar el PDF).
+    """
+
+    def __init__(self, parent, app):
+        self.parent = parent
+        self.app = app
+
+    # ---------- datos del registro ----------
+    def datos(self, id_rec):
+        """Datos del registro + contacto del cliente (correo y teléfono)."""
+        datos = None
+        conn = conectar_db(silencioso=True)
+        if not conn:
+            return None
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id_cliente, COALESCE(cliente_nombre, ''), COALESCE(cliente_ruc, ''),
+                       anio, mes, quincena, COALESCE(plan_cobro, ''), COALESCE(total, 0)
+                FROM cobranza_quincenas WHERE id=%s
+            ''', (id_rec,))
+            fila = cursor.fetchone()
+            if fila:
+                datos = {"id_cliente": fila[0], "nombre": str(fila[1]),
+                         "ruc": str(fila[2]), "anio": int(fila[3] or 0),
+                         "mes": int(fila[4] or 0), "quincena": int(fila[5] or 1),
+                         "plan": str(fila[6]), "total": float(fila[7] or 0)}
+        except Exception as e:
+            print("[cobranza] datos del registro:", e)
+            datos = None
+        finally:
+            liberar_conexion(conn)
+        if not datos:
+            return None
+        datos.update(_contacto_cliente(datos["id_cliente"], datos["ruc"]))
+        return datos
+
+    @staticmethod
+    def periodo_texto(datos):
+        """Periodo legible: 'Noviembre 2026' o 'Noviembre 2026 — 1ª quincena (1 al 15)'."""
+        try:
+            nombre_mes = NOMBRES_MESES[int(datos.get("mes") or 1) - 1]
+        except Exception:
+            nombre_mes = ""
+        base = ("%s %s" % (nombre_mes, datos.get("anio", ""))).strip()
+        if str(datos.get("plan") or "").strip() == "Por Punto o Viaje":
+            return base
+        try:
+            es_primera = int(datos.get("quincena") or 1) == 1
+        except Exception:
+            es_primera = True
+        quincena = "1ª quincena (1 al 15)" if es_primera else "2ª quincena (16 al fin)"
+        return "%s — %s" % (base, quincena)
+
+    def mensaje(self, datos):
+        """Asunto y cuerpo del mensaje que se envía al cliente."""
+        periodo = self.periodo_texto(datos)
+        total_txt = formatear_moneda(datos.get("total") or 0)
+        config = _cargar_config_local()
+        empresa = str(config.get("razon_social_empresa", "") or "").strip()
+        ruc_empresa = str(config.get("ruc_empresa", "") or "").strip()
+        asunto = "Cálculo de cobranza — %s — %s" % (datos["nombre"], periodo)
+        cuerpo = (
+            "Estimado(s) %s:\n\n"
+            "Le compartimos el cálculo de cobranza correspondiente a %s.\n\n"
+            "Total a cobrar: %s\n\n"
+            "Adjuntamos el detalle en PDF.\n\n"
+            "Quedamos atentos a cualquier consulta.\n\n"
+            "%s%s"
+        ) % (datos["nombre"], periodo, total_txt, empresa,
+             ("\nRUC: " + ruc_empresa) if ruc_empresa else "")
+        return asunto, cuerpo
+
+    def pdf(self, id_rec):
+        """Genera (o reutiliza) el PDF del registro y devuelve su ruta."""
+        if not REPORTLAB_DISPONIBLE:
+            messagebox.showerror("Falta ReportLab",
+                                 "Instale las dependencias con: python instalar_dependencias.py",
+                                 parent=self.parent)
+            return ""
+        try:
+            ruta = self.app._generar_pdf_desde_registro(id_rec)
+        except Exception as e:
+            messagebox.showerror("Error al generar el PDF",
+                                 f"Ocurrió un error inesperado:\n{e}",
+                                 parent=self.parent)
+            return ""
+        return ruta or ""
+
+    # ---------- correo ----------
+    def enviar_correo(self, id_rec, ruta=""):
+        """Envía el cálculo al correo del cliente."""
+        datos = self.datos(id_rec)
+        if not datos:
+            messagebox.showerror("Correo", "No se pudo leer el registro seleccionado.",
+                                 parent=self.parent)
+            return
+        destino = str(datos.get("correo") or "").strip()
+        if "@" not in destino:
+            destino = simpledialog.askstring(
+                "Correo del cliente",
+                "El cliente «%s» no tiene un correo registrado.\n\n"
+                "Escriba el correo de destino:" % datos["nombre"],
+                parent=self.parent)
+            destino = str(destino or "").strip()
+            if not destino:
+                return
+            if "@" not in destino:
+                messagebox.showwarning("Correo", "El correo escrito no es válido.",
+                                       parent=self.parent)
+                return
+        ruta = ruta or self.pdf(id_rec)
+        if not ruta:
+            return
+        asunto, cuerpo = self.mensaje(datos)
+        config = _cargar_config_local()
+        remitente = str(config.get("email_user", "") or "").strip()
+        clave = str(config.get("email_pass", "") or "").strip()
+        if remitente and clave:
+            self._enviar_correo_smtp(destino, asunto, cuerpo, ruta, config, id_rec)
+        else:
+            self._abrir_correo_externo(
+                destino, asunto, cuerpo, ruta,
+                nota=("El envío directo, con el PDF ya adjunto, se activa al "
+                      "configurar la cuenta de correo en «Configuración General»."))
+            registrar_auditoria(self.app.usuario_activo, "Cobranza",
+                                "Preparó en su gestor de correo el cálculo de cobranza N° %s para %s"
+                                % (id_rec, destino))
+
+    def _enviar_correo_smtp(self, destino, asunto, cuerpo, ruta, config, id_rec=None):
+        """Envía el correo con el PDF adjunto (en segundo plano)."""
+        servidor = str(config.get("email_smtp", "smtp.gmail.com") or "smtp.gmail.com").strip()
+        try:
+            puerto = int(str(config.get("email_port", "587") or "587"))
+        except Exception:
+            puerto = 587
+        remitente = str(config.get("email_user", "") or "").strip()
+        clave = str(config.get("email_pass", "") or "").strip()
+        empresa = str(config.get("razon_social_empresa", "") or "").strip()
+
+        def _enviar(estado):                      # 👈 hilo secundario (sin interfaz)
+            try:
+                msg = EmailMessage()
+                msg["Subject"] = asunto
+                msg["From"] = formataddr((empresa, remitente)) if empresa else remitente
+                msg["To"] = destino
+                msg.set_content(cuerpo)
+                with open(ruta, "rb") as archivo:
+                    msg.add_attachment(archivo.read(), maintype="application",
+                                       subtype="pdf", filename=os.path.basename(ruta))
+                if puerto == 465:
+                    server = smtplib.SMTP_SSL(servidor, puerto, timeout=30)
+                else:
+                    server = smtplib.SMTP(servidor, puerto, timeout=30)
+                try:
+                    server.ehlo()
+                    if puerto != 465:
+                        try:
+                            server.starttls()
+                            server.ehlo()
+                        except Exception:
+                            pass
+                    try:
+                        server.login(remitente, clave)
+                    except smtplib.SMTPAuthenticationError:
+                        # Las claves de aplicación de Gmail se muestran con espacios:
+                        # se prueban sin ellos antes de darse por vencido.
+                        server.login(remitente, clave.replace(" ", ""))
+                    server.send_message(msg)
+                finally:
+                    try:
+                        server.quit()
+                    except Exception:
+                        pass
+                estado["enviado"] = True
+            except Exception as error:
+                estado["error_envio"] = error
+
+        def _terminar(estado):                    # 👈 hilo principal
+            if estado.get("error_envio"):
+                if messagebox.askyesno(
+                        "No se pudo enviar",
+                        "No se pudo enviar el correo:\n\n%s\n\n"
+                        "¿Deseas abrir tu gestor de correo con el mensaje listo? "
+                        "(el PDF se copia al portapapeles)" % estado["error_envio"],
+                        parent=self.parent):
+                    self._abrir_correo_externo(destino, asunto, cuerpo, ruta)
+                return
+            registrar_auditoria(self.app.usuario_activo, "Cobranza",
+                                "Envió por correo el cálculo de cobranza N° %s a %s"
+                                % (id_rec, destino))
+            messagebox.showinfo("Correo enviado",
+                                "El cálculo de cobranza se envió a:\n\n%s" % destino,
+                                parent=self.parent)
+
+        ejecutar_en_hilo(self.parent, _enviar, al_terminar=_terminar)
+
+    def _abrir_correo_externo(self, destino, asunto, cuerpo, ruta, nota=""):
+        """Abre el gestor de correo del equipo con el mensaje listo y el PDF copiado."""
+        try:
+            copiado = _copiar_archivo_portapapeles(ruta)
+            if copiado:
+                detalle = ("El PDF se copió al portapapeles: haz clic en el cuerpo del "
+                           "correo y pégalo con Ctrl+V (Cmd+V en Mac) para adjuntarlo.")
+            else:
+                detalle = "Adjunta manualmente este archivo:\n%s" % ruta
+            messagebox.showinfo(
+                "Correo",
+                "Se abrirá tu gestor de correo con el mensaje ya escrito.\n\n"
+                + detalle + (("\n\n" + nota) if nota else ""),
+                parent=self.parent)
+            url = "mailto:%s?subject=%s&body=%s" % (
+                urllib.parse.quote(destino), urllib.parse.quote(asunto),
+                urllib.parse.quote(cuerpo))
+            webbrowser.open(url)
+        except Exception as error:
+            messagebox.showerror("Correo",
+                                 "No se pudo abrir el gestor de correo:\n%s" % error,
+                                 parent=self.parent)
+
+    # ---------- WhatsApp ----------
+    def enviar_whatsapp(self, id_rec, ruta=""):
+        """Abre WhatsApp con el mensaje listo y el PDF copiado para adjuntar."""
+        datos = self.datos(id_rec)
+        if not datos:
+            messagebox.showerror("WhatsApp", "No se pudo leer el registro seleccionado.",
+                                 parent=self.parent)
+            return
+        telefono = _normalizar_telefono_whatsapp(datos.get("telefono"))
+        if not telefono:
+            numero = simpledialog.askstring(
+                "WhatsApp",
+                "El cliente «%s» no tiene teléfono registrado.\n\n"
+                "Escriba el número (ej.: 987654321):" % datos["nombre"],
+                parent=self.parent)
+            telefono = _normalizar_telefono_whatsapp(numero)
+            if not telefono:
+                return
+        ruta = ruta or self.pdf(id_rec)
+        if not ruta:
+            return
+        config = _cargar_config_local()
+        empresa = str(config.get("razon_social_empresa", "") or "").strip()
+        saludo = str(datos.get("contacto") or "").strip()
+        mensaje = (
+            "%s\n\n"
+            "Le compartimos el cálculo de cobranza de *%s* — *%s*.\n"
+            "Total a cobrar: *%s*\n\n"
+            "Le adjunto el detalle en PDF.\n\n"
+            "%s"
+        ) % (("Hola *%s* 👋" % saludo) if saludo else "Hola 👋",
+             datos["nombre"], self.periodo_texto(datos),
+             formatear_moneda(datos.get("total") or 0), empresa)
+        copiado = _copiar_archivo_portapapeles(ruta)
+        if copiado:
+            messagebox.showinfo(
+                "WhatsApp",
+                "Se abrirá el chat de WhatsApp con el mensaje ya escrito.\n\n"
+                "El PDF se copió al portapapeles: en el chat haz clic en el cuadro de "
+                "mensaje y pégalo con Ctrl+V (Cmd+V en Mac) para adjuntarlo.",
+                parent=self.parent)
+        else:
+            messagebox.showinfo(
+                "WhatsApp",
+                "Se abrirá el chat de WhatsApp con el mensaje ya escrito.\n\n"
+                "Adjunta manualmente este archivo:\n%s" % ruta,
+                parent=self.parent)
+        url = "https://wa.me/%s?text=%s" % (telefono, urllib.parse.quote(mensaje))
+        try:
+            webbrowser.open(url)
+        except Exception as error:
+            messagebox.showerror("WhatsApp",
+                                 "No se pudo abrir WhatsApp:\n%s" % error,
+                                 parent=self.parent)
+            return
+        registrar_auditoria(self.app.usuario_activo, "Cobranza",
+                            "Envió por WhatsApp el cálculo de cobranza N° %s a %s"
+                            % (id_rec, telefono))
+
+
+# =========================================================
+# ✏️ EDITAR UN TRASLADO O UNA DEDUCCIÓN YA REGISTRADA
+# =========================================================
+class DialogoEditarItem(ctk.CTkToplevel):
+    """Corrige un traslado (o una deducción) ya registrado.
+
+    Permite cambiar fecha, zona, cantidad, vehículo, motivo y el sobrecargo
+    por tiempo de espera sin tener que quitarlo y volverlo a registrar.
+    """
+
+    def __init__(self, parent, app, registro, nombres_zonas, vehiculos,
+                 es_viaje=True, al_guardar=None):
+        super().__init__(parent)
+        self.app = app
+        self.registro = dict(registro or {})
+        self.nombres_zonas = list(nombres_zonas or [])
+        self.vehiculos = list(vehiculos or [])
+        self.es_viaje = bool(es_viaje)
+        self.al_guardar = al_guardar
+        self.familia = "Helvetica" if sys.platform == "darwin" else "Arial"
+
+        self.title("Editar traslado" if self.es_viaje else "Editar deducción")
+        ancho, alto = (690, 345) if self.es_viaje else (690, 300)
+        self.geometry("%dx%d" % (ancho, alto))
+        self.transient(parent)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+        self.update_idletasks()
+        try:
+            x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (ancho // 2)
+            y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (alto // 2)
+            self.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        except Exception:
+            pass
+        try:
+            self.bind("<Escape>", lambda _e: self.destroy())
+        except Exception:
+            pass
+
+        f = ctk.CTkFrame(self, corner_radius=10, border_width=1, border_color="#e0e0e0")
+        f.pack(fill="both", expand=True, padx=16, pady=(16, 8))
+        ctk.CTkLabel(f, text=("✏️ EDITAR TRASLADO" if self.es_viaje else "✏️ EDITAR DEDUCCIÓN"),
+                     font=(self.familia, 14, "bold"),
+                     text_color="#1f538d").pack(anchor="w", padx=16, pady=(12, 8))
+
+        # ---- Fecha y zona ----
+        fila = ctk.CTkFrame(f, fg_color="transparent")
+        fila.pack(fill="x", padx=16, pady=(0, 8))
+        ctk.CTkLabel(fila, text="Fecha:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.ent_fecha = ctk.CTkEntry(fila, width=120, placeholder_text="dd/mm/aaaa")
+        self.ent_fecha.pack(side="left", padx=(4, 2))
+        fecha = self.registro.get("fecha")
+        self.ent_fecha.insert(0, fecha.strftime("%d/%m/%Y") if hasattr(fecha, "strftime")
+                              else str(fecha or ""))
+        self.ent_fecha.bind("<KeyRelease>", lambda _e: self._actualizar_monto())
+        ctk.CTkButton(fila, text="📅", width=40, font=(self.familia, 12),
+                      command=self._calendario).pack(side="left", padx=(0, 14))
+        ctk.CTkLabel(fila, text="Zona:", font=(self.familia, 11, "bold")).pack(side="left")
+        self.cmb_zona = ctk.CTkOptionMenu(fila, values=self.nombres_zonas or ["—"],
+                                          width=230, font=(self.familia, 11),
+                                          command=lambda _v: self._actualizar_monto())
+        self.cmb_zona.pack(side="left", padx=(4, 0))
+        zona_actual = str(self.registro.get("zona") or "").strip()
+        if zona_actual in self.nombres_zonas:
+            self.cmb_zona.set(zona_actual)
+        elif self.nombres_zonas:
+            self.cmb_zona.set(self.nombres_zonas[0])
+
+        # ---- Cantidad / vehículo / motivo ----
+        fila2 = ctk.CTkFrame(f, fg_color="transparent")
+        fila2.pack(fill="x", padx=16, pady=(0, 8))
+        if self.es_viaje:
+            ctk.CTkLabel(fila2, text="Vehículo:",
+                         font=(self.familia, 11, "bold")).pack(side="left")
+            self.cmb_veh = ctk.CTkOptionMenu(
+                fila2, values=self.vehiculos or ["— Sin vehículo —"],
+                width=240, font=(self.familia, 11))
+            self.cmb_veh.pack(side="left", padx=(4, 14))
+            veh_actual = str(self.registro.get("vehiculo") or "")
+            if veh_actual in self.vehiculos:
+                self.cmb_veh.set(veh_actual)
+            elif self.vehiculos:
+                self.cmb_veh.set(self.vehiculos[0])
+        ctk.CTkLabel(fila2, text="Cantidad:",
+                     font=(self.familia, 11, "bold")).pack(side="left")
+        self.cmb_cant = ctk.CTkComboBox(fila2, values=CANTIDADES_TRASLADO, width=90,
+                                        justify="center", font=(self.familia, 11),
+                                        dropdown_font=(self.familia, 11),
+                                        command=lambda _v: self._actualizar_monto())
+        self.cmb_cant.set("%g" % (float(self.registro.get("cantidad") or 0) or 1))
+        self.cmb_cant.pack(side="left", padx=(4, 14))
+        if not self.es_viaje:
+            ctk.CTkLabel(fila2, text="Motivo:",
+                         font=(self.familia, 11, "bold")).pack(side="left")
+            self.ent_motivo = ctk.CTkEntry(fila2, width=320,
+                                           placeholder_text="Ej.: servicio no realizado")
+            self.ent_motivo.pack(side="left", padx=(4, 0))
+            self.ent_motivo.insert(0, str(self.registro.get("motivo") or ""))
+
+        # ---- Tiempo de espera (solo traslados) ----
+        if self.es_viaje:
+            fila3 = ctk.CTkFrame(f, fg_color="transparent")
+            fila3.pack(fill="x", padx=16, pady=(0, 6))
+            self.chk_espera = ctk.CTkCheckBox(
+                fila3, text="⏱ Tiempo de espera superado",
+                font=(self.familia, 11, "bold"),
+                checkbox_width=18, checkbox_height=18,
+                command=self._actualizar_monto)
+            self.chk_espera.pack(side="left")
+            if float(self.registro.get("espera_monto") or 0) > 0.005:
+                self.chk_espera.select()
+            ctk.CTkLabel(fila3, text="Sobrecargo:",
+                         font=(self.familia, 11, "bold")).pack(side="left", padx=(14, 4))
+            self.ent_pct = ctk.CTkEntry(fila3, width=60, justify="center")
+            pct_actual = float(self.registro.get("espera_pct") or 0) or 10.0
+            self.ent_pct.insert(0, "%g" % pct_actual)
+            self.ent_pct.pack(side="left")
+            self.ent_pct.bind("<KeyRelease>", lambda _e: self._actualizar_monto())
+            ctk.CTkLabel(fila3, text="% del monto",
+                         font=(self.familia, 10),
+                         text_color="#555").pack(side="left", padx=(4, 0))
+
+        self.lbl_monto = ctk.CTkLabel(f, text="", font=(self.familia, 12, "bold"),
+                                      text_color="#27ae60")
+        self.lbl_monto.pack(anchor="w", padx=16, pady=(2, 2))
+
+        barra = ctk.CTkFrame(f, fg_color="transparent")
+        barra.pack(fill="x", padx=16, pady=(4, 12))
+        ctk.CTkButton(barra, text="💾 Guardar cambios", width=200, height=36,
+                      font=(self.familia, 12, "bold"), fg_color="#27ae60",
+                      hover_color="#1e8449",
+                      command=self._guardar).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(barra, text="✖ Cancelar", width=130, height=36,
+                      font=(self.familia, 12, "bold"), fg_color="#7f8c8d",
+                      hover_color="#606b6b", command=self.destroy).pack(side="left")
+
+        self._actualizar_monto()
+
+    # ---------- utilidades ----------
+    def _fecha(self):
+        try:
+            return datetime.strptime(str(self.ent_fecha.get()).strip(), "%d/%m/%Y").date()
+        except Exception:
+            return None
+
+    def _calendario(self):
+        try:
+            try:
+                anio_cal, mes_cal, _q = self.app.periodo_actual()
+            except Exception:
+                anio_cal, mes_cal = datetime.now().year, datetime.now().month
+            CalendarioPopup(self, self.ent_fecha, self._actualizar_monto,
+                            anio=anio_cal, mes=mes_cal,
+                            dias_resaltados={d["fecha"].day: d["categoria"]
+                                             for d in (getattr(self.app, "dias", []) or [])
+                                             if d["fecha"].year == anio_cal
+                                             and d["fecha"].month == mes_cal},
+                            feriados=getattr(self.app, "feriados", {}) or {})
+        except Exception as e:
+            messagebox.showwarning("Calendario",
+                                   "Escriba la fecha como dd/mm/aaaa." + chr(10) + str(e),
+                                   parent=self)
+
+    def _indice_zona(self):
+        nombre = str(self.cmb_zona.get() or "").strip()
+        if not nombre or nombre == "—":
+            return None
+        try:
+            idx = self.nombres_zonas.index(nombre)
+        except ValueError:
+            return None
+        if 0 <= idx < len(self.app.rangos_viaje):
+            return idx
+        return None
+
+    def _cantidad(self):
+        try:
+            return float(str(self.cmb_cant.get()).replace(",", ".").strip() or 0)
+        except Exception:
+            return 0.0
+
+    def _datos_calculados(self):
+        """(fecha, idx, cant, categoria, rango, precio, monto) o None si falta algo."""
+        fecha = self._fecha()
+        idx = self._indice_zona()
+        cant = self._cantidad()
+        if fecha is None or idx is None or cant <= 0:
+            return None
+        rg = self.app.rangos_viaje[idx]
+        cat = self.app._categoria_para_fecha(fecha)
+        precio = float(rg.get("precio_%s" % cat) or 0)
+        return fecha, idx, cant, cat, rg, precio, precio * cant
+
+    def _actualizar_monto(self):
+        datos = self._datos_calculados()
+        if not datos:
+            self.lbl_monto.configure(text="Monto: —", text_color="#7f8c8d")
+            return
+        _fecha, _idx, _cant, cat, _rg, _precio, monto = datos
+        espera = 0.0
+        if self.es_viaje and self.chk_espera.get():
+            try:
+                pct = float(str(self.ent_pct.get()).replace(",", ".").strip() or 0)
+            except Exception:
+                pct = 0.0
+            if 0 < pct <= 100:
+                espera = round(monto * pct / 100.0, 2)
+        texto = "Monto: %s  ·  %s" % (formatear_moneda(monto),
+                                      dict(CATEGORIAS).get(cat, cat))
+        if espera > 0.005:
+            texto += "  +  espera %s  =  %s" % (
+                formatear_moneda(espera), formatear_moneda(monto + espera))
+        self.lbl_monto.configure(text=texto, text_color="#27ae60")
+
+    def _guardar(self):
+        datos = self._datos_calculados()
+        if not datos:
+            if self._fecha() is None:
+                return messagebox.showwarning(
+                    "Fecha", "Escriba la fecha como dd/mm/aaaa.", parent=self)
+            if self._indice_zona() is None:
+                return messagebox.showwarning("Zona", "Elija la zona.", parent=self)
+            return messagebox.showwarning(
+                "Cantidad", "La cantidad debe ser mayor a 0 (puede ser 0.5).",
+                parent=self)
+        fecha, idx, cant, cat, rg, precio, monto = datos
+        nuevos = {
+            "fecha": fecha, "categoria": cat, "rango_idx": idx,
+            "zona": str(rg.get("nombre") or ""),
+            "precio": precio, "monto": monto, "cantidad": cant,
+            "desde": rg.get("distancia_desde", 0),
+            "hasta": rg.get("distancia_hasta", 0),
+        }
+        if self.es_viaje:
+            vehiculo = str(self.cmb_veh.get() or "")
+            nuevos["vehiculo"] = "" if vehiculo.startswith("—") else vehiculo
+            espera_pct, espera_monto = 0.0, 0.0
+            if self.chk_espera.get():
+                try:
+                    pct = float(str(self.ent_pct.get()).replace(",", ".").strip() or 0)
+                except Exception:
+                    pct = 0.0
+                if not (0 < pct <= 100):
+                    return messagebox.showwarning(
+                        "Tiempo de espera",
+                        "Escriba el porcentaje del sobrecargo (mayor a 0 y hasta 100).",
+                        parent=self)
+                espera_pct = pct
+                espera_monto = round(monto * pct / 100.0, 2)
+            nuevos["espera_pct"] = espera_pct
+            nuevos["espera_monto"] = espera_monto
+        else:
+            nuevos["motivo"] = str(self.ent_motivo.get() or "").strip()
+        if self.al_guardar:
+            try:
+                self.al_guardar(nuevos)
+            except Exception as e:
+                return messagebox.showerror(
+                    "Editar", "No se pudo aplicar el cambio:\n%s" % e, parent=self)
+        self.destroy()
 
 
 # =========================================================
@@ -7184,7 +7915,7 @@ class AsistenteCobranza(ctk.CTkToplevel):
         self._titulo("Paso 4 de 6 — Traslados y deducciones por ZONA",
                      "Cada traslado lleva su FECHA (puede ser cualquier día). El precio sale de la "
                      "ZONA elegida según el día: normal, domingo o feriado. Puedes poner la cantidad "
-                     "de viajes de esa fecha.")
+                     "de viajes de esa fecha. Doble clic en una fila (o el botón ✏️) para editarla.")
         rangos = getattr(self.app, "rangos_viaje", []) or []
         if not rangos:
             f = self._tarjeta("🛣️ Traslados")
@@ -7219,9 +7950,17 @@ class AsistenteCobranza(ctk.CTkToplevel):
             self.tabla_traslados.column(col, width=ancho,
                                         anchor="w" if col in ("zona", "vehiculo") else "center")
         self.tabla_traslados.pack(fill="x", padx=15, pady=(6, 4))
-        ctk.CTkButton(f_reg, text="➖ Quitar traslado seleccionado", width=240,
-                      font=(self.familia, 11, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
-                      command=self._quitar_traslado_asistente).pack(anchor="w", padx=15, pady=(0, 10))
+        self.tabla_traslados.bind("<Double-1>", self._doble_clic_traslado)
+        f_acc = ctk.CTkFrame(f_reg, fg_color="transparent")
+        f_acc.pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkButton(f_acc, text="✏️ Editar traslado seleccionado", width=250, height=30,
+                      font=(self.familia, 11, "bold"), fg_color="#2980b9",
+                      hover_color="#1f618d",
+                      command=self._editar_traslado_asistente).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(f_acc, text="➖ Quitar traslado seleccionado", width=240, height=30,
+                      font=(self.familia, 11, "bold"), fg_color="#e74c3c",
+                      hover_color="#c0392b",
+                      command=self._quitar_traslado_asistente).pack(side="left")
 
         # ---------------- ALTA DE TRASLADO ----------------
         f_alta = self._tarjeta("➕ Registrar traslado")
@@ -7241,8 +7980,12 @@ class AsistenteCobranza(ctk.CTkToplevel):
                                                 font=(self.familia, 11))
         self.combo_veh_asis.pack(side="left", padx=(4, 10))
         ctk.CTkLabel(fila, text="Cantidad:", font=(self.familia, 11, "bold")).pack(side="left")
-        self.ent_cant_asis = ctk.CTkEntry(fila, width=60, justify="center")
-        self.ent_cant_asis.insert(0, "1")
+        # 🚚 Desplegable de cantidades (editable: también admite 0.5 = medio viaje)
+        self.ent_cant_asis = ctk.CTkComboBox(fila, values=CANTIDADES_TRASLADO,
+                                             width=85, font=(self.familia, 11),
+                                             justify="center",
+                                             dropdown_font=(self.familia, 11))
+        self.ent_cant_asis.set("1")
         self.ent_cant_asis.pack(side="left", padx=(4, 10))
         ctk.CTkButton(fila, text="➕ Agregar traslado", width=170, height=32,
                       font=(self.familia, 11, "bold"), fg_color="#27ae60", hover_color="#1e8449",
@@ -7258,7 +8001,7 @@ class AsistenteCobranza(ctk.CTkToplevel):
         ctk.CTkLabel(fila_esp, text="Sobrecargo:", font=(self.familia, 11, "bold")).pack(
             side="left", padx=(15, 4))
         self.ent_espera_pct_asis = ctk.CTkEntry(fila_esp, width=60, justify="center")
-        self.ent_espera_pct_asis.insert(0, "20")
+        self.ent_espera_pct_asis.insert(0, "10")
         self.ent_espera_pct_asis.pack(side="left")
         ctk.CTkLabel(fila_esp, text="% del monto del traslado", font=(self.familia, 10),
                      text_color="#555").pack(side="left", padx=(4, 0))
@@ -7282,8 +8025,11 @@ class AsistenteCobranza(ctk.CTkToplevel):
                                                      font=(self.familia, 11))
         self.combo_zona_ded_asis.pack(side="left", padx=(4, 10))
         ctk.CTkLabel(fila2, text="Cantidad:", font=(self.familia, 11, "bold")).pack(side="left")
-        self.ent_cant_ded_asis = ctk.CTkEntry(fila2, width=60, justify="center")
-        self.ent_cant_ded_asis.insert(0, "1")
+        self.ent_cant_ded_asis = ctk.CTkComboBox(fila2, values=CANTIDADES_TRASLADO,
+                                                 width=85, font=(self.familia, 11),
+                                                 justify="center",
+                                                 dropdown_font=(self.familia, 11))
+        self.ent_cant_ded_asis.set("1")
         self.ent_cant_ded_asis.pack(side="left", padx=(4, 10))
         ctk.CTkLabel(fila2, text="Motivo:", font=(self.familia, 11, "bold")).pack(side="left")
         self.ent_motivo_ded_asis = ctk.CTkEntry(fila2, width=200,
@@ -7303,9 +8049,17 @@ class AsistenteCobranza(ctk.CTkToplevel):
             self.tabla_ded_asis.column(col, width=ancho,
                                        anchor="w" if col in ("zona", "motivo") else "center")
         self.tabla_ded_asis.pack(fill="x", padx=15, pady=(4, 4))
-        ctk.CTkButton(f_ded, text="➖ Quitar deducción seleccionada", width=240,
-                      font=(self.familia, 11, "bold"), fg_color="#e74c3c", hover_color="#c0392b",
-                      command=self._quitar_ded_asistente).pack(anchor="w", padx=15, pady=(0, 10))
+        self.tabla_ded_asis.bind("<Double-1>", self._doble_clic_ded)
+        f_acc_ded = ctk.CTkFrame(f_ded, fg_color="transparent")
+        f_acc_ded.pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkButton(f_acc_ded, text="✏️ Editar deducción seleccionada", width=250, height=30,
+                      font=(self.familia, 11, "bold"), fg_color="#2980b9",
+                      hover_color="#1f618d",
+                      command=self._editar_ded_asistente).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(f_acc_ded, text="➖ Quitar deducción seleccionada", width=240, height=30,
+                      font=(self.familia, 11, "bold"), fg_color="#e74c3c",
+                      hover_color="#c0392b",
+                      command=self._quitar_ded_asistente).pack(side="left")
 
         self._pintar_traslados_asistente()
         self._actualizar_cat_asis()
@@ -7406,14 +8160,89 @@ class AsistenteCobranza(ctk.CTkToplevel):
         if not (0 <= posicion < len(self.app.viajes_registrados)):
             return
         registro = self.app.viajes_registrados.pop(posicion)
-        idx = registro.get("rango_idx")
-        cat = registro.get("categoria") or "normal"
-        cant = float(registro.get("cantidad") or 1)
+        self._ajustar_viajes_zona(registro.get("rango_idx"), registro.get("categoria"),
+                                  -float(registro.get("cantidad") or 1))
+        self._refrescar_totales_asis()
+
+    # ---------- editar traslados / deducciones ya registrados ----------
+    def _vehiculos_asis(self):
         try:
-            rg = self.app.rangos_viaje[idx]
-            rg["viajes"][cat] = max(0.0, float(rg["viajes"].get(cat, 0) or 0) - cant)
+            valores = list(self.combo_veh_asis.cget("values"))
+        except Exception:
+            valores = []
+        return [v for v in valores if str(v or "").strip()] or ["— Sin vehículo —"]
+
+    def _doble_clic_traslado(self, evento):
+        """Doble clic sobre una fila de traslados: abre el editor."""
+        try:
+            if not self.tabla_traslados.identify_row(evento.y):
+                return
+        except Exception:
+            return
+        self._editar_traslado_asistente()
+
+    def _doble_clic_ded(self, evento):
+        """Doble clic sobre una fila de deducciones: abre el editor."""
+        try:
+            if not self.tabla_ded_asis.identify_row(evento.y):
+                return
+        except Exception:
+            return
+        self._editar_ded_asistente()
+
+    def _editar_traslado_asistente(self):
+        sel = self.tabla_traslados.selection()
+        if not sel:
+            return messagebox.showwarning("Traslados", "Elija el traslado que quiere editar.",
+                                          parent=self)
+        posicion = int(sel[0])
+        if not (0 <= posicion < len(self.app.viajes_registrados)):
+            return
+        DialogoEditarItem(
+            self, self.app, self.app.viajes_registrados[posicion],
+            getattr(self, "_nombres_zonas_asis", []) or [], self._vehiculos_asis(),
+            es_viaje=True,
+            al_guardar=lambda nuevos: self._aplicar_edicion_traslado(posicion, nuevos))
+
+    def _ajustar_viajes_zona(self, rango_idx, categoria, delta):
+        """Suma/resta viajes al conteo de la zona indicada."""
+        try:
+            rg = self.app.rangos_viaje[rango_idx]
+            cat = categoria if categoria in ("normal", "domingo", "feriado") else "normal"
+            rg["viajes"][cat] = max(0.0, float(rg["viajes"].get(cat, 0) or 0) + float(delta))
         except Exception:
             pass
+
+    def _aplicar_edicion_traslado(self, posicion, nuevos):
+        """Aplica los cambios de un traslado y actualiza los conteos por zona."""
+        if not (0 <= posicion < len(self.app.viajes_registrados)):
+            return
+        anterior = self.app.viajes_registrados[posicion]
+        self._ajustar_viajes_zona(anterior.get("rango_idx"), anterior.get("categoria"),
+                                  -float(anterior.get("cantidad") or 0))
+        anterior.update(nuevos)
+        self._ajustar_viajes_zona(nuevos.get("rango_idx"), nuevos.get("categoria"),
+                                  float(nuevos.get("cantidad") or 0))
+        self._refrescar_totales_asis()
+
+    def _editar_ded_asistente(self):
+        sel = self.tabla_ded_asis.selection()
+        if not sel:
+            return messagebox.showwarning("Deducciones", "Elija la deducción que quiere editar.",
+                                          parent=self)
+        posicion = int(sel[0])
+        if not (0 <= posicion < len(self.app.deducciones_registradas)):
+            return
+        DialogoEditarItem(
+            self, self.app, self.app.deducciones_registradas[posicion],
+            getattr(self, "_nombres_zonas_asis", []) or [], [],
+            es_viaje=False,
+            al_guardar=lambda nuevos: self._aplicar_edicion_ded(posicion, nuevos))
+
+    def _aplicar_edicion_ded(self, posicion, nuevos):
+        if not (0 <= posicion < len(self.app.deducciones_registradas)):
+            return
+        self.app.deducciones_registradas[posicion].update(nuevos)
         self._refrescar_totales_asis()
 
     def _agregar_ded_asistente(self):
@@ -7480,12 +8309,13 @@ class AsistenteCobranza(ctk.CTkToplevel):
                      else self.app.deducciones_registradas)
             for posicion, registro in enumerate(lista):
                 idx = registro.get("rango_idx")
+                zona_guardada = str(registro.get("zona") or "").strip()
                 try:
                     rg = self.app.rangos_viaje[idx]
-                    zona = rg.get("nombre") or (
-                        _etiqueta_rango(rg))
+                    zona = (zona_guardada or rg.get("nombre")
+                            or _etiqueta_rango(rg))
                 except Exception:
-                    zona = registro.get("zona", "")
+                    zona = zona_guardada or "—"
                 fecha = registro.get("fecha")
                 fecha_txt = fecha.strftime("%d/%m/%Y") if hasattr(fecha, "strftime") else str(fecha)
                 cat = str(registro.get("categoria") or "")
@@ -7556,13 +8386,29 @@ class AsistenteCobranza(ctk.CTkToplevel):
         except Exception:
             pass
         btns = ctk.CTkFrame(f, fg_color="transparent")
-        btns.pack(fill="x", padx=15, pady=(8, 14))
+        btns.pack(fill="x", padx=15, pady=(8, 4))
         ctk.CTkButton(btns, text="💾 Guardar", width=220, height=40,
                       font=(self.familia, 13, "bold"), fg_color="#27ae60", hover_color="#1e8449",
                       command=self._guardar).pack(side="left", padx=(0, 10))
         ctk.CTkButton(btns, text="📄 Guardar y generar PDF", width=270, height=40,
                       font=(self.familia, 13, "bold"), fg_color="#c0392b", hover_color="#922b21",
                       command=self._guardar_y_pdf).pack(side="left")
+
+        # 📤 Guardar + generar el PDF + enviarlo al cliente en un solo paso
+        btns_envio = ctk.CTkFrame(f, fg_color="transparent")
+        btns_envio.pack(fill="x", padx=15, pady=(2, 10))
+        ctk.CTkLabel(btns_envio, text="📤 Guardar, generar el PDF y enviarlo:",
+                     font=(self.familia, 11, "bold"),
+                     text_color="#1f538d").pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btns_envio, text="📧 Enviar por correo", width=230, height=40,
+                      font=(self.familia, 12, "bold"), fg_color="#2980b9",
+                      hover_color="#1f618d",
+                      command=lambda: self._guardar_pdf_y_enviar("correo")).pack(
+            side="left", padx=(0, 10))
+        ctk.CTkButton(btns_envio, text="💬 Enviar por WhatsApp", width=230, height=40,
+                      font=(self.familia, 12, "bold"), fg_color="#27ae60",
+                      hover_color="#1e8449",
+                      command=lambda: self._guardar_pdf_y_enviar("whatsapp")).pack(side="left")
         ctk.CTkLabel(f, text="Sugerencia: si el PDF no se abre, ciérralo en tu visor y vuelve a generarlo.",
                      font=(self.familia, 10), text_color="#7f8c8d").pack(anchor="w", padx=15, pady=(0, 12))
 
@@ -7595,6 +8441,29 @@ class AsistenteCobranza(ctk.CTkToplevel):
                 abrir_documento(ruta)
         except Exception as e:
             messagebox.showerror("Error al generar el PDF", str(e), parent=self)
+
+    def _guardar_pdf_y_enviar(self, canal):
+        """Guarda la quincena, genera el PDF y lo envía por correo o WhatsApp."""
+        self._sincronizar_notas()
+        try:
+            if not self.app.guardar_quincena():
+                return
+        except Exception as e:
+            messagebox.showerror("Error al guardar", str(e), parent=self)
+            return
+        id_rec = self.app.registro_editando
+        try:
+            ruta = self.app._generar_pdf_desde_registro(id_rec)
+        except Exception as e:
+            messagebox.showerror("Error al generar el PDF", str(e), parent=self)
+            return
+        if not ruta:
+            return
+        enviador = EnviadorCobranza(self, self.app)
+        if canal == "correo":
+            enviador.enviar_correo(id_rec, ruta=ruta)
+        else:
+            enviador.enviar_whatsapp(id_rec, ruta=ruta)
 
 
 if __name__ == "__main__":

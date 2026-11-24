@@ -2569,8 +2569,14 @@ class FacturasEmitidasTab:
         self.ent_desc.pack(fill="x", padx=10, pady=(0, 8))
 
         ctk.CTkLabel(self.f_form, text="Orden de Compra:", font=("Arial", 11, "bold"), text_color="#166534").pack(anchor="w", padx=10)
-        self.combo_oc = ctk.CTkComboBox(self.f_form, state="readonly")
-        self.combo_oc.pack(fill="x", padx=10, pady=(0, 8))
+        self.combo_oc = ctk.CTkComboBox(self.f_form, state="readonly",
+                                        command=lambda _v: self._actualizar_info_oc())
+        self.combo_oc.pack(fill="x", padx=10, pady=(0, 2))
+        # 📋 Detalle de la OC elegida (se completa en _actualizar_info_oc)
+        self.lbl_oc_info = ctk.CTkLabel(self.f_form, text="", font=("Arial", 9),
+                                        text_color="#555555", justify="left",
+                                        wraplength=290)
+        self.lbl_oc_info.pack(anchor="w", padx=10, pady=(0, 6))
 
         ctk.CTkLabel(self.f_form, text="Monto Base (Sin IGV / Subtotal):", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         self.ent_subtotal = ctk.CTkEntry(self.f_form)
@@ -2764,6 +2770,53 @@ class FacturasEmitidasTab:
         if hasattr(self, 'combo_oc'):
             self.combo_oc.configure(values=ocs)
             self.combo_oc.set("--- Sin Orden de Compra ---")
+            self._actualizar_info_oc()
+
+    def _actualizar_info_oc(self):
+        """Muestra el detalle de la OC elegida y avisa si el monto no cuadra."""
+        try:
+            numero = self.combo_oc.get().strip()
+            if not numero or numero == "--- Sin Orden de Compra ---":
+                self.lbl_oc_info.configure(text="", text_color="#555555")
+                return
+            datos = None
+            conn = conectar_db(silencioso=True)
+            if conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("""
+                        SELECT COALESCE(cliente, ''), COALESCE(monto_total, 0),
+                               COALESCE(descripcion, '')
+                        FROM ordenes_compra_clientes
+                        WHERE numero_oc = %s ORDER BY id DESC LIMIT 1
+                    """, (numero,))
+                    datos = c.fetchone()
+                finally:
+                    liberar_conexion(conn)
+            if not datos:
+                self.lbl_oc_info.configure(text="", text_color="#555555")
+                return
+            cliente, monto, descripcion = datos
+            monto = float(monto or 0)
+            texto = "OC %s · %s · S/ %s" % (numero, str(cliente or ""),
+                                             formatear_moneda(monto))
+            _desc_oc = str(descripcion or "").strip()
+            if _desc_oc:
+                texto += "   ·   " + _desc_oc[:60]
+            try:
+                total_factura = _texto_a_numero(self.ent_subtotal.get())
+                if "Factura" in self.combo_tipo.get():
+                    total_factura = total_factura * 1.18
+            except Exception:
+                total_factura = 0.0
+            color = "#1e8449"
+            if total_factura > 0 and abs(total_factura - monto) > 0.5:
+                texto += ("   ⚠️ no coincide con el total de la factura (S/ %s)"
+                          % formatear_moneda(total_factura))
+                color = "#c0392b"
+            self.lbl_oc_info.configure(text=texto, text_color=color)
+        except Exception as e:
+            print("Aviso - info de la OC:", e)
 
     def on_tipo_change(self, choice):
         # 🧾 El total escrito solo se descarta si CAMBIA el tipo de documento
@@ -3339,6 +3392,10 @@ class FacturasEmitidasTab:
             if hasattr(self, "lbl_archivo"):
                 self.lbl_archivo.configure(text="Sin PDF adjunto", text_color="#999999")
             self.combo_oc.set("--- Sin Orden de Compra ---")
+            try:
+                self._actualizar_info_oc()
+            except Exception:
+                pass
             self.id_cobranza_seleccionada = None
             self.total_cobranza_seleccionada = 0.0
             if hasattr(self, "lbl_cobranza_info"):

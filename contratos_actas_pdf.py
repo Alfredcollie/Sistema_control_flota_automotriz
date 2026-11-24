@@ -302,9 +302,12 @@ def _crear_pdf(ruta, historia, margenes):
         # las ACTAS llevan 5 mm menos arriba para que las firmas no salten de hoja
         if "acta" in os.path.basename(str(ruta)).lower():
             superior = 1.0
+            inferior = max(inferior, 5.3)      # actas: pie ajustado al membrete
         else:
-            superior = min(superior, 1.5)  # sin margen arriba (lo pide el membrete)
-        inferior = max(inferior, 5.3)      # pie ajustado (el membrete empieza en 5,2 cm)
+            superior = min(superior, 1.5)      # sin margen arriba (lo pide el membrete)
+            # 📄 Contratos: mismo margen inferior que el documento modelo
+            #    (deja el texto en 6,0 cm y produce las 5 hojas exactas).
+            inferior = max(inferior, 6.0)
         izquierda = 2.5                    # 2,5 cm (1 cm más por lado)
         derecha = 2.5                      # 2,5 cm
     documento = SimpleDocTemplate(

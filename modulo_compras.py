@@ -29,6 +29,7 @@ import xml.etree.ElementTree as ET
 import base64
 import time
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 import threading
 
 # 🚀 IMPORTAMOS NUESTRAS HERRAMIENTAS CORPORATIVAS
@@ -3175,6 +3176,52 @@ def _redondear_detraccion(monto):
     except Exception:
         return 0.0
 
+
+# =========================================================
+# 🍽️ RECARGO AL CONSUMO DE RESTAURANTES (8% del valor de venta)
+# =========================================================
+RECARGO_CONSUMO_PCT = 8.0
+
+
+def _redondear_2_half_up(monto):
+    """Redondeo comercial a 2 decimales: 6.842 -> 6.84 · 6.845 -> 6.85."""
+    try:
+        return float(Decimal(str(monto)).quantize(Decimal("0.01"),
+                                                  rounding=ROUND_HALF_UP))
+    except Exception:
+        try:
+            return round(float(monto or 0) + 1e-9, 2)
+        except Exception:
+            return 0.0
+
+
+def recargo_consumo_8(valor_venta):
+    """8% del valor de venta (subtotal SIN IGV), redondeado a 2 decimales."""
+    return _redondear_2_half_up(float(valor_venta or 0) * RECARGO_CONSUMO_PCT / 100.0)
+
+
+def recargo_restaurante(base=0.0, total=0.0, recargo=0.0):
+    """Devuelve (base, recargo) de una factura de restaurante.
+
+    - Si el comprobante ya trae un recargo, se respeta (es lo que se cobró).
+    - Si no, se calcula el 8% del valor de venta. Si solo se conoce el total,
+      se deduce la base con IGV 10.5% + recargo 8% (total = base × 1.185).
+    """
+    try:
+        base = float(base or 0)
+        total = float(total or 0)
+        recargo = float(recargo or 0)
+    except Exception:
+        return 0.0, 0.0
+    if recargo > 0:
+        return _redondear_2_half_up(base), _redondear_2_half_up(recargo)
+    if base <= 0 and total > 0:
+        base = total / (1.0 + 0.105 + RECARGO_CONSUMO_PCT / 100.0)
+    if base <= 0:
+        return 0.0, 0.0
+    base = _redondear_2_half_up(base)
+    return base, recargo_consumo_8(base)
+
 class CalendarioNativo(ctk.CTkToplevel):
     def __init__(self, parent, target_entry, al_elegir=None):
         # 'al_elegir' es opcional: al elegir la fecha se avisa (si se pidió).
@@ -5455,7 +5502,21 @@ class FacturasRecibidasTab:
 
             montos = extraer_montos_comprobante(texto)
             tasa_leida = tasa_igv_de_montos(montos["base"], montos["igv"])
-            es_restaurante = montos["recargo"] > 0 or abs(tasa_leida - 10.5) < 0.01
+            es_restaurante = (montos["recargo"] > 0
+                              or abs(tasa_leida - 10.5) < 0.01
+                              or bool(re.search(r"RESTAURANT|RECARGO\s+AL\s+CONSUMO|"
+                                                r"SERVICIO\s+AL\s+CONSUMO",
+                                                texto, re.IGNORECASE)))
+
+            # 🍽️ Si el comprobante no trae el recargo impreso, se calcula el 8%
+            #    del valor de venta (subtotal sin IGV), redondeado a 2 decimales.
+            recargo_calculado = 0.0
+            if es_restaurante and montos["recargo"] <= 0:
+                base_r, recargo_r = recargo_restaurante(montos["base"], montos["total"], 0.0)
+                if recargo_r > 0:
+                    montos["base"] = base_r
+                    montos["recargo"] = recargo_r
+                    recargo_calculado = recargo_r
 
             # ---- Tipo de documento ----
             texto_mayus = texto.upper()
@@ -5569,7 +5630,10 @@ class FacturasRecibidasTab:
                               "Revise la fecha, el N° de documento y los montos antes de guardar.")
             if fecha_ilegible:
                 avisos.append("No se pudo leer la fecha con seguridad: corríjala a mano.")
-            if montos["recargo"] > 0:
+            if recargo_calculado > 0:
+                avisos.append("Recargo al consumo 8%% calculado sobre el valor de venta: %s "
+                              "(redondeado a 2 decimales)." % formatear_moneda(recargo_calculado))
+            elif montos["recargo"] > 0:
                 avisos.append(f"Recargo al consumo detectado: {formatear_moneda(montos['recargo'])} "
                               "(se suma al total y no lleva IGV).")
             messagebox.showinfo("Extracción Inteligente",
@@ -6633,8 +6697,9 @@ class FacturasRecibidasTab:
         if any(str(o).strip().casefold() == texto.casefold() for o in opciones):
             self.al_seleccionar_proveedor()
 
-    def cargar_proveedores_bd(self):
-        provs = cache_sistema.obtener("lista_proveedores_combobox")
+    def cargar_proveedores_bd(self, forzar=False):
+        """Carga el combo de proveedores (caché salvo `forzar=True`)."""
+        provs = None if forzar else cache_sistema.obtener("lista_proveedores_combobox")
         if provs is not None:
             self._aplicar_provs(provs)
             return
@@ -6659,6 +6724,10 @@ class FacturasRecibidasTab:
         # El hilo solo consulta; el combo se llena desde el hilo principal
         ejecutar_en_hilo(self.main_root, _leer_proveedores,
                          al_terminar=lambda e: self._aplicar_provs(e.get("valor") or []))
+
+    def refrescar_proveedores(self):
+        """🔄 Vuelve a leer de la base la lista de proveedores del combo."""
+        self.cargar_proveedores_bd(forzar=True)
             
     def _aplicar_provs(self, provs):
         if provs:
@@ -7383,8 +7452,8 @@ class FacturasRecibidasTab:
         self.actualizar_totales()
 
     def actualizar_totales(self, *args):
-        if not hasattr(self, "ent_subtotal"):
-            return
+        if not hasattr(self, "ent_subtotal") or not hasattr(self, "lbl_base"):
+            return   # el formulario todavía se está construyendo
         self._refrescar_etiqueta_modo()
         tipo = self.combo_tipo.get()
         try:
@@ -9908,7 +9977,7 @@ class CuentasPorPagarTab:
 
                     # Se traen TODOS los comprobantes del filtro/mes (sin LIMIT) para
                     # poder ordenar por cualquier columna en todas las páginas
-                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(delivery, 0) FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
+                    cursor.execute(f"SELECT id, fecha, numero_documento, proveedor, evento_asociado, descripcion, subtotal, impuesto, total, COALESCE(det_monto, 0), tipo_documento, kilometraje, cantidad_combustible, ruc, COALESCE(pagado_por_tercero, ''), COALESCE(es_compra_cruzada, FALSE), COALESCE(soporte_pago_tercero, ''), COALESCE(comision_interbancaria, 0), COALESCE(es_interbancario, FALSE), COALESCE(delivery, 0), COALESCE(archivo_ruta, '') FROM facturas_recibidas{where_sql} ORDER BY id DESC", tuple(params))
                     registros = cursor.fetchall()
                     
                     ids_actuales = [r[0] for r in registros]
@@ -9927,10 +9996,12 @@ class CuentasPorPagarTab:
                         (id_factura, fecha, nro_doc, proveedor, evento, concepto, subtotal, impuesto,
                          tot_bruto, det_monto, tipo_doc, km_val, cant_val, ruc_db,
                          tercero, es_cruzada, soporte_cruzada,
-                         comision_cruz, interbancario_cruz, delivery_val) = reg
+                         comision_cruz, interbancario_cruz, delivery_val,
+                         ruta_factura) = reg
                         tercero = str(tercero or "")
                         es_cruzada = bool(es_cruzada)
                         soporte_cruzada = str(soporte_cruzada or "")
+                        ruta_factura = str(ruta_factura or "").strip()
                         sub_val = float(subtotal or 0.0)
                         imp_val = float(impuesto or 0.0)
                         tot_bruto_val = float(tot_bruto or 0.0)
@@ -9944,7 +10015,10 @@ class CuentasPorPagarTab:
                         
                         pagos_factura = mapa_detalle_pagos.get(id_factura, [])
                         monto_pagado = 0.0
-                        cant_archivos = 0
+                        # 📎 El archivo de la propia factura también cuenta como adjunto
+                        #    ('PENDIENTE_DESCARGA' todavía no es un archivo real).
+                        cant_archivos = (1 if ruta_factura
+                                         and ruta_factura != "PENDIENTE_DESCARGA" else 0)
                         tiene_cuenta = False
                         cuentas_lista = []
                         
@@ -11040,6 +11114,20 @@ class CuentasPorPagarTab:
             except Exception:
                 pass
 
+        def _sin_comision_si_efectivo(_valor=None):
+            """En efectivo no hay comisión interbancaria: se apaga sola."""
+            try:
+                _cuenta_txt = str(cmb_cuenta.get() or "").upper()
+                if "CAJA" in _cuenta_txt or "EFECTIVO" in _cuenta_txt:
+                    var_comision.set(False)
+                    _aplicar_comision()
+            except Exception:
+                pass
+        try:
+            cmb_cuenta.configure(command=_sin_comision_si_efectivo)
+        except Exception:
+            pass
+
         ctk.CTkCheckBox(fila_com, text="🏦 Adicionar comisión interbancaria",
                         variable=var_comision, font=("Arial", 11, "bold"),
                         checkbox_width=18, checkbox_height=18,
@@ -11457,23 +11545,22 @@ class CuentasPorPagarTab:
             conn = conectar_db()
             cursor = conn.cursor()
             cursor.execute("SELECT archivo_ruta FROM pagos_comprobantes WHERE id_factura = %s AND archivo_ruta != ''", (id_factura,))
-            rutas = [r[0] for r in cursor.fetchall()]
-            if not rutas:
-                # Compras cruzadas (módulo de Banco) o facturas sin pagos registrados:
-                # se abren los documentos de la propia factura (y su soporte del pago a tercero).
-                cursor.execute("""SELECT COALESCE(archivo_ruta, ''), COALESCE(soporte_pago_tercero, '')
-                                  FROM facturas_recibidas WHERE id = %s""", (id_factura,))
-                extra = cursor.fetchone()
-                if extra:
-                    rutas = [x for x in extra if x]
+            rutas_pagos = [r[0] for r in cursor.fetchall()]
+            # 📎 La factura (y su soporte del pago a tercero) SIEMPRE es un adjunto más,
+            #    aunque la compra todavía no tenga pagos registrados.
+            cursor.execute("""SELECT COALESCE(archivo_ruta, ''), COALESCE(soporte_pago_tercero, '')
+                              FROM facturas_recibidas WHERE id = %s""", (id_factura,))
+            extra = cursor.fetchone()
+            rutas_factura = [x for x in (extra or ()) if x]
             liberar_conexion(conn)
+            rutas = list(dict.fromkeys(rutas_factura + rutas_pagos))
             if rutas:
                 abiertos = 0
                 _encontrados = []
                 for ruta in rutas:
                     # 🔎 Resuelve rutas guardadas por otro equipo/sistema (Mac/Windows)
                     ruta_norm = resolver_ruta_archivo(ruta)
-                    if ruta_norm:
+                    if ruta_norm and ruta_norm not in _encontrados:
                         _encontrados.append(ruta_norm)
                         abiertos += 1
                 if _encontrados:
@@ -11483,7 +11570,7 @@ class CuentasPorPagarTab:
                     messagebox.showwarning("Aviso", "Los documentos están registrados pero los archivos no se encuentran en este equipo.")
                 # 📄 Si el mismo comprobante cancela varias facturas, se muestran sus números
                 try:
-                    vinculadas = facturas_que_cancela(rutas[0] if rutas else "", "")
+                    vinculadas = facturas_que_cancela(rutas_pagos[0] if rutas_pagos else "", "")
                     if len(vinculadas) > 1:
                         messagebox.showinfo(
                             "Comprobante compartido",
