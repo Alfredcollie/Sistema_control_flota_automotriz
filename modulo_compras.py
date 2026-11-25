@@ -4335,9 +4335,7 @@ def fila_documento_adjunto(parent, tipo, entidad, documento, etiqueta):
     ctk.CTkButton(marco, text="📎 Cargar PDF", width=108, height=26,
                   font=("Arial", 10, "bold"), fg_color="#1f538d", hover_color="#163b65",
                   command=_cargar).pack(side="left", padx=2)
-    ctk.CTkButton(marco, text="🖨️ Escanear", width=98, height=26,
-                  font=("Arial", 10, "bold"), fg_color="#e67e22", hover_color="#ca6f1e",
-                  command=_escanear).pack(side="left", padx=2)
+
     ctk.CTkButton(marco, text="👁 Ver", width=68, height=26,
                   font=("Arial", 10, "bold"), fg_color="#27ae60", hover_color="#1e8449",
                   command=_ver).pack(side="left", padx=2)
@@ -6442,16 +6440,7 @@ class FacturasRecibidasTab:
         btn_auto_xml = ctk.CTkButton(f_autos, text="📥 Desde XML", font=("Arial", 11, "bold"), fg_color="#d35400", hover_color="#a84300", command=self.autocompletar_desde_xml, width=140)
         btn_auto_xml.pack(side="left", fill="x", expand=True, padx=(5, 0))
 
-        # 🖨️ Escanear la factura con la multifuncional y leerla con OCR
-        btn_escanear = ctk.CTkButton(self.f_form, text="🖨️ Escanear factura (OCR)",
-                                     font=("Arial", 12, "bold"), fg_color="#0e7490",
-                                     hover_color="#155e75",
-                                     command=self.escanear_factura_ocr, height=34)
-        btn_escanear.pack(fill="x", padx=10, pady=(0, 10))
-        ctk.CTkButton(self.f_form, text="📱 Escanear desde el teléfono",
-                      font=("Arial", 12, "bold"), fg_color="#7d3c98", hover_color="#5b2c6f",
-                      command=self.escanear_desde_telefono, height=34).pack(
-            fill="x", padx=10, pady=(0, 10))
+
 
         ctk.CTkLabel(self.f_form, text="Tipo de Documento:", font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
         
@@ -9134,18 +9123,12 @@ class FacturasRecibidasTab:
         f_scan.pack(fill="x", pady=(0, 4))
         f_botones_scan = ctk.CTkFrame(f_scan, fg_color="transparent")
         f_botones_scan.pack(fill="x", padx=8, pady=(8, 0))
-        ctk.CTkButton(f_botones_scan, text="🖨️ Escanear", height=32,
-                      font=("Arial", 11, "bold"), fg_color="#0e7490", hover_color="#155e75",
-                      command=lambda: escanear_factura_editor()).pack(
-            side="left", padx=(0, 4))
+
         ctk.CTkButton(f_botones_scan, text="📄 Cargar PDF/foto", height=32,
                       font=("Arial", 11, "bold"), fg_color="#1f538d", hover_color="#163b65",
                       command=lambda: cargar_pdf_editor()).pack(
             side="left", padx=4)
-        ctk.CTkButton(f_botones_scan, text="📱 Teléfono", height=32,
-                      font=("Arial", 11, "bold"), fg_color="#7d3c98", hover_color="#5b2c6f",
-                      command=lambda: escanear_telefono_editor()).pack(
-            side="left", padx=4)
+
         lbl_adjunto = ctk.CTkLabel(f_scan, text=_texto_adjunto(), font=("Arial", 10),
                                    text_color="#1f538d", anchor="w", justify="left",
                                    wraplength=560)
@@ -11910,14 +11893,7 @@ class CuentasPorPagarTab:
             except Exception as e:
                 messagebox.showerror("Escáner por teléfono", str(e))
 
-        ctk.CTkButton(f_comp, text="📱 Teléfono", height=30,
-                      font=("Arial", 11, "bold"), fg_color="#8e44ad",
-                      hover_color="#6c3483",
-                      command=escanear_desde_telefono
-                      ).pack(side="left", padx=(6, 0))
-        ctk.CTkButton(f_comp, text="🖨️ Escanear comprobante", height=30, font=("Arial", 11, "bold"),
-                      fg_color="#0e7490", hover_color="#155e75",
-                      command=escanear_comp).pack(side="left", fill="x", expand=True, padx=(6, 0))
+
         ctk.CTkButton(f_comp, text="👁️ Ver", width=64, height=30, font=("Arial", 11, "bold"),
                       fg_color="#5d6d7e", hover_color="#4a5967",
                       command=lambda: (abrir_documento(estado_comp["ruta"])
@@ -11976,10 +11952,7 @@ class CuentasPorPagarTab:
                       font=("Arial", 10, "bold"), fg_color="#16a085", hover_color="#11806a",
                       command=lambda: _elegir_soporte_tercero()
                       ).pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(f_sop_tercero, text="📱 Teléfono", height=28, width=110,
-                      font=("Arial", 10, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
-                      command=lambda: _escanear_soporte_tercero()
-                      ).pack(side="left", padx=(6, 0))
+
         ctk.CTkButton(f_sop_tercero, text="👁️", height=28, width=44, font=("Arial", 10, "bold"),
                       fg_color="#5d6d7e", hover_color="#4a5967",
                       command=lambda: _ver_soporte_tercero()).pack(side="left", padx=(6, 0))
@@ -12869,14 +12842,7 @@ class CuentasPorPagarTab:
             except Exception as e:
                 messagebox.showerror("Escáner por teléfono", str(e))
 
-        ctk.CTkButton(f_btn_soporte, text="📱 Teléfono", height=30,
-                      font=("Arial", 11, "bold"), fg_color="#8e44ad",
-                      hover_color="#6c3483",
-                      command=escanear_desde_telefono
-                      ).pack(side="left", padx=(6, 0))
-        ctk.CTkButton(f_btn_soporte, text="📷 Escanear", width=130, height=26,
-                      font=("Arial", 11, "bold"), fg_color="#8e44ad",
-                      command=escanear_soporte).pack(side="left")
+
 
         # ❓ Si el pago viene de «Cancelar la factura», se deja ELEGIR por dónde
         #    adjuntar el comprobante (multifuncional / teléfono / archivo).
@@ -13739,10 +13705,7 @@ class NotasCreditoTab:
                       command=self._cargar_pdf).grid(row=0, column=0, sticky="ew", padx=2, pady=2)
         ctk.CTkButton(fila_imp, text="XML", height=26, fg_color="#8e44ad",
                       command=self._cargar_xml).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
-        ctk.CTkButton(fila_imp, text="Escanear", height=26, fg_color="#0e7490",
-                      command=self._escanear).grid(row=1, column=0, sticky="ew", padx=2, pady=2)
-        ctk.CTkButton(fila_imp, text="Teléfono", height=26, fg_color="#16a085",
-                      command=self._escanear_telefono).grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+
         fila_btn = ctk.CTkFrame(self.f_acciones, fg_color="transparent")
         fila_btn.pack(fill="x", padx=6, pady=(2, 6))
         ctk.CTkButton(fila_btn, text="Limpiar", width=78, height=28, fg_color="#95a5a6",

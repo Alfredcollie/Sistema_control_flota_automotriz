@@ -25,6 +25,7 @@ from app_paths import CONFIG_FILE, DATA_DIR
 
 import plantillas_contratos as PL
 import contratos_actas_pdf as pdf
+import impresion
 
 FAMILIA = "Helvetica" if sys.platform == "darwin" else "Arial"
 COLOR_AZUL = "#1f538d"
@@ -709,6 +710,10 @@ class ContratosActasApp:
         ctk.CTkButton(botones, text="📄 Generar contrato (PDF)", width=210, fg_color=COLOR_VERDE,
                       hover_color="#11806a",
                       command=self._generar_contrato).pack(side="left", padx=8)
+        ctk.CTkButton(botones, text="🖨️ Imprimir contrato", width=190, fg_color=COLOR_AZUL,
+                      hover_color="#163b65",
+                      command=lambda: self._generar_contrato(imprimir=True)).pack(
+            side="left", padx=8)
 
         self._buscar_en_contratos()
 
@@ -837,7 +842,7 @@ class ContratosActasApp:
         nombre_archivo = "%s_%s.pdf" % (tipo, marca)
         return os.path.join(carpeta, nombre_archivo)
 
-    def _generar_contrato(self):
+    def _generar_contrato(self, imprimir=False):
         valores = self._datos_documento()
         error = self._validar_contrato(valores)
         if error:
@@ -859,7 +864,10 @@ class ContratosActasApp:
         self._registrar_contrato(valores, ruta, "Inicial", None)
         messagebox.showinfo("Contratos y Actas", "Contrato generado:\n" + os.path.basename(ruta),
                             parent=self.parent_frame)
-        self._abrir_pdf(ruta)
+        if imprimir:
+            impresion.imprimir_con_aviso(ruta, parent=self.parent_frame)
+        else:
+            self._abrir_pdf(ruta)
         self._cargar_historicos()
         self._actualizar_estado_chofer(valores)
         return ruta
@@ -1309,6 +1317,10 @@ class ContratosActasApp:
         ctk.CTkButton(botones, text="📄 Generar acta (PDF)", width=190, fg_color=COLOR_VERDE,
                       hover_color="#11806a",
                       command=self._generar_acta).pack(side="left")
+        ctk.CTkButton(botones, text="🖨️ Imprimir acta", width=170, fg_color=COLOR_AZUL,
+                      hover_color="#163b65",
+                      command=lambda: self._generar_acta(imprimir=True)).pack(
+            side="left", padx=8)
         ctk.CTkLabel(botones, text="El acta no modifica el móvil asignado del chofer",
                      font=(FAMILIA, 10, "italic"), text_color="#7f8c8d").pack(side="left", padx=10)
 
@@ -1358,7 +1370,7 @@ class ContratosActasApp:
         texto = self.txt_bienes.get("1.0", "end-1c")
         return [linea.strip() for linea in texto.splitlines() if linea.strip()]
 
-    def _generar_acta(self):
+    def _generar_acta(self, imprimir=False):
         if not self.chofer:
             return messagebox.showwarning("Actas de Entrega", "Elija primero un chofer.",
                                           parent=self.parent_frame)
@@ -1401,7 +1413,10 @@ class ContratosActasApp:
         messagebox.showinfo("Actas de Entrega",
                             "Acta generada:\n" + os.path.basename(ruta),
                             parent=self.parent_frame)
-        self._abrir_pdf(ruta)
+        if imprimir:
+            impresion.imprimir_con_aviso(ruta, parent=self.parent_frame)
+        else:
+            self._abrir_pdf(ruta)
         self._cargar_historicos()
 
     def _registrar_acta(self, valores, ruta):
@@ -1480,6 +1495,9 @@ class ContratosActasApp:
         botones.pack(fill="x", pady=6)
         ctk.CTkButton(botones, text="📄 Abrir PDF", width=130, fg_color=COLOR_AZUL,
                       command=self._abrir_historico_seleccionado).pack(side="left")
+        ctk.CTkButton(botones, text="🖨️ Imprimir", width=130, fg_color="#0e7490",
+                      hover_color="#155e75",
+                      command=self._imprimir_historico_seleccionado).pack(side="left", padx=6)
         self.lbl_total_historicos = ctk.CTkLabel(botones, text="", font=(FAMILIA, 10, "italic"),
                                                  text_color="#7f8c8d")
         self.lbl_total_historicos.pack(side="left", padx=12)
@@ -1557,6 +1575,7 @@ class ContratosActasApp:
         menu = tk.Menu(self.parent_frame, tearoff=0)
         menu.add_command(label="✏️ Editar documento", command=self._editar_historico)
         menu.add_command(label="📄 Abrir PDF", command=self._abrir_historico_seleccionado)
+        menu.add_command(label="🖨️ Imprimir", command=self._imprimir_historico_seleccionado)
         menu.add_separator()
         menu.add_command(label="🗑️ Eliminar documento", command=self._eliminar_historico)
         try:
@@ -1771,6 +1790,26 @@ class ContratosActasApp:
                 "El archivo no se encuentra en este equipo:\n\n" + str(ruta) +
                 "\n\nVerifique que rclone/Google Drive ya lo haya sincronizado.",
                 parent=self.parent_frame)
+
+    def _imprimir_historico_seleccionado(self):
+        """🖨️ Manda a la impresora el PDF del documento histórico seleccionado."""
+        seleccion = self.tabla_historicos.selection()
+        if not seleccion:
+            return messagebox.showinfo("Históricos", "Seleccione un documento.",
+                                       parent=self.parent_frame)
+        ruta = (getattr(self, "_historicos", {}) or {}).get(seleccion[0])
+        try:
+            from app_paths import resolver_ruta_archivo
+            real = resolver_ruta_archivo(ruta) if ruta else ""
+        except Exception:
+            real = ruta if ruta and os.path.exists(ruta) else ""
+        if not real or not os.path.exists(real):
+            return messagebox.showwarning(
+                "Históricos",
+                "El archivo no se encuentra en este equipo:\n\n" + str(ruta) +
+                "\n\nVerifique que rclone/Google Drive ya lo haya sincronizado.",
+                parent=self.parent_frame)
+        impresion.imprimir_con_aviso(real, parent=self.parent_frame)
 
     def _abrir_carpeta_base(self):
         carpeta = ruta_base()

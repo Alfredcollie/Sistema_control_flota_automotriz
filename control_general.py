@@ -70,6 +70,13 @@ from config_nube import (cargar_bancos, guardar_bancos, cargar_cuenta_grifo,
                          cargar_rclone_sync, registrar_rclone_sync, borrar_rclone_sync,
                          guardar_rclone_token, obtener_rclone_token, borrar_rclone_token)
 
+# 🌍 Todos los «abrir PDF» preguntan: Computadora / Teléfono / Multifuncional
+try:
+    from cargar_documento import instalar_selector_global
+    instalar_selector_global()
+except Exception as _e_selector:
+    print("Aviso - selector de documentos:", _e_selector)
+
 if sys.platform == "win32":
     import ctypes
 
@@ -1425,12 +1432,19 @@ def traer_al_frente(ventana, retrasos=(60, 260, 700, 1150)):
         except Exception:
             pass
 
+    creada = time.time()
+
     def _traer():
         try:
             if not ventana.winfo_exists():
                 return
-            # 🛡️ Si el usuario ya la minimizó, no se vuelve a mostrar
+            # 🛡️ Si el usuario ya la minimizó, no se vuelve a mostrar…
+            #    salvo que se haya minimizado sola al abrir (primeros 2 s).
             if str(ventana.state()) == "iconic":
+                if time.time() - creada <= 2.0:
+                    ventana.deiconify()
+                    ventana.lift()
+                    ventana.focus_force()
                 return
             ventana.deiconify()
             ventana.lift()
@@ -1703,6 +1717,67 @@ class ControlGeneralEventos:
     # =======================================================
     # LOGIN SEGURO
     # =======================================================
+    def _primer_entry(self, widget):
+        """Primer campo de texto del acceso seguro (para no perder el foco)."""
+        try:
+            if isinstance(widget, (ctk.CTkEntry, tk.Entry)):
+                return widget
+            for hijo in widget.winfo_children():
+                encontrado = self._primer_entry(hijo)
+                if encontrado is not None:
+                    return encontrado
+        except Exception:
+            pass
+        return None
+
+    def _traer_login_al_frente(self):
+        """🔐 Mantiene el acceso seguro por encima de cualquier ventana abierta."""
+        ventana = getattr(self, "v_login", None)
+        try:
+            if ventana is None or not ventana.winfo_exists():
+                return
+            enfocado = None
+            try:
+                actual = ventana.focus_get()
+                if actual is not None and str(actual).startswith(str(ventana)):
+                    enfocado = actual
+            except Exception:
+                enfocado = None
+            if str(ventana.state()) == "iconic":
+                ventana.deiconify()
+            ventana.attributes("-topmost", True)
+            ventana.lift()
+            try:
+                ventana.focus_force()
+            except Exception:
+                pass
+            try:
+                if enfocado is None or str(enfocado) == str(ventana):
+                    enfocado = self._primer_entry(ventana)
+                if enfocado is not None and enfocado.winfo_exists():
+                    enfocado.focus_set()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _aviso_login(self, tipo, titulo, texto):
+        """Muestra el aviso encima del acceso seguro y vuelve a subir el login."""
+        ventana = getattr(self, "v_login", None)
+        try:
+            if ventana is not None and ventana.winfo_exists():
+                ventana.attributes("-topmost", False)
+        except Exception:
+            pass
+        try:
+            opciones = {"parent": ventana} if ventana is not None else {}
+            if str(tipo).lower() == "error":
+                messagebox.showerror(titulo, texto, **opciones)
+            else:
+                messagebox.showinfo(titulo, texto, **opciones)
+        finally:
+            self._traer_login_al_frente()
+
     def abrir_ventana_login(self):
         self.v_login = ctk.CTkToplevel(self.root)
         self.login_en_pantalla = True
@@ -1717,8 +1792,13 @@ class ControlGeneralEventos:
         x = max(0, (self.v_login.winfo_screenwidth() // 2) - (ancho_ventana // 2))
         y = max(0, (self.v_login.winfo_screenheight() // 2) - (alto_ventana // 2))
         self.v_login.geometry(f"{ancho_ventana}x{alto_ventana}+{x}+{y}")
-        self.v_login.lift()
-        self.v_login.focus_force()
+        self._traer_login_al_frente()
+        for _retraso in (120, 350, 800, 1500):
+            try:
+                self.v_login.after(_retraso, self._traer_login_al_frente)
+            except Exception:
+                pass
+        self.v_login.attributes("-topmost", True)
         self.v_login.grab_set()
 
         frame_log = ctk.CTkFrame(self.v_login, corner_radius=15, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
@@ -1785,10 +1865,10 @@ class ControlGeneralEventos:
             
             conn = conectar_db(silencioso=True)
             if not conn:
-                messagebox.showinfo(
+                self._aviso_login(
+                    "info",
                     "📡 MODO LECTURA OFFLINE ACTIVADO",
-                    "Sin conexión a Internet.\n\nIniciando en MODO LECTURA:\n• Podrás revisar clientes, cronograma y flota.\n• No se permitirán modificaciones hasta reconectarte."
-                )
+                    "Sin conexión a Internet.\n\nIniciando en MODO LECTURA:\n• Podrás revisar clientes, cronograma y flota.\n• No se permitirán modificaciones hasta reconectarte.")
                 self.usuario_activo = user if user else "Invitado"
                 self.rol_activo = "Invitado Offline"
                 self.permisos_activos = {"clientes": True, "cronograma": True, "flota": True}
@@ -1804,7 +1884,7 @@ class ControlGeneralEventos:
                     cursor.execute("SELECT rol, permisos, clave_hash, activo FROM usuarios WHERE usuario = %s", (user,))
                     resultado = cursor.fetchone()
                     if not resultado:
-                        messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
+                        self._aviso_login("error", "Acceso Denegado", "Usuario o contraseña incorrectos.")
                         registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido (usuario no existe)")
                         ent_pass.delete(0, tk.END)
                         ent_user.focus()
@@ -1812,12 +1892,12 @@ class ControlGeneralEventos:
                         
                     rol_db, permisos_str, clave_hash, activo = resultado
                     if not activo:
-                        messagebox.showerror("Acceso Denegado", "Este usuario está desactivado.\nContacta al administrador.")
+                        self._aviso_login("error", "Acceso Denegado", "Este usuario está desactivado.\nContacta al administrador.")
                         registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión con usuario desactivado")
                         return
                         
                     if not clave_hash or not verify_password(clave, clave_hash):
-                        messagebox.showerror("Acceso Denegado", "Usuario o contraseña incorrectos.")
+                        self._aviso_login("error", "Acceso Denegado", "Usuario o contraseña incorrectos.")
                         registrar_auditoria(user, "Seguridad", "Intento de inicio de sesión fallido")
                         ent_pass.delete(0, tk.END)
                         ent_user.focus()
@@ -1834,7 +1914,7 @@ class ControlGeneralEventos:
                     self.v_login.destroy()
                     self.construir_dashboard_spa()
             except Exception as e:
-                messagebox.showerror("Error Crítico", f"Ocurrió un problema en el sistema:\n{e}")
+                self._aviso_login("error", "Error Crítico", f"Ocurrió un problema en el sistema:\n{e}")
             finally:
                 liberar_conexion(conn)
 
@@ -2161,6 +2241,7 @@ class ControlGeneralEventos:
     def _construir_escritorio(self):
         """Crea el escritorio (área de trabajo) y la barra de tareas."""
         self.ventanas_modulos = {}
+        self.pestanas_modulos = {}
         self._clave_activa = None
         self._contador_cascada = 0
         self._arrastre = None
@@ -2169,6 +2250,7 @@ class ControlGeneralEventos:
         #    ventana real de Windows (aparece en la barra de tareas del sistema).
         #    Se sigue construyendo (sin empaquetar) por compatibilidad.
         self.barra_tareas = ctk.CTkFrame(self.contenedor_central, height=34, corner_radius=0, fg_color="#1a252c")
+        self.barra_tareas.pack(side="bottom", fill="x")
         self.barra_tareas.pack_propagate(False)
 
         ctk.CTkLabel(self.barra_tareas, text="🗂️ Módulos abiertos:", font=("Arial", 10, "bold"),
@@ -2315,6 +2397,27 @@ class ControlGeneralEventos:
         ventana.bind("<F11>", lambda _e, c=clave: self.alternar_maximizar_ventana(c), add="+")
         ventana.bind("<FocusIn>", lambda _e, c=clave: self._marcar_clave_activa(c), add="+")
 
+        # 🩺 Diagnóstico: si la ventana se minimiza sola, se anota con la pila
+        def _registrar_iconic(evento=None, v=ventana, c=clave):
+            try:
+                if not self._ventana_viva(v) or str(v.state()) != "iconic":
+                    return
+                # Si la minimización la hizo el botón del módulo, no es un fallo
+                if time.time() - getattr(self, "_ultima_minimizacion", 0.0) < 1.0:
+                    return
+                import traceback
+                pila = "".join(traceback.format_stack()[-12:])
+                self._registrar_minimizacion(
+                    "DETECTADO %s | evento=%s | widget=%s | grab=%s | focus=%s\n%s"
+                    % (c, evento, getattr(evento, "widget", None),
+                       v.grab_current(), v.focus_get(), pila))
+            except Exception:
+                pass
+        try:
+            ventana.bind("<Unmap>", _registrar_iconic, add="+")
+        except Exception:
+            pass
+
         try:
             app = constructor(cuerpo)
         except Exception as e:
@@ -2346,6 +2449,7 @@ class ControlGeneralEventos:
         traer_al_frente(ventana)
         self._enganchar_foco_ventana()
         self._actualizar_bienvenida()
+        self._refrescar_barra_tareas()
         return app
 
     # ------------------------------------------------------------------
@@ -2370,6 +2474,7 @@ class ControlGeneralEventos:
         if info.get("minimizada"):
             info["minimizada"] = False
         self._actualizar_bienvenida()
+        self._resaltar_pestana()
 
     def traer_al_frente_ventana_modulo(self, clave):
         """Restaura (si estaba minimizada), trae al frente y enfoca la ventana."""
@@ -2504,6 +2609,7 @@ class ControlGeneralEventos:
         if info and self._clave_activa == clave:
             self._clave_activa = None
         self._actualizar_bienvenida()
+        self._refrescar_barra_tareas()
 
     def _colocar_ventana_inicial(self, clave, ancho_rel=0.92, alto_rel=0.90):
         """Compatibilidad: la ventana la coloca Windows (cascada al abrir)."""
@@ -2729,6 +2835,7 @@ class ControlGeneralEventos:
         except Exception:
             _minimizar()
         self._actualizar_bienvenida()
+        self._resaltar_pestana()
 
     def restaurar_ventana(self, clave):
         """Restaura una ventana minimizada (la vuelve a mostrar)."""
@@ -2746,6 +2853,7 @@ class ControlGeneralEventos:
         info["minimizada"] = False
         self._clave_activa = clave
         self._actualizar_bienvenida()
+        self._resaltar_pestana()
 
     def alternar_ventana(self, clave):
         """Restaura / minimiza la ventana del módulo."""
@@ -2859,14 +2967,78 @@ class ControlGeneralEventos:
         if self._clave_activa == clave:
             self._clave_activa = None
         self._actualizar_bienvenida()
+        self._refrescar_barra_tareas()
 
     def cerrar_todas_las_ventanas(self):
         for clave in list(getattr(self, "ventanas_modulos", {}).keys()):
             self.cerrar_ventana(clave)
 
+    def _etiqueta_corta(self, titulo):
+        """Nombre corto del módulo para la pestaña inferior."""
+        texto = str(titulo or "").strip()
+        if texto and not texto[0].isalnum():
+            partes = texto.split(" ", 1)
+            if len(partes) == 2:
+                texto = partes[1]
+        if "(" in texto:
+            texto = texto.split("(")[0].strip()
+        if len(texto) > 20:
+            texto = texto[:19].rstrip() + "…"
+        return texto or "Módulo"
+
+    def _resaltar_pestana(self):
+        """Pinta la pestaña del módulo que está activo."""
+        for clave, boton in (getattr(self, "pestanas_modulos", {}) or {}).items():
+            try:
+                boton.configure(fg_color="#1f538d" if clave == self._clave_activa else "#34495e")
+            except Exception:
+                pass
+
     def _refrescar_barra_tareas(self):
-        """La barra "Módulos abiertos" ya no se usa (cada módulo es una ventana)."""
-        return None
+        """Redibuja las pestañas de los módulos abiertos en la barra inferior."""
+        marco = getattr(self, "frame_botones_tareas", None)
+        if marco is None:
+            return
+        try:
+            for hijo in marco.winfo_children():
+                hijo.destroy()
+        except Exception:
+            pass
+        self.pestanas_modulos = {}
+        abiertos = []
+        for clave, info in (getattr(self, "ventanas_modulos", {}) or {}).items():
+            if info and self._ventana_viva(info.get("ventana")):
+                abiertos.append((clave, info))
+        if not abiertos:
+            self._lbl_sin_ventanas = ctk.CTkLabel(
+                marco, text="(ninguno abierto)", font=("Arial", 10, "italic"),
+                text_color="#7f8c8d")
+            self._lbl_sin_ventanas.pack(side="left", padx=6)
+            return
+        try:
+            disponible = int(marco.winfo_width())
+        except Exception:
+            disponible = 0
+        if disponible < 120:
+            disponible = 900
+        ancho = max(70, min(170, int(disponible / max(1, len(abiertos))) - 28))
+        for clave, info in abiertos:
+            titulo = self._etiqueta_corta(info.get("titulo") or self._titulo_modulo(clave))
+            activa = (clave == self._clave_activa)
+            fila = ctk.CTkFrame(marco, fg_color="transparent")
+            fila.pack(side="left", padx=2)
+            boton = ctk.CTkButton(
+                fila, text=titulo, width=ancho, height=24, corner_radius=6,
+                font=("Arial", 10, "bold"),
+                fg_color="#1f538d" if activa else "#34495e",
+                hover_color="#163b65",
+                command=lambda c=clave: self.traer_al_frente_ventana_modulo(c))
+            boton.pack(side="left")
+            ctk.CTkButton(
+                fila, text="✕", width=22, height=24, corner_radius=6,
+                font=("Arial", 10, "bold"), fg_color="#7f8c8d", hover_color="#c0392b",
+                command=lambda c=clave: self.cerrar_ventana(c)).pack(side="left", padx=(2, 0))
+            self.pestanas_modulos[clave] = boton
 
     def _actualizar_bienvenida(self):
         """El dashboard queda siempre visible en la ventana principal.

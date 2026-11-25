@@ -2503,14 +2503,7 @@ class FacturasEmitidasTab:
         self.f_form = ctk.CTkScrollableFrame(frame_split, corner_radius=10, width=330, fg_color="#f8f9fa", border_width=1, border_color="#e0e0e0")
         self.f_form.pack(side="left", fill="y", padx=(0, 15))
 
-        btn_escanear = ctk.CTkButton(self.f_form, text="🖨️ Escanear con la Multifuncional",
-                                     fg_color="#8e44ad", hover_color="#703688", font=("Arial", 12, "bold"),
-                                     command=self.escanear_factura_multifuncional)
-        btn_escanear.pack(fill="x", padx=10, pady=(10, 5))
-        ctk.CTkButton(self.f_form, text="📱 Escanear desde el teléfono",
-                      font=("Arial", 12, "bold"), fg_color="#7d3c98", hover_color="#5b2c6f",
-                      command=self.escanear_desde_telefono).pack(
-            fill="x", padx=10, pady=(0, 10))
+
 
         btn_auto = ctk.CTkButton(self.f_form, text="📄 Cargar PDF y Autocompletar (OCR)", fg_color="#1f538d", hover_color="#163b65", command=self.autocompletar_desde_pdf)
         btn_auto.pack(fill="x", padx=10, pady=(10, 5))
@@ -5420,32 +5413,7 @@ class CuentasPorCobrarTab:
         ctk.CTkButton(f_comp, text="📎 Cargar archivo", height=30, font=("Arial", 11, "bold"),
                       fg_color="#16a085", hover_color="#11806a", command=cargar_comp).pack(
             side="left", fill="x", expand=True)
-        ctk.CTkButton(f_comp, text="🖨️ Escanear comprobante", height=30, font=("Arial", 11, "bold"),
-                      fg_color="#0e7490", hover_color="#155e75",
-                      command=escanear_comp).pack(side="left", fill="x", expand=True, padx=(6, 0))
 
-        # 📱 Escanear el comprobante del cobro con el teléfono (fila propia)
-        def escanear_comp_telefono():
-            """📱 Abre el QR y espera la foto del teléfono."""
-            try:
-                import escaner_movil as _mov
-                try:
-                    _cfg = cargar_configuracion_regional()
-                except Exception:
-                    _cfg = None
-                _mov.escanear_reusando_flujo(
-                    parent=v, config=_cfg, funcion=escanear_comp,
-                    etiqueta="Ventas · cobro de varias facturas")
-            except Exception as e:
-                messagebox.showerror("Escáner por teléfono", str(e), parent=v)
-
-        _fila_comp_tel = ctk.CTkFrame(f, fg_color="transparent")
-        _fila_comp_tel.pack(fill="x", pady=(4, 0))
-        ctk.CTkButton(_fila_comp_tel, text="📱 Escanear con el teléfono",
-                      height=30, font=("Arial", 11, "bold"),
-                      fg_color="#8e44ad", hover_color="#6c3483",
-                      command=escanear_comp_telefono
-                      ).pack(side="left", fill="x", expand=True)
         ctk.CTkButton(f_comp, text="👁️ Ver", width=64, height=30, font=("Arial", 11, "bold"),
                       fg_color="#5d6d7e", hover_color="#4a5967",
                       command=lambda: (abrir_documento(estado_comp["ruta"])
@@ -6486,31 +6454,7 @@ class CuentasPorCobrarTab:
         ctk.CTkButton(f_comp, text="📎 Cargar archivo", height=30, font=("Arial", 11, "bold"),
                       fg_color="#16a085", hover_color="#11806a", command=cargar_comp).pack(
             side="left", fill="x", expand=True)
-        ctk.CTkButton(f_comp, text="🖨️ Escanear comprobante", height=30, font=("Arial", 11, "bold"),
-                      fg_color="#0e7490", hover_color="#155e75",
-                      command=escanear_comp).pack(side="left", fill="x", expand=True, padx=(6, 0))
-        # 📱 Escanear el comprobante del cobro con el teléfono (fila propia)
-        def escanear_comp_telefono():
-            """📱 Abre el QR y espera la foto del teléfono."""
-            try:
-                import escaner_movil as _mov
-                try:
-                    _cfg = cargar_configuracion_regional()
-                except Exception:
-                    _cfg = None
-                _mov.escanear_reusando_flujo(
-                    parent=v, config=_cfg, funcion=escanear_comp,
-                    etiqueta="Ventas · cobro de factura")
-            except Exception as e:
-                messagebox.showerror("Escáner por teléfono", str(e), parent=v)
 
-        _fila_cobro_tel = ctk.CTkFrame(f, fg_color="transparent")
-        _fila_cobro_tel.pack(fill="x", pady=(4, 0))
-        ctk.CTkButton(_fila_cobro_tel, text="📱 Escanear con el teléfono",
-                      height=30, font=("Arial", 11, "bold"),
-                      fg_color="#8e44ad", hover_color="#6c3483",
-                      command=escanear_comp_telefono
-                      ).pack(side="left", fill="x", expand=True)
         ctk.CTkButton(f_comp, text="👁️ Ver", width=64, height=30, font=("Arial", 11, "bold"),
                       fg_color="#5d6d7e", hover_color="#4a5967",
                       command=lambda: (abrir_documento(estado_comp["ruta"])

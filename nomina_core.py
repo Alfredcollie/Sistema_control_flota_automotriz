@@ -1038,7 +1038,7 @@ def guardar_turno(datos, usuario="sistema"):
         datos.get("hora_salida", "17:00"),
         a_int(datos.get("tolerancia_min", 10), 10),
         a_int(datos.get("refrigerio_min", 45), 45),
-        a_float(datos.get("horas_jornada", 8), 8),
+        a_float(datos.get("horas_jornada", datos.get("jornada_horas", 8)), 8),
         dias,
         bool(datos.get("cruza_medianoche", False)),
         bool(datos.get("aplica_nocturno", False)),
@@ -1306,13 +1306,21 @@ def listar_empleados(solo_activos=False, incluir_sin_chofer=True):
             })
         empleados.sort(key=lambda e: normalizar_texto(e["nombre"]))
     if solo_activos:
-        empleados = [e for e in empleados if normalizar_texto(e["estado"]) not in ("CESADO", "INACTIVO")]
+        def _activo(registro):
+            estado_chofer = normalizar_texto(registro.get("estado_chofer"))
+            estado_nomina = normalizar_texto(registro.get("estado"))
+            return (estado_chofer not in ("INACTIVO", "CESADO", "BAJA")
+                    and estado_nomina not in ("CESADO", "INACTIVO"))
+        empleados = [e for e in empleados if _activo(e)]
     return empleados
 
 
 def sincronizar_empleados(usuario="sistema"):
     """Crea en nom_empleado una fila por cada chofer que aun no la tenga."""
-    filas = _consultar("SELECT dni FROM choferes") or []
+    filas = _consultar(
+        "SELECT dni FROM choferes "
+        "WHERE UPPER(COALESCE(NULLIF(TRIM(estado), ''), 'ACTIVO')) "
+        "NOT IN ('INACTIVO', 'CESADO', 'BAJA')") or []
     dnis = [str(f[0]).strip() for f in filas if f[0]]
     if not dnis:
         return 0

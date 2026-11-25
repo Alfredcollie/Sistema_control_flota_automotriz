@@ -21,6 +21,8 @@ from pathlib import Path
 from app_paths import (DATA_DIR, BASE_DIR, ruta_drive_configurada,
                        ruta_para_guardar, resolver_ruta_archivo)
 
+import impresion
+
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.utils import ImageReader
@@ -561,6 +563,10 @@ class AmonestacionesApp(ctk.CTkFrame):
                                      fg_color="#27ae60", hover_color="#1e8449",
                                      command=self.generar)
         self.btn_pdf.pack(fill="x", padx=10, pady=(6, 4))
+        ctk.CTkButton(self.f_form, text="🖨️ Guardar e Imprimir", font=("Arial", 13, "bold"),
+                      height=38, fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: self.generar(imprimir=True)).pack(
+            fill="x", padx=10, pady=(0, 4))
         ctk.CTkButton(self.f_form, text="🧹 Limpiar formulario", font=("Arial", 11),
                       fg_color="#7f8c8d", hover_color="#606b6b",
                       command=self.limpiar).pack(fill="x", padx=10, pady=(0, 12))
@@ -820,7 +826,7 @@ class AmonestacionesApp(ctk.CTkFrame):
                 liberar_conexion(conn)
         return siguiente_numero_documento(tipo)
 
-    def generar(self):
+    def generar(self, imprimir=False):
         datos = self._datos_formulario()
         if not datos["chofer"]:
             return messagebox.showwarning("Amonestaciones", "Seleccione el chofer.")
@@ -904,12 +910,15 @@ class AmonestacionesApp(ctk.CTkFrame):
 
         registrar_auditoria(self.usuario, "Amonestaciones",
                             "%s a %s por: %s" % (datos["tipo"], datos["chofer"], datos["motivo"]))
-        try:
-            abrir_documento(ruta_pdf)
-        except Exception:
-            pass
         messagebox.showinfo("Amonestaciones",
                             "Documento generado y guardado:" + chr(10) + ruta_pdf)
+        if imprimir:
+            impresion.imprimir_con_aviso(ruta_pdf, parent=self)
+        else:
+            try:
+                abrir_documento(ruta_pdf)
+            except Exception:
+                pass
 
     def limpiar(self):
         self.txt_detalle.delete("1.0", "end")
@@ -966,6 +975,9 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
         ctk.CTkButton(botones, text="📄 Ver PDF", font=("Arial", 12, "bold"),
                       fg_color="#1f538d", hover_color="#163b65",
                       command=self.ver_pdf).pack(side="left", padx=12)
+        ctk.CTkButton(botones, text="🖨️ Imprimir", font=("Arial", 12, "bold"),
+                      fg_color="#0e7490", hover_color="#155e75",
+                      command=self.imprimir_seleccionado).pack(side="left", padx=6)
         ctk.CTkButton(botones, text="✏️ Editar", font=("Arial", 12, "bold"),
                       fg_color="#e67e22", hover_color="#ca6f1e",
                       command=self.editar).pack(side="left", padx=6)
@@ -1164,3 +1176,29 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
             abrir_documento(ruta)
         except Exception as e:
             messagebox.showerror("Historial", "No se pudo abrir el PDF: " + str(e), parent=self)
+
+    def imprimir_seleccionado(self):
+        """🖨️ Manda a la impresora el PDF del documento seleccionado."""
+        sel = self.tabla.selection()
+        if not sel:
+            return messagebox.showinfo("Historial", "Seleccione un documento.", parent=self)
+        conn = conectar_db(silencioso=True)
+        ruta = ""
+        if conn:
+            try:
+                with conn.cursor() as c:
+                    c.execute("SELECT COALESCE(archivo_ruta,'') FROM amonestaciones WHERE id = %s",
+                              (int(sel[0]),))
+                    fila = c.fetchone()
+                    ruta = str(fila[0]) if fila and fila[0] else ""
+            except Exception:
+                pass
+            finally:
+                liberar_conexion(conn)
+        try:
+            ruta = resolver_ruta_archivo(ruta) or ruta
+        except Exception:
+            pass
+        if not ruta or not Path(ruta).is_file():
+            return messagebox.showwarning("Historial", "El PDF no está disponible.", parent=self)
+        impresion.imprimir_con_aviso(ruta, parent=self)

@@ -1614,7 +1614,7 @@ class ModuloNominaApp:
 
         def tarea(estado):
             estado["esquema"] = nc.inicializar_esquema_nomina()
-            estado["empleados"] = nc.listar_empleados()
+            estado["empleados"] = nc.listar_empleados(solo_activos=True)
             estado["turnos"] = nc.listar_turnos()
             estado["horarios"] = nc.listar_horarios()
             estado["parametros"] = nc.obtener_parametros()
@@ -3382,8 +3382,7 @@ class ModuloNominaApp:
     def sincronizar_empleados(self):
         cantidad = nc.sincronizar_empleados(self.usuario_activo)
         self.recargar_catalogos()
-        messagebox.showinfo("Padrón sincronizado",
-                            "Se revisó la tabla de choferes y se crearon/actualizaron las fichas de nómina.")
+        self.aviso("✅ Sincronizados %d choferes activos." % cantidad, COLOR_OK)
 
     # ---------- TURNOS ----------
     def _construir_turnos(self, padre):
@@ -3538,7 +3537,7 @@ class ModuloNominaApp:
             "nombre": self.ent_turno_nombre.get().strip(),
             "hora_entrada": entrada,
             "hora_salida": salida,
-            "jornada_horas": parse_num(self.ent_turno_jornada.get(), 8),
+            "horas_jornada": parse_num(self.ent_turno_jornada.get(), 8),
             "tolerancia_min": parse_num(self.ent_turno_tolerancia.get(), 10),
             "refrigerio_min": parse_num(self.ent_turno_refrigerio.get(), 45),
             "dias_semana": dias,
@@ -4715,7 +4714,7 @@ class ModuloNominaApp:
                                "Actualizando el padrón, turnos y horarios")
 
         def tarea(estado):
-            estado["empleados"] = nc.listar_empleados()
+            estado["empleados"] = nc.listar_empleados(solo_activos=True)
             estado["turnos"] = nc.listar_turnos()
             estado["horarios"] = nc.listar_horarios()
             estado["parametros"] = nc.obtener_parametros()
