@@ -1678,6 +1678,7 @@ class ModuloNominaApp:
                     combo.set(horarios_opciones[0])
             except Exception:
                 pass
+        self._actualizar_turno_base()
 
     def registrar_combo_empleado(self, combo):
         if not hasattr(self, "_combos_empleados"):
@@ -3402,7 +3403,7 @@ class ModuloNominaApp:
             ("jornada", "Jornada", 80, "center"),
             ("tolerancia", "Tolerancia", 85, "center"),
             ("refrigerio", "Refrigerio", 85, "center"),
-            ("dias", "Días", 220, "w"),
+            ("dias", "Días sugeridos", 220, "w"),
             ("nocturno", "Nocturno", 85, "center"),
             ("activo", "Activo", 70, "center"),
         ], alto=10)
@@ -3471,7 +3472,7 @@ class ModuloNominaApp:
                         font=("Arial", 10)).pack(side="left", padx=4)
         fila3 = ctk.CTkFrame(formulario, fg_color="transparent")
         fila3.pack(fill="x", padx=12, pady=3)
-        ctk.CTkLabel(fila3, text="Días que aplica:", font=("Arial", 10, "bold")).pack(side="left")
+        ctk.CTkLabel(fila3, text="Días sugeridos:", font=("Arial", 10, "bold")).pack(side="left")
         self.vars_turno_dias = {}
         for indice, dia in enumerate(nc.DIAS_CORTOS, start=1):
             variable = tk.BooleanVar(value=indice <= 6)
@@ -3481,6 +3482,11 @@ class ModuloNominaApp:
         ctk.CTkLabel(fila3, text="Observación:", font=("Arial", 10, "bold")).pack(side="left", padx=(10, 2))
         self.ent_turno_observacion = ctk.CTkEntry(fila3, width=240)
         self.ent_turno_observacion.pack(side="left")
+        ctk.CTkLabel(formulario,
+                     text=("💡 Los días reales de trabajo los define el HORARIO SEMANAL. "
+                           "Estos días sirven para prellenar el horario al crearlo."),
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d",
+                     justify="left").pack(anchor="w", padx=12)
         acciones = ctk.CTkFrame(formulario, fg_color="transparent")
         acciones.pack(fill="x", padx=12, pady=(6, 10))
         ctk.CTkButton(acciones, text="💾 Guardar turno", width=160, fg_color=COLOR_OK,
@@ -3673,7 +3679,7 @@ class ModuloNominaApp:
             ("id", "ID", 50, "center"),
             ("nombre", "Horario", 300, "w"),
             ("descripcion", "Descripción", 300, "w"),
-            ("resumen", "Distribución semanal", 480, "w"),
+            ("resumen", "Distribución semanal", 780, "w"),
             ("activo", "Activo", 70, "center"),
         ], alto=5)
         self.tabla_horarios.bind("<<TreeviewSelect>>", self.al_seleccionar_horario)
@@ -3694,6 +3700,20 @@ class ModuloNominaApp:
         self.var_horario_activo = tk.BooleanVar(value=True)
         ctk.CTkCheckBox(fila, text="Activo", variable=self.var_horario_activo,
                         font=("Arial", 10)).pack(side="left", padx=4)
+
+        fila_base = ctk.CTkFrame(formulario, fg_color="transparent")
+        fila_base.pack(fill="x", padx=12, pady=3)
+        ctk.CTkLabel(fila_base, text="Turno base:", font=("Arial", 10, "bold")).pack(side="left")
+        self.cmb_horario_base = ctk.CTkComboBox(
+            fila_base, values=["(Ninguno)"], width=250, state="readonly",
+            command=lambda _v: self._aplicar_dias_turno_base())
+        self.cmb_horario_base.pack(side="left", padx=(2, 8))
+        ctk.CTkButton(fila_base, text="🎯 Aplicar sus días", width=150, height=26,
+                      font=("Arial", 10, "bold"), fg_color="#8e44ad", hover_color="#6c3483",
+                      command=self._aplicar_dias_turno_base).pack(side="left", padx=4)
+        ctk.CTkLabel(fila_base,
+                     text="Prellena la semana con los días sugeridos del turno; luego ajuste cada día.",
+                     font=("Arial", 9, "italic"), text_color="#7f8c8d").pack(side="left", padx=8)
 
         self.grid_horario = ctk.CTkFrame(formulario, fg_color="transparent")
         self.grid_horario.pack(fill="x", padx=12, pady=2)
@@ -3732,6 +3752,90 @@ class ModuloNominaApp:
         self.var_horario_activo.set(True)
         for combo in self.combos_dias_horario.values():
             combo.set("(Descanso)")
+        # 🎯 Se prellena con los días sugeridos del turno base
+        self._aplicar_dias_turno_base()
+
+    def _opciones_turnos_horario(self):
+        return ["(Ninguno)"] + [
+            "%s | %s (%s-%s)" % (turno["id"], turno["nombre"], turno["hora_entrada"],
+                                 turno["hora_salida"])
+            for turno in self.turnos
+        ]
+
+    def _actualizar_turno_base(self):
+        """Refresca la lista de turnos del selector «Turno base»."""
+        combo = getattr(self, "cmb_horario_base", None)
+        if combo is None:
+            return
+        try:
+            actual = combo.get()
+            opciones = self._opciones_turnos_horario()
+            combo.configure(values=opciones)
+            if not getattr(self, "_turno_base_inicializado", False) and len(opciones) > 1:
+                combo.set(opciones[1])          # primer turno: prellena al crear
+                self._turno_base_inicializado = True
+            elif actual in opciones:
+                combo.set(actual)
+            else:
+                combo.set("(Ninguno)")
+        except Exception:
+            pass
+
+    def _opcion_turno_combo(self, combo, turno_id):
+        try:
+            for opcion in combo.cget("values"):
+                if opcion != "(Descanso)" and opcion.split("|")[0].strip() == str(turno_id):
+                    return opcion
+        except Exception:
+            pass
+        return "(Descanso)"
+
+    def _aplicar_dias_turno_base(self):
+        """Prellena el horario con los días sugeridos del turno base."""
+        combo_base = getattr(self, "cmb_horario_base", None)
+        if combo_base is None:
+            return
+        texto = combo_base.get()
+        if not texto or texto.startswith("("):
+            return
+        try:
+            turno_id = int(texto.split("|")[0].strip())
+        except Exception:
+            return
+        turno = next((t for t in self.turnos if int(t["id"]) == turno_id), None)
+        if not turno:
+            return
+        dias = nc.parsear_dias_semana(turno.get("dias_semana"))
+        for indice, combo_dia in self.combos_dias_horario.items():
+            if indice in dias:
+                combo_dia.set(self._opcion_turno_combo(combo_dia, turno_id))
+            else:
+                combo_dia.set("(Descanso)")
+
+    def _resumen_dias_horario(self, detalle, turnos):
+        """Resumen compacto de la semana: agrupa días consecutivos con el mismo turno."""
+        nombres_dias = []
+        for indice in range(1, 8):
+            turno_id = detalle.get(indice)
+            if turno_id and int(turno_id) in turnos:
+                nombre = turnos[int(turno_id)]["nombre"].split("(")[0].strip()
+            else:
+                nombre = "Descanso"
+            nombres_dias.append((indice, nombre))
+        grupos = []
+        for indice, nombre in nombres_dias:
+            if grupos and grupos[-1][2] == nombre and grupos[-1][1] == indice - 1:
+                grupos[-1] = (grupos[-1][0], indice, nombre)
+            else:
+                grupos.append((indice, indice, nombre))
+        partes = []
+        for inicio, fin, nombre in grupos:
+            if inicio == fin:
+                etiqueta = nc.DIAS_CORTOS[inicio - 1]
+            else:
+                etiqueta = "%s a %s" % (nc.DIAS_CORTOS[inicio - 1], nc.DIAS_CORTOS[fin - 1])
+            partes.append("%s: %s" % (etiqueta, nombre))
+        return " | ".join(partes)
 
     @con_letrero("Leyendo los horarios...", "")
     def cargar_horarios(self):
@@ -3739,17 +3843,10 @@ class ModuloNominaApp:
         turnos = {int(t["id"]): t for t in self.turnos}
         for horario in self.horarios:
             completo = nc.obtener_horario(horario["id"]) or {"detalle": {}}
-            resumen = []
-            for indice in range(1, 8):
-                turno_id = completo["detalle"].get(indice)
-                if turno_id and int(turno_id) in turnos:
-                    turno = turnos[int(turno_id)]
-                    resumen.append("%s: %s" % (nc.DIAS_CORTOS[indice - 1], turno["nombre"].split("(")[0].strip()))
-                else:
-                    resumen.append("%s: Descanso" % nc.DIAS_CORTOS[indice - 1])
+            resumen = self._resumen_dias_horario(completo.get("detalle") or {}, turnos)
             self.tabla_horarios.insert("", tk.END, values=(
                 horario["id"], horario["nombre"], horario.get("descripcion") or "",
-                " | ".join(resumen), "SÍ" if horario.get("activo") else "NO"))
+                resumen, "SÍ" if horario.get("activo") else "NO"))
 
     def al_seleccionar_horario(self, evento=None):
         seleccion = self.tabla_horarios.selection()
