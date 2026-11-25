@@ -26,7 +26,7 @@ import calendar
 import functools
 import subprocess
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import colorchooser, ttk, messagebox
 from datetime import datetime, date, timedelta
 
 import customtkinter as ctk
@@ -2295,7 +2295,7 @@ class ModuloNominaApp:
         nombre_reloj = self.tabla_personas.item(seleccion[0], "values")[1] if seleccion else ""
         ok, error = nc.guardar_mapeo(codigo, dni, nombre_reloj, self.usuario_activo)
         if not ok:
-            return messagebox.showerror("Error", error)
+            return messagebox.showerror("Error", error, parent=self.frame_main)
         self.aviso("✅ Código %s vinculado con el DNI %s" % (codigo, dni), COLOR_OK)
         self.cargar_personas_reloj()
         self.cargar_mapeos()
@@ -3426,10 +3426,21 @@ class ModuloNominaApp:
         self.ent_turno_salida = ctk.CTkEntry(fila1, width=70)
         self.ent_turno_salida.insert(0, "17:00")
         self.ent_turno_salida.pack(side="left", padx=(2, 10))
-        ctk.CTkLabel(fila1, text="Jornada (h):", font=("Arial", 10, "bold")).pack(side="left")
+        ctk.CTkLabel(fila1, text="Jornada (h) auto:", font=("Arial", 10, "bold")).pack(side="left")
         self.ent_turno_jornada = ctk.CTkEntry(fila1, width=60)
-        self.ent_turno_jornada.insert(0, "8")
         self.ent_turno_jornada.pack(side="left", padx=(2, 10))
+        # 🔒 La jornada se calcula sola desde la hora de entrada y salida
+        try:
+            self.ent_turno_jornada.configure(state="readonly")
+        except Exception:
+            pass
+        for _entrada_hora in (self.ent_turno_entrada, self.ent_turno_salida):
+            _entrada_hora.bind("<KeyRelease>", self._calcular_jornada_turno, add="+")
+            _entrada_hora.bind("<FocusOut>", self._calcular_jornada_turno, add="+")
+            _entrada_hora.bind("<Return>", self._calcular_jornada_turno, add="+")
+            _entrada_hora.bind("<<Paste>>",
+                               lambda _e: self.after(10, self._calcular_jornada_turno), add="+")
+        self._calcular_jornada_turno()
         fila2 = ctk.CTkFrame(formulario, fg_color="transparent")
         fila2.pack(fill="x", padx=12, pady=3)
         ctk.CTkLabel(fila2, text="Tolerancia (min):", font=("Arial", 10, "bold")).pack(side="left")
@@ -3443,7 +3454,12 @@ class ModuloNominaApp:
         ctk.CTkLabel(fila2, text="Color:", font=("Arial", 10, "bold")).pack(side="left")
         self.ent_turno_color = ctk.CTkEntry(fila2, width=90)
         self.ent_turno_color.insert(0, COLOR_PRIMARIO)
-        self.ent_turno_color.pack(side="left", padx=(2, 10))
+        self.ent_turno_color.pack(side="left", padx=(2, 4))
+        self.btn_turno_color = ctk.CTkButton(
+            fila2, text="🎨 Elegir", width=82, height=26, font=("Arial", 10, "bold"),
+            fg_color=COLOR_PRIMARIO, hover_color=COLOR_HOVER,
+            command=self.elegir_color_turno)
+        self.btn_turno_color.pack(side="left", padx=(0, 10))
         self.var_turno_cruza = tk.BooleanVar(value=False)
         self.var_turno_nocturno = tk.BooleanVar(value=False)
         self.var_turno_activo = tk.BooleanVar(value=True)
@@ -3478,6 +3494,66 @@ class ModuloNominaApp:
         contenedor.pack(side="top", fill="both", expand=True)
         self.turno_id = None
 
+    def elegir_color_turno(self):
+        """🎨 Abre el abanico de colores para el turno."""
+        actual = self.ent_turno_color.get().strip() or COLOR_PRIMARIO
+        try:
+            elegido = colorchooser.askcolor(color=actual, parent=self.parent_frame,
+                                            title="Color del turno")
+        except Exception:
+            try:
+                elegido = colorchooser.askcolor(color=actual)
+            except Exception:
+                elegido = (None, None)
+        color = (elegido or (None, None))[1]
+        if not color:
+            return
+        self.ent_turno_color.delete(0, tk.END)
+        self.ent_turno_color.insert(0, color)
+        try:
+            self.btn_turno_color.configure(fg_color=color)
+        except Exception:
+            pass
+
+    def _minutos_hora_turno(self, texto):
+        """Minutos desde medianoche de una hora HH:MM (o None si no es válida)."""
+        hora = nc.parse_hora(texto)
+        if not hora:
+            return None
+        try:
+            partes = str(hora).split(":")
+            return int(partes[0]) * 60 + int(partes[1])
+        except Exception:
+            return None
+
+    def _horas_jornada_turno(self):
+        """Horas de jornada según la entrada y la salida (cruza medianoche)."""
+        entrada = self._minutos_hora_turno(self.ent_turno_entrada.get())
+        salida = self._minutos_hora_turno(self.ent_turno_salida.get())
+        if entrada is None or salida is None:
+            return None
+        minutos = (salida - entrada) % (24 * 60)
+        if minutos == 0:
+            minutos = 24 * 60      # entrada y salida iguales: jornada completa
+        return round(minutos / 60.0, 2)
+
+    def _poner_jornada_turno(self, valor=None):
+        if valor is None:
+            valor = self._horas_jornada_turno()
+        if valor is None:
+            return
+        try:
+            self.ent_turno_jornada.configure(state="normal")
+            self.ent_turno_jornada.delete(0, tk.END)
+            self.ent_turno_jornada.insert(0, "%.2f" % float(valor))
+            self.ent_turno_jornada.configure(state="readonly")
+        except Exception:
+            pass
+
+    def _calcular_jornada_turno(self, evento=None):
+        """Recalcula la jornada automáticamente (el campo no se edita a mano)."""
+        self._poner_jornada_turno()
+
     def nuevo_turno(self):
         self.turno_id = None
         self.ent_turno_nombre.delete(0, tk.END)
@@ -3485,6 +3561,13 @@ class ModuloNominaApp:
         self.ent_turno_entrada.insert(0, "08:00")
         self.ent_turno_salida.delete(0, tk.END)
         self.ent_turno_salida.insert(0, "17:00")
+        self._calcular_jornada_turno()
+        self.ent_turno_color.delete(0, tk.END)
+        self.ent_turno_color.insert(0, COLOR_PRIMARIO)
+        try:
+            self.btn_turno_color.configure(fg_color=COLOR_PRIMARIO)
+        except Exception:
+            pass
         self.ent_turno_observacion.delete(0, tk.END)
 
     @con_letrero("Leyendo los turnos...", "")
@@ -3509,13 +3592,18 @@ class ModuloNominaApp:
                 self.ent_turno_nombre.insert(0, turno["nombre"])
                 for entrada, valor in ((self.ent_turno_entrada, turno["hora_entrada"]),
                                        (self.ent_turno_salida, turno["hora_salida"]),
-                                       (self.ent_turno_jornada, turno["horas_jornada"]),
                                        (self.ent_turno_tolerancia, turno["tolerancia_min"]),
                                        (self.ent_turno_refrigerio, turno["refrigerio_min"]),
                                        (self.ent_turno_color, turno["color"]),
                                        (self.ent_turno_observacion, turno["observacion"])):
                     entrada.delete(0, tk.END)
                     entrada.insert(0, "" if valor is None else str(valor))
+                self._calcular_jornada_turno()
+                try:
+                    self.btn_turno_color.configure(
+                        fg_color=str(turno.get("color") or COLOR_PRIMARIO))
+                except Exception:
+                    pass
                 self.var_turno_cruza.set(bool(turno.get("cruza_medianoche")))
                 self.var_turno_nocturno.set(bool(turno.get("aplica_nocturno")))
                 self.var_turno_activo.set(bool(turno.get("activo")))
@@ -3528,16 +3616,18 @@ class ModuloNominaApp:
         entrada = nc.parse_hora(self.ent_turno_entrada.get())
         salida = nc.parse_hora(self.ent_turno_salida.get())
         if not entrada or not salida:
-            return messagebox.showwarning("Atención", "Escriba la hora de entrada y de salida (HH:MM).")
+            return messagebox.showwarning("Atención", "Escriba la hora de entrada y de salida (HH:MM).",
+                                          parent=self.frame_main)
         dias = [indice for indice, variable in self.vars_turno_dias.items() if variable.get()]
         if not dias:
-            return messagebox.showwarning("Atención", "Seleccione al menos un día de la semana.")
+            return messagebox.showwarning("Atención", "Seleccione al menos un día de la semana.",
+                                          parent=self.frame_main)
         datos = {
             "id": self.turno_id,
             "nombre": self.ent_turno_nombre.get().strip(),
             "hora_entrada": entrada,
             "hora_salida": salida,
-            "horas_jornada": parse_num(self.ent_turno_jornada.get(), 8),
+            "horas_jornada": self._horas_jornada_turno() or 8,
             "tolerancia_min": parse_num(self.ent_turno_tolerancia.get(), 10),
             "refrigerio_min": parse_num(self.ent_turno_refrigerio.get(), 45),
             "dias_semana": dias,
@@ -3556,9 +3646,11 @@ class ModuloNominaApp:
 
     def eliminar_turno(self):
         if not self.turno_id:
-            return messagebox.showwarning("Atención", "Seleccione un turno de la lista.")
+            return messagebox.showwarning("Atención", "Seleccione un turno de la lista.",
+                                          parent=self.frame_main)
         if not messagebox.askyesno("Confirmar", "¿Eliminar el turno seleccionado?\n\n"
-                                                "Los empleados y horarios que lo usaban quedarán sin turno."):
+                                                "Los empleados y horarios que lo usaban quedarán sin turno.",
+                                                parent=self.frame_main):
             return
         nc.eliminar_turno(self.turno_id, self.usuario_activo)
         self.turno_id = None

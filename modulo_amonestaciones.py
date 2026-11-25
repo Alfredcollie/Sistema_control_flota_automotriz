@@ -10,6 +10,7 @@ import sys
 import subprocess
 import json
 import datetime
+import calendar
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -30,6 +31,104 @@ try:
     _PDF_OK = True
 except Exception:            # pragma: no cover
     _PDF_OK = False
+
+
+class CalendarioNativo(ctk.CTkToplevel):
+    """Calendario emergente para elegir una fecha (Windows y macOS)."""
+
+    def __init__(self, parent, target_entry):
+        super().__init__(parent)
+        self.target_entry = target_entry
+        self.title("Seleccionar Fecha")
+        self.geometry("310x320")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - (310 // 2)
+        y = parent.winfo_rooty() + (parent.winfo_height() // 2) - (320 // 2)
+        self.geometry(f"+{x}+{y}")
+
+        self.current_year = datetime.datetime.now().year
+        self.current_month = datetime.datetime.now().month
+        self.meses_nombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+        self.header_frame = ctk.CTkFrame(self, fg_color="#1f538d", corner_radius=0)
+        self.header_frame.pack(fill="x")
+        ctk.CTkButton(self.header_frame, text="<", width=25, fg_color="transparent",
+                      text_color="white", hover_color="#163b65", font=("Arial", 14, "bold"),
+                      command=self.prev_month).pack(side="left", padx=5, pady=10)
+        self.cmb_mes = ctk.CTkComboBox(self.header_frame, values=self.meses_nombres, width=100,
+                                       command=self.cambiar_mes_combo)
+        self.cmb_mes.pack(side="left", padx=2, pady=10)
+        anios = [str(y) for y in range(datetime.datetime.now().year - 80,
+                                       datetime.datetime.now().year + 20)]
+        self.cmb_anio = ctk.CTkComboBox(self.header_frame, values=anios, width=75,
+                                        command=self.cambiar_anio_combo)
+        self.cmb_anio.pack(side="left", padx=2, pady=10)
+        ctk.CTkButton(self.header_frame, text=">", width=25, fg_color="transparent",
+                      text_color="white", hover_color="#163b65", font=("Arial", 14, "bold"),
+                      command=self.next_month).pack(side="right", padx=5, pady=10)
+
+        self.days_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.days_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        for i, day in enumerate(["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]):
+            ctk.CTkLabel(self.days_frame, text=day, font=("Arial", 11, "bold"),
+                         text_color="#1f538d").grid(row=0, column=i, padx=5, pady=5)
+        self.update_calendar()
+
+    def cambiar_mes_combo(self, choice):
+        self.current_month = self.meses_nombres.index(choice) + 1
+        self.update_calendar()
+
+    def cambiar_anio_combo(self, choice):
+        try:
+            self.current_year = int(choice)
+            self.update_calendar()
+        except ValueError:
+            pass
+
+    def update_calendar(self):
+        self.cmb_mes.set(self.meses_nombres[self.current_month - 1])
+        self.cmb_anio.set(str(self.current_year))
+        for widget in self.days_frame.winfo_children():
+            if int(widget.grid_info()["row"]) > 0:
+                widget.destroy()
+        cal = calendar.monthcalendar(self.current_year, self.current_month)
+        hoy = datetime.datetime.now()
+        for row_idx, week in enumerate(cal, start=1):
+            for col_idx, day in enumerate(week):
+                if day != 0:
+                    es_hoy = (day == hoy.day and self.current_month == hoy.month
+                              and self.current_year == hoy.year)
+                    btn = ctk.CTkButton(self.days_frame, text=str(day), width=30, height=30,
+                                        fg_color="#d4edda" if es_hoy else "transparent",
+                                        text_color="#155724" if es_hoy else "black",
+                                        hover_color="#e0e0e0", font=("Arial", 11))
+                    btn.configure(command=lambda d=day: self.select_date(d))
+                    btn.grid(row=row_idx, column=col_idx, padx=3, pady=2)
+
+    def prev_month(self):
+        self.current_month -= 1
+        if self.current_month < 1:
+            self.current_month = 12
+            self.current_year -= 1
+        self.update_calendar()
+
+    def next_month(self):
+        self.current_month += 1
+        if self.current_month > 12:
+            self.current_month = 1
+            self.current_year += 1
+        self.update_calendar()
+
+    def select_date(self, day):
+        fecha_seleccionada = "%02d/%02d/%04d" % (day, self.current_month, self.current_year)
+        self.target_entry.delete(0, tk.END)
+        self.target_entry.insert(0, fecha_seleccionada)
+        self.destroy()
 
 
 def abrir_documento(ruta, titulo="Documento"):
@@ -130,6 +229,7 @@ def asegurar_schema():
                     motivo VARCHAR(250),
                     detalle TEXT,
                     fecha VARCHAR(20),
+                    fecha_falta VARCHAR(20),
                     fecha_inicio VARCHAR(20),
                     dias INTEGER DEFAULT 0,
                     gerente VARCHAR(200),
@@ -147,6 +247,7 @@ def asegurar_schema():
             """)
             # 🔢 Número de documento (AMO-2026-0001 / SUS-2026-0001)
             c.execute("ALTER TABLE amonestaciones ADD COLUMN IF NOT EXISTS numero_documento VARCHAR(30)")
+            c.execute("ALTER TABLE amonestaciones ADD COLUMN IF NOT EXISTS fecha_falta VARCHAR(20)")
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_amonestaciones_numero "
                       "ON amonestaciones (numero_documento) WHERE numero_documento IS NOT NULL")
             c.execute("SELECT COUNT(*) FROM motivos_amonestacion")
@@ -255,7 +356,7 @@ def listar_amonestaciones(filtro=""):
         with conn.cursor() as c:
             sql = ("SELECT id, tipo, fecha, chofer, dni, motivo, gerente, COALESCE(archivo_ruta,''), "
                    "COALESCE(detalle,''), COALESCE(dias,0), COALESCE(fecha_inicio,''), "
-                   "COALESCE(numero_documento,'') "
+                   "COALESCE(numero_documento,''), COALESCE(fecha_falta,'') "
                    "FROM amonestaciones")
             params = ()
             if filtro:
@@ -385,6 +486,9 @@ def generar_pdf(datos, ruta_destino, gerente, empresa="BLACK RIDERS E.I.R.L.", r
     y -= 15
     lienzo.drawString(margen, y, "Fecha del documento: " + str(datos.get("fecha") or ""))
     y -= 15
+    lienzo.drawString(margen, y, "Fecha de la falta: "
+                      + str(datos.get("fecha_falta") or datos.get("fecha") or ""))
+    y -= 15
     lienzo.drawString(margen, y, "Motivo: " + str(datos.get("motivo") or ""))
     if "suspens" in tipo.lower():
         y -= 15
@@ -509,9 +613,27 @@ class AmonestacionesApp(ctk.CTkFrame):
 
         ctk.CTkLabel(self.f_form, text="Fecha del documento:",
                      font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
-        self.ent_fecha = ctk.CTkEntry(self.f_form)
-        self.ent_fecha.pack(fill="x", padx=10, pady=(0, 8))
+        fila_fecha_doc = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        fila_fecha_doc.pack(fill="x", padx=10, pady=(0, 8))
+        self.ent_fecha = ctk.CTkEntry(fila_fecha_doc)
+        self.ent_fecha.pack(side="left", fill="x", expand=True)
         self.ent_fecha.insert(0, datetime.date.today().strftime("%d/%m/%Y"))
+        ctk.CTkButton(fila_fecha_doc, text="📅", width=36, height=28,
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: self._abrir_calendario(self.ent_fecha)
+                      ).pack(side="left", padx=(6, 0))
+
+        ctk.CTkLabel(self.f_form, text="Fecha de la falta:",
+                     font=("Arial", 11, "bold")).pack(anchor="w", padx=10)
+        fila_fecha_falta = ctk.CTkFrame(self.f_form, fg_color="transparent")
+        fila_fecha_falta.pack(fill="x", padx=10, pady=(0, 8))
+        self.ent_fecha_falta = ctk.CTkEntry(fila_fecha_falta)
+        self.ent_fecha_falta.pack(side="left", fill="x", expand=True)
+        self.ent_fecha_falta.insert(0, datetime.date.today().strftime("%d/%m/%Y"))
+        ctk.CTkButton(fila_fecha_falta, text="📅", width=36, height=28,
+                      fg_color="#1f538d", hover_color="#163b65",
+                      command=lambda: self._abrir_calendario(self.ent_fecha_falta)
+                      ).pack(side="left", padx=(6, 0))
 
         self.f_suspension = ctk.CTkFrame(self.f_form, fg_color="#fdf2e3", corner_radius=6,
                                           border_width=1, border_color="#e3c39a")
@@ -692,6 +814,13 @@ class AmonestacionesApp(ctk.CTkFrame):
             return ""
         return valor
 
+    def _abrir_calendario(self, entrada):
+        """📅 Abre el calendario y escribe la fecha elegida en el campo."""
+        try:
+            CalendarioNativo(self.winfo_toplevel(), entrada)
+        except Exception as error:
+            print("Aviso - calendario:", error)
+
     def _datos_formulario(self):
         return {
             "tipo": self.combo_tipo.get(),
@@ -699,6 +828,7 @@ class AmonestacionesApp(ctk.CTkFrame):
             "dni": self._dni_chofer(self.combo_chofer.get().strip()),
             "motivo": self.combo_motivo.get().strip(),
             "fecha": self.ent_fecha.get().strip(),
+            "fecha_falta": self.ent_fecha_falta.get().strip(),
             "detalle": self._detalle_valor(),
             "dias": self.ent_dias.get().strip(),
             "fecha_inicio": self.ent_inicio.get().strip(),
@@ -718,7 +848,8 @@ class AmonestacionesApp(ctk.CTkFrame):
         texto += chr(10) + chr(10)
         texto += "Nombre: " + (datos["chofer"] or "—") + chr(10)
         texto += "DNI: " + (datos["dni"] or "—") + chr(10)
-        texto += "Fecha: " + (datos["fecha"] or "—") + chr(10)
+        texto += "Fecha del documento: " + (datos["fecha"] or "—") + chr(10)
+        texto += "Fecha de la falta: " + (datos["fecha_falta"] or "—") + chr(10)
         texto += "Motivo: " + (datos["motivo"] or "—") + chr(10) + chr(10)
         texto += cuerpo
         if datos["detalle"]:
@@ -887,21 +1018,23 @@ class AmonestacionesApp(ctk.CTkFrame):
                         # se completa la fila ya reservada (con su número)
                         c.execute("""UPDATE amonestaciones SET
                                         id_chofer=%s, dni=%s, motivo=%s, detalle=%s, fecha=%s,
-                                        fecha_inicio=%s, dias=%s, gerente=%s, archivo_ruta=%s
+                                        fecha_falta=%s, fecha_inicio=%s, dias=%s, gerente=%s,
+                                        archivo_ruta=%s
                                      WHERE id=%s""",
                                   (0, datos["dni"], datos["motivo"], datos["detalle"],
-                                   datos["fecha"], datos["fecha_inicio"], int(datos["dias"] or 0),
+                                   datos["fecha"], datos["fecha_falta"],
+                                   datos["fecha_inicio"], int(datos["dias"] or 0),
                                    datos["gerente"], ruta_pdf, id_fila))
                     else:
                         c.execute("""
                             INSERT INTO amonestaciones
-                                (tipo, id_chofer, chofer, dni, motivo, detalle, fecha, fecha_inicio,
-                                 dias, gerente, archivo_ruta, numero_documento)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                (tipo, id_chofer, chofer, dni, motivo, detalle, fecha, fecha_falta,
+                                 fecha_inicio, dias, gerente, archivo_ruta, numero_documento)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (datos["tipo"], 0, datos["chofer"], datos["dni"], datos["motivo"],
-                              datos["detalle"], datos["fecha"], datos["fecha_inicio"],
-                              int(datos["dias"] or 0), datos["gerente"], ruta_pdf,
-                              datos.get("numero") or None))
+                              datos["detalle"], datos["fecha"], datos["fecha_falta"],
+                              datos["fecha_inicio"], int(datos["dias"] or 0), datos["gerente"],
+                              ruta_pdf, datos.get("numero") or None))
                 conn.commit()
             except Exception as e:
                 print("[amonestaciones] guardar:", e)
@@ -929,6 +1062,8 @@ class AmonestacionesApp(ctk.CTkFrame):
         self.ent_dias.insert(0, "1")
         self.ent_fecha.delete(0, "end")
         self.ent_fecha.insert(0, datetime.date.today().strftime("%d/%m/%Y"))
+        self.ent_fecha_falta.delete(0, "end")
+        self.ent_fecha_falta.insert(0, datetime.date.today().strftime("%d/%m/%Y"))
         self.ent_inicio.delete(0, "end")
         self.ent_inicio.insert(0, datetime.date.today().strftime("%d/%m/%Y"))
         self._actualizar_previa()
@@ -991,7 +1126,7 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
             self.tabla.delete(i)
         for fila in listar_amonestaciones(self.ent_buscar.get().strip()):
             (id_, tipo, fecha, chofer, dni, motivo, gerente, archivo, detalle, dias, inicio,
-             numero_doc) = fila
+             numero_doc, fecha_falta) = fila
             self.tabla.insert("", tk.END, iid=str(id_), values=(
                 numero_doc or "—", id_, tipo, fecha, chofer, dni, motivo, gerente,
                 "Sí" if archivo else "—"))
@@ -1014,14 +1149,15 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
                     c.execute("""SELECT tipo, chofer, COALESCE(dni,''), motivo, COALESCE(detalle,''),
                                         COALESCE(fecha,''), COALESCE(fecha_inicio,''), COALESCE(dias,0),
                                         COALESCE(gerente,''), COALESCE(archivo_ruta,''),
-                                        COALESCE(numero_documento,'')
+                                        COALESCE(numero_documento,''), COALESCE(fecha_falta,'')
                                  FROM amonestaciones WHERE id = %s""", (id_doc,))
                     fila = c.fetchone()
                     if fila:
                         datos = {"id": id_doc, "tipo": fila[0], "chofer": fila[1], "dni": fila[2],
                                  "motivo": fila[3], "detalle": fila[4], "fecha": fila[5],
                                  "fecha_inicio": fila[6], "dias": fila[7], "gerente": fila[8],
-                                 "archivo": fila[9], "numero": fila[10]}
+                                 "archivo": fila[9], "numero": fila[10],
+                                 "fecha_falta": fila[11]}
             except Exception as e:
                 print("[amonestaciones] leer:", e)
             finally:
@@ -1054,7 +1190,21 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
 
         campo("Colaborador:", datos["chofer"], "chofer")
         campo("DNI:", datos["dni"], "dni")
-        campo("Fecha del documento:", datos["fecha"], "fecha")
+        def campo_fecha(etiqueta, valor, clave):
+            ctk.CTkLabel(marco, text=etiqueta, font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
+            fila_fecha = ctk.CTkFrame(marco, fg_color="transparent")
+            fila_fecha.pack(fill="x")
+            entrada = ctk.CTkEntry(fila_fecha)
+            entrada.pack(side="left", fill="x", expand=True)
+            entrada.insert(0, "" if valor is None else str(valor))
+            ctk.CTkButton(fila_fecha, text="📅", width=36, height=28,
+                          fg_color="#1f538d", hover_color="#163b65",
+                          command=lambda e=entrada: CalendarioNativo(ventana, e)
+                          ).pack(side="left", padx=(6, 0))
+            entradas[clave] = entrada
+
+        campo_fecha("Fecha del documento:", datos["fecha"], "fecha")
+        campo_fecha("Fecha de la falta:", datos.get("fecha_falta") or datos["fecha"], "fecha_falta")
 
         ctk.CTkLabel(marco, text="Motivo:", font=("Arial", 11, "bold")).pack(anchor="w", pady=(6, 0))
         combo_motivo = ctk.CTkComboBox(marco, values=cargar_motivos())
@@ -1082,11 +1232,13 @@ class HistorialAmonestaciones(ctk.CTkToplevel):
                 return
             try:
                 with conn.cursor() as c:
-                    c.execute("""UPDATE amonestaciones SET chofer=%s, dni=%s, fecha=%s, motivo=%s,
-                                        detalle=%s, dias=%s, fecha_inicio=%s, gerente=%s
+                    c.execute("""UPDATE amonestaciones SET chofer=%s, dni=%s, fecha=%s,
+                                        fecha_falta=%s, motivo=%s, detalle=%s, dias=%s,
+                                        fecha_inicio=%s, gerente=%s
                                  WHERE id=%s""",
-                              (nuevos["chofer"], nuevos["dni"], nuevos["fecha"], nuevos["motivo"],
-                               nuevos["detalle"], int(nuevos["dias"] or 0), nuevos["fecha_inicio"],
+                              (nuevos["chofer"], nuevos["dni"], nuevos["fecha"],
+                               nuevos["fecha_falta"], nuevos["motivo"], nuevos["detalle"],
+                               int(nuevos["dias"] or 0), nuevos["fecha_inicio"],
                                nuevos["gerente"], id_doc))
                 conn.commit()
             except Exception as e:
