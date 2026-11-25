@@ -126,7 +126,7 @@ jobs:
       run: Compress-Archive -Path "dist/ControlFlota" -DestinationPath "dist/ControlFlota-Windows.zip" -Force
 
     - name: Subir artifact (Windows)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: windows
         path: |
@@ -310,7 +310,7 @@ jobs:
         hdiutil create -volname "Control Flota" -srcfolder dmg -ov -format UDZO "Instalador.ControlFlota.dmg"
 
     - name: Subir artifact (macOS)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: mac
         path: |
@@ -325,13 +325,13 @@ jobs:
 
     steps:
     - name: Descargar artifact Windows
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         name: windows
         path: release-assets
 
     - name: Descargar artifact macOS
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         name: mac
         path: release-assets
@@ -340,14 +340,36 @@ jobs:
       run: ls -la release-assets
 
     - name: Publicar en GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
-        name: ControlFlota ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
-        files: |
-          release-assets/*.zip
-          release-assets/*.dmg
-          release-assets/*.exe
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+      run: |
+        set -euo pipefail
+        echo "Publicando la versión $TAG"
+        if gh release view "$TAG" >/dev/null 2>&1; then
+          echo "El release $TAG ya existe; se reemplazarán los archivos uno por uno."
+        else
+          gh release create "$TAG" --title "ControlFlota $TAG" --notes "Compilación automática $TAG"
+        fi
+        for archivo in release-assets/*; do
+          if [ ! -f "$archivo" ]; then
+            continue
+          fi
+          echo "Subiendo $(basename "$archivo")..."
+          subido=0
+          for intento in 1 2 3 4; do
+            if gh release upload "$TAG" "$archivo" --clobber; then
+              subido=1
+              break
+            fi
+            echo "Fallo al subir $(basename "$archivo") (intento $intento). Reintentando en 10 s..."
+            sleep 10
+          done
+          if [ "$subido" -ne 1 ]; then
+            echo "ERROR: no se pudo subir $archivo" >&2
+            exit 1
+          fi
+        done
+        gh release edit "$TAG" --draft=false >/dev/null 2>&1 || true
+        echo "Release $TAG publicado correctamente."
 
