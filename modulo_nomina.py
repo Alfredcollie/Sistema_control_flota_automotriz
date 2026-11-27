@@ -1659,8 +1659,11 @@ class ModuloNominaApp:
                     combo.set(opciones[0] if opciones else "")
             except Exception:
                 pass
-        turnos_opciones = ["(Descanso)"] + ["%s | %s (%s-%s)" % (t["id"], t["nombre"], t["hora_entrada"],
-                                                                t["hora_salida"]) for t in self.turnos]
+        turnos_opciones = ["(Descanso)"] + [
+            "%s | %s | %s (%s-%s)" % (t["id"], self._texto_dias_turno(t), t["nombre"],
+                                      t["hora_entrada"], t["hora_salida"])
+            for t in self.turnos
+        ]
         horarios_opciones = ["(Ninguno)"] + ["%s | %s" % (h["id"], h["nombre"]) for h in self.horarios]
         for combo in getattr(self, "_combos_turnos", []):
             try:
@@ -3755,10 +3758,36 @@ class ModuloNominaApp:
         # 🎯 Se prellena con los días sugeridos del turno base
         self._aplicar_dias_turno_base()
 
+    def _texto_dias_turno(self, turno):
+        """Días del turno en forma corta: «Lun a Sab», «Lun, Jue», «Todos los días»."""
+        try:
+            dias = sorted(nc.parsear_dias_semana((turno or {}).get("dias_semana")))
+        except Exception:
+            dias = []
+        dias = [int(d) for d in dias if 1 <= int(d) <= 7]
+        if not dias:
+            return "Sin días"
+        if len(dias) >= 7:
+            return "Todos los días"
+        grupos = []
+        for dia in dias:
+            if grupos and dia == grupos[-1][1] + 1:
+                grupos[-1] = (grupos[-1][0], dia)
+            else:
+                grupos.append((dia, dia))
+        partes = []
+        for inicio, fin in grupos:
+            if inicio == fin:
+                partes.append(nc.DIAS_CORTOS[inicio - 1])
+            else:
+                partes.append("%s a %s" % (nc.DIAS_CORTOS[inicio - 1], nc.DIAS_CORTOS[fin - 1]))
+        return ", ".join(partes)
+
     def _opciones_turnos_horario(self):
         return ["(Ninguno)"] + [
-            "%s | %s (%s-%s)" % (turno["id"], turno["nombre"], turno["hora_entrada"],
-                                 turno["hora_salida"])
+            "%s | %s | %s (%s-%s)" % (turno["id"], self._texto_dias_turno(turno),
+                                      turno["nombre"], turno["hora_entrada"],
+                                      turno["hora_salida"])
             for turno in self.turnos
         ]
 
@@ -3882,15 +3911,17 @@ class ModuloNominaApp:
                  "activo": self.var_horario_activo.get()}
         nuevo_id, error = nc.guardar_horario(datos, detalle, self.usuario_activo)
         if not nuevo_id:
-            return messagebox.showerror("Error", error)
+            return messagebox.showerror("Error", error, parent=self.frame_main)
         self.horario_id = nuevo_id
         self.aviso("✅ Horario guardado: %s" % datos["nombre"], COLOR_OK)
         self.recargar_catalogos()
 
     def eliminar_horario(self):
         if not self.horario_id:
-            return messagebox.showwarning("Atención", "Seleccione un horario de la lista.")
-        if not messagebox.askyesno("Confirmar", "¿Eliminar el horario seleccionado?"):
+            return messagebox.showwarning("Atención", "Seleccione un horario de la lista.",
+                                          parent=self.frame_main)
+        if not messagebox.askyesno("Confirmar", "¿Eliminar el horario seleccionado?",
+                                   parent=self.frame_main):
             return
         nc.eliminar_horario(self.horario_id, self.usuario_activo)
         self.horario_id = None
@@ -3899,7 +3930,8 @@ class ModuloNominaApp:
 
     def duplicar_horario(self):
         if not self.horario_id:
-            return messagebox.showwarning("Atención", "Seleccione el horario que desea duplicar.")
+            return messagebox.showwarning("Atención", "Seleccione el horario que desea duplicar.",
+                                          parent=self.frame_main)
         from tkinter import simpledialog
         nombre = simpledialog.askstring("Duplicar horario", "Nombre del nuevo horario:",
                                         initialvalue="Copia de %s" % (self.ent_horario_nombre.get() or ""),
@@ -3908,7 +3940,7 @@ class ModuloNominaApp:
             return
         nuevo_id, error = nc.duplicar_horario(self.horario_id, nombre, self.usuario_activo)
         if not nuevo_id:
-            return messagebox.showerror("Error", error)
+            return messagebox.showerror("Error", error, parent=self.frame_main)
         self.recargar_catalogos()
         self.aviso("✅ Horario duplicado", COLOR_OK)
 

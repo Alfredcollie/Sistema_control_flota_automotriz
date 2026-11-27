@@ -83,9 +83,11 @@ CATEGORIAS = [
     ("normal", "Días Normales (Lun–Sáb)"),
     ("domingo", "Domingos"),
     ("feriado", "Feriados"),
+    ("festivo", "Festivos comerciales"),
 ]
 # Etiquetas cortas para los asientos de deducción (fecha → tipo de día)
-ETIQUETAS_CORTAS = {"normal": "Normal", "domingo": "Domingo", "feriado": "Feriado"}
+ETIQUETAS_CORTAS = {"normal": "Normal", "domingo": "Domingo",
+                    "feriado": "Feriado", "festivo": "Festivo"}
 ETIQUETAS_CORTAS_A_CLAVE = {v: k for k, v in ETIQUETAS_CORTAS.items()}
 NOMBRES_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
@@ -684,12 +686,38 @@ def feriados_locales(anio):
 # =========================================================
 # 🚀 CLASIFICACIÓN DE DÍAS DE LA QUINCENA
 # =========================================================
-def clasificar_dia(fecha, feriados=None):
-    """Clasifica el día: domingo, feriado (según la lista de Perú) o normal.
+def _n_esimo_domingo(anio, mes, n):
+    """Fecha del n-ésimo domingo del mes (n=1 primero, n=2 segundo...)."""
+    primero = date(anio, mes, 1)
+    adelanto = (6 - primero.weekday()) % 7
+    return primero + timedelta(days=adelanto + 7 * (n - 1))
 
-    El feriado SE MUESTRA en la quincena (para que se vea en la tabla y en el
-    PDF) pero NO se cobra el día: solo suman las «horas extras feriado».
+
+def festivos_comerciales(anio):
+    """Festivos comerciales de Perú que se cobran con la tarifa «P. Festivo».
+
+    Se pueden marcar/desmarcar a mano en la tabla de días. Por defecto:
+      · Día de la Madre (segundo domingo de mayo)
+      · Día del Padre (tercer domingo de junio)
+      · 24 de diciembre (Nochebuena)
+      · 31 de diciembre (Fin de Año)
     """
+    return {
+        _n_esimo_domingo(anio, 5, 2): "Día de la Madre",
+        _n_esimo_domingo(anio, 6, 3): "Día del Padre",
+        date(anio, 12, 24): "Nochebuena",
+        date(anio, 12, 31): "Fin de Año",
+    }
+
+
+def clasificar_dia(fecha, feriados=None, festivos=None):
+    """Clasifica el día: festivo comercial, domingo, feriado o normal.
+
+    El feriado oficial SE MUESTRA pero NO se cobra el día: solo suman las
+    «horas extras feriado». El festivo comercial sí se cobra y usa P. Festivo.
+    """
+    if festivos and fecha in festivos:
+        return "festivo"
     if fecha.weekday() == 6:  # Domingo
         return "domingo"
     if feriados and fecha in feriados:
@@ -697,15 +725,20 @@ def clasificar_dia(fecha, feriados=None):
     return "normal"  # Lunes a sábado
 
 
-def dias_de_quincena(anio, mes, quincena, feriados):
-    """Devuelve la lista de días [fecha, categoria, nombre_feriado] de la quincena."""
+def dias_de_quincena(anio, mes, quincena, feriados, festivos=None):
+    """Devuelve la lista de días [fecha, categoria, nombre] de la quincena."""
     dias = []
     ultimo = calendar.monthrange(anio, mes)[1]
     inicio, fin = (1, 15) if quincena == 1 else (16, ultimo)
     for d in range(inicio, fin + 1):
         f = date(anio, mes, d)
-        cat = clasificar_dia(f, feriados)
-        nombre = feriados.get(f, "") if cat == "feriado" else ""
+        cat = clasificar_dia(f, feriados, festivos)
+        if cat == "festivo":
+            nombre = festivos.get(f, "") if festivos else ""
+        elif cat == "feriado":
+            nombre = feriados.get(f, "") if feriados else ""
+        else:
+            nombre = ""
         dias.append({"fecha": f, "categoria": cat, "feriado_nombre": nombre})
     return dias
 
@@ -755,20 +788,25 @@ def _etiqueta_rango(rg):
     return "%g - %g km" % (d, h)
 
 
-def dias_de_mes(anio, mes, feriados):
-    """Todos los días del MES (para el plan Por Punto o Viaje, sin quincena)."""
+def dias_de_mes(anio, mes, feriados, festivos=None):
+    """Todos los días del MES (plan Por Punto o Viaje), con festivos comerciales."""
     dias = []
     ultimo = calendar.monthrange(anio, mes)[1]
     for d in range(1, ultimo + 1):
         f = date(anio, mes, d)
-        cat = clasificar_dia(f, feriados)
-        nombre = feriados.get(f, "") if cat == "feriado" else ""
+        cat = clasificar_dia(f, feriados, festivos)
+        if cat == "festivo":
+            nombre = festivos.get(f, "") if festivos else ""
+        elif cat == "feriado":
+            nombre = feriados.get(f, "") if feriados else ""
+        else:
+            nombre = ""
         dias.append({"fecha": f, "categoria": cat, "feriado_nombre": nombre})
     return dias
 
 
 def conteos_quincena(dias):
-    c = {"normal": 0, "domingo": 0, "feriado": 0}
+    c = {"normal": 0, "domingo": 0, "feriado": 0, "festivo": 0}
     for d in dias:
         c[d["categoria"]] = c.get(d["categoria"], 0) + 1
     return c
@@ -1086,6 +1124,7 @@ class CalculoCobranzaApp:
         # Si un feriado (o un vehículo) no está aquí, se usan las "Horas/Día".
         self.horas_feriado = {}
         self.feriados = {}      # {date: nombre}
+        self.festivos = {}      # {date: nombre} festivos comerciales
         self.unidades = []      # unidades asignadas del cliente
         self.viajes_registrados = []  # viajes agregados con el registro rápido
         self.deducciones_registradas = []  # asientos de deducción (fecha + motivo) del plan por viajes
@@ -1207,6 +1246,34 @@ class CalculoCobranzaApp:
                     precio_feriado NUMERIC(12,2) DEFAULT 0
                 )
             ''')
+            # 🎉 Precio y contadores para los festivos comerciales (Día de la Madre,
+            #    Día del Padre, 24 y 31 de diciembre). Se agregan sin borrar datos.
+            for _tabla, _col, _tipo in (
+                ("cobranza_quincenas", "precio_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("cobranza_quincenas", "cant_festivo", "INTEGER DEFAULT 0"),
+                ("cobranza_quincenas", "ded_festivo_h", "NUMERIC(12,3) DEFAULT 0"),
+                ("cobranza_quincenas", "monto_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("clientes_unidades", "precio_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("cobranza_quincena_unidades", "precio_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("cobranza_quincena_unidades", "cant_festivo", "INTEGER DEFAULT 0"),
+                ("cobranza_quincena_unidades", "ded_festivo_h", "NUMERIC(12,3) DEFAULT 0"),
+                ("cobranza_quincena_unidades", "monto_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("precios_viaje_distancia", "precio_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("precios_viaje_zona", "precio_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("cobranza_quincena_viajes", "precio_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("cobranza_quincena_viajes", "viajes_festivo", "NUMERIC(12,2) DEFAULT 0"),
+                ("cobranza_quincena_viajes", "ded_festivo", "NUMERIC(12,2) DEFAULT 0"),
+            ):
+                try:
+                    cursor.execute("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s"
+                                   % (_tabla, _col, _tipo))
+                except Exception as e_col:
+                    print("[Schema Festivo]", _tabla, _col, e_col)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cobranza_quincena_viajes (
                     id SERIAL PRIMARY KEY,
@@ -1424,6 +1491,10 @@ class CalculoCobranzaApp:
                                 font=(familia_fuente, 11, "bold"), fg_color="#e67e22",
                                 hover_color="#d35400", command=self.toggle_feriado)
         btn_fer.pack(side="right", padx=(5, 0))
+        btn_fest = ctk.CTkButton(f_dias_tool, text="🎉 Marcar/Desmarcar Festivo", width=180,
+                                 font=(familia_fuente, 11, "bold"), fg_color="#8e44ad",
+                                 hover_color="#6c3483", command=self.toggle_festivo)
+        btn_fest.pack(side="right", padx=(5, 0))
         # ⏱️ Las horas de feriado se cargan en «Horas Extras» con la fecha del feriado
         ctk.CTkLabel(f_dias_tool, text="(el feriado se cobra solo con las Horas Extras marcadas como Feriado)",
                      font=(familia_fuente, 10, "italic"), text_color="#7f8c8d").pack(
@@ -2044,7 +2115,8 @@ class CalculoCobranzaApp:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, distancia_desde, distancia_hasta, precio_normal, precio_domingo, precio_feriado
+                SELECT id, distancia_desde, distancia_hasta, precio_normal, precio_domingo,
+                       precio_feriado, precio_festivo
                 FROM precios_viaje_distancia
                 WHERE id_cliente = %s ORDER BY distancia_desde ASC
             ''', (self.cliente_id,))
@@ -2053,14 +2125,16 @@ class CalculoCobranzaApp:
                     "id": r[0], "distancia_desde": float(r[1]), "distancia_hasta": float(r[2]),
                     "precio_normal": float(r[3] or 0), "precio_domingo": float(r[4] or 0),
                     "precio_feriado": float(r[5] or 0),
-                    "viajes": {"normal": 0, "domingo": 0, "feriado": 0},
-                    "ded": {"normal": 0, "domingo": 0, "feriado": 0},
+                    "precio_festivo": float(r[6] or 0) if len(r) > 6 else 0.0,
+                    "viajes": {"normal": 0, "domingo": 0, "feriado": 0, "festivo": 0},
+                    "ded": {"normal": 0, "domingo": 0, "feriado": 0, "festivo": 0},
                 })
             # 🏷️ ZONAS con precio: si el cliente las tiene, se cobra por zona (no por km)
             zonas = []
             try:
                 cursor.execute("""
-                    SELECT id, nombre, precio_normal, precio_domingo, precio_feriado
+                    SELECT id, nombre, precio_normal, precio_domingo, precio_feriado,
+                           precio_festivo
                     FROM precios_viaje_zona WHERE id_cliente = %s ORDER BY nombre ASC
                 """, (self.cliente_id,))
                 zonas = cursor.fetchall()
@@ -2074,8 +2148,9 @@ class CalculoCobranzaApp:
                         "distancia_desde": 0.0, "distancia_hasta": 0.0,
                         "precio_normal": float(z[2] or 0), "precio_domingo": float(z[3] or 0),
                         "precio_feriado": float(z[4] or 0),
-                        "viajes": {"normal": 0, "domingo": 0, "feriado": 0},
-                        "ded": {"normal": 0, "domingo": 0, "feriado": 0},
+                        "precio_festivo": float(z[5] or 0) if len(z) > 5 else 0.0,
+                        "viajes": {"normal": 0, "domingo": 0, "feriado": 0, "festivo": 0},
+                        "ded": {"normal": 0, "domingo": 0, "feriado": 0, "festivo": 0},
                     })
                 print("[Zonas] cliente %s: %d zona(s)" % (self.cliente_id, len(zonas)))
             cursor.close()
@@ -2108,10 +2183,10 @@ class CalculoCobranzaApp:
                 text="⚠️ Este cliente no tiene tabla de precios por distancia. Usa '📏 Precios por Distancia'.")
             return
         self.lbl_sin_viajes.configure(text="")
-        cabeceras = ["Distancia", "P. Normal", "P. Domingo", "P. Feriado",
+        cabeceras = ["Distancia", "P. Normal", "P. Domingo", "P. Feriado", "P. Festivo",
                      "Viajes\nNormales", "Viajes\nDomingos", "Viajes\nFeriados",
-                     "No Real.\nNormales", "No Real.\nDomingos", "No Real.\nFeriados",
-                     "Monto"]
+                     "Viajes\nFestivos", "No Real.\nNormales", "No Real.\nDomingos",
+                     "No Real.\nFeriados", "No Real.\nFestivos", "Monto"]
         for j, txt in enumerate(cabeceras):
             ctk.CTkLabel(self.frame_viajes_grid, text=txt, font=(familia_fuente, 9, "bold"),
                          text_color="#7f8c8d").grid(row=0, column=j, padx=3, pady=2)
@@ -2127,20 +2202,22 @@ class CalculoCobranzaApp:
                          font=(familia_fuente, 10)).grid(row=row, column=2, padx=3)
             ctk.CTkLabel(self.frame_viajes_grid, text=formatear_moneda(rg['precio_feriado']),
                          font=(familia_fuente, 10)).grid(row=row, column=3, padx=3)
+            ctk.CTkLabel(self.frame_viajes_grid, text=formatear_moneda(rg.get('precio_festivo', 0)),
+                         font=(familia_fuente, 10)).grid(row=row, column=4, padx=3)
             entradas = {"viajes": {}, "ded": {}}
-            for col, clave in zip((4, 5, 6), ("normal", "domingo", "feriado")):
+            for col, clave in zip((5, 6, 7, 8), ("normal", "domingo", "feriado", "festivo")):
                 e = ctk.CTkEntry(self.frame_viajes_grid, width=62, justify="center")
                 e.grid(row=row, column=col, padx=2, pady=2)
                 e.insert(0, ("%g" % float(rg["viajes"][clave] or 0)))
                 entradas["viajes"][clave] = e
-            for col, clave in zip((7, 8, 9), ("normal", "domingo", "feriado")):
+            for col, clave in zip((9, 10, 11, 12), ("normal", "domingo", "feriado", "festivo")):
                 e = ctk.CTkEntry(self.frame_viajes_grid, width=62, justify="center")
                 e.grid(row=row, column=col, padx=2, pady=2)
                 e.insert(0, ("%g" % float(rg["ded"][clave] or 0)))
                 entradas["ded"][clave] = e
             lbl_m = ctk.CTkLabel(self.frame_viajes_grid, text=formatear_moneda(0),
                                  font=(familia_fuente, 10, "bold"), text_color="#1f538d")
-            lbl_m.grid(row=row, column=10, padx=3, pady=2)
+            lbl_m.grid(row=row, column=13, padx=3, pady=2)
             self.lbl_monto_viaje.append(lbl_m)
             self.ent_viajes.append(entradas)
 
@@ -2167,7 +2244,7 @@ class CalculoCobranzaApp:
         """Lee las cantidades de viajes de los campos y las aplica a self.rangos_viaje."""
         for i, rg in enumerate(self.rangos_viaje):
             if i < len(self.ent_viajes):
-                for cat in ("normal", "domingo", "feriado"):
+                for cat in ("normal", "domingo", "feriado", "festivo"):
                     rg["viajes"][cat] = self._leer_cantidad_viaje(self.ent_viajes[i]["viajes"][cat], f"Viajes {cat}")
                     rg["ded"][cat] = self._leer_cantidad_viaje(self.ent_viajes[i]["ded"][cat], f"No realizados {cat}")
 
@@ -2214,7 +2291,7 @@ class CalculoCobranzaApp:
         for d in self.dias:
             if d["fecha"] == fecha:
                 return d["categoria"]
-        return clasificar_dia(fecha, self.feriados)
+        return clasificar_dia(fecha, self.feriados, self.festivos)
 
     def _al_seleccionar_fecha_viaje(self):
         fecha = self._fecha_desde_entry()
@@ -2480,6 +2557,7 @@ class CalculoCobranzaApp:
         anio, mes, quincena = self.periodo_actual()
         self.registro_editando = None
         self.feriados = feriados_locales(anio)
+        self.festivos = festivos_comerciales(anio)
         if _leer_cache_feriados().get(str(anio)):
             self.lbl_origen_feriados.configure(text="Feriados: caché local de Perú (consultando internet…).")
         else:
@@ -2517,7 +2595,7 @@ class CalculoCobranzaApp:
         anio, mes, quincena = self.periodo_actual()
         if self.plan_cobro == "Por Punto o Viaje":
             # 🗓️ Cobro por punto: se toman TODOS los días del mes (no hay quincena)
-            self.dias = dias_de_mes(anio, mes, self.feriados)
+            self.dias = dias_de_mes(anio, mes, self.feriados, self.festivos)
         else:
             self.dias = dias_de_quincena(anio, mes, quincena, self.feriados)
         self.pintar_dias()
@@ -2528,7 +2606,8 @@ class CalculoCobranzaApp:
             self.tabla_dias.delete(item)
         for d in self.dias:
             etiqueta_cat = dict(CATEGORIAS)[d["categoria"]]
-            nombre = d["feriado_nombre"] if d["categoria"] == "feriado" else ""
+            nombre = (d["feriado_nombre"] if d["categoria"] in ("feriado", "festivo")
+                      else "")
             self.tabla_dias.insert("", tk.END, values=(
                 d["fecha"].strftime("%d/%m/%Y"),
                 DIAS_SEMANA[d["fecha"].weekday()],
@@ -2545,7 +2624,7 @@ class CalculoCobranzaApp:
         idx = self.tabla_dias.index(sel[0])
         d = self.dias[idx]
         if d["categoria"] == "feriado":
-            nueva = clasificar_dia(d["fecha"], {})
+            nueva = clasificar_dia(d["fecha"], self.feriados, self.festivos)
             d["categoria"] = nueva
             d["feriado_nombre"] = ""
         else:
@@ -2553,12 +2632,29 @@ class CalculoCobranzaApp:
             d["feriado_nombre"] = "Marcado manualmente"
         self.pintar_dias()  # conserva la marca manual (no reconstruye desde feriados)
 
+    def toggle_festivo(self):
+        """Marca/desmarca manualmente un día como festivo comercial."""
+        sel = self.tabla_dias.selection()
+        if not sel:
+            messagebox.showinfo("Seleccione una fila", "Seleccione un día de la tabla.")
+            return
+        idx = self.tabla_dias.index(sel[0])
+        d = self.dias[idx]
+        if d["categoria"] == "festivo":
+            d["categoria"] = clasificar_dia(d["fecha"], self.feriados, {})
+            d["feriado_nombre"] = ""
+        else:
+            d["categoria"] = "festivo"
+            d["feriado_nombre"] = "Marcado manualmente"
+        self.pintar_dias()
+
     def restablecer_feriados(self):
         if not self.dias:
             messagebox.showinfo("Sin quincena", "Primero busque los días de la quincena.")
             return
         anio, _, _ = self.periodo_actual()
         self.feriados = feriados_locales(anio)
+        self.festivos = festivos_comerciales(anio)
         if _leer_cache_feriados().get(str(anio)):
             self.lbl_origen_feriados.configure(text="Feriados: caché local de Perú (consultando internet…).")
         else:
@@ -2596,8 +2692,8 @@ class CalculoCobranzaApp:
         monto_extras_total = 0.0
         horas_extras_total = 0.0
         total_general = 0.0
-        ded_global = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
-        monto_cat_global = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
+        ded_global = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0, "festivo": 0.0}
+        monto_cat_global = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0, "festivo": 0.0}
         # Asientos con fecha (deducciones y horas extras) para el detalle del PDF
         deducciones_detalle = []
 
@@ -2608,12 +2704,12 @@ class CalculoCobranzaApp:
             horas_dia = self._leer_float(u["horas_dia"], "Horas al día")
             if horas_dia <= 0:
                 horas_dia = 24.0  # respaldo si no se definió jornada
-            precio_cat = {"normal": pn, "domingo": pd, "feriado": pf}
+            precio_cat = {"normal": pn, "domingo": pd, "feriado": pf, "festivo": pf}
 
             base_u = 0.0
             ded_u = 0.0
-            ded_horas_u = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
-            monto_cat_u = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
+            ded_horas_u = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0, "festivo": 0.0}
+            monto_cat_u = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0, "festivo": 0.0}
 
             # ⏱️ Las horas de FERIADO se toman SOLO de las Horas Extras registradas
             #    con fecha de feriado (si no hay ninguna, el feriado no suma horas).
@@ -2750,29 +2846,35 @@ class CalculoCobranzaApp:
             idx = t.get("rango_idx")
             if idx is None or not (0 <= idx < len(self.rangos_viaje)):
                 continue
-            cat = t.get("categoria") if t.get("categoria") in ("normal", "domingo", "feriado") else "normal"
-            ded_reg.setdefault(idx, {"normal": 0, "domingo": 0, "feriado": 0})
+            cat = t.get("categoria") if t.get("categoria") in ("normal", "domingo", "feriado", "festivo") else "normal"
+            ded_reg.setdefault(idx, {"normal": 0, "domingo": 0, "feriado": 0, "festivo": 0})
             ded_reg[idx][cat] += float(t.get("cantidad") or 0)
 
         monto_base = 0.0
         monto_ded = 0.0
         total = 0.0
-        monto_cat = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
+        monto_cat = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0, "festivo": 0.0}
         detalle = []
         deducciones_detalle = []
         for i, rg in enumerate(self.rangos_viaje):
             pn = self._leer_float(rg["precio_normal"], "Precio Normal")
             pd = self._leer_float(rg["precio_domingo"], "Precio Domingo")
             pf = self._leer_float(rg["precio_feriado"], "Precio Feriado")
+            pfe = self._leer_float(rg.get("precio_festivo", 0) or 0, "Precio Festivo")
             extra = ded_reg.get(i, {})
             nr_normal = float(rg["ded"]["normal"] or 0) + float(extra.get("normal", 0))
             nr_domingo = float(rg["ded"]["domingo"] or 0) + float(extra.get("domingo", 0))
             nr_feriado = float(rg["ded"]["feriado"] or 0) + float(extra.get("feriado", 0))
-            base_r = rg["viajes"]["normal"] * pn + rg["viajes"]["domingo"] * pd + rg["viajes"]["feriado"] * pf
-            ded_r = nr_normal * pn + nr_domingo * pd + nr_feriado * pf
+            nr_festivo = float(rg["ded"].get("festivo", 0) or 0) + float(extra.get("festivo", 0))
+            base_r = (rg["viajes"]["normal"] * pn + rg["viajes"]["domingo"] * pd
+                      + rg["viajes"]["feriado"] * pf
+                      + float(rg["viajes"].get("festivo", 0) or 0) * pfe)
+            ded_r = (nr_normal * pn + nr_domingo * pd + nr_feriado * pf
+                     + nr_festivo * pfe)
             monto_cat["normal"] += (rg["viajes"]["normal"] - nr_normal) * pn
             monto_cat["domingo"] += (rg["viajes"]["domingo"] - nr_domingo) * pd
             monto_cat["feriado"] += (rg["viajes"]["feriado"] - nr_feriado) * pf
+            monto_cat["festivo"] += (float(rg["viajes"].get("festivo", 0) or 0) - nr_festivo) * pfe
             sub = max(0.0, base_r - ded_r)
             monto_base += base_r
             monto_ded += ded_r
@@ -2784,9 +2886,12 @@ class CalculoCobranzaApp:
                 "desde": rg["distancia_desde"], "hasta": rg["distancia_hasta"],
                 "distancia": _etiqueta_rango(rg),
                 "precio_normal": pn, "precio_domingo": pd, "precio_feriado": pf,
+                "precio_festivo": pfe,
                 "viajes_normal": rg["viajes"]["normal"], "viajes_domingo": rg["viajes"]["domingo"],
                 "viajes_feriado": rg["viajes"]["feriado"],
+                "viajes_festivo": float(rg["viajes"].get("festivo", 0) or 0),
                 "ded_normal": nr_normal, "ded_domingo": nr_domingo, "ded_feriado": nr_feriado,
+                "ded_festivo": nr_festivo,
                 "monto_base": base_r, "monto_deducciones": ded_r, "subtotal": sub,
             })
 
@@ -2795,13 +2900,14 @@ class CalculoCobranzaApp:
             cant = float(t.get("cantidad") or 0)
             if cant <= 0:
                 continue
-            cat = t.get("categoria") if t.get("categoria") in ("normal", "domingo", "feriado") else "normal"
-            precio_cat = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0}
+            cat = t.get("categoria") if t.get("categoria") in ("normal", "domingo", "feriado", "festivo") else "normal"
+            precio_cat = {"normal": 0.0, "domingo": 0.0, "feriado": 0.0, "festivo": 0.0}
             idx = t.get("rango_idx")
             if idx is not None and 0 <= idx < len(detalle):
                 precio_cat = {"normal": detalle[idx]["precio_normal"],
                               "domingo": detalle[idx]["precio_domingo"],
-                              "feriado": detalle[idx]["precio_feriado"]}
+                              "feriado": detalle[idx]["precio_feriado"],
+                              "festivo": detalle[idx].get("precio_festivo", 0)}
             deducciones_detalle.append({
                 "tipo": "DEDUCCION",
                 "plan": "Por Punto o Viaje",
@@ -2837,7 +2943,10 @@ class CalculoCobranzaApp:
             "monto_normal": monto_cat["normal"],
             "monto_domingo": monto_cat["domingo"],
             "monto_feriado": monto_cat["feriado"],
+            "monto_festivo": monto_cat["festivo"],
+            "precio_festivo": sum(float(rg.get("precio_festivo", 0) or 0) for rg in self.rangos_viaje),
             "ded_normal_h": 0.0, "ded_domingo_h": 0.0, "ded_feriado_h": 0.0,
+            "ded_festivo_h": 0.0,
             "deducciones_detalle": deducciones_detalle,
             "total": total,
         }
@@ -2857,12 +2966,14 @@ class CalculoCobranzaApp:
             c = conteos_quincena(self.dias)
             self.lbl_conteo.configure(
                 text=(f"Días Normales (Lun–Sáb): {c['normal']}  |  Domingos: {c['domingo']}  |  "
-                      f"Feriados: {c['feriado']}  |  Total días: {len(self.dias)}"))
+                      f"Feriados: {c['feriado']}  |  Festivos: {c.get('festivo', 0)}  |  "
+                      f"Total días: {len(self.dias)}"))
             return
         c = r["conteos"]
         self.lbl_conteo.configure(
             text=(f"Días Normales (Lun–Sáb): {c['normal']}  |  Domingos: {c['domingo']}  |  "
-                  f"Feriados: {c['feriado']}  |  Total días: {len(self.dias)}"))
+                  f"Feriados: {c['feriado']}  |  Festivos: {c.get('festivo', 0)}  |  "
+                  f"Total días: {len(self.dias)}"))
 
         lineas = []
         if "viajes" in r:
@@ -2870,13 +2981,13 @@ class CalculoCobranzaApp:
             # 🛣️ Solo se listan los traslados/zonas que realmente se calcularon
             for i, vj in enumerate(r["viajes"]):
                 tiene_viajes = any(float(vj.get(k) or 0) for k in
-                                   ("viajes_normal", "viajes_domingo", "viajes_feriado"))
+                                   ("viajes_normal", "viajes_domingo", "viajes_feriado", "viajes_festivo"))
                 tiene_ded = any(float(vj.get(k) or 0) for k in
-                                ("ded_normal", "ded_domingo", "ded_feriado"))
+                                ("ded_normal", "ded_domingo", "ded_feriado", "ded_festivo"))
                 if tiene_viajes or tiene_ded or float(vj.get("monto_base") or 0):
                     detalle_cant = []
                     for clave, etiqueta in (("normal", "normal"), ("domingo", "domingo"),
-                                            ("feriado", "feriado")):
+                                            ("feriado", "feriado"), ("festivo", "festivo")):
                         cuantos = float(vj.get("viajes_%s" % clave) or 0)
                         if cuantos:
                             detalle_cant.append("%g %s" % (cuantos, etiqueta))
@@ -2970,35 +3081,41 @@ class CalculoCobranzaApp:
                 cursor.execute('''
                     INSERT INTO cobranza_quincenas
                     (id_cliente, cliente_nombre, cliente_ruc, anio, mes, quincena, plan_cobro,
-                     precio_normal, precio_domingo, precio_feriado,
-                     cant_lunvie, cant_sabado, cant_domingo, cant_feriado,
-                     ded_normal_h, ded_sabado_h, ded_domingo_h, ded_feriado_h,
-                     monto_lunvie, monto_sabado, monto_domingo, monto_feriado,
+                     precio_normal, precio_domingo, precio_feriado, precio_festivo,
+                     cant_lunvie, cant_sabado, cant_domingo, cant_feriado, cant_festivo,
+                     ded_normal_h, ded_sabado_h, ded_domingo_h, ded_feriado_h, ded_festivo_h,
+                     monto_lunvie, monto_sabado, monto_domingo, monto_feriado, monto_festivo,
                      monto_base, monto_deducciones, total, notas, pdf_ruta, fecha_registro)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s)
                     RETURNING id
                 ''', (self.cliente_id, self.cliente_nombre, self.cliente_ruc, anio, mes, quincena, self.plan_cobro,
-                      0, 0, 0,
+                      0, 0, 0, 0,
                       r["conteos"]["normal"], 0, r["conteos"]["domingo"], r["conteos"]["feriado"],
+                      r["conteos"].get("festivo", 0),
                       r["ded_normal_h"], 0, r["ded_domingo_h"], r["ded_feriado_h"],
+                      r.get("ded_festivo_h", 0),
                       r["monto_normal"], 0, r["monto_domingo"], r["monto_feriado"],
+                      r.get("monto_festivo", 0),
                       r["monto_base"], r["monto_deducciones"], r["total"], notas, fecha_reg))
                 id_cob = cursor.fetchone()[0]
             else:
                 cursor.execute('''
                     UPDATE cobranza_quincenas SET
                      id_cliente=%s, cliente_nombre=%s, cliente_ruc=%s, anio=%s, mes=%s, quincena=%s, plan_cobro=%s,
-                     precio_normal=%s, precio_domingo=%s, precio_feriado=%s,
-                     cant_lunvie=%s, cant_sabado=%s, cant_domingo=%s, cant_feriado=%s,
-                     ded_normal_h=%s, ded_sabado_h=%s, ded_domingo_h=%s, ded_feriado_h=%s,
-                     monto_lunvie=%s, monto_sabado=%s, monto_domingo=%s, monto_feriado=%s,
+                     precio_normal=%s, precio_domingo=%s, precio_feriado=%s, precio_festivo=%s,
+                     cant_lunvie=%s, cant_sabado=%s, cant_domingo=%s, cant_feriado=%s, cant_festivo=%s,
+                     ded_normal_h=%s, ded_sabado_h=%s, ded_domingo_h=%s, ded_feriado_h=%s, ded_festivo_h=%s,
+                     monto_lunvie=%s, monto_sabado=%s, monto_domingo=%s, monto_feriado=%s, monto_festivo=%s,
                      monto_base=%s, monto_deducciones=%s, total=%s, notas=%s, fecha_registro=%s
                     WHERE id=%s
                 ''', (self.cliente_id, self.cliente_nombre, self.cliente_ruc, anio, mes, quincena, self.plan_cobro,
-                      0, 0, 0,
+                      0, 0, 0, 0,
                       r["conteos"]["normal"], 0, r["conteos"]["domingo"], r["conteos"]["feriado"],
+                      r["conteos"].get("festivo", 0),
                       r["ded_normal_h"], 0, r["ded_domingo_h"], r["ded_feriado_h"],
+                      r.get("ded_festivo_h", 0),
                       r["monto_normal"], 0, r["monto_domingo"], r["monto_feriado"],
+                      r.get("monto_festivo", 0),
                       r["monto_base"], r["monto_deducciones"], r["total"], notas, fecha_reg, id_cob))
 
             # Detalle día por día (reemplazo)
@@ -3034,16 +3151,19 @@ class CalculoCobranzaApp:
                     cursor.execute('''
                         INSERT INTO cobranza_quincena_viajes
                         (id_cobranza, zona, distancia_desde, distancia_hasta, precio_normal,
-                         precio_domingo, precio_feriado,
-                         viajes_normal, viajes_domingo, viajes_feriado,
-                         ded_normal, ded_domingo, ded_feriado,
+                         precio_domingo, precio_feriado, precio_festivo,
+                         viajes_normal, viajes_domingo, viajes_feriado, viajes_festivo,
+                         ded_normal, ded_domingo, ded_feriado, ded_festivo,
                          monto_base, monto_deducciones, subtotal)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ''', (id_cob, vj.get("distancia", ""),
                           vj.get("desde", 0), vj.get("hasta", 0),
                           vj["precio_normal"], vj["precio_domingo"], vj["precio_feriado"],
+                          vj.get("precio_festivo", 0),
                           vj["viajes_normal"], vj["viajes_domingo"], vj["viajes_feriado"],
+                          vj.get("viajes_festivo", 0),
                           vj["ded_normal"], vj["ded_domingo"], vj["ded_feriado"],
+                          vj.get("ded_festivo", 0),
                           vj["monto_base"], vj["monto_deducciones"], vj["subtotal"]))
 
                 # Detalle de viajes individuales (fecha, vehículo, tipo) — reemplazo
@@ -3149,7 +3269,7 @@ class CalculoCobranzaApp:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT id, id_cliente, cliente_nombre, cliente_ruc, anio, mes, quincena, plan_cobro,
-                       cant_lunvie, cant_sabado, cant_domingo, cant_feriado,
+                       cant_lunvie, cant_sabado, cant_domingo, cant_feriado, cant_festivo,
                        monto_base, monto_deducciones, total, notas, fecha_registro
                 FROM cobranza_quincenas WHERE id=%s
             ''', (id_cob,))
@@ -3158,7 +3278,7 @@ class CalculoCobranzaApp:
                 messagebox.showerror("No Encontrado", "El registro de cobranza no existe.")
                 return None
             (id_rec, id_cli, nom_cli, ruc_cli, anio, mes, quincena, plan,
-             c_lunvie, c_sab, c_dom, c_fer,
+             c_lunvie, c_sab, c_dom, c_fer, c_fest,
              m_base, m_ded, total, notas, fecha_reg) = row
 
             cursor.execute("SELECT fecha, categoria, feriado_nombre FROM cobranza_detalle_dias WHERE id_cobranza=%s ORDER BY fecha", (id_cob,))
@@ -3176,9 +3296,9 @@ class CalculoCobranzaApp:
 
             cursor.execute('''
                 SELECT COALESCE(zona, ''), distancia_desde, distancia_hasta, precio_normal,
-                       precio_domingo, precio_feriado,
-                       viajes_normal, viajes_domingo, viajes_feriado,
-                       ded_normal, ded_domingo, ded_feriado,
+                       precio_domingo, precio_feriado, precio_festivo,
+                       viajes_normal, viajes_domingo, viajes_feriado, viajes_festivo,
+                       ded_normal, ded_domingo, ded_feriado, ded_festivo,
                        monto_base, monto_deducciones, subtotal
                 FROM cobranza_quincena_viajes WHERE id_cobranza=%s ORDER BY id
             ''', (id_cob,))
@@ -3187,11 +3307,12 @@ class CalculoCobranzaApp:
             viajes_pdf = []
             for fila in todas_pdf:
                 try:
-                    (zona, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df, mb, md, sub) = fila
+                    (zona, desde, hasta, pn, pd, pf, pfe, vn, vd, vf, vfe,
+                     dn, dd, df, dfe, mb, md, sub) = fila
                 except Exception:
                     continue
-                if (float(vn or 0) or float(vd or 0) or float(vf or 0)
-                        or float(dn or 0) or float(dd or 0) or float(df or 0)
+                if (float(vn or 0) or float(vd or 0) or float(vf or 0) or float(vfe or 0)
+                        or float(dn or 0) or float(dd or 0) or float(df or 0) or float(dfe or 0)
                         or abs(float(mb or 0)) > 0.005 or abs(float(sub or 0)) > 0.005):
                     viajes_pdf.append(fila)
 
@@ -3482,7 +3603,7 @@ class CalculoCobranzaApp:
             c.drawString(40, y, "DETALLE DE DÍAS DE LA QUINCENA")
             y -= SALTO_TITULO
             c.setFont("Helvetica-Bold", 10)
-            c.drawString(40, y, f"Total días: {len(detalle)}  |  Días Normales (Lun–Sáb): {c_lunvie}  |  Domingos: {c_dom}  |  Feriados: {c_fer}")
+            c.drawString(40, y, f"Total días: {len(detalle)}  |  Días Normales (Lun–Sáb): {c_lunvie}  |  Domingos: {c_dom}  |  Feriados: {c_fer}  |  Festivos: {c_fest}")
         y -= SALTO_BLOQUE
 
         if viajes_pdf:
@@ -3514,10 +3635,13 @@ class CalculoCobranzaApp:
                     cant_t = round(cant_t, 4) or 1.0
                     # etiqueta corta del día (Normal / Domingo / Feriado)
                     etiqueta_dia = {"normal": "Normal", "domingo": "Domingo",
-                                    "feriado": "Feriado"}.get(str(cat_t or "").lower())
+                                    "feriado": "Feriado", "festivo": "Festivo"}.get(
+                                        str(cat_t or "").lower())
                     if not etiqueta_dia:
                         texto_cat = str(cat_t or "").lower()
-                        if "feriado" in texto_cat:
+                        if "festivo" in texto_cat:
+                            etiqueta_dia = "Festivo"
+                        elif "feriado" in texto_cat:
                             etiqueta_dia = "Feriado"
                         elif "domingo" in texto_cat:
                             etiqueta_dia = "Domingo"
@@ -3529,13 +3653,15 @@ class CalculoCobranzaApp:
                                       espera_pct_t, espera_t))
             else:
                 for v in viajes_pdf:
-                    (zona, desde, hasta, pn, pd, pf, vn, vd, vf,
-                     dn, dd, df, mb, md, sub) = v
+                    (zona, desde, hasta, pn, pd, pf, pfe, vn, vd, vf, vfe,
+                     dn, dd, df, dfe, mb, md, sub) = v
                     nombre = _etiqueta_rango({"nombre": zona, "desde": desde, "hasta": hasta})
                     for clave, etiqueta_dia, precio in (("normal", "Normal", pn),
                                                         ("domingo", "Domingo", pd),
-                                                        ("feriado", "Feriado", pf)):
-                        cant = {"normal": vn, "domingo": vd, "feriado": vf}[clave]
+                                                        ("feriado", "Feriado", pf),
+                                                        ("festivo", "Festivo", pfe)):
+                        cant = {"normal": vn, "domingo": vd, "feriado": vf,
+                                "festivo": vfe}[clave]
                         cant = float(cant or 0)
                         if cant:
                             filas_pdf.append(("", nombre, etiqueta_dia, cant,
@@ -3901,7 +4027,7 @@ class CalculoCobranzaApp:
             if d.get("fecha") == fecha:
                 return str(d.get("categoria") or "normal")
         try:
-            return clasificar_dia(fecha, self.feriados or {})
+            return clasificar_dia(fecha, self.feriados or {}, self.festivos or {})
         except Exception:
             return "normal"
 
@@ -4179,9 +4305,9 @@ class CalculoCobranzaApp:
             unidades_rows = cursor.fetchall()
             cursor.execute('''
                 SELECT COALESCE(zona, ''), distancia_desde, distancia_hasta,
-                       precio_normal, precio_domingo, precio_feriado,
-                       viajes_normal, viajes_domingo, viajes_feriado,
-                       ded_normal, ded_domingo, ded_feriado
+                       precio_normal, precio_domingo, precio_feriado, precio_festivo,
+                       viajes_normal, viajes_domingo, viajes_feriado, viajes_festivo,
+                       ded_normal, ded_domingo, ded_feriado, ded_festivo
                 FROM cobranza_quincena_viajes WHERE id_cobranza=%s ORDER BY id
             ''', (id_cob,))
             viajes_rows = cursor.fetchall()
@@ -4242,6 +4368,10 @@ class CalculoCobranzaApp:
         except Exception:
             pass
 
+        try:
+            self.festivos = festivos_comerciales(anio)
+        except Exception:
+            pass
         # Días desde el detalle guardado
         self.dias = []
         for fecha_s, categoria, fer_nombre in detalle:
@@ -4255,7 +4385,8 @@ class CalculoCobranzaApp:
             self.tabla_dias.delete(item)
         for d in self.dias:
             etiqueta_cat = dict(CATEGORIAS)[d["categoria"]]
-            nombre = d["feriado_nombre"] if d["categoria"] == "feriado" else ""
+            nombre = (d["feriado_nombre"] if d["categoria"] in ("feriado", "festivo")
+                      else "")
             self.tabla_dias.insert("", tk.END, values=(
                 d["fecha"].strftime("%d/%m/%Y"),
                 DIAS_SEMANA[d["fecha"].weekday()],
@@ -4269,7 +4400,8 @@ class CalculoCobranzaApp:
         self.viajes_registrados = []
         self.deducciones_registradas = []
         if self.plan_cobro == "Por Punto o Viaje":
-            for (zona_v, desde, hasta, pn, pd, pf, vn, vd, vf, dn, dd, df) in viajes_rows:
+            for (zona_v, desde, hasta, pn, pd, pf, pfe, vn, vd, vf, vfe,
+                 dn, dd, df, dfe) in viajes_rows:
                 nombre_v = str(zona_v or "").strip()
                 self.rangos_viaje.append({
                     "id": None,
@@ -4280,11 +4412,12 @@ class CalculoCobranzaApp:
                     "distancia_desde": float(desde or 0), "distancia_hasta": float(hasta or 0),
                     "precio_normal": float(pn or 0), "precio_domingo": float(pd or 0),
                     "precio_feriado": float(pf or 0),
+                    "precio_festivo": float(pfe or 0),
                     # 🚚 Se conservan los medios viajes (1.5) que ya estaban guardados.
                     "viajes": {"normal": float(vn or 0), "domingo": float(vd or 0),
-                               "feriado": float(vf or 0)},
+                               "feriado": float(vf or 0), "festivo": float(vfe or 0)},
                     "ded": {"normal": float(dn or 0), "domingo": float(dd or 0),
-                            "feriado": float(df or 0)},
+                            "feriado": float(df or 0), "festivo": float(dfe or 0)},
                 })
             # Recupera los asientos de deducción con fecha (cantidad no realizada por rango)
             for (plan_d, unidad_d, fecha_s, cat_d, horas_d, min_d, cant_d,
@@ -5594,7 +5727,9 @@ class CalendarioPopup(ctk.CTkToplevel):
                     cat = clasificar_dia(date(self.anio, self.mes, dia), self.feriados)
                 except Exception:
                     cat = None
-            if cat == "feriado":
+            if cat == "festivo":
+                fg_color, hover_color = "#d5f5e3", "#abebc6"
+            elif cat == "feriado":
                 fg_color, hover_color = "#f8d7da", "#e6b8ba"
             elif cat == "domingo":
                 fg_color, hover_color = "#fdebd0", "#f2d3a3"
@@ -8486,23 +8621,24 @@ class VentanaZonasPrecio(ctk.CTkToplevel):
         self.nombre_cliente = nombre_cliente
         familia_fuente = "Helvetica" if sys.platform == "darwin" else "Arial"
         self.title("Zonas y precios — %s" % nombre_cliente)
-        self.geometry("780x520")
+        self.geometry("920x520")
         self.transient(parent)
         try:
             self.grab_set()
         except Exception:
             pass
-        ctk.CTkLabel(self, text="🏷️ ZONAS DEL CLIENTE  (precio normal / domingo / feriado)",
+        ctk.CTkLabel(self, text="🏷️ ZONAS DEL CLIENTE  (normal / domingo / feriado / festivo)",
                      font=(familia_fuente, 14, "bold"), text_color="#0e6655").pack(
             anchor="w", padx=15, pady=(12, 2))
         ctk.CTkLabel(self, text="Cada viaje se cobra según la ZONA de destino.",
                      font=(familia_fuente, 10), text_color="gray").pack(anchor="w", padx=15)
         f_tabla = ctk.CTkFrame(self, fg_color="transparent")
         f_tabla.pack(fill="both", expand=True, padx=15, pady=8)
-        self.tabla = ttk.Treeview(f_tabla, columns=("nombre", "normal", "domingo", "feriado"),
+        self.tabla = ttk.Treeview(f_tabla, columns=("nombre", "normal", "domingo", "feriado", "festivo"),
                                   show="headings", selectmode="browse", height=8)
-        for col, titulo, ancho in (("nombre", "Zona", 300), ("normal", "P. Normal", 130),
-                                   ("domingo", "P. Domingo", 130), ("feriado", "P. Feriado", 130)):
+        for col, titulo, ancho in (("nombre", "Zona", 280), ("normal", "P. Normal", 110),
+                                   ("domingo", "P. Domingo", 110), ("feriado", "P. Feriado", 110),
+                                   ("festivo", "P. Festivo", 110)):
             self.tabla.heading(col, text=titulo, anchor="center")
             self.tabla.column(col, width=ancho, anchor="w" if col == "nombre" else "center")
         self.tabla.pack(side="left", fill="both", expand=True)
@@ -8526,8 +8662,12 @@ class VentanaZonasPrecio(ctk.CTkToplevel):
         self.ent_domingo.grid(row=0, column=5, sticky="w", padx=4)
         ctk.CTkLabel(f_edit, text="Feriado:", font=(familia_fuente, 11, "bold")).grid(
             row=0, column=6, sticky="w", padx=(12, 4))
-        self.ent_feriado = ctk.CTkEntry(f_edit, width=85, justify="center", placeholder_text="0.00")
-        self.ent_feriado.grid(row=0, column=7, sticky="w", padx=(4, 10))
+        self.ent_feriado = ctk.CTkEntry(f_edit, width=78, justify="center", placeholder_text="0.00")
+        self.ent_feriado.grid(row=0, column=7, sticky="w", padx=4)
+        ctk.CTkLabel(f_edit, text="Festivo:", font=(familia_fuente, 11, "bold")).grid(
+            row=0, column=8, sticky="w", padx=(10, 4))
+        self.ent_festivo = ctk.CTkEntry(f_edit, width=78, justify="center", placeholder_text="0.00")
+        self.ent_festivo.grid(row=0, column=9, sticky="w", padx=(4, 10))
         f_btn = ctk.CTkFrame(self, fg_color="transparent")
         f_btn.pack(fill="x", padx=15, pady=(0, 12))
         ctk.CTkButton(f_btn, text="➕ Agregar zona", width=150, font=(familia_fuente, 11, "bold"),
@@ -8555,14 +8695,15 @@ class VentanaZonasPrecio(ctk.CTkToplevel):
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, nombre, precio_normal, precio_domingo, precio_feriado
+                SELECT id, nombre, precio_normal, precio_domingo, precio_feriado, precio_festivo
                 FROM precios_viaje_zona WHERE id_cliente = %s ORDER BY nombre ASC
             """, (self.id_cliente,))
             for z in cursor.fetchall():
                 self.tabla.insert("", tk.END, iid=str(z[0]),
                                   values=(z[1], "%.2f" % float(z[2] or 0),
                                           "%.2f" % float(z[3] or 0),
-                                          "%.2f" % float(z[4] or 0)))
+                                          "%.2f" % float(z[4] or 0),
+                                          "%.2f" % float(z[5] or 0)))
             cursor.close()
         except Exception as e:
             messagebox.showerror("Zonas", "No se pudieron cargar las zonas:" + chr(10) + str(e),
@@ -8579,7 +8720,8 @@ class VentanaZonasPrecio(ctk.CTkToplevel):
         self.ent_nombre.insert(0, valores[0])
         for entrada, valor in ((self.ent_normal, valores[1]),
                                (self.ent_domingo, valores[2]),
-                               (self.ent_feriado, valores[3])):
+                               (self.ent_feriado, valores[3]),
+                               (self.ent_festivo, valores[4])):
             entrada.delete(0, "end")
             entrada.insert(0, valor)
 
@@ -8596,7 +8738,7 @@ class VentanaZonasPrecio(ctk.CTkToplevel):
             messagebox.showwarning("Zona", "Escriba el nombre de la zona.", parent=self)
             return None
         return (nombre, self._numero(self.ent_normal), self._numero(self.ent_domingo),
-                self._numero(self.ent_feriado))
+                self._numero(self.ent_feriado), self._numero(self.ent_festivo))
 
     def _guardar_fila(self, datos, id_zona=None):
         conn = conectar_db(silencioso=True)
@@ -8607,14 +8749,16 @@ class VentanaZonasPrecio(ctk.CTkToplevel):
             if id_zona:
                 cursor.execute("""
                     UPDATE precios_viaje_zona
-                    SET nombre=%s, precio_normal=%s, precio_domingo=%s, precio_feriado=%s
+                    SET nombre=%s, precio_normal=%s, precio_domingo=%s, precio_feriado=%s,
+                        precio_festivo=%s
                     WHERE id=%s
                 """, datos + (id_zona,))
             else:
                 cursor.execute("""
                     INSERT INTO precios_viaje_zona
-                        (id_cliente, nombre, precio_normal, precio_domingo, precio_feriado)
-                    VALUES (%s, %s, %s, %s, %s)
+                        (id_cliente, nombre, precio_normal, precio_domingo, precio_feriado,
+                         precio_festivo)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                 """, (self.id_cliente,) + datos)
             conn.commit()
             return True

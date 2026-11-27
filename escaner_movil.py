@@ -437,6 +437,22 @@ def escanear_desde_telefono(parent, config=None, al_recibir=None, al_terminar=No
 
     familia = "Helvetica" if __import__("sys").platform == "darwin" else "Arial"
 
+    # 🛡️ Si la ventana que abrió el diálogo ya no existe, se usa una viva:
+    #    antes se creaba la ventana sobre un «bad window path» y se caía.
+    try:
+        if parent is not None and not parent.winfo_exists():
+            parent = None
+    except Exception:
+        parent = None
+    if parent is None:
+        try:
+            import tkinter as _tk
+            parent = _tk._default_root
+        except Exception:
+            parent = None
+    if parent is None:
+        return None
+
     carpeta = None
     try:
         import escaner
@@ -496,11 +512,22 @@ def escanear_desde_telefono(parent, config=None, al_recibir=None, al_terminar=No
             pass
 
     def recibir(rutas, tipo):
-        """Se llama desde el hilo del servidor: solo encola."""
+        """Se llama desde el hilo del servidor.
+
+        🚀 Se procesa AQUÍ MISMO (no solo se encola): antes, si la ventana del
+        teléfono se cerraba o su revisión de cola se detenía, la foto llegaba
+        al PC pero el programa no hacía nada. El callback de cada módulo ya
+        programa su trabajo en el hilo principal.
+        """
         try:
             cola.put(("documento", rutas, tipo))
         except Exception:
             pass
+        if al_recibir:
+            try:
+                al_recibir(rutas, tipo)
+            except Exception as error_recibir:
+                registrar("ERROR al procesar el documento recibido: %s" % error_recibir)
 
     servidor = ServidorEscanerMovil(al_recibir=recibir, al_avisar=avisar, carpeta=carpeta)
     ok, resultado = servidor.iniciar()
@@ -564,11 +591,7 @@ def escanear_desde_telefono(parent, config=None, al_recibir=None, al_terminar=No
                         barra.stop()
                     except Exception:
                         pass
-                    if al_recibir:
-                        try:
-                            al_recibir(rutas, tipo)
-                        except Exception as e:
-                            print("[Escáner móvil] error al procesar:", e)
+                    # 🚀 El documento YA se procesó en `recibir` (hilo del servidor).
                     try:
                         ventana.after(900, cerrar)
                     except Exception:
@@ -686,17 +709,18 @@ def escanear_reusando_flujo(parent=None, config=None, funcion=None, etiqueta="")
         tenia_grab[0] = False
 
     def al_recibir(rutas, tipo):
-        """Ya llega en el hilo principal: se puede tocar la interfaz con seguridad."""
-        try:
-            if parent is not None:
-                try:
-                    parent.grab_release()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
+        """Llega desde el hilo del servidor: se programa en el hilo principal."""
         def lanzar():
+            # 🪟 Tkinter solo se toca en el hilo principal
+            try:
+                if parent is not None:
+                    try:
+                        parent.grab_release()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             original = getattr(_escaner, "escanear", None)
 
             def escanear_falso(*args, **kwargs):

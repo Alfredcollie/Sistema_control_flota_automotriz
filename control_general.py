@@ -2999,6 +2999,13 @@ class ControlGeneralEventos:
         marco = getattr(self, "frame_botones_tareas", None)
         if marco is None:
             return
+        # 🛡️ Al cerrar el programa la barra ya puede estar destruida:
+        #    no se intenta dibujar nada sobre una ventana que ya no existe.
+        try:
+            if not marco.winfo_exists():
+                return
+        except Exception:
+            return
         try:
             for hijo in marco.winfo_children():
                 hijo.destroy()
@@ -3010,10 +3017,13 @@ class ControlGeneralEventos:
             if info and self._ventana_viva(info.get("ventana")):
                 abiertos.append((clave, info))
         if not abiertos:
-            self._lbl_sin_ventanas = ctk.CTkLabel(
-                marco, text="(ninguno abierto)", font=("Arial", 10, "italic"),
-                text_color="#7f8c8d")
-            self._lbl_sin_ventanas.pack(side="left", padx=6)
+            try:
+                self._lbl_sin_ventanas = ctk.CTkLabel(
+                    marco, text="(ninguno abierto)", font=("Arial", 10, "italic"),
+                    text_color="#7f8c8d")
+                self._lbl_sin_ventanas.pack(side="left", padx=6)
+            except Exception:
+                pass
             return
         try:
             disponible = int(marco.winfo_width())
