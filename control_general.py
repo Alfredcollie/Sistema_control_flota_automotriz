@@ -3859,6 +3859,27 @@ class ControlGeneralEventos:
         cmb_cuenta_grifo.set("Ninguna")
         ctk.CTkLabel(f_grifo, text="(se asigna automáticamente al llegar facturas del App Grifo)", font=("Arial", 9, "italic"), text_color="gray").pack(side="left", padx=5)
 
+        # ⚙️ Desfase y tolerancia de App Grifo (solo Flota)
+        f_grifo_dias = ctk.CTkFrame(f_empresa, fg_color="transparent")
+        f_grifo_dias.pack(fill="x", padx=15, pady=(4, 0))
+        ctk.CTkLabel(f_grifo_dias, text="Días de desfase App Grifo:", font=("Arial", 11, "bold")).pack(side="left", padx=(0, 5))
+        try:
+            from config_nube import (cargar_desfase_app_grifo,
+                                     cargar_tolerancia_app_grifo)
+            _dias_grifo_cfg = cargar_desfase_app_grifo()
+            _tol_grifo_cfg = cargar_tolerancia_app_grifo()
+        except Exception:
+            _dias_grifo_cfg, _tol_grifo_cfg = 3, 1
+        ent_desfase_grifo = ctk.CTkEntry(f_grifo_dias, width=60)
+        ent_desfase_grifo.pack(side="left", padx=5)
+        ent_desfase_grifo.insert(0, str(_dias_grifo_cfg))
+        ctk.CTkLabel(f_grifo_dias, text="Tolerancia ± (días):", font=("Arial", 11, "bold")).pack(side="left", padx=(16, 5))
+        ent_tol_grifo = ctk.CTkEntry(f_grifo_dias, width=60)
+        ent_tol_grifo.pack(side="left", padx=5)
+        ent_tol_grifo.insert(0, str(_tol_grifo_cfg))
+        ctk.CTkLabel(f_grifo_dias, text="(el desfase se suma a la fecha del asiento; la tolerancia solo sugiere)",
+                     font=("Arial", 9, "italic"), text_color="gray").pack(side="left", padx=5)
+
         def _opciones_cuentas_grifo():
             opciones = ["Ninguna"]
             for _f, _cb, _ec, _ef, _es in filas_bancos:
@@ -5168,6 +5189,10 @@ class ControlGeneralEventos:
             try:
                 guardar_bancos(lista_bancos)
                 guardar_cuenta_grifo(cuenta_grifo_sel)
+                from config_nube import (guardar_desfase_app_grifo,
+                                         guardar_tolerancia_app_grifo)
+                guardar_desfase_app_grifo(ent_desfase_grifo.get().strip() or 3)
+                guardar_tolerancia_app_grifo(ent_tol_grifo.get().strip() or 1)
             except Exception as e:
                 print("Error guardando bancos/grifo en nube:", e)
 
